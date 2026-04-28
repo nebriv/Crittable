@@ -191,6 +191,19 @@ export function Play({ sessionId, token }: Props) {
         >
           Exercise complete. Thanks for participating — your facilitator can download the AAR.
         </div>
+      ) : snapshot.current_turn?.status === "errored" ? (
+        // The AI failed to yield via a tool after strict retry. Without
+        // this banner, players sit watching no progress and have no idea
+        // what's happening — the activity panel that surfaces the error
+        // is creator-only.
+        <div
+          role="status"
+          aria-live="polite"
+          className="bg-amber-900/70 px-4 py-3 text-center text-sm font-semibold text-amber-100"
+        >
+          The AI facilitator paused — your facilitator has been notified and
+          can resume the exercise.
+        </div>
       ) : isMyTurn ? (
         <div
           role="status"
@@ -226,6 +239,7 @@ export function Play({ sessionId, token }: Props) {
             aiThinking={
               snapshot.state !== "ENDED" &&
               !streamingText &&
+              snapshot.current_turn?.status !== "errored" &&
               (snapshot.state === "AI_PROCESSING" ||
                 snapshot.state === "BRIEFING" ||
                 snapshot.current_turn?.status === "processing")

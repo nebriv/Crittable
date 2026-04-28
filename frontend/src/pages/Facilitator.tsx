@@ -496,6 +496,8 @@ export function Facilitator() {
             sessionId={state.sessionId}
             creatorToken={state.token}
             roles={snapshot.roles}
+            onForceAdvance={handleForceAdvance}
+            busy={busy}
           />
           <CostMeter cost={cost ?? snapshot.cost} />
           <Controls
@@ -543,6 +545,10 @@ export function Facilitator() {
                 aiThinking={
                   phase === "play" &&
                   !streamingText &&
+                  // Don't spin the indicator if the turn errored — the
+                  // AI is no longer working; the activity panel surfaces
+                  // the error and the operator can force-advance.
+                  snapshot.current_turn?.status !== "errored" &&
                   (snapshot.state === "AI_PROCESSING" ||
                     snapshot.state === "BRIEFING" ||
                     snapshot.current_turn?.status === "processing")

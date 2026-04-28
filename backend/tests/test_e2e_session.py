@@ -1131,3 +1131,59 @@ def test_setup_notes_visible_only_to_creator(client: TestClient) -> None:
 def test_health(client: TestClient) -> None:
     assert client.get("/healthz").json() == {"status": "ok"}
     assert client.get("/readyz").json() == {"status": "ready"}
+
+
+def test_spa_fallback_for_nested_routes(tmp_path) -> None:
+    """Regression for the production 404 on ``/play/{sid}/{token}``.
+
+    The previous ``StaticFiles(directory=..., html=True)`` mount served
+    ``index.html`` for ``/`` only. Any nested SPA route returned 404, so the
+    join-link flow was broken — players clicking a copied URL got a server
+    404 before their browser ever loaded the SPA.
+
+    Uses ``static_dir_override`` so the test never touches the real
+    ``backend/app/static`` build artifact (a developer who has run a vite
+    build would otherwise have their bundle clobbered by the synthesised
+    index.html).
+    """
+
+    from app.main import create_app
+
+    static_root = tmp_path / "static"
+    static_root.mkdir()
+    (static_root / "index.html").write_text(
+        "<!doctype html><html><head><title>SPA</title></head><body><div id=root></div></body></html>"
+    )
+    (static_root / "favicon.ico").write_bytes(b"\x00\x00\x01\x00")  # serve real files
+    (static_root / ".env").write_text("SECRET=should-not-leak")  # dotfile reject case
+
+    from fastapi.testclient import TestClient as _TC
+
+    app = create_app(static_dir_override=static_root)
+    with _TC(app) as c:
+        # Real API still works.
+        assert c.get("/healthz").json() == {"status": "ok"}
+        # Top-level SPA route → index.html.
+        r = c.get("/")
+        assert r.status_code == 200
+        assert "<title>SPA</title>" in r.text
+        # Nested SPA route → fallback to index.html.
+        r = c.get("/play/abc123/some-token")
+        assert r.status_code == 200
+        assert "<title>SPA</title>" in r.text
+        # Real top-level static file → served as-is.
+        r = c.get("/favicon.ico")
+        assert r.status_code == 200
+        assert r.content.startswith(b"\x00\x00\x01\x00")
+        # Dotfile must NOT be served, even though it exists in static_dir.
+        r = c.get("/.env")
+        assert r.status_code == 200
+        assert "SECRET=" not in r.text
+        assert "<title>SPA</title>" in r.text
+        # /api/<unknown> must return real 404, not the SPA fallback.
+        r = c.get("/api/this-route-does-not-exist")
+        assert r.status_code == 404
+        assert "<title>SPA</title>" not in r.text
+        # /ws/<unknown> must also 404.
+        r = c.get("/ws/this-route-does-not-exist")
+        assert r.status_code == 404

@@ -112,7 +112,18 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         logger.info("shutdown_complete")
 
 
-def create_app(settings: Settings | None = None) -> FastAPI:
+def create_app(
+    settings: Settings | None = None,
+    *,
+    static_dir_override: Path | None = None,
+) -> FastAPI:
+    """Build the FastAPI app.
+
+    ``static_dir_override`` is a test-only seam that points the SPA-fallback
+    handler at a synthesised directory, so unit tests don't risk clobbering
+    a developer's real ``backend/app/static`` build artifact.
+    """
+
     if settings is not None:
         # Respect a caller-provided override (used by tests).
         from . import config as _cfg
@@ -155,9 +166,58 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     register_api_routes(app)
     register_ws_routes(app)
 
-    static_dir = Path(__file__).parent / "static"
+    static_dir = static_dir_override or (Path(__file__).parent / "static")
     if static_dir.is_dir():
-        app.mount("/", StaticFiles(directory=static_dir, html=True), name="static")
+        # Serve hashed bundle assets from /assets/* directly. We deliberately
+        # mount the assets subdir rather than the whole static dir at "/" —
+        # the previous "/" mount swallowed every URL and returned 404 for
+        # client-side SPA routes like /play/{sid}/{token} (the route handler
+        # below now serves index.html as the SPA fallback).
+        assets_dir = static_dir / "assets"
+        if assets_dir.is_dir():
+            app.mount(
+                "/assets",
+                StaticFiles(directory=assets_dir),
+                name="assets",
+            )
+
+        # Serve top-level static files (favicon, etc) and the SPA fallback.
+        # Anything that's not a real file in the build output falls through
+        # to index.html so React Router / our own path-based router can take
+        # over client-side.
+        from fastapi.responses import FileResponse, Response
+
+        @app.get("/{full_path:path}", include_in_schema=False)
+        async def spa_fallback(full_path: str) -> Response:
+            # /api/* and /ws/* are real backend prefixes; if they reach the
+            # catch-all it means the path is not registered. Returning
+            # index.html for those (HTTP 200) breaks API client error
+            # handling and makes endpoint enumeration noisier. Surface a
+            # real 404 instead.
+            if full_path.startswith("api/") or full_path.startswith("ws/"):
+                return Response(status_code=404, content="not found")
+
+            # Don't serve dotfiles (.env, .DS_Store, .git/config, etc) even
+            # if they accidentally land in the build output. Vite normally
+            # doesn't emit them, but a hand-built deploy or a stray file
+            # would otherwise be silently exposed to the public internet.
+            if any(part.startswith(".") for part in Path(full_path).parts):
+                index = static_dir / "index.html"
+                return FileResponse(index) if index.is_file() else Response(status_code=404)
+
+            # Path-traversal guard: resolve and verify the candidate is
+            # still inside ``static_dir`` (catches ``../`` and symlinks).
+            candidate = (static_dir / full_path).resolve()
+            try:
+                candidate.relative_to(static_dir.resolve())
+            except ValueError:
+                candidate = static_dir / "index.html"
+            if candidate.is_file():
+                return FileResponse(candidate)
+            index = static_dir / "index.html"
+            if index.is_file():
+                return FileResponse(index)
+            return Response(status_code=404, content="not built")
 
     return app
 
