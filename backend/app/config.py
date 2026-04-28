@@ -83,6 +83,13 @@ class Settings(BaseSettings):
     # ---- Audit ---------------------------------------------------------
     audit_ring_size: int = Field(default=2000, alias="AUDIT_RING_SIZE", ge=10)
 
+    # ---- Developer ergonomics -----------------------------------------
+    # When true, ``POST /api/sessions`` skips the AI setup dialogue, populates a
+    # minimal default scenario plan, and lands the session straight in READY so
+    # the operator can iterate on the play / lobby UI without burning model
+    # tokens or waiting for setup turns. **Never set this in production.**
+    dev_fast_setup: bool = Field(default=False, alias="DEV_FAST_SETUP")
+
     # ---- Extensions ----------------------------------------------------
     extensions_tools_json: str | None = Field(default=None, alias="EXTENSIONS_TOOLS_JSON")
     extensions_tools_path: str | None = Field(default=None, alias="EXTENSIONS_TOOLS_PATH")

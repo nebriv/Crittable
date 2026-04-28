@@ -46,11 +46,24 @@ def _install_mock_and_drive(client: TestClient, *, role_ids: list[str], extensio
     return ""  # callers fetch the export themselves
 
 
+def _install_minimal_mock(client: TestClient) -> None:
+    """A no-op-ish mock for tests that don't drive a full play flow.
+
+    Returns a benign ``end_session`` call for any tier so the auto-kicked
+    setup turn on session creation doesn't reach the real Anthropic API.
+    """
+
+    client.app.state.llm.set_transport(MockAnthropic({}).messages)
+
+
 @pytest.fixture
 def client() -> TestClient:
     reset_settings_cache()
     app = create_app()
     with TestClient(app) as c:
+        # Install a default mock so session creation's auto-AI-kick doesn't hit
+        # the network. Individual tests can re-install a richer script later.
+        _install_minimal_mock(c)
         yield c
 
 
@@ -266,6 +279,96 @@ def test_extensions_endpoint(client: TestClient) -> None:
     body = r.json()
     names = [t["name"] for t in body["tools"]]
     assert "lookup_threat_intel" in names
+
+
+def test_creator_can_finalize_draft_plan_without_ai(client: TestClient) -> None:
+    """The 'Approve plan' UI shortcut: AI proposes, creator hits finalize
+    directly with no body — server uses the existing draft plan."""
+
+    seats = _create_and_seat(client, role_count=2)
+    _install_mock_and_drive(
+        client, role_ids=seats["role_ids"], extension="lookup_threat_intel"
+    )
+    sid = seats["session_id"]
+    cr = seats["creator_token"]
+
+    # First reply triggers the AI to ask. Second reply triggers propose.
+    client.post(f"/api/sessions/{sid}/setup/reply?token={cr}", json={"content": "ok"})
+    client.post(
+        f"/api/sessions/{sid}/setup/reply?token={cr}",
+        json={"content": "draft plan please"},
+    )
+
+    snap = client.get(f"/api/sessions/{sid}?token={cr}").json()
+    assert snap["plan"] is not None, "AI should have stored a draft plan"
+    assert snap["state"] == "SETUP", "session must still be in SETUP after propose"
+
+    # Direct finalize without resending the plan body — server uses the draft.
+    r = client.post(f"/api/sessions/{sid}/setup/finalize?token={cr}", json={})
+    assert r.status_code == 200, r.text
+
+    snap = client.get(f"/api/sessions/{sid}?token={cr}").json()
+    assert snap["state"] == "READY"
+
+
+def test_setup_skip_endpoint_lands_session_in_ready(client: TestClient) -> None:
+    """The 'Skip setup (dev)' UI button: drops a default plan, jumps to READY."""
+
+    seats = _create_and_seat(client, role_count=2)
+    sid = seats["session_id"]
+    cr = seats["creator_token"]
+
+    r = client.post(f"/api/sessions/{sid}/setup/skip?token={cr}")
+    assert r.status_code == 200, r.text
+
+    snap = client.get(f"/api/sessions/{sid}?token={cr}").json()
+    assert snap["state"] == "READY"
+    assert snap["plan"] is not None
+    assert snap["plan"]["title"]
+
+
+def test_dev_fast_setup_env(monkeypatch) -> None:
+    """``DEV_FAST_SETUP=true`` lands new sessions straight in READY."""
+
+    monkeypatch.setenv("DEV_FAST_SETUP", "true")
+    reset_settings_cache()
+    app = create_app()
+    with TestClient(app) as c:
+        _install_minimal_mock(c)
+        resp = c.post(
+            "/api/sessions",
+            json={
+                "scenario_prompt": "Phishing-led credential theft.",
+                "creator_label": "CISO",
+                "creator_display_name": "Alex",
+            },
+        )
+        body = resp.json()
+        assert body["fast_setup"] is True
+        snap = c.get(
+            f"/api/sessions/{body['session_id']}?token={body['creator_token']}"
+        ).json()
+        assert snap["state"] == "READY"
+        assert snap["plan"] is not None
+
+
+def test_setup_notes_visible_only_to_creator(client: TestClient) -> None:
+    seats = _create_and_seat(client, role_count=2)
+    _install_mock_and_drive(
+        client, role_ids=seats["role_ids"], extension="lookup_threat_intel"
+    )
+    sid = seats["session_id"]
+    cr = seats["creator_token"]
+    other_token = seats["role_tokens"][seats["role_ids"][1]]
+
+    # Push the AI to ask one question.
+    client.post(f"/api/sessions/{sid}/setup/reply?token={cr}", json={"content": "context"})
+
+    creator_view = client.get(f"/api/sessions/{sid}?token={cr}").json()
+    other_view = client.get(f"/api/sessions/{sid}?token={other_token}").json()
+
+    assert creator_view["setup_notes"], "creator should see setup notes"
+    assert other_view["setup_notes"] is None, "non-creator must not see setup notes"
 
 
 def test_health(client: TestClient) -> None:

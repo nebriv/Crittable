@@ -3,11 +3,13 @@ import {
   api,
   CostSnapshot,
   RoleView,
+  ScenarioPlan,
   SessionSnapshot,
 } from "../api/client";
 import { Composer } from "../components/Composer";
 import { CriticalEventBanner } from "../components/CriticalEventBanner";
 import { RoleRoster } from "../components/RoleRoster";
+import { SetupChat } from "../components/SetupChat";
 import { Transcript } from "../components/Transcript";
 import { ServerEvent, WsClient } from "../lib/ws";
 
@@ -20,6 +22,8 @@ interface CreatorState {
   joinUrl: string;
 }
 
+const NUDGE_PROPOSE = "I think we have enough context. Please draft the scenario plan now.";
+
 export function Facilitator() {
   const [state, setState] = useState<CreatorState | null>(null);
   const [snapshot, setSnapshot] = useState<SessionSnapshot | null>(null);
@@ -28,6 +32,9 @@ export function Facilitator() {
   const [creatorDisplayName, setCreatorDisplayName] = useState("");
   const [setupReply, setSetupReply] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [busyMessage, setBusyMessage] = useState<string | null>(null);
+  const [wsStatus, setWsStatus] = useState<"connecting" | "open" | "closed" | "error">("connecting");
 
   const [streamingText, setStreamingText] = useState("");
   const [criticalBanner, setCriticalBanner] = useState<{
@@ -50,12 +57,15 @@ export function Facilitator() {
   async function handleCreate(e: FormEvent) {
     e.preventDefault();
     setError(null);
+    setBusy(true);
+    setBusyMessage("Creating session and starting AI setup dialogue…");
     try {
       const created = await api.createSession({
         scenario_prompt: scenarioPrompt,
         creator_label: creatorLabel,
         creator_display_name: creatorDisplayName,
       });
+      console.info("[facilitator] session created", created);
       setState({
         sessionId: created.session_id,
         token: created.creator_token,
@@ -66,6 +76,9 @@ export function Facilitator() {
       setSnapshot(snap);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+      setBusyMessage(null);
     }
   }
 
@@ -76,6 +89,7 @@ export function Facilitator() {
       sessionId: state.sessionId,
       token: state.token,
       onEvent: handleEvent,
+      onStatus: (s) => setWsStatus(s),
     });
     ws.connect();
     wsRef.current = ws;
@@ -123,38 +137,140 @@ export function Facilitator() {
     }
   }
 
-  async function handleSetupReply(e: FormEvent) {
-    e.preventDefault();
-    if (!state || !setupReply.trim()) return;
+  async function callSetup(content: string, busyText: string) {
+    if (!state || !content.trim()) return;
+    setError(null);
+    setBusy(true);
+    setBusyMessage(busyText);
     try {
-      await api.setupReply(state.sessionId, state.token, setupReply.trim());
-      setSetupReply("");
+      await api.setupReply(state.sessionId, state.token, content.trim());
       await refreshSnapshot();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+      setBusyMessage(null);
+    }
+  }
+
+  async function handleSetupReply(e: FormEvent) {
+    e.preventDefault();
+    if (!setupReply.trim()) return;
+    const content = setupReply.trim();
+    setSetupReply("");
+    await callSetup(content, "AI is thinking — drafting the next setup question…");
+  }
+
+  /**
+   * "Looks ready" button: force progress toward a finalized plan.
+   * - If a draft plan already exists → finalize directly (skip the AI loop).
+   * - Otherwise → nudge the AI to propose, then auto-finalize if it does.
+   */
+  async function handleLooksReady() {
+    if (!state || !snapshot) return;
+    setError(null);
+    if (snapshot.plan) {
+      await handleApprovePlan();
+      return;
+    }
+    setBusy(true);
+    setBusyMessage("Asking the AI to draft the plan…");
+    try {
+      await api.setupReply(state.sessionId, state.token, NUDGE_PROPOSE);
+      const snap = await api.getSession(state.sessionId, state.token);
+      setSnapshot(snap);
+      if (snap.plan) {
+        setBusyMessage("Plan drafted — finalizing…");
+        await api.setupFinalize(state.sessionId, state.token);
+        const after = await api.getSession(state.sessionId, state.token);
+        setSnapshot(after);
+      } else {
+        setError(
+          "The AI didn't propose a plan yet. Try once more, or share a bit more context first.",
+        );
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+      setBusyMessage(null);
+    }
+  }
+
+  /** Direct finalize using the existing draft plan — no AI call. */
+  async function handleApprovePlan() {
+    if (!state) return;
+    setError(null);
+    setBusy(true);
+    setBusyMessage("Finalizing plan and moving to the lobby…");
+    try {
+      await api.setupFinalize(state.sessionId, state.token);
+      const snap = await api.getSession(state.sessionId, state.token);
+      setSnapshot(snap);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+      setBusyMessage(null);
+    }
+  }
+
+  /** Dev-only shortcut: install a default plan and skip setup entirely. */
+  async function handleSkipSetup() {
+    if (!state) return;
+    if (
+      !confirm(
+        "Skip the AI setup dialogue and use a generic default plan? Use this for testing only.",
+      )
+    ) {
+      return;
+    }
+    setError(null);
+    setBusy(true);
+    setBusyMessage("Skipping setup with a default plan…");
+    try {
+      await api.setupSkip(state.sessionId, state.token);
+      const snap = await api.getSession(state.sessionId, state.token);
+      setSnapshot(snap);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+      setBusyMessage(null);
     }
   }
 
   async function handleAddRole(label: string) {
     if (!state) return;
+    setBusy(true);
+    setBusyMessage(`Adding role "${label}"…`);
     try {
       const r = await api.addRole(state.sessionId, state.token, { label });
       const link = `${window.location.origin}/play/${state.sessionId}/${encodeURIComponent(r.token)}`;
+      console.info("[facilitator] join link minted", link);
       await navigator.clipboard?.writeText(link).catch(() => undefined);
       await refreshSnapshot();
       return link;
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+      setBusyMessage(null);
     }
   }
 
   async function handleStart() {
     if (!state) return;
+    setBusy(true);
+    setBusyMessage("Starting session — AI is opening the briefing…");
     try {
       await api.start(state.sessionId, state.token);
       await refreshSnapshot();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+      setBusyMessage(null);
     }
   }
 
@@ -169,21 +285,32 @@ export function Facilitator() {
 
   async function handleForceAdvance() {
     if (!state) return;
+    setBusy(true);
+    setBusyMessage("Force-advancing turn — AI is drafting the next beat…");
     try {
       await api.forceAdvance(state.sessionId, state.token);
       await refreshSnapshot();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+      setBusyMessage(null);
     }
   }
 
   async function handleEnd() {
     if (!state) return;
+    if (!confirm("End the session? This generates the AAR and closes the exercise.")) return;
+    setBusy(true);
+    setBusyMessage("Ending session…");
     try {
       await api.endSession(state.sessionId, state.token, "ended by creator");
       await refreshSnapshot();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+      setBusyMessage(null);
     }
   }
 
@@ -224,11 +351,17 @@ export function Facilitator() {
           </div>
           <button
             type="submit"
-            className="self-start rounded bg-sky-600 px-4 py-2 text-sm font-semibold text-white"
+            disabled={busy}
+            className="self-start rounded bg-sky-600 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50"
           >
-            Create session
+            {busy ? "Creating…" : "Create session"}
           </button>
         </form>
+        {busyMessage ? (
+          <p className="text-sm text-sky-300" role="status" aria-live="polite">
+            {busyMessage}
+          </p>
+        ) : null}
         {error ? <p className="text-sm text-red-400">{error}</p> : null}
       </main>
     );
@@ -238,6 +371,7 @@ export function Facilitator() {
 
   const activeRoleIds = snapshot.current_turn?.active_role_ids ?? [];
   const isMyTurn = activeRoleIds.includes(state.creatorRoleId);
+  const playerCount = snapshot.roles.filter((r) => r.kind === "player").length;
 
   return (
     <main className="flex min-h-screen flex-col">
@@ -248,9 +382,20 @@ export function Facilitator() {
           onAcknowledge={() => setCriticalBanner(null)}
         />
       ) : null}
+      <StatusBar
+        phase={phase}
+        backendState={snapshot.state}
+        wsStatus={wsStatus}
+        busy={busy}
+        busyMessage={busyMessage}
+      />
       <div className="mx-auto grid w-full max-w-6xl flex-1 grid-cols-1 gap-4 p-4 md:grid-cols-[260px_1fr]">
         <section className="flex flex-col gap-4">
-          <RoleRoster roles={snapshot.roles} activeRoleIds={activeRoleIds} selfRoleId={state.creatorRoleId} />
+          <RoleRoster
+            roles={snapshot.roles}
+            activeRoleIds={activeRoleIds}
+            selfRoleId={state.creatorRoleId}
+          />
           <CostMeter cost={cost ?? snapshot.cost} />
           <Controls
             phase={phase}
@@ -262,21 +407,36 @@ export function Facilitator() {
               window.open(api.exportUrl(state.sessionId, state.token), "_blank", "noopener")
             }
             roles={snapshot.roles}
+            playerCount={playerCount}
+            hasFinalizedPlan={Boolean(snapshot.plan)}
+            busy={busy}
           />
         </section>
 
         <section className="flex flex-col gap-4">
           {phase === "setup" ? (
-            <SetupView snapshot={snapshot} setupReply={setupReply} setSetupReply={setSetupReply} onSubmit={handleSetupReply} />
+            <SetupView
+              snapshot={snapshot}
+              setupReply={setupReply}
+              setSetupReply={setSetupReply}
+              onSubmit={handleSetupReply}
+              onLooksReady={handleLooksReady}
+              onApprovePlan={handleApprovePlan}
+              onSkipSetup={handleSkipSetup}
+              onPickOption={(opt) => callSetup(opt, "Sending your selection to the AI…")}
+              busy={busy}
+            />
           ) : null}
-          {phase === "ready" ? (
-            <ReadyView plan={snapshot.plan} />
-          ) : null}
+          {phase === "ready" ? <ReadyView plan={snapshot.plan} /> : null}
           {phase === "play" || phase === "ended" ? (
             <>
-              <Transcript messages={snapshot.messages} roles={snapshot.roles} streamingText={streamingText} />
+              <Transcript
+                messages={snapshot.messages}
+                roles={snapshot.roles}
+                streamingText={streamingText}
+              />
               <Composer
-                enabled={phase === "play" && isMyTurn}
+                enabled={phase === "play" && isMyTurn && !busy}
                 placeholder={
                   isMyTurn
                     ? "You are an active role. Make your decision."
@@ -290,6 +450,58 @@ export function Facilitator() {
         </section>
       </div>
     </main>
+  );
+}
+
+function StatusBar({
+  phase,
+  backendState,
+  wsStatus,
+  busy,
+  busyMessage,
+}: {
+  phase: Phase;
+  backendState: string;
+  wsStatus: "connecting" | "open" | "closed" | "error";
+  busy: boolean;
+  busyMessage: string | null;
+}) {
+  const wsColour =
+    wsStatus === "open"
+      ? "text-emerald-300"
+      : wsStatus === "connecting"
+        ? "text-amber-300"
+        : "text-red-300";
+  return (
+    <header className="border-b border-slate-800 bg-slate-900/70 px-4 py-2 text-xs">
+      <div className="mx-auto flex max-w-6xl flex-wrap items-center gap-4">
+        <span className="font-semibold uppercase tracking-widest text-slate-400">
+          Facilitator
+        </span>
+        <span className="rounded bg-slate-800 px-2 py-0.5 text-slate-200">
+          state: {backendState} · phase: {phase}
+        </span>
+        <span className={wsColour}>● ws: {wsStatus}</span>
+        {busy ? (
+          <span
+            role="status"
+            aria-live="polite"
+            className="ml-auto inline-flex items-center gap-2 rounded bg-sky-900/40 px-2 py-0.5 text-sky-200"
+          >
+            <Spinner /> {busyMessage ?? "Working…"}
+          </span>
+        ) : null}
+      </div>
+    </header>
+  );
+}
+
+function Spinner() {
+  return (
+    <span
+      aria-hidden="true"
+      className="inline-block h-3 w-3 animate-spin rounded-full border-2 border-sky-400 border-t-transparent"
+    />
   );
 }
 
@@ -315,44 +527,98 @@ function Controls(props: {
   onForceAdvance: () => void;
   onEnd: () => void;
   onExport: () => void;
+  playerCount: number;
+  hasFinalizedPlan: boolean;
+  busy: boolean;
 }) {
   const [newRole, setNewRole] = useState("");
   const [lastJoinLink, setLastJoinLink] = useState<string | null>(null);
+  const [copyHint, setCopyHint] = useState<string | null>(null);
 
   async function add(e: FormEvent) {
     e.preventDefault();
     if (!newRole.trim()) return;
     const link = await props.onAddRole(newRole.trim());
     setNewRole("");
-    if (link) setLastJoinLink(link);
+    if (link) {
+      setLastJoinLink(link);
+      setCopyHint("Copied to clipboard");
+      setTimeout(() => setCopyHint(null), 2000);
+    }
   }
 
+  async function copyLink() {
+    if (!lastJoinLink) return;
+    try {
+      await navigator.clipboard.writeText(lastJoinLink);
+      setCopyHint("Copied to clipboard");
+      setTimeout(() => setCopyHint(null), 2000);
+    } catch {
+      setCopyHint("Copy failed — select & copy manually");
+    }
+  }
+
+  const canStart =
+    (props.phase === "ready" || props.phase === "setup") &&
+    props.hasFinalizedPlan &&
+    props.playerCount >= 2;
+
   return (
-    <div className="flex flex-col gap-3 rounded border border-slate-700 bg-slate-900 p-3 text-sm">
+    <div className="flex min-w-0 flex-col gap-3 rounded border border-slate-700 bg-slate-900 p-3 text-sm">
       {props.phase === "ready" || props.phase === "setup" ? (
         <form onSubmit={add} className="flex flex-col gap-2">
           <label className="text-xs uppercase tracking-widest text-slate-400">Add role</label>
-          <div className="flex gap-2">
+          <div className="flex flex-col gap-2">
             <input
               value={newRole}
               onChange={(e) => setNewRole(e.target.value)}
               placeholder="IR Lead"
-              className="flex-1 rounded border border-slate-700 bg-slate-950 p-1 text-sm"
+              className="w-full rounded border border-slate-700 bg-slate-950 p-1 text-sm"
             />
-            <button type="submit" className="rounded bg-sky-600 px-2 text-xs font-semibold text-white">
-              Add
+            <button
+              type="submit"
+              disabled={props.busy || !newRole.trim()}
+              className="rounded bg-sky-600 px-2 py-1 text-xs font-semibold text-white disabled:opacity-50"
+            >
+              Add role
             </button>
           </div>
           {lastJoinLink ? (
-            <p className="break-all rounded bg-slate-950 p-1 text-xs text-emerald-300">
-              Copied join URL: {lastJoinLink}
-            </p>
+            <div className="flex flex-col gap-1">
+              <p className="break-all rounded bg-slate-950 p-1 text-xs text-emerald-300">
+                {lastJoinLink}
+              </p>
+              <div className="flex items-center justify-between gap-2">
+                <button
+                  type="button"
+                  onClick={copyLink}
+                  className="rounded border border-slate-700 px-2 py-0.5 text-xs text-slate-200 hover:bg-slate-800"
+                >
+                  Copy join URL
+                </button>
+                {copyHint ? <span className="text-xs text-emerald-300">{copyHint}</span> : null}
+              </div>
+            </div>
           ) : null}
+          <p className="text-xs text-slate-500">
+            Players: {props.playerCount} (need ≥ 2 to start)
+          </p>
         </form>
       ) : null}
 
-      {props.phase === "ready" ? (
-        <button onClick={props.onStart} className="rounded bg-emerald-600 px-2 py-1 text-sm font-semibold text-white">
+      {props.phase === "ready" || props.phase === "setup" ? (
+        <button
+          onClick={props.onStart}
+          disabled={!canStart || props.busy}
+          className="rounded bg-emerald-600 px-2 py-1 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"
+          title={
+            !props.hasFinalizedPlan
+              ? "Finalize the plan first"
+              : props.playerCount < 2
+                ? "Add at least 2 player roles"
+                : ""
+          }
+        >
           Start session
         </button>
       ) : null}
@@ -361,13 +627,15 @@ function Controls(props: {
         <>
           <button
             onClick={props.onForceAdvance}
-            className="rounded border border-amber-500 px-2 py-1 text-sm font-semibold text-amber-200"
+            disabled={props.busy}
+            className="rounded border border-amber-500 px-2 py-1 text-sm font-semibold text-amber-200 disabled:opacity-50"
           >
             Force-advance turn
           </button>
           <button
             onClick={props.onEnd}
-            className="rounded border border-red-500 px-2 py-1 text-sm font-semibold text-red-300"
+            disabled={props.busy}
+            className="rounded border border-red-500 px-2 py-1 text-sm font-semibold text-red-300 disabled:opacity-50"
           >
             End session
           </button>
@@ -375,7 +643,10 @@ function Controls(props: {
       ) : null}
 
       {props.phase === "ended" ? (
-        <button onClick={props.onExport} className="rounded bg-emerald-600 px-2 py-1 text-sm font-semibold text-white">
+        <button
+          onClick={props.onExport}
+          className="rounded bg-emerald-600 px-2 py-1 text-sm font-semibold text-white"
+        >
           Download AAR
         </button>
       ) : null}
@@ -388,41 +659,115 @@ function SetupView({
   setupReply,
   setSetupReply,
   onSubmit,
+  onLooksReady,
+  onApprovePlan,
+  onSkipSetup,
+  onPickOption,
+  busy,
 }: {
   snapshot: SessionSnapshot;
   setupReply: string;
   setSetupReply: (s: string) => void;
   onSubmit: (e: FormEvent) => void;
+  onLooksReady: () => void;
+  onApprovePlan: () => void;
+  onSkipSetup: () => void;
+  onPickOption: (option: string) => void;
+  busy: boolean;
 }) {
+  const hasPlan = Boolean(snapshot.plan);
+  const notes = snapshot.setup_notes ?? [];
+
   return (
     <div className="flex flex-col gap-3">
-      <h2 className="text-lg font-semibold">Setup dialogue</h2>
-      <p className="text-xs text-slate-400">
-        The AI is gathering context. Answer briefly; click "Looks ready" once you're set.
-      </p>
-      <Transcript messages={snapshot.messages.length ? snapshot.messages : []} roles={snapshot.roles} />
+      <div>
+        <h2 className="text-lg font-semibold">Setup dialogue</h2>
+        <p className="text-xs text-slate-400">
+          Answer the AI's questions briefly. When you have shared enough background, click{" "}
+          <em>"Looks ready — propose the plan"</em> to nudge it to draft. Once a plan is on the
+          table, click <em>"Approve plan"</em> to commit it.
+        </p>
+      </div>
+
+      {notes.length === 0 && !busy ? (
+        <p className="rounded border border-amber-700 bg-amber-950/40 p-3 text-xs text-amber-200">
+          No setup messages yet. The AI usually responds in 5–20 seconds. If nothing appears soon,
+          check the backend container logs — the most common causes are a missing
+          <code className="mx-1 rounded bg-slate-900 px-1">ANTHROPIC_API_KEY</code> or a network
+          issue reaching the Anthropic API.
+        </p>
+      ) : null}
+
+      <SetupChat notes={notes} busy={busy} onPickOption={onPickOption} />
+
       <form onSubmit={onSubmit} className="flex flex-col gap-2">
         <textarea
           value={setupReply}
           onChange={(e) => setSetupReply(e.target.value)}
           rows={3}
-          placeholder="e.g. mid-size regional bank, PCI + SOX in scope"
-          className="rounded border border-slate-700 bg-slate-900 p-2 text-sm"
+          placeholder="Type your reply to the AI…"
+          disabled={busy}
+          className="rounded border border-slate-700 bg-slate-900 p-2 text-sm disabled:opacity-50"
         />
-        <button
-          type="submit"
-          className="self-end rounded bg-sky-600 px-3 py-1 text-sm font-semibold text-white"
-        >
-          Send to AI
-        </button>
+        <div className="flex flex-wrap gap-2">
+          <button
+            type="submit"
+            disabled={busy || !setupReply.trim()}
+            className="rounded bg-sky-600 px-3 py-1 text-sm font-semibold text-white disabled:opacity-50"
+          >
+            Send reply
+          </button>
+          <button
+            type="button"
+            onClick={onLooksReady}
+            disabled={busy}
+            className="rounded border border-emerald-600 px-3 py-1 text-sm font-semibold text-emerald-300 disabled:opacity-50"
+            title={
+              hasPlan
+                ? "A plan is ready — clicking finalizes it and moves to the lobby."
+                : "Asks the AI to draft a plan; auto-finalizes it if one comes back."
+            }
+          >
+            {hasPlan ? "Looks ready — finalize plan" : "Looks ready — propose the plan"}
+          </button>
+          {hasPlan ? (
+            <button
+              type="button"
+              onClick={onApprovePlan}
+              disabled={busy}
+              className="rounded bg-emerald-600 px-3 py-1 text-sm font-semibold text-white disabled:opacity-50"
+              title="Commits the existing draft plan immediately (no AI call)."
+            >
+              Approve &amp; start lobby
+            </button>
+          ) : null}
+          <button
+            type="button"
+            onClick={onSkipSetup}
+            disabled={busy}
+            className="ml-auto rounded border border-slate-600 px-3 py-1 text-xs text-slate-400 hover:bg-slate-800 disabled:opacity-50"
+            title="Dev/testing only: skip the AI setup dialogue and use a generic default plan."
+          >
+            Skip setup (dev)
+          </button>
+        </div>
       </form>
-      {snapshot.plan ? (
-        <details className="rounded border border-slate-700 bg-slate-900 p-2 text-xs">
-          <summary className="cursor-pointer">Proposed plan</summary>
-          <pre className="mt-2 whitespace-pre-wrap">{JSON.stringify(snapshot.plan, null, 2)}</pre>
-        </details>
-      ) : null}
+
+      {hasPlan ? <PlanPreview plan={snapshot.plan!} /> : null}
     </div>
+  );
+}
+
+function PlanPreview({ plan }: { plan: ScenarioPlan }) {
+  return (
+    <details className="rounded border border-emerald-700/60 bg-emerald-950/20 p-2 text-xs" open>
+      <summary className="cursor-pointer text-emerald-300">
+        Proposed plan: {plan.title}
+      </summary>
+      <pre className="mt-2 max-h-72 overflow-auto whitespace-pre-wrap text-slate-200">
+        {JSON.stringify(plan, null, 2)}
+      </pre>
+    </details>
   );
 }
 

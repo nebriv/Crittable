@@ -32,6 +32,7 @@ If `ANTHROPIC_MODEL` is set, it is the fallback for any unset tier.
 | `EXPORT_RETENTION_MIN` | `60` | Minutes to keep an ENDED session's export available |
 | `WS_HEARTBEAT_S` | `20` | WebSocket heartbeat interval |
 | `INPUT_GUARDRAIL_ENABLED` | `true` | Toggle the Haiku off-topic pre-classifier |
+| `DEV_FAST_SETUP` | `false` | Dev/testing only: skip the AI setup dialogue at session creation, drop a generic default plan, and land in `READY`. **Never enable in production.** A creator can also trigger this mid-flow via `POST /api/sessions/{id}/setup/skip`. |
 
 ## Logging
 

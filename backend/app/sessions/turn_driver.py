@@ -197,6 +197,10 @@ class TurnDriver:
         for msg in outcome.appended_messages:
             session.messages.append(msg)
         if outcome.proposed_plan is not None:
+            # Persist the proposal as a draft on the session so the snapshot
+            # endpoint can surface it to the creator. State stays SETUP — only
+            # ``finalize_setup`` (AI- or operator-initiated) flips to READY.
+            session.plan = outcome.proposed_plan
             await self._manager.connections().broadcast(
                 session.id,
                 {

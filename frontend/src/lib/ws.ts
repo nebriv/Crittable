@@ -69,27 +69,31 @@ export class WsClient {
     ws.addEventListener("open", () => {
       this.reconnectAttempt = 0;
       this.opts.onStatus?.("open");
+      console.debug("[ws] open", { sessionId: this.opts.sessionId });
       this._setupHeartbeat();
     });
 
     ws.addEventListener("message", (evt) => {
       try {
         const parsed = JSON.parse(evt.data) as ServerEvent;
+        console.debug("[ws] event", parsed);
         this.opts.onEvent(parsed);
       } catch {
         // Drop malformed frames silently.
       }
     });
 
-    ws.addEventListener("close", () => {
+    ws.addEventListener("close", (evt) => {
       this._teardownHeartbeat();
       this.opts.onStatus?.("closed");
+      console.debug("[ws] close", { code: evt.code, reason: evt.reason });
       if (!this.closedByCaller) {
         this._scheduleReconnect();
       }
     });
 
-    ws.addEventListener("error", () => {
+    ws.addEventListener("error", (evt) => {
+      console.warn("[ws] error", evt);
       this.opts.onStatus?.("error");
     });
   }

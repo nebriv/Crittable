@@ -11,7 +11,16 @@ export interface SessionSnapshot {
   roles: RoleView[];
   current_turn: TurnView | null;
   messages: MessageView[];
+  setup_notes: SetupNoteView[] | null;
   cost: CostSnapshot | null;
+}
+
+export interface SetupNoteView {
+  ts: string;
+  speaker: "ai" | "creator";
+  content: string;
+  topic: string | null;
+  options: string[] | null;
 }
 
 export interface RoleView {
@@ -57,11 +66,14 @@ export interface ScenarioPlan {
 }
 
 async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
+  console.debug(`[api] ${method} ${path}`, body ?? "");
+  const start = performance.now();
   const res = await fetch(path, {
     method,
     headers: body ? { "content-type": "application/json" } : undefined,
     body: body ? JSON.stringify(body) : undefined,
   });
+  const ms = Math.round(performance.now() - start);
   if (!res.ok) {
     let detail = `${res.status}`;
     try {
@@ -70,9 +82,12 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
     } catch {
       /* ignore */
     }
+    console.warn(`[api] ${method} ${path} → ${res.status} (${ms}ms)`, detail);
     throw new Error(detail);
   }
-  return (await res.json()) as T;
+  const out = (await res.json()) as T;
+  console.debug(`[api] ${method} ${path} → ${res.status} (${ms}ms)`);
+  return out;
 }
 
 export const api = {
@@ -103,6 +118,25 @@ export const api = {
 
   async setupReply(sessionId: string, token: string, content: string): Promise<{ ok: boolean }> {
     return request("POST", `/api/sessions/${sessionId}/setup/reply?token=${encodeURIComponent(token)}`, { content });
+  },
+
+  async setupFinalize(
+    sessionId: string,
+    token: string,
+    plan?: ScenarioPlan,
+  ): Promise<{ ok: boolean }> {
+    return request(
+      "POST",
+      `/api/sessions/${sessionId}/setup/finalize?token=${encodeURIComponent(token)}`,
+      plan ?? {},
+    );
+  },
+
+  async setupSkip(sessionId: string, token: string): Promise<{ ok: boolean }> {
+    return request(
+      "POST",
+      `/api/sessions/${sessionId}/setup/skip?token=${encodeURIComponent(token)}`,
+    );
   },
 
   async start(sessionId: string, token: string): Promise<{ ok: boolean }> {
