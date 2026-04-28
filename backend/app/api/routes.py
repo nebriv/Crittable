@@ -15,7 +15,6 @@ from ..auth.authz import (
     require_participant,
 )
 from ..extensions.registry import FrozenRegistry
-from ..llm.export import AARGenerator
 from ..sessions.manager import SessionManager
 from ..sessions.models import ParticipantKind, ScenarioPlan, SessionState
 from ..sessions.repository import SessionNotFoundError
@@ -193,6 +192,10 @@ def register_api_routes(app: FastAPI) -> None:
                     "display_name": r.display_name,
                     "kind": r.kind,
                     "is_creator": r.is_creator,
+                    # Bumped when the creator kicks; the frontend uses this in
+                    # localStorage keys so a new player on the same browser
+                    # doesn't inherit the kicked player's notes.
+                    "token_version": r.token_version,
                 }
                 for r in session.roles
             ],
@@ -469,6 +472,14 @@ def register_api_routes(app: FastAPI) -> None:
 
     @router.get("/sessions/{session_id}/export.md", response_class=PlainTextResponse)
     async def export_md(session_id: str, request: Request) -> Response:
+        """Polling-friendly AAR download.
+
+        AAR generation runs as a background task on /end. While it's still
+        in flight (``aar_status`` in {pending, generating}) this endpoint
+        returns 425 with a ``Retry-After`` header so the client can poll. On
+        ``ready``, returns 200 with the markdown body. On ``failed``, 500.
+        """
+
         manager = _manager(request)
         token = await _bind_token(request, session_id)
         try:
@@ -482,18 +493,196 @@ def register_api_routes(app: FastAPI) -> None:
         if session.state != SessionState.ENDED:
             raise HTTPException(status.HTTP_425_TOO_EARLY, "session not yet ended")
 
-        if session.aar_markdown is None:
-            generator = AARGenerator(llm=manager.llm(), audit=manager.audit())
-            session.aar_markdown = await generator.generate(session)
-            await manager._repo.save(session)
+        if session.aar_status in ("pending", "generating"):
+            return PlainTextResponse(
+                content=f"AAR is {session.aar_status}; please retry shortly.",
+                status_code=status.HTTP_425_TOO_EARLY,
+                headers={
+                    "Retry-After": "3",
+                    "X-AAR-Status": session.aar_status,
+                },
+            )
+
+        if session.aar_status == "failed" or session.aar_markdown is None:
+            return PlainTextResponse(
+                content=f"AAR generation failed: {session.aar_error or 'unknown error'}",
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                headers={"X-AAR-Status": session.aar_status},
+            )
 
         filename_slug = (session.plan.title if session.plan else "exercise")
         filename_slug = "-".join(filename_slug.lower().split())[:40] or "exercise"
         return PlainTextResponse(
             content=session.aar_markdown,
             media_type="text/markdown",
-            headers={"Content-Disposition": f'attachment; filename="{filename_slug}-aar.md"'},
+            headers={
+                "Content-Disposition": f'attachment; filename="{filename_slug}-aar.md"',
+                "X-AAR-Status": "ready",
+            },
         )
+
+    @router.get("/sessions/{session_id}/activity")
+    async def session_activity(session_id: str, request: Request) -> dict[str, Any]:
+        """Lightweight creator-only "what is the backend doing?" snapshot.
+
+        Designed to be polled every ~3s by the activity panel in the sidebar.
+        Carries enough to answer:
+
+        * Is the AI currently running, and for how long?
+        * What turn are we on, who has submitted, who are we waiting for?
+        * Is the AAR ready / generating / failed?
+
+        Does NOT include audit payloads, system prompts, or full message
+        bodies — those live behind the God Mode endpoint below so creators
+        who want to stay in role can opt in to seeing them.
+        """
+
+        manager = _manager(request)
+        token = await _bind_token(request, session_id)
+        try:
+            require_creator(token)
+        except AuthorizationError as exc:
+            raise HTTPException(status.HTTP_403_FORBIDDEN, str(exc)) from exc
+        session = await manager.get_session(session_id)
+        in_flight = manager.llm().in_flight_for(session_id)
+        import time as _t
+
+        now = _t.monotonic()
+        return {
+            "state": session.state.value,
+            "turn": (
+                {
+                    "index": session.current_turn.index,
+                    "status": session.current_turn.status,
+                    "active_role_ids": session.current_turn.active_role_ids,
+                    "submitted_role_ids": session.current_turn.submitted_role_ids,
+                    "waiting_on_role_ids": [
+                        rid
+                        for rid in session.current_turn.active_role_ids
+                        if rid not in session.current_turn.submitted_role_ids
+                    ],
+                    "error_reason": session.current_turn.error_reason,
+                    "retried_with_strict": session.current_turn.retried_with_strict,
+                }
+                if session.current_turn
+                else None
+            ),
+            "in_flight_llm": [
+                {
+                    "tier": call.tier,
+                    "model": call.model,
+                    "stream": call.stream,
+                    "elapsed_ms": int((now - call.started_at) * 1000),
+                }
+                for call in in_flight
+            ],
+            "aar_status": session.aar_status,
+            "aar_error": session.aar_error,
+            "turn_count": len(session.turns),
+            "message_count": len(session.messages),
+            "setup_note_count": len(session.setup_notes),
+        }
+
+    @router.get("/sessions/{session_id}/debug")
+    async def session_debug(session_id: str, request: Request) -> dict[str, Any]:
+        """Creator-only full-debug "God Mode" dump.
+
+        Returns everything that's safe for the creator to inspect: full audit
+        log, all messages with bodies + tool args, the full plan,
+        extension registry, in-flight LLM details. The creator already has
+        the plan in their snapshot, so plan disclosure here is no new leak.
+
+        Polled while the God Mode panel is open. Distinct from
+        ``/activity`` so the regular sidebar can stay lightweight.
+        """
+
+        manager = _manager(request)
+        token = await _bind_token(request, session_id)
+        try:
+            require_creator(token)
+        except AuthorizationError as exc:
+            raise HTTPException(status.HTTP_403_FORBIDDEN, str(exc)) from exc
+        session = await manager.get_session(session_id)
+        registry = _registry(request)
+        audit = manager.audit().dump(session_id)
+        in_flight = manager.llm().in_flight_for(session_id)
+        import time as _t
+
+        now = _t.monotonic()
+        return {
+            "session": {
+                "id": session.id,
+                "state": session.state.value,
+                "scenario_prompt": session.scenario_prompt,
+                "plan": session.plan.model_dump() if session.plan else None,
+                "active_extension_prompts": session.active_extension_prompts,
+                "cost": session.cost.model_dump(),
+                "aar_status": session.aar_status,
+                "aar_error": session.aar_error,
+                "created_at": session.created_at.isoformat(),
+                "ended_at": session.ended_at.isoformat() if session.ended_at else None,
+            },
+            "turns": [
+                {
+                    "index": t.index,
+                    "status": t.status,
+                    "active_role_ids": t.active_role_ids,
+                    "submitted_role_ids": t.submitted_role_ids,
+                    "started_at": t.started_at.isoformat(),
+                    "ended_at": t.ended_at.isoformat() if t.ended_at else None,
+                    "error_reason": t.error_reason,
+                    "retried_with_strict": t.retried_with_strict,
+                }
+                for t in session.turns
+            ],
+            "messages": [
+                {
+                    "id": m.id,
+                    "ts": m.ts.isoformat(),
+                    "role_id": m.role_id,
+                    "kind": m.kind.value,
+                    "body": m.body,
+                    "tool_name": m.tool_name,
+                    "tool_args": m.tool_args,
+                    "turn_id": m.turn_id,
+                }
+                for m in session.messages
+            ],
+            "setup_notes": [
+                {
+                    "ts": n.ts.isoformat(),
+                    "speaker": n.speaker,
+                    "topic": n.topic,
+                    "options": n.options,
+                    "content": n.content,
+                }
+                for n in session.setup_notes
+            ],
+            "audit_events": [evt.model_dump(mode="json") for evt in audit[-200:]],
+            "in_flight_llm": [
+                {
+                    "tier": call.tier,
+                    "model": call.model,
+                    "stream": call.stream,
+                    "elapsed_ms": int((now - call.started_at) * 1000),
+                }
+                for call in in_flight
+            ],
+            "extensions": {
+                "tools": [
+                    {"name": t.name, "description": t.description}
+                    for t in registry.tools.values()
+                ],
+                "resources": [
+                    {"name": r.name, "description": r.description}
+                    for r in registry.resources.values()
+                ],
+                "prompts": [
+                    {"name": p.name, "description": p.description, "scope": p.scope}
+                    for p in registry.prompts.values()
+                ],
+            },
+        }
 
     @router.get("/extensions")
     async def list_extensions(request: Request) -> dict[str, Any]:

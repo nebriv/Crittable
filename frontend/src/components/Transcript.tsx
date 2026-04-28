@@ -1,4 +1,5 @@
 import { MessageView, RoleView } from "../api/client";
+import { ChatIndicator } from "./ChatIndicator";
 
 interface Props {
   messages: MessageView[];
@@ -10,10 +11,24 @@ interface Props {
    * scrolled participant doesn't have to look at the StatusBar.
    */
   aiThinking?: boolean;
+  /** role_ids of human players currently typing (excluding the local user). */
+  typingRoleIds?: string[];
 }
 
-export function Transcript({ messages, roles, streamingText, aiThinking }: Props) {
+export function Transcript({ messages, roles, streamingText, aiThinking, typingRoleIds }: Props) {
   const roleById = new Map(roles.map((r) => [r.id, r]));
+  const typing = (typingRoleIds ?? []).flatMap((id) => {
+    const r = roleById.get(id);
+    return r ? [`${r.label}${r.display_name ? ` · ${r.display_name}` : ""}`] : [];
+  });
+  const typingLabel =
+    typing.length === 0
+      ? null
+      : typing.length === 1
+        ? `${typing[0]} is typing…`
+        : typing.length === 2
+          ? `${typing[0]} and ${typing[1]} are typing…`
+          : `${typing[0]}, ${typing[1]} and ${typing.length - 2} more are typing…`;
   return (
     <div
       className="flex flex-col gap-3"
@@ -64,23 +79,9 @@ export function Transcript({ messages, roles, streamingText, aiThinking }: Props
           <p className="whitespace-pre-wrap text-sm leading-relaxed">{streamingText}</p>
         </article>
       ) : aiThinking ? (
-        <article
-          className="rounded-md border border-emerald-700/40 bg-emerald-950/30 p-3"
-          data-kind="ai-thinking"
-          aria-busy="true"
-        >
-          <header className="mb-1 text-xs uppercase tracking-wide text-emerald-300">
-            AI Facilitator
-          </header>
-          <p className="inline-flex items-center gap-2 text-sm text-emerald-200">
-            <span
-              aria-hidden="true"
-              className="inline-block h-2 w-2 animate-ping rounded-full bg-emerald-400"
-            />
-            <span className="opacity-90">AI is thinking…</span>
-          </p>
-        </article>
+        <ChatIndicator label="AI Facilitator is typing…" tone="ai" />
       ) : null}
+      {typingLabel ? <ChatIndicator label={typingLabel} tone="player" /> : null}
     </div>
   );
 }

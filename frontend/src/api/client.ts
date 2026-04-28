@@ -29,6 +29,8 @@ export interface RoleView {
   display_name: string | null;
   kind: "player" | "spectator";
   is_creator: boolean;
+  /** Bumped on kick; included in localStorage keys to isolate notes per join. */
+  token_version: number;
 }
 
 export interface TurnView {
@@ -200,4 +202,28 @@ export const api = {
       `/api/sessions/${sessionId}/roles/${roleId}?token=${encodeURIComponent(creatorToken)}`,
     );
   },
+
+  async getActivity(sessionId: string, token: string): Promise<unknown> {
+    return request(
+      "GET",
+      `/api/sessions/${sessionId}/activity?token=${encodeURIComponent(token)}`,
+    );
+  },
+
+  async getDebug(sessionId: string, token: string): Promise<unknown> {
+    return request(
+      "GET",
+      `/api/sessions/${sessionId}/debug?token=${encodeURIComponent(token)}`,
+    );
+  },
 };
+
+/**
+ * Strip the ``?token=…`` query param from a URL before logging it. Centralised
+ * here so any module that bypasses the wrapped ``request<T>()`` (e.g. raw
+ * polling like ``EndedView``) can still avoid leaking creator/player tokens
+ * to the browser console.
+ */
+export function scrubUrl(url: string): string {
+  return url.replace(/([?&]token=)[^&]+/gi, "$1***");
+}

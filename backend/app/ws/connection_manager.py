@@ -64,14 +64,25 @@ class ConnectionManager:
             except ValueError:
                 pass
 
-    async def broadcast(self, session_id: str, event: dict[str, Any]) -> None:
+    async def broadcast(
+        self,
+        session_id: str,
+        event: dict[str, Any],
+        *,
+        record: bool = True,
+    ) -> None:
         """Fan out to every connection on the session.
 
-        Cost events are gated to creators only inside :meth:`send_to_role`
-        upstream — this method assumes everything passed in is broadcast-safe.
+        ``record=False`` skips the replay buffer — use this for **ephemeral**
+        signals (typing indicators, presence pings) that are spammed at high
+        volume and have no value to a reconnecting client. Without this gate
+        a malicious peer can flood typing events and evict legitimate
+        ``state_changed`` / ``message_complete`` events from the bounded
+        buffer, breaking reconnect rehydration.
         """
 
-        await self._record_replay(session_id, event)
+        if record:
+            await self._record_replay(session_id, event)
         async with self._lock:
             recipients = list(self._connections.get(session_id, ()))
         for conn in recipients:

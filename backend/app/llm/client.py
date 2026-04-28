@@ -4,7 +4,9 @@ Phase-2 responsibilities:
 * hold a single shared client instance,
 * expose a typed ``acomplete`` that the SessionManager / export pipeline call,
 * attach a prompt-cache breakpoint on the system block,
-* keep a hook (`set_transport`) so tests can inject a deterministic transport.
+* keep a hook (`set_transport`) so tests can inject a deterministic transport,
+* track in-flight calls per session so the creator's activity panel can show
+  "AI processing for 12s" in real time.
 
 The full streaming relay over the WebSocket lives in the SessionManager / WS
 layer; this client returns either a complete response or an async-iterator of
@@ -14,7 +16,9 @@ events depending on ``stream``.
 from __future__ import annotations
 
 import asyncio
+import time
 from collections.abc import AsyncIterator
+from dataclasses import dataclass
 from typing import Any, Protocol
 
 from ..config import ModelTier, Settings
@@ -22,6 +26,16 @@ from ..logging_setup import get_logger
 from .cost import estimate_usd
 
 _logger = get_logger("llm.client")
+
+
+@dataclass
+class InFlightCall:
+    """One active LLM call. Used by the creator's activity panel."""
+
+    tier: str
+    model: str
+    stream: bool
+    started_at: float  # time.monotonic() seconds
 
 
 class _AnthropicCallable(Protocol):
@@ -59,6 +73,37 @@ class LLMClient:
         self._lock = asyncio.Lock()
         self._transport: _AnthropicCallable | None = None
         self._closed = False
+        # In-flight tracker: session_id -> list of InFlightCall (in case the
+        # session manager dispatches the AAR while a guardrail call is also
+        # active; rare but possible).
+        self._in_flight: dict[str, list[InFlightCall]] = {}
+
+    def in_flight_for(self, session_id: str) -> list[InFlightCall]:
+        """Snapshot of active LLM calls for a session. Safe from any thread."""
+
+        return list(self._in_flight.get(session_id, ()))
+
+    def _begin_call(
+        self,
+        *,
+        session_id: str | None,
+        tier: ModelTier,
+        model: str,
+        stream: bool,
+    ) -> InFlightCall | None:
+        if not session_id:
+            return None
+        call = InFlightCall(tier=tier, model=model, stream=stream, started_at=time.monotonic())
+        self._in_flight.setdefault(session_id, []).append(call)
+        return call
+
+    def _end_call(self, session_id: str | None, call: InFlightCall | None) -> None:
+        if session_id and call is not None:
+            bucket = self._in_flight.get(session_id)
+            if bucket and call in bucket:
+                bucket.remove(call)
+            if bucket is not None and not bucket:
+                self._in_flight.pop(session_id, None)
 
     # ---------------------------------------------------------------- setup
     def set_transport(self, transport: _AnthropicCallable) -> None:
@@ -103,6 +148,7 @@ class LLMClient:
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]] | None = None,
         max_tokens: int = 1024,
+        session_id: str | None = None,
     ) -> LLMResult:
         """One-shot, non-streamed completion. Streaming for play turns goes via
         :meth:`astream`."""
@@ -117,8 +163,6 @@ class LLMClient:
         if tools:
             kwargs["tools"] = tools
 
-        import time as _t
-
         _logger.info(
             "llm_call_start",
             tier=tier,
@@ -127,7 +171,8 @@ class LLMClient:
             tools=len(tools or []),
             messages=len(messages),
         )
-        started = _t.monotonic()
+        call = self._begin_call(session_id=session_id, tier=tier, model=model, stream=False)
+        started = time.monotonic()
         try:
             api = await self._messages()
             response = await api.create(**kwargs)
@@ -136,17 +181,19 @@ class LLMClient:
                 "llm_call_failed",
                 tier=tier,
                 model=model,
-                duration_ms=int((_t.monotonic() - started) * 1000),
+                duration_ms=int((time.monotonic() - started) * 1000),
                 error=str(exc),
             )
             raise
+        finally:
+            self._end_call(session_id, call)
 
         result = _normalize_response(response, model=model)
         _logger.info(
             "llm_call_complete",
             tier=tier,
             model=model,
-            duration_ms=int((_t.monotonic() - started) * 1000),
+            duration_ms=int((time.monotonic() - started) * 1000),
             usage=result.usage,
             estimated_usd=round(result.estimated_usd, 6),
             stop_reason=result.stop_reason,
@@ -162,6 +209,7 @@ class LLMClient:
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]] | None = None,
         max_tokens: int = 1024,
+        session_id: str | None = None,
     ) -> AsyncIterator[dict[str, Any]]:
         """Yield streamed events. The terminal event has ``type == "complete"``
         and carries the final ``LLMResult`` under the ``result`` key."""
@@ -176,8 +224,6 @@ class LLMClient:
         if tools:
             kwargs["tools"] = tools
 
-        import time as _t
-
         _logger.info(
             "llm_call_start",
             tier=tier,
@@ -186,38 +232,48 @@ class LLMClient:
             tools=len(tools or []),
             messages=len(messages),
         )
-        started = _t.monotonic()
+        call = self._begin_call(session_id=session_id, tier=tier, model=model, stream=True)
+        started = time.monotonic()
         api = await self._messages()
         stream = api.stream(**kwargs)
         text_buffer: list[str] = []
+        # try/finally rather than try/except: ``CancelledError`` is BaseException
+        # so a WS-disconnect-cancel mid-stream would otherwise leak the
+        # in-flight entry forever (the activity panel would show "AI play
+        # 999.9s" until the process restarts).
         try:
-            async with stream as s:
-                async for event in s:
-                    etype = getattr(event, "type", None)
-                    if etype == "content_block_delta":
-                        delta = getattr(event, "delta", None)
-                        if delta is not None and getattr(delta, "type", None) == "text_delta":
-                            text_buffer.append(delta.text)
-                            yield {"type": "text_delta", "text": delta.text}
-                    # Other event types aren't surfaced in MVP.
-                final = await s.get_final_message()
-        except Exception as exc:
-            _logger.warning(
-                "llm_call_failed",
-                tier=tier,
-                model=model,
-                duration_ms=int((_t.monotonic() - started) * 1000),
-                stream=True,
-                error=str(exc),
-            )
-            raise
+            try:
+                async with stream as s:
+                    async for event in s:
+                        etype = getattr(event, "type", None)
+                        if etype == "content_block_delta":
+                            delta = getattr(event, "delta", None)
+                            if (
+                                delta is not None
+                                and getattr(delta, "type", None) == "text_delta"
+                            ):
+                                text_buffer.append(delta.text)
+                                yield {"type": "text_delta", "text": delta.text}
+                    final = await s.get_final_message()
+            except Exception as exc:
+                _logger.warning(
+                    "llm_call_failed",
+                    tier=tier,
+                    model=model,
+                    duration_ms=int((time.monotonic() - started) * 1000),
+                    stream=True,
+                    error=str(exc),
+                )
+                raise
+        finally:
+            self._end_call(session_id, call)
         result = _normalize_response(final, model=model)
         _logger.info(
             "llm_call_complete",
             tier=tier,
             model=model,
             stream=True,
-            duration_ms=int((_t.monotonic() - started) * 1000),
+            duration_ms=int((time.monotonic() - started) * 1000),
             usage=result.usage,
             estimated_usd=round(result.estimated_usd, 6),
             stop_reason=result.stop_reason,

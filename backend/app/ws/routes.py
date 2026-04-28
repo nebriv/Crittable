@@ -122,6 +122,32 @@ def register_ws_routes(app: FastAPI) -> None:
             clear_session_context()
 
 
+async def _broadcast_typing(
+    *,
+    manager: SessionManager,
+    session_id: str,
+    role_id: str,
+    typing: bool,
+) -> None:
+    """Fan out a ``typing`` event to every connection on the session.
+
+    The receiving clients filter by ``role_id`` so a sender doesn't echo
+    their own typing state. Kept symmetric (start + stop both broadcast)
+    rather than only-on-change, because clients expire their own state.
+
+    ``record=False`` keeps these out of the replay buffer — typing is a
+    stale signal by the time anyone reconnects, and they're emitted at
+    high volume so they'd evict legitimate state events from the bounded
+    buffer otherwise.
+    """
+
+    await manager.connections().broadcast(
+        session_id,
+        {"type": "typing", "role_id": role_id, "typing": typing},
+        record=False,
+    )
+
+
 async def _server_pump(
     websocket: WebSocket,
     conn: Any,
@@ -166,10 +192,17 @@ async def _client_pump(
             event_type = payload.get("type")
             if event_type == "heartbeat":
                 continue
+            # Mutating + presence events are participant-only. Spectators can
+            # connect (read-only fan-out) but cannot emit typing indicators or
+            # state-changing events. Letting spectators emit ``typing_start``
+            # would (a) leak presence and (b) amplify a spectator into a
+            # high-volume broadcaster against the session's connections.
             if event_type in (
                 "submit_response",
                 "request_force_advance",
                 "request_end_session",
+                "typing_start",
+                "typing_stop",
             ):
                 try:
                     require_participant(token_payload)
@@ -245,6 +278,16 @@ async def _client_pump(
                     await websocket.send_json(
                         {"type": "error", "scope": "end_session", "message": str(exc)}
                     )
+            elif event_type in ("typing_start", "typing_stop"):
+                # Relay to other connections only (not the sender). Lightweight
+                # — no server-side state, the client expires its own typing
+                # roster after ~3s of silence.
+                await _broadcast_typing(
+                    manager=manager,
+                    session_id=session_id,
+                    role_id=role_id,
+                    typing=event_type == "typing_start",
+                )
             else:
                 await websocket.send_json(
                     {"type": "error", "scope": "ws", "message": f"unknown event type: {event_type}"}

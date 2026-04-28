@@ -46,13 +46,14 @@ mcp__github__search_issues  query='repo:nebriv/ai-tabletop-facilitator is:issue 
 
 ## Sub-agent review protocol
 
-**Every closed Phase-2 issue and every Phase-3 epic requires three independent reviews before merge.** The implementing agent launches each as a Claude Code sub-agent, posts findings as PR review comments, and must resolve or explicitly defer (with a follow-up issue) every finding before marking the issue done.
+**Every commit that touches application code must pass all four sub-agent reviews before pushing.** The implementing agent launches each in parallel via the Agent tool, triages findings (CRITICAL / BLOCK / HIGH must be fixed; MEDIUM/LOW/MINOR may be deferred with a tracked follow-up), and only commits + pushes once the four reviews come back without blockers. Phase-1 docs / CI / scaffolding work is exempt; everything else is in scope.
 
 1. **QA Agent** — verifies tests cover the golden path + edge cases; checks regression risk; validates the issue's acceptance criteria; flags missing or skipped tests.
 2. **Security Engineer Agent** — reviews input validation, secret handling, AuthN/AuthZ correctness, WebSocket origin/token checks, rate limits, **prompt-injection surface (extra attention to the extensions pipeline)**, and dependency CVEs.
 3. **UI/UX Agent** — reviews layout, responsive behavior, keyboard navigation, ARIA/accessibility, role clarity, and error / empty / loading / streaming states.
+4. **Product / App-Owner Agent** — reviews the change vs. **what was actually asked** and **what the app is supposed to do**. Reads `docs/PLAN.md`, the open GitHub issues for the current milestone (`mcp__github__search_issues` with the milestone filter), the recent conversation asks, and the diff. Flags scope drift, missed requests, half-done items, and design-doc divergence. The other three agents check the *how*; this agent checks the *what*.
 
-Phase-1 work is exempt from the three-agent review (no application logic yet) but still goes through normal PR review.
+Run them with `Agent({ subagent_type: "general-purpose", run_in_background: true, ... })` so they execute in parallel; wait for all four to complete; address every BLOCK / CRITICAL / HIGH; document any deferred findings in the commit body. **Skipping the reviews is a process bug** — earlier rounds shipped CRITICAL plan-disclosure leaks, token-logging bugs, and stuck-setup states that the reviews caught.
 
 ## Extension authoring
 
@@ -65,6 +66,46 @@ Custom tools, resources, and prompts (Skills-style) are loaded at startup via en
 - Async-first: every I/O path is `async`; locks are per-session (no globals).
 - All config through `pydantic-settings` env vars; never hard-code.
 - Commit style: `<area>: <imperative subject>` (e.g. `backend: add session repository`). Body explains *why*. Phase-1 bootstrap can use `chore:` / `docs:` / `ci:`.
+
+## Communication patterns: WebSocket vs AJAX/polling
+
+Pick the right transport for each interaction. Mixing them is fine; using the wrong one for a specific job is the bug.
+
+### WebSocket — chat-style fan-out
+
+Use the `/ws/sessions/{id}` channel for **anything that reads as a real-time conversation** between the server and many clients:
+
+- streaming AI text deltas (`message_chunk`)
+- final messages (`message_complete`)
+- state / turn / participant transitions (`state_changed`, `turn_changed`, `participant_joined`, `participant_left`)
+- critical-event banners (`critical_event`)
+- typing indicators (`typing`)
+- creator-only signals like `cost_updated` (sent via `send_to_role`)
+
+The contract: events are small, frequent, and one-shot. The connection manager's per-connection queue + replay buffer is sized for this.
+
+### AJAX / polling — long-running operations and large payloads
+
+Use plain HTTP for **anything that involves a slow upstream call** (Anthropic API > 2 s) or **anything where the client may legitimately reconnect / refresh and need to fetch state on demand**:
+
+- `POST /api/sessions/{id}/end` returns immediately; the AAR generates in a background task. The download endpoint (`GET /export.md`) returns **425 Too Early** with a `Retry-After` header while `aar_status` is `pending`/`generating`, **200** when ready, **500** on failure. Frontend polls every ~2.5 s.
+- `GET /api/sessions/{id}/activity` and `/debug` are **polled** by the creator UI (~3 s) — they don't push because their content is heavy and not all clients want it.
+- `POST /api/sessions/{id}/setup/reply` and `POST /start` are still synchronous in this codebase; they're flagged as Phase-3 candidates for the same async-then-poll treatment because they currently block on a 5–30 s LLM call.
+
+Long synchronous POSTs that wrap an LLM call **without a polling fallback** are flagged in code review. The reverse — pushing a 30 KB plan dump via WebSocket — is also flagged: that's what `GET /api/sessions/{id}/debug` is for.
+
+### Pattern for new long-running endpoints
+
+```text
+POST /api/.../foo            → 200 immediately, sets foo_status="pending"
+                                kicks asyncio.create_task(_foo_bg(...))
+GET  /api/.../foo            → 425 (Retry-After: 3) while pending/generating
+                                200 when ready
+                                500 when failed (X-Foo-Status reveals the state)
+WS event "foo_status_changed" optional, nudges the polling client to re-fetch
+```
+
+This keeps the request handlers fast, lets the operator's reverse proxy keep its 30 s read timeout, and gives the client a cheap recovery path when its tab refreshes.
 
 ## Logging rules (read before adding any new code path)
 

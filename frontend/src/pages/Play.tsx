@@ -2,6 +2,7 @@ import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { api, SessionSnapshot } from "../api/client";
 import { Composer } from "../components/Composer";
 import { CriticalEventBanner } from "../components/CriticalEventBanner";
+import { RightSidebar } from "../components/RightSidebar";
 import { RoleRoster } from "../components/RoleRoster";
 import { Transcript } from "../components/Transcript";
 import { ServerEvent, WsClient } from "../lib/ws";
@@ -25,6 +26,7 @@ export function Play({ sessionId, token }: Props) {
     body: string;
   } | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [typing, setTyping] = useState<Record<string, number>>({});
   const wsRef = useRef<WsClient | null>(null);
 
   // Determine self by inspecting snapshot.roles and matching the role with the
@@ -81,6 +83,14 @@ export function Play({ sessionId, token }: Props) {
       case "guardrail_blocked":
         setError(evt.message);
         break;
+      case "typing":
+        setTyping((prev) => {
+          const next = { ...prev };
+          if (evt.typing) next[evt.role_id] = Date.now();
+          else delete next[evt.role_id];
+          return next;
+        });
+        break;
       case "error":
         setError(evt.message);
         break;
@@ -88,6 +98,23 @@ export function Play({ sessionId, token }: Props) {
         break;
     }
   }
+
+  // Expire stale typing entries.
+  useEffect(() => {
+    const id = setInterval(() => {
+      setTyping((prev) => {
+        const cutoff = Date.now() - 4000;
+        const next: Record<string, number> = {};
+        let changed = false;
+        for (const [k, v] of Object.entries(prev)) {
+          if (v >= cutoff) next[k] = v;
+          else changed = true;
+        }
+        return changed ? next : prev;
+      });
+    }, 1000);
+    return () => clearInterval(id);
+  }, []);
 
   async function refreshSnapshot() {
     try {
@@ -104,6 +131,14 @@ export function Play({ sessionId, token }: Props) {
       wsRef.current?.send({ type: "submit_response", content: text });
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  function handleTypingChange(t: boolean) {
+    try {
+      wsRef.current?.send({ type: t ? "typing_start" : "typing_stop" });
+    } catch {
+      /* ignore — WS may have closed mid-typing. */
     }
   }
 
@@ -165,24 +200,24 @@ export function Play({ sessionId, token }: Props) {
           Your turn — {myRole?.label} ({displayName})
         </div>
       ) : null}
-      <div className="mx-auto grid w-full max-w-5xl flex-1 grid-cols-1 gap-4 p-4 md:grid-cols-[220px_1fr]">
-        <section>
+      <div className="mx-auto grid w-full max-w-7xl flex-1 grid-cols-1 gap-4 p-4 lg:grid-cols-[220px_1fr_280px]">
+        <aside>
           <RoleRoster roles={snapshot.roles} activeRoleIds={activeRoleIds} selfRoleId={selfRoleId} />
           <div className="mt-3 flex flex-col gap-2 rounded border border-slate-700 bg-slate-900 p-2 text-xs">
             <button
               onClick={handleForceAdvance}
-              className="rounded border border-amber-500 px-2 py-1 font-semibold text-amber-200"
+              className="rounded border border-amber-500 px-2 py-1 font-semibold text-amber-200 hover:bg-amber-900/30"
             >
               Force-advance turn
             </button>
             <button
               onClick={handleEnd}
-              className="rounded border border-red-500 px-2 py-1 font-semibold text-red-300"
+              className="rounded border border-red-500 px-2 py-1 font-semibold text-red-300 hover:bg-red-900/30"
             >
               End session
             </button>
           </div>
-        </section>
+        </aside>
         <section className="flex flex-col gap-3">
           <Transcript
             messages={snapshot.messages}
@@ -195,10 +230,26 @@ export function Play({ sessionId, token }: Props) {
                 snapshot.state === "BRIEFING" ||
                 snapshot.current_turn?.status === "processing")
             }
+            typingRoleIds={Object.keys(typing).filter((rid) => rid !== selfRoleId)}
           />
-          <Composer enabled={isMyTurn && snapshot.state !== "ENDED"} placeholder={placeholder} onSubmit={handleSubmit} />
+          <Composer
+            enabled={isMyTurn && snapshot.state !== "ENDED"}
+            placeholder={placeholder}
+            onSubmit={handleSubmit}
+            onTypingChange={handleTypingChange}
+          />
           {error ? <p className="text-sm text-red-400" role="alert">{error}</p> : null}
         </section>
+        <RightSidebar
+          messages={snapshot.messages}
+          roles={snapshot.roles}
+          notesStorageKey={(() => {
+            if (!selfRoleId) return null;
+            const role = snapshot.roles.find((r) => r.id === selfRoleId);
+            const v = role?.token_version ?? 0;
+            return `atf-notes:${sessionId}:${selfRoleId}:v${v}`;
+          })()}
+        />
       </div>
     </main>
   );

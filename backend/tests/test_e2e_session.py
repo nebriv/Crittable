@@ -46,6 +46,21 @@ def _install_mock_and_drive(client: TestClient, *, role_ids: list[str], extensio
     return ""  # callers fetch the export themselves
 
 
+def _wait_for_aar(client: TestClient, session_id: str, token: str, *, attempts: int = 50):
+    """Poll the AAR endpoint until it returns 200 or fails. AAR generation is
+    a background task on /end, so the export endpoint returns 425 while
+    pending/generating."""
+
+    import time
+
+    for _ in range(attempts):
+        r = client.get(f"/api/sessions/{session_id}/export.md?token={token}")
+        if r.status_code != 425:
+            return r
+        time.sleep(0.05)
+    return r  # last attempt, even if still 425
+
+
 def _install_minimal_mock(client: TestClient) -> None:
     """A no-op-ish mock for tests that don't drive a full play flow.
 
@@ -190,9 +205,7 @@ def test_e2e_2_role(client: TestClient) -> None:
     )
 
     # ------ export
-    r = client.get(
-        f"/api/sessions/{seats['session_id']}/export.md?token={seats['creator_token']}"
-    )
+    r = _wait_for_aar(client, seats["session_id"], seats["creator_token"])
     assert r.status_code == 200, r.text
     md = r.text
     for section in (
@@ -213,6 +226,25 @@ def test_e2e_2_role(client: TestClient) -> None:
         f"/api/sessions/{seats['session_id']}?token={seats['creator_token']}"
     ).json()
     assert snap["state"] == "ENDED"
+
+    # Gate 9 (docs/PLAN.md § Phase 2 acceptance gates): "Custom extension
+    # loaded from EXTENSIONS_TOOLS_JSON is offered to the AI and successfully
+    # invoked at least once during the integration test." Mock script in
+    # ``setup_then_play_script`` calls ``use_extension_tool`` with
+    # ``lookup_threat_intel`` on play turn 3; the dispatcher should render
+    # the Jinja template and emit an ``extension_invoked`` audit event.
+    audit_dump = client.app.state.manager.audit().dump(seats["session_id"])
+    extension_invocations = [
+        e for e in audit_dump if e.kind == "extension_invoked"
+    ]
+    assert extension_invocations, (
+        f"gate 9 violated: no extension_invoked audit events for session "
+        f"{seats['session_id']}; saw kinds={set(e.kind for e in audit_dump)}"
+    )
+    assert any(
+        e.payload.get("tool") == "lookup_threat_intel"
+        for e in extension_invocations
+    ), "gate 9 violated: lookup_threat_intel never dispatched"
 
 
 def test_e2e_12_role(client: TestClient) -> None:
@@ -812,6 +844,269 @@ def test_remove_role_non_creator_rejected(client: TestClient) -> None:
     target = seats["role_ids"][2]
     r = client.delete(f"/api/sessions/{sid}/roles/{target}?token={other}")
     assert r.status_code == 403
+
+
+def test_activity_endpoint_creator_only(client: TestClient) -> None:
+    seats = _create_and_seat(client, role_count=2)
+    sid = seats["session_id"]
+    cr = seats["creator_token"]
+    other = seats["role_tokens"][seats["role_ids"][1]]
+
+    r = client.get(f"/api/sessions/{sid}/activity?token={cr}")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert "state" in body
+    assert "aar_status" in body
+    assert "in_flight_llm" in body
+
+    # Non-creator forbidden.
+    r = client.get(f"/api/sessions/{sid}/activity?token={other}")
+    assert r.status_code == 403
+
+
+def test_debug_endpoint_creator_only(client: TestClient) -> None:
+    seats = _create_and_seat(client, role_count=2)
+    sid = seats["session_id"]
+    cr = seats["creator_token"]
+    other = seats["role_tokens"][seats["role_ids"][1]]
+
+    r = client.get(f"/api/sessions/{sid}/debug?token={cr}")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    for key in ("session", "turns", "messages", "audit_events", "extensions"):
+        assert key in body, f"missing key: {key}"
+
+    r = client.get(f"/api/sessions/{sid}/debug?token={other}")
+    assert r.status_code == 403
+
+
+def test_export_returns_425_while_aar_pending(client: TestClient) -> None:
+    """Direct test of the polling response: simulate aar_status=generating
+    and confirm export.md returns 425 with retry-after."""
+
+    seats = _create_and_seat(client, role_count=2)
+    sid = seats["session_id"]
+    cr = seats["creator_token"]
+    client.post(f"/api/sessions/{sid}/setup/skip?token={cr}")
+
+    # Manually mutate the session into ENDED + aar_status=generating to test
+    # the polling-friendly export response without driving a full play loop.
+    import asyncio
+
+    async def _set_pending() -> None:
+        from app.sessions.models import SessionState
+
+        session = await client.app.state.manager.get_session(sid)
+        session.state = SessionState.ENDED
+        session.aar_status = "generating"
+        await client.app.state.manager._repo.save(session)
+
+    asyncio.run(_set_pending())
+
+    r = client.get(f"/api/sessions/{sid}/export.md?token={cr}")
+    assert r.status_code == 425
+    assert r.headers.get("Retry-After") == "3"
+    assert r.headers.get("X-AAR-Status") == "generating"
+
+
+def test_aar_failed_path_returns_500(client: TestClient) -> None:
+    """QA review MAJOR: cover the failed-AAR branch.
+
+    Monkey-patch the AAR generator to raise; end the session; export should
+    return 500 with ``X-AAR-Status: failed`` and the error body.
+    """
+
+    seats = _create_and_seat(client, role_count=2)
+    sid = seats["session_id"]
+    cr = seats["creator_token"]
+    client.post(f"/api/sessions/{sid}/setup/skip?token={cr}")
+
+    # Monkey-patch by swapping the AARGenerator class the manager imports.
+    import app.llm.export as export_mod
+
+    original = export_mod.AARGenerator
+
+    class _BoomGenerator:
+        def __init__(self, **_: object) -> None:
+            pass
+
+        async def generate(self, _session: object) -> str:
+            raise RuntimeError("simulated AAR failure")
+
+    export_mod.AARGenerator = _BoomGenerator  # type: ignore[misc]
+    try:
+        # Use REST end_session — it now triggers AAR generation inline in
+        # TEST_MODE, so by the time end returns the failure has been recorded.
+        client.post(f"/api/sessions/{sid}/end?token={cr}", json={"reason": "test"})
+        r = client.get(f"/api/sessions/{sid}/export.md?token={cr}")
+        assert r.status_code == 500, r.text
+        assert r.headers.get("X-AAR-Status") == "failed"
+        assert "simulated AAR failure" in r.text
+    finally:
+        export_mod.AARGenerator = original  # type: ignore[misc]
+
+
+def test_in_flight_tracker_records_and_releases(client: TestClient) -> None:
+    """QA MAJOR: the activity endpoint claims to expose live LLM calls,
+    but no test confirmed an actual call shows up. This patches the LLM
+    transport to await a future, so we can observe the in-flight slot
+    while the call is hanging."""
+
+    import asyncio
+
+    llm = client.app.state.llm
+    gate = asyncio.Event()
+    held = asyncio.Event()
+
+    class _HangingMessages:
+        async def create(self, **_: object) -> object:
+            held.set()
+            await gate.wait()
+            from tests.mock_anthropic import _ContentBlock, _Response
+
+            return _Response(content=[_ContentBlock(type="text", text="ok")])
+
+        def stream(self, **_: object) -> object:
+            raise NotImplementedError
+
+    async def _drive() -> None:
+        # Call llm.acomplete directly — simpler than threading through the
+        # full setup/start flow, and exactly the path that registers a slot.
+        prior_transport = llm._transport
+        llm.set_transport(_HangingMessages())
+        task = asyncio.create_task(
+            llm.acomplete(
+                tier="setup",
+                system_blocks=[{"type": "text", "text": "x"}],
+                messages=[{"role": "user", "content": "hi"}],
+                session_id="sentinel",
+            )
+        )
+        await held.wait()
+        in_flight = llm.in_flight_for("sentinel")
+        assert len(in_flight) == 1
+        assert in_flight[0].tier == "setup"
+        gate.set()
+        await task
+        # After completion the slot is released.
+        assert llm.in_flight_for("sentinel") == []
+        llm._transport = prior_transport
+
+    asyncio.run(_drive())
+
+
+def test_typing_event_relays_to_other_participants(client: TestClient) -> None:
+    """QA MAJOR: typing indicators were untested. Drives a participant WS
+    sending ``typing_start`` and asserts another participant's connection
+    sees the relayed ``typing`` event with the server-verified role_id."""
+
+    import asyncio
+
+    seats = _create_and_seat(client, role_count=2)
+    sid = seats["session_id"]
+    sender_role_id = seats["role_ids"][1]
+    sender_token = seats["role_tokens"][sender_role_id]
+
+    connections = client.app.state.connections
+
+    async def _drive() -> None:
+        observer = await connections.register(
+            session_id=sid, role_id=seats["creator_role_id"], is_creator=True
+        )
+        try:
+            with client.websocket_connect(
+                f"/ws/sessions/{sid}?token={sender_token}"
+            ) as ws:
+                ws.send_json({"type": "typing_start"})
+                # Drain the observer queue for a typing event.
+                seen: list[dict[str, object]] = []
+                for _ in range(50):
+                    try:
+                        seen.append(observer.queue.get_nowait())
+                    except asyncio.QueueEmpty:
+                        await asyncio.sleep(0.01)
+                typing_evts = [e for e in seen if e.get("type") == "typing"]
+                assert typing_evts, f"no typing event observed in {seen}"
+                evt = typing_evts[-1]
+                assert evt["role_id"] == sender_role_id
+                assert evt["typing"] is True
+        finally:
+            await connections.unregister(observer)
+
+    asyncio.run(_drive())
+
+
+def test_typing_rejected_for_spectator(client: TestClient) -> None:
+    """Security HIGH regression: spectator-kind tokens cannot emit typing."""
+
+    seats = _create_and_seat(client, role_count=2)
+    sid = seats["session_id"]
+    authn = client.app.state.authn
+    spectator_token = authn.mint(
+        session_id=sid, role_id=seats["role_ids"][1], kind="spectator"
+    )
+
+    with client.websocket_connect(
+        f"/ws/sessions/{sid}?token={spectator_token}"
+    ) as ws:
+        ws.send_json({"type": "typing_start"})
+        saw_rejection = False
+        for _ in range(8):
+            try:
+                evt = ws.receive_json()
+            except Exception:
+                break
+            if evt.get("type") == "error" and evt.get("scope") == "typing_start":
+                saw_rejection = True
+                break
+        assert saw_rejection, "spectator typing must be rejected"
+
+
+def test_typing_does_not_pollute_replay_buffer(client: TestClient) -> None:
+    """Security HIGH regression: typing events use record=False so they
+    don't evict legitimate state events from the bounded replay buffer."""
+
+    import asyncio
+
+    seats = _create_and_seat(client, role_count=2)
+    sid = seats["session_id"]
+    cr = seats["creator_token"]
+    # Drive setup → READY so we have a `state_changed` worth replaying.
+    client.post(f"/api/sessions/{sid}/setup/skip?token={cr}")
+
+    connections = client.app.state.connections
+
+    async def _drive() -> None:
+        # Hammer the typing channel — used to pollute the replay buffer.
+        for _ in range(300):  # > _replay_max (256), would have evicted otherwise
+            await connections.broadcast(
+                sid,
+                {"type": "typing", "role_id": "x", "typing": True},
+                record=False,
+            )
+        # Fresh observer should still see the prior plan_finalized_announcement
+        # in its replay buffer.
+        conn = await connections.register(
+            session_id=sid, role_id=seats["role_ids"][1], is_creator=False
+        )
+        try:
+            collected: list[dict[str, object]] = []
+            for _ in range(50):
+                try:
+                    collected.append(conn.queue.get_nowait())
+                except asyncio.QueueEmpty:
+                    break
+            kinds = {e.get("type") for e in collected}
+            assert "typing" not in kinds, "typing leaked into replay"
+            # State events from the setup/skip → READY transition must still be there.
+            assert kinds & {
+                "state_changed",
+                "plan_finalized_announcement",
+            }, f"replay should still have lifecycle events; got {kinds}"
+        finally:
+            await connections.unregister(conn)
+
+    asyncio.run(_drive())
 
 
 def test_setup_notes_visible_only_to_creator(client: TestClient) -> None:

@@ -38,6 +38,7 @@ class AARGenerator:
             messages=messages,
             tools=[AAR_TOOL],
             max_tokens=4096,
+            session_id=session.id,
         )
         report = _extract_report(result.content)
         return _render_markdown(session, report, audit_events=self._audit.dump(session.id))

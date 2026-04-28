@@ -89,6 +89,9 @@ class SessionManager:
         self._locks: dict[str, asyncio.Lock] = {}
         self._lock_meta = asyncio.Lock()
         self._closed = False
+        # Background tasks (currently just AAR generation). Kept on the manager
+        # so they aren't garbage-collected mid-flight; cancelled on shutdown.
+        self._bg_tasks: set[asyncio.Task[Any]] = set()
 
     # ------------------------------------------------------------------ utils
     async def _lock_for(self, session_id: str) -> asyncio.Lock:
@@ -489,6 +492,8 @@ class SessionManager:
     ) -> Session:
         async with await self._lock_for(session_id):
             session = await self._repo.get(session_id)
+            if session.state == SessionState.ENDED:
+                return session  # idempotent
             assert_transition(session.state, SessionState.ENDED)
             session.state = SessionState.ENDED
             from datetime import datetime
@@ -500,10 +505,83 @@ class SessionManager:
                     body=f"Session ended by {by_role_id}: {reason}",
                 )
             )
+            session.aar_status = "pending"
             await self._repo.save(session)
         self._emit("session_ended", session, by=by_role_id, reason=reason)
         await self._broadcast_state(session)
+        await self.trigger_aar_generation(session_id)
         return session
+
+    async def trigger_aar_generation(self, session_id: str) -> None:
+        """Kick AAR generation. Called by ``end_session`` and by the turn
+        driver when the AI ends the session via the ``end_session`` tool.
+
+        AAR runs in the background in production. In TEST_MODE we run it
+        inline because Starlette TestClient doesn't reliably progress
+        cross-request tasks.
+        """
+
+        if self._settings.test_mode:
+            await self._generate_aar_bg(session_id)
+        else:
+            self._spawn_bg(self._generate_aar_bg(session_id))
+
+    def _spawn_bg(self, coro: Any) -> None:
+        task = asyncio.create_task(coro)
+        self._bg_tasks.add(task)
+        task.add_done_callback(self._bg_tasks.discard)
+
+    async def _generate_aar_bg(self, session_id: str) -> None:
+        from ..llm.export import AARGenerator
+
+        async with await self._lock_for(session_id):
+            try:
+                session = await self._repo.get(session_id)
+            except Exception:
+                return
+            if session.aar_status not in ("pending", "failed"):
+                return
+            session.aar_status = "generating"
+            await self._repo.save(session)
+            target = session
+        await self._connections.broadcast(
+            session_id, {"type": "aar_status_changed", "status": "generating"}
+        )
+        _logger.info("aar_generation_start", session_id=session_id)
+
+        try:
+            generator = AARGenerator(llm=self._llm, audit=self._audit)
+            markdown = await generator.generate(target)
+        except Exception as exc:
+            _logger.exception("aar_generation_failed", session_id=session_id, error=str(exc))
+            async with await self._lock_for(session_id):
+                try:
+                    session = await self._repo.get(session_id)
+                except Exception:
+                    return
+                session.aar_status = "failed"
+                session.aar_error = str(exc)[:500]
+                await self._repo.save(session)
+            await self._connections.broadcast(
+                session_id, {"type": "aar_status_changed", "status": "failed"}
+            )
+            return
+
+        async with await self._lock_for(session_id):
+            try:
+                session = await self._repo.get(session_id)
+            except Exception:
+                return
+            session.aar_markdown = markdown
+            session.aar_status = "ready"
+            session.aar_error = None
+            await self._repo.save(session)
+        await self._connections.broadcast(
+            session_id, {"type": "aar_status_changed", "status": "ready"}
+        )
+        _logger.info(
+            "aar_generation_complete", session_id=session_id, length=len(markdown)
+        )
 
     # ---------------------------------------------------- messaging helpers
     async def append_ai_message(
@@ -602,9 +680,21 @@ class SessionManager:
     async def emit(self, kind: str, session: Session, **payload: Any) -> None:
         self._emit(kind, session, **payload)
 
+    async def flush_background_tasks(self) -> None:
+        """Test helper: wait for in-flight background tasks (notably the AAR
+        generator) to finish. Production code should never call this."""
+
+        if self._bg_tasks:
+            await asyncio.gather(*self._bg_tasks, return_exceptions=True)
+
     # --------------------------------------------------------------- shutdown
     async def shutdown(self) -> None:
         self._closed = True
+        for task in list(self._bg_tasks):
+            task.cancel()
+        if self._bg_tasks:
+            await asyncio.gather(*self._bg_tasks, return_exceptions=True)
+        self._bg_tasks.clear()
 
 
 __all__ = ["ParticipantKindLiteral", "SessionManager"]

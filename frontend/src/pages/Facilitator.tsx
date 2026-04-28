@@ -8,7 +8,10 @@ import {
 } from "../api/client";
 import { Composer } from "../components/Composer";
 import { CriticalEventBanner } from "../components/CriticalEventBanner";
+import { GodModePanel } from "../components/GodModePanel";
+import { RightSidebar } from "../components/RightSidebar";
 import { RolesPanel } from "../components/RolesPanel";
+import { SessionActivityPanel } from "../components/SessionActivityPanel";
 import { SetupChat } from "../components/SetupChat";
 import { Transcript } from "../components/Transcript";
 import { ServerEvent, WsClient } from "../lib/ws";
@@ -43,6 +46,10 @@ export function Facilitator() {
     body: string;
   } | null>(null);
   const [cost, setCost] = useState<CostSnapshot | null>(null);
+  const [godMode, setGodMode] = useState(false);
+  // role_id -> last typing-true timestamp (ms). Filtered to "currently typing"
+  // by the consuming components which check freshness < 4s.
+  const [typing, setTyping] = useState<Record<string, number>>({});
   const wsRef = useRef<WsClient | null>(null);
 
   const phase: Phase = useMemo(() => {
@@ -142,6 +149,22 @@ export function Facilitator() {
       case "cost_updated":
         setCost(evt.cost as unknown as CostSnapshot);
         break;
+      case "typing":
+        setTyping((prev) => {
+          const next = { ...prev };
+          if (evt.typing) {
+            next[evt.role_id] = Date.now();
+          } else {
+            delete next[evt.role_id];
+          }
+          return next;
+        });
+        break;
+      case "aar_status_changed":
+        // The EndedView polls /export.md too; this just nudges the snapshot
+        // refresh so the AAR-status pill updates immediately.
+        refreshSnapshot();
+        break;
       case "error":
         setError(evt.message);
         break;
@@ -149,6 +172,24 @@ export function Facilitator() {
         break;
     }
   }
+
+  // Expire stale typing entries every second so the indicator disappears
+  // even if the typing_stop event got dropped.
+  useEffect(() => {
+    const id = setInterval(() => {
+      setTyping((prev) => {
+        const cutoff = Date.now() - 4000;
+        const next: Record<string, number> = {};
+        let changed = false;
+        for (const [k, v] of Object.entries(prev)) {
+          if (v >= cutoff) next[k] = v;
+          else changed = true;
+        }
+        return changed ? next : prev;
+      });
+    }, 1000);
+    return () => clearInterval(id);
+  }, []);
 
   async function refreshSnapshot() {
     if (!state) return;
@@ -318,6 +359,14 @@ export function Facilitator() {
     }
   }
 
+  function handleTypingChange(typing: boolean) {
+    try {
+      wsRef.current?.send({ type: typing ? "typing_start" : "typing_stop" });
+    } catch {
+      /* WS can be closed mid-typing; never throw out of this handler. */
+    }
+  }
+
   async function handleForceAdvance() {
     if (!state) return;
     setBusy(true);
@@ -423,9 +472,11 @@ export function Facilitator() {
         wsStatus={wsStatus}
         busy={busy}
         busyMessage={busyMessage}
+        onToggleGodMode={() => setGodMode((g) => !g)}
+        godMode={godMode}
       />
-      <div className="mx-auto grid w-full max-w-6xl flex-1 grid-cols-1 gap-4 p-4 md:grid-cols-[280px_1fr]">
-        <section className="flex flex-col gap-4">
+      <div className="mx-auto grid w-full max-w-7xl flex-1 grid-cols-1 gap-4 p-4 lg:grid-cols-[280px_1fr_280px]">
+        <aside className="flex flex-col gap-4">
           <RolesPanel
             sessionId={state.sessionId}
             creatorToken={state.token}
@@ -441,6 +492,11 @@ export function Facilitator() {
               roles={snapshot.roles}
             />
           ) : null}
+          <SessionActivityPanel
+            sessionId={state.sessionId}
+            creatorToken={state.token}
+            roles={snapshot.roles}
+          />
           <CostMeter cost={cost ?? snapshot.cost} />
           <Controls
             phase={phase}
@@ -455,7 +511,7 @@ export function Facilitator() {
             hasFinalizedPlan={Boolean(snapshot.plan)}
             busy={busy}
           />
-        </section>
+        </aside>
 
         <section className="flex flex-col gap-4">
           {phase === "setup" ? (
@@ -474,9 +530,8 @@ export function Facilitator() {
           {phase === "ready" ? <ReadyView plan={snapshot.plan} /> : null}
           {phase === "ended" ? (
             <EndedView
-              onExport={() =>
-                window.open(api.exportUrl(state.sessionId, state.token), "_blank", "noopener")
-              }
+              sessionId={state.sessionId}
+              token={state.token}
             />
           ) : null}
           {phase === "play" || phase === "ended" ? (
@@ -492,6 +547,9 @@ export function Facilitator() {
                     snapshot.state === "BRIEFING" ||
                     snapshot.current_turn?.status === "processing")
                 }
+                typingRoleIds={Object.keys(typing).filter(
+                  (rid) => rid !== state.creatorRoleId,
+                )}
               />
               {phase === "play" ? (
                 <Composer
@@ -502,13 +560,31 @@ export function Facilitator() {
                       : "Waiting for the AI / other roles."
                   }
                   onSubmit={handleSubmit}
+                  onTypingChange={handleTypingChange}
                 />
               ) : null}
             </>
           ) : null}
           {error ? <p className="text-sm text-red-400">{error}</p> : null}
         </section>
+
+        <RightSidebar
+          messages={snapshot.messages}
+          roles={snapshot.roles}
+          notesStorageKey={(() => {
+            const role = snapshot.roles.find((r) => r.id === state.creatorRoleId);
+            const v = role?.token_version ?? 0;
+            return `atf-notes:${state.sessionId}:${state.creatorRoleId}:v${v}`;
+          })()}
+        />
       </div>
+      {godMode ? (
+        <GodModePanel
+          sessionId={state.sessionId}
+          creatorToken={state.token}
+          onClose={() => setGodMode(false)}
+        />
+      ) : null}
     </main>
   );
 }
@@ -519,11 +595,15 @@ function StatusBar({
   wsStatus,
   busy,
   busyMessage,
+  onToggleGodMode,
+  godMode,
 }: {
   phase: Phase;
   backendState: string;
   wsStatus: "connecting" | "open" | "closed" | "error";
   busy: boolean;
+  onToggleGodMode: () => void;
+  godMode: boolean;
   busyMessage: string | null;
 }) {
   const wsColour =
@@ -534,7 +614,7 @@ function StatusBar({
         : "text-red-300";
   return (
     <header className="border-b border-slate-800 bg-slate-900/70 px-4 py-2 text-xs">
-      <div className="mx-auto flex max-w-6xl flex-wrap items-center gap-4">
+      <div className="mx-auto flex max-w-7xl flex-wrap items-center gap-4">
         <span className="font-semibold uppercase tracking-widest text-slate-400">
           Facilitator
         </span>
@@ -546,11 +626,25 @@ function StatusBar({
           <span
             role="status"
             aria-live="polite"
-            className="ml-auto inline-flex items-center gap-2 rounded bg-sky-900/40 px-2 py-0.5 text-sky-200"
+            className="inline-flex items-center gap-2 rounded bg-sky-900/40 px-2 py-0.5 text-sky-200"
           >
             <Spinner /> {busyMessage ?? "Working…"}
           </span>
         ) : null}
+        <button
+          type="button"
+          onClick={onToggleGodMode}
+          aria-pressed={godMode}
+          className={
+            "ml-auto rounded border px-2 py-0.5 font-semibold focus-visible:outline focus-visible:outline-2 focus-visible:outline-purple-300 " +
+            (godMode
+              ? "border-purple-500 bg-purple-700/40 text-purple-100"
+              : "border-purple-700/40 text-purple-300 hover:bg-purple-900/30")
+          }
+          title="Toggle full debug overlay (audit log, system prompt, etc). Creator-only."
+        >
+          {godMode ? "● God Mode" : "○ God Mode"}
+        </button>
       </div>
     </header>
   );
@@ -793,7 +887,53 @@ function PlanPreview({ plan }: { plan: ScenarioPlan }) {
   );
 }
 
-function EndedView({ onExport }: { onExport: () => void }) {
+function EndedView({ sessionId, token }: { sessionId: string; token: string }) {
+  type AARState = "generating" | "ready" | "failed";
+  const [aarState, setAarState] = useState<AARState>("generating");
+  const [errMsg, setErrMsg] = useState<string | null>(null);
+
+  // Poll the export endpoint with HEAD-style behavior: if 425, keep
+  // polling. If 200, mark ready (and let the user click Download — fetching
+  // again returns 200 quickly because the markdown is cached on the
+  // session). If 5xx, mark failed.
+  useEffect(() => {
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+
+    async function tick() {
+      try {
+        const res = await fetch(
+          `/api/sessions/${sessionId}/export.md?token=${encodeURIComponent(token)}`,
+        );
+        if (cancelled) return;
+        if (res.status === 200) {
+          setAarState("ready");
+          return;
+        }
+        if (res.status === 425) {
+          setAarState("generating");
+          timer = setTimeout(tick, 2500);
+          return;
+        }
+        setAarState("failed");
+        try {
+          setErrMsg((await res.text()).slice(0, 200));
+        } catch {
+          setErrMsg(`HTTP ${res.status}`);
+        }
+      } catch (err) {
+        if (cancelled) return;
+        setErrMsg(err instanceof Error ? err.message : String(err));
+        timer = setTimeout(tick, 5000);
+      }
+    }
+    tick();
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [sessionId, token]);
+
   return (
     <div
       className="flex flex-col gap-3 rounded border border-emerald-700/60 bg-emerald-950/30 p-4"
@@ -803,17 +943,34 @@ function EndedView({ onExport }: { onExport: () => void }) {
       <h2 className="text-lg font-semibold text-emerald-200">
         Session ended — exercise complete
       </h2>
-      <p className="text-sm text-emerald-100">
-        Download the markdown after-action report. It includes the full transcript,
-        per-role scores, the frozen scenario plan, and the audit log.
-      </p>
-      <button
-        type="button"
-        onClick={onExport}
-        className="self-start rounded bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-300"
-      >
-        Download AAR (.md)
-      </button>
+      {aarState === "generating" ? (
+        <p className="inline-flex items-center gap-2 text-sm text-emerald-100">
+          <span
+            aria-hidden="true"
+            className="inline-block h-2 w-2 animate-ping rounded-full bg-emerald-400"
+          />
+          Generating after-action report (this can take 30–60 s)…
+        </p>
+      ) : aarState === "ready" ? (
+        <>
+          <p className="text-sm text-emerald-100">
+            Markdown after-action report is ready. It includes the full transcript,
+            per-role scores, the frozen scenario plan, and the audit log.
+          </p>
+          <a
+            href={`/api/sessions/${sessionId}/export.md?token=${encodeURIComponent(token)}`}
+            target="_blank"
+            rel="noopener"
+            className="self-start rounded bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-300"
+          >
+            Download AAR (.md)
+          </a>
+        </>
+      ) : (
+        <p className="text-sm text-red-300">
+          AAR generation failed: {errMsg ?? "unknown error"}. Check the backend logs.
+        </p>
+      )}
     </div>
   );
 }

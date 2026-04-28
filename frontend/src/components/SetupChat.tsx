@@ -1,4 +1,5 @@
 import { SetupNoteView } from "../api/client";
+import { ChatIndicator } from "./ChatIndicator";
 
 interface Props {
   notes: SetupNoteView[];
@@ -71,15 +72,7 @@ export function SetupChat({ notes, busy, onPickOption }: Props) {
       })}
       {busy && lastAiNote ? (
         <div className="flex justify-start">
-          <div className="max-w-[85%] rounded-lg bg-slate-800 px-3 py-2 text-sm text-slate-300">
-            <span className="inline-flex items-center gap-2">
-              <span
-                aria-hidden="true"
-                className="inline-block h-2 w-2 animate-ping rounded-full bg-sky-400"
-              />
-              <span className="opacity-80">AI is thinking…</span>
-            </span>
-          </div>
+          <ChatIndicator label="AI Facilitator is typing…" tone="ai" />
         </div>
       ) : null}
     </div>

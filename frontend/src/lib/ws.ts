@@ -15,13 +15,19 @@ export type ServerEvent =
   | { type: "guardrail_blocked"; verdict: string; message: string }
   | { type: "plan_proposed"; plan: Record<string, unknown> }
   | { type: "plan_finalized"; plan: Record<string, unknown> }
+  | { type: "plan_proposed_announcement" }
+  | { type: "plan_finalized_announcement" }
   | { type: "plan_edited"; field: string }
+  | { type: "aar_status_changed"; status: "pending" | "generating" | "ready" | "failed" }
+  | { type: "typing"; role_id: string; typing: boolean }
   | { type: "error"; scope: string; message: string };
 
 export type ClientEvent =
   | { type: "submit_response"; content: string }
   | { type: "request_force_advance" }
   | { type: "request_end_session"; reason?: string }
+  | { type: "typing_start" }
+  | { type: "typing_stop" }
   | { type: "heartbeat" };
 
 export interface WsClientOptions {

@@ -50,6 +50,7 @@ class MessageKind(StrEnum):
 ParticipantKind = Literal["player", "spectator"]
 TurnStatus = Literal["awaiting", "processing", "complete", "errored"]
 RosterSize = Literal["small", "medium", "large"]
+AARStatus = Literal["pending", "generating", "ready", "failed"]
 
 
 class Role(BaseModel):
@@ -189,6 +190,8 @@ class Session(BaseModel):
     """Indices of recent turns that fired ``inject_critical_event``; trimmed to a 5-turn window."""
 
     aar_markdown: str | None = None
+    aar_status: AARStatus = "pending"
+    aar_error: str | None = None
 
     def role_by_id(self, role_id: str) -> Role | None:
         return next((r for r in self.roles if r.id == role_id), None)

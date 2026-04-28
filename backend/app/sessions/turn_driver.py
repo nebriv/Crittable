@@ -72,6 +72,7 @@ class TurnDriver:
                 messages=messages,
                 tools=SETUP_TOOLS,
                 max_tokens=1024,
+                session_id=session.id,
             )
             await self._apply_cost(session.id, result)
 
@@ -181,6 +182,7 @@ class TurnDriver:
             messages=messages,
             tools=tools,
             max_tokens=1024,
+            session_id=session.id,
         ):
             etype = event.get("type")
             if etype == "text_delta":
@@ -296,6 +298,7 @@ class TurnDriver:
             assert_transition(session.state, SessionState.ENDED)
             session.state = SessionState.ENDED
             session.ended_at = _now()
+            session.aar_status = "pending"
             await self._manager._repo.save(session)
             await self._manager.connections().broadcast(
                 session.id,
@@ -306,6 +309,9 @@ class TurnDriver:
                     "turn_index": turn.index,
                 },
             )
+            # AI-initiated end — kick the AAR generator. Mirrors what the
+            # creator-initiated /end REST path does.
+            await self._manager.trigger_aar_generation(session.id)
             return
 
         if outcome.set_active_role_ids is not None:
