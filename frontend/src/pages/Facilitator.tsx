@@ -465,6 +465,13 @@ export function Facilitator() {
                 messages={snapshot.messages}
                 roles={snapshot.roles}
                 streamingText={streamingText}
+                aiThinking={
+                  phase === "play" &&
+                  !streamingText &&
+                  (snapshot.state === "AI_PROCESSING" ||
+                    snapshot.state === "BRIEFING" ||
+                    snapshot.current_turn?.status === "processing")
+                }
               />
               {phase === "play" ? (
                 <Composer

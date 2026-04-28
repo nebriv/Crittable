@@ -4,9 +4,15 @@ interface Props {
   messages: MessageView[];
   roles: RoleView[];
   streamingText?: string;
+  /**
+   * True when the backend is in AI_PROCESSING (or equivalent) but no streaming
+   * chunks have arrived yet. Renders an inline "AI is thinking…" bubble so a
+   * scrolled participant doesn't have to look at the StatusBar.
+   */
+  aiThinking?: boolean;
 }
 
-export function Transcript({ messages, roles, streamingText }: Props) {
+export function Transcript({ messages, roles, streamingText, aiThinking }: Props) {
   const roleById = new Map(roles.map((r) => [r.id, r]));
   return (
     <div
@@ -48,9 +54,31 @@ export function Transcript({ messages, roles, streamingText }: Props) {
         );
       })}
       {streamingText ? (
-        <article className="rounded-md border border-emerald-500/60 bg-emerald-900/30 p-3" aria-live="polite">
-          <header className="mb-1 text-xs uppercase tracking-wide text-emerald-300">AI Facilitator (streaming…)</header>
+        <article
+          className="rounded-md border border-emerald-500/60 bg-emerald-900/30 p-3"
+          aria-busy="true"
+        >
+          <header className="mb-1 text-xs uppercase tracking-wide text-emerald-300">
+            AI Facilitator (streaming…)
+          </header>
           <p className="whitespace-pre-wrap text-sm leading-relaxed">{streamingText}</p>
+        </article>
+      ) : aiThinking ? (
+        <article
+          className="rounded-md border border-emerald-700/40 bg-emerald-950/30 p-3"
+          data-kind="ai-thinking"
+          aria-busy="true"
+        >
+          <header className="mb-1 text-xs uppercase tracking-wide text-emerald-300">
+            AI Facilitator
+          </header>
+          <p className="inline-flex items-center gap-2 text-sm text-emerald-200">
+            <span
+              aria-hidden="true"
+              className="inline-block h-2 w-2 animate-ping rounded-full bg-emerald-400"
+            />
+            <span className="opacity-90">AI is thinking…</span>
+          </p>
         </article>
       ) : null}
     </div>

@@ -184,7 +184,18 @@ export function Play({ sessionId, token }: Props) {
           </div>
         </section>
         <section className="flex flex-col gap-3">
-          <Transcript messages={snapshot.messages} roles={snapshot.roles} streamingText={streamingText} />
+          <Transcript
+            messages={snapshot.messages}
+            roles={snapshot.roles}
+            streamingText={streamingText}
+            aiThinking={
+              snapshot.state !== "ENDED" &&
+              !streamingText &&
+              (snapshot.state === "AI_PROCESSING" ||
+                snapshot.state === "BRIEFING" ||
+                snapshot.current_turn?.status === "processing")
+            }
+          />
           <Composer enabled={isMyTurn && snapshot.state !== "ENDED"} placeholder={placeholder} onSubmit={handleSubmit} />
           {error ? <p className="text-sm text-red-400" role="alert">{error}</p> : null}
         </section>
