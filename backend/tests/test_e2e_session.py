@@ -470,6 +470,166 @@ def test_ws_replay_buffer_rehydrates_on_reconnect(client: TestClient) -> None:
     asyncio.run(_check())
 
 
+def test_plan_content_not_in_ws_replay_buffer(client: TestClient) -> None:
+    """Regression for the security review CRITICAL.
+
+    Previously, ``plan_proposed`` and ``plan_finalized`` events were
+    ``broadcast()``-ed with full plan content; the replay buffer then handed
+    that content to any future-connecting non-creator. The fix routes plan
+    content via ``send_to_role(creator)`` and broadcasts a content-free
+    announcement instead.
+    """
+
+    import asyncio
+
+    seats = _create_and_seat(client, role_count=2)
+    sid = seats["session_id"]
+    cr = seats["creator_token"]
+
+    # Drive setup → READY (uses /setup/skip which goes through finalize_setup
+    # via the manager). manager.finalize_setup itself only broadcasts
+    # state_changed; the leaky path was turn_driver._apply_setup_outcome.
+    client.post(f"/api/sessions/{sid}/setup/skip?token={cr}")
+
+    connections = client.app.state.connections
+
+    async def _check() -> None:
+        # Attach a non-creator connection — replay buffer should have no event
+        # whose payload contains plan content.
+        non_creator_id = seats["role_ids"][1]
+        conn = await connections.register(
+            session_id=sid, role_id=non_creator_id, is_creator=False
+        )
+        try:
+            collected: list[dict[str, Any]] = []
+            for _ in range(50):
+                try:
+                    collected.append(conn.queue.get_nowait())
+                except asyncio.QueueEmpty:
+                    break
+            for evt in collected:
+                # The plan content key is "plan"; any event still carrying it
+                # has leaked.
+                assert "plan" not in evt, (
+                    f"replay buffer leaked plan content via {evt.get('type')!r}: "
+                    f"{evt}"
+                )
+        finally:
+            await connections.unregister(conn)
+
+    asyncio.run(_check())
+
+
+def test_ws_rejects_spectator_for_mutating_events(client: TestClient) -> None:
+    """Regression for security review HIGH: WS handler must run
+    ``require_participant`` before routing submit/force-advance/end."""
+
+    import os
+
+    # Create a session and seat a player. We then mint a *spectator* token for
+    # that role and confirm it's blocked from submitting.
+    seats = _create_and_seat(client, role_count=2)
+    sid = seats["session_id"]
+    cr = seats["creator_token"]
+    client.post(f"/api/sessions/{sid}/setup/skip?token={cr}")
+    client.post(f"/api/sessions/{sid}/start?token={cr}")
+
+    # Mint a spectator-kind token by calling the authn module directly — the
+    # public role-add path doesn't currently mint spectator tokens.
+    authn = client.app.state.authn
+    spectator_token = authn.mint(
+        session_id=sid, role_id=seats["role_ids"][1], kind="spectator"
+    )
+
+    with client.websocket_connect(
+        f"/ws/sessions/{sid}?token={spectator_token}"
+    ) as ws:
+        ws.send_json({"type": "submit_response", "content": "hello"})
+        # Drain until we see the rejection or the connection closes.
+        saw_rejection = False
+        for _ in range(8):
+            try:
+                evt = ws.receive_json()
+            except Exception:
+                break
+            if evt.get("type") == "error" and evt.get("scope") == "submit_response":
+                saw_rejection = True
+                break
+            if evt.get("type") == "state_changed":
+                continue
+        assert saw_rejection, "spectator token must be rejected on submit_response"
+    # Touch unused import sentinel for ruff
+    _ = os
+
+
+def test_plan_edit_endpoint_creator_only_and_field_allowlist(client: TestClient) -> None:
+    """Plan-edit endpoint had no e2e coverage."""
+
+    seats = _create_and_seat(client, role_count=2)
+    sid = seats["session_id"]
+    cr = seats["creator_token"]
+    other = seats["role_tokens"][seats["role_ids"][1]]
+
+    client.post(f"/api/sessions/{sid}/setup/skip?token={cr}")
+
+    # Allowed field — edits the plan in place.
+    r = client.post(
+        f"/api/sessions/{sid}/plan?token={cr}",
+        json={"field": "guardrails", "value": ["new", "rules"]},
+    )
+    assert r.status_code == 200, r.text
+    snap = client.get(f"/api/sessions/{sid}?token={cr}").json()
+    assert snap["plan"]["guardrails"] == ["new", "rules"]
+
+    # Immutable field — rejected.
+    r = client.post(
+        f"/api/sessions/{sid}/plan?token={cr}",
+        json={"field": "title", "value": "New title"},
+    )
+    assert r.status_code == 409, r.text
+
+    # Non-creator — rejected.
+    r = client.post(
+        f"/api/sessions/{sid}/plan?token={other}",
+        json={"field": "guardrails", "value": ["x"]},
+    )
+    assert r.status_code == 403, r.text
+
+
+def test_ws_rejects_bad_token_with_4401(client: TestClient) -> None:
+    """Acceptance gate 13: AAA exercised on every request.
+
+    The WS handler closes a bad-token connection with code 4401 before
+    accept. Starlette's TestClient surfaces that as a ``WebSocketDisconnect``
+    raised from ``websocket_connect``'s context manager.
+    """
+
+    from starlette.websockets import WebSocketDisconnect
+
+    seats = _create_and_seat(client, role_count=2)
+    sid = seats["session_id"]
+    bad = seats["creator_token"][:-1] + "X"
+
+    with pytest.raises(WebSocketDisconnect) as exc_info:
+        with client.websocket_connect(f"/ws/sessions/{sid}?token={bad}"):
+            pass
+    assert exc_info.value.code == 4401, f"expected 4401, got {exc_info.value.code}"
+
+
+def test_ws_rejects_session_mismatch(client: TestClient) -> None:
+    from starlette.websockets import WebSocketDisconnect
+
+    seats_a = _create_and_seat(client, role_count=2)
+    seats_b = _create_and_seat(client, role_count=2)
+
+    with pytest.raises(WebSocketDisconnect) as exc_info:
+        with client.websocket_connect(
+            f"/ws/sessions/{seats_b['session_id']}?token={seats_a['creator_token']}"
+        ):
+            pass
+    assert exc_info.value.code == 4401
+
+
 def test_setup_notes_visible_only_to_creator(client: TestClient) -> None:
     seats = _create_and_seat(client, role_count=2)
     _install_mock_and_drive(

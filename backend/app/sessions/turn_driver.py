@@ -214,12 +214,23 @@ class TurnDriver:
             # endpoint can surface it to the creator. State stays SETUP — only
             # ``finalize_setup`` (AI- or operator-initiated) flips to READY.
             session.plan = outcome.proposed_plan
+            # IMPORTANT: plan content is creator-only (docs/prompts.md Block 4
+            # rule #4). Broadcasting it would leak via the WS replay buffer to
+            # any future-connecting non-creator role. Send the body only to the
+            # creator; broadcast a content-free announcement so other clients
+            # know a plan is in flight.
+            if session.creator_role_id:
+                await self._manager.connections().send_to_role(
+                    session.id,
+                    session.creator_role_id,
+                    {
+                        "type": "plan_proposed",
+                        "plan": outcome.proposed_plan.model_dump(),
+                    },
+                )
             await self._manager.connections().broadcast(
                 session.id,
-                {
-                    "type": "plan_proposed",
-                    "plan": outcome.proposed_plan.model_dump(),
-                },
+                {"type": "plan_proposed_announcement"},
             )
         if outcome.finalized_plan is not None:
             session.plan = outcome.finalized_plan
@@ -227,12 +238,18 @@ class TurnDriver:
 
             assert_transition(session.state, SessionState.READY)
             session.state = SessionState.READY
+            if session.creator_role_id:
+                await self._manager.connections().send_to_role(
+                    session.id,
+                    session.creator_role_id,
+                    {
+                        "type": "plan_finalized",
+                        "plan": outcome.finalized_plan.model_dump(),
+                    },
+                )
             await self._manager.connections().broadcast(
                 session.id,
-                {
-                    "type": "plan_finalized",
-                    "plan": outcome.finalized_plan.model_dump(),
-                },
+                {"type": "plan_finalized_announcement"},
             )
         # Always persist via repository
         await self._manager._repo.save(session)

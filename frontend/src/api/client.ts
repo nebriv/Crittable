@@ -65,8 +65,17 @@ export interface ScenarioPlan {
   out_of_scope: string[];
 }
 
+/**
+ * Strip query-string secrets ({@code token=...}) from a path before logging.
+ * Tokens are bearer credentials — leaking them via console is a real bug.
+ */
+function _scrub(path: string): string {
+  return path.replace(/([?&]token=)[^&]+/gi, "$1***");
+}
+
 async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
-  console.debug(`[api] ${method} ${path}`, body ?? "");
+  const safePath = _scrub(path);
+  console.debug(`[api] ${method} ${safePath}`, body ?? "");
   const start = performance.now();
   const res = await fetch(path, {
     method,
@@ -82,11 +91,11 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
     } catch {
       /* ignore */
     }
-    console.warn(`[api] ${method} ${path} → ${res.status} (${ms}ms)`, detail);
+    console.warn(`[api] ${method} ${safePath} → ${res.status} (${ms}ms)`, detail);
     throw new Error(detail);
   }
   const out = (await res.json()) as T;
-  console.debug(`[api] ${method} ${path} → ${res.status} (${ms}ms)`);
+  console.debug(`[api] ${method} ${safePath} → ${res.status} (${ms}ms)`);
   return out;
 }
 

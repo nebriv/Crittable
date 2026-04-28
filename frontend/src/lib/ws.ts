@@ -76,7 +76,10 @@ export class WsClient {
     ws.addEventListener("message", (evt) => {
       try {
         const parsed = JSON.parse(evt.data) as ServerEvent;
-        console.debug("[ws] event", parsed);
+        // Don't log payloads that carry plan content / message bodies — those
+        // can be sensitive (frozen scenario plan is creator-only). Log type
+        // only; the network tab in devtools shows full WS frames if needed.
+        console.debug("[ws] event", { type: parsed.type });
         this.opts.onEvent(parsed);
       } catch {
         // Drop malformed frames silently.

@@ -83,7 +83,12 @@ export function Facilitator() {
         creator_label: creatorLabel,
         creator_display_name: creatorDisplayName,
       });
-      console.info("[facilitator] session created", created);
+      // Don't log the response object — it carries the creator token in
+      // ``creator_token`` and ``creator_join_url``. Log only non-secret IDs.
+      console.info("[facilitator] session created", {
+        sessionId: created.session_id,
+        creatorRoleId: created.creator_role_id,
+      });
       setState({
         sessionId: created.session_id,
         token: created.creator_token,
@@ -265,7 +270,8 @@ export function Facilitator() {
     try {
       const r = await api.addRole(state.sessionId, state.token, { label });
       const link = `${window.location.origin}/play/${state.sessionId}/${encodeURIComponent(r.token)}`;
-      console.info("[facilitator] join link minted", link);
+      // Token-bearing URL — log identifiers only, never the link itself.
+      console.info("[facilitator] join link minted", { sessionId: state.sessionId, roleId: r.role_id, label: r.label });
       await navigator.clipboard?.writeText(link).catch(() => undefined);
       await refreshSnapshot();
       return link;
@@ -446,6 +452,13 @@ export function Facilitator() {
             />
           ) : null}
           {phase === "ready" ? <ReadyView plan={snapshot.plan} /> : null}
+          {phase === "ended" ? (
+            <EndedView
+              onExport={() =>
+                window.open(api.exportUrl(state.sessionId, state.token), "_blank", "noopener")
+              }
+            />
+          ) : null}
           {phase === "play" || phase === "ended" ? (
             <>
               <Transcript
@@ -453,15 +466,17 @@ export function Facilitator() {
                 roles={snapshot.roles}
                 streamingText={streamingText}
               />
-              <Composer
-                enabled={phase === "play" && isMyTurn && !busy}
-                placeholder={
-                  isMyTurn
-                    ? "You are an active role. Make your decision."
-                    : "Waiting for the AI / other roles."
-                }
-                onSubmit={handleSubmit}
-              />
+              {phase === "play" ? (
+                <Composer
+                  enabled={isMyTurn && !busy}
+                  placeholder={
+                    isMyTurn
+                      ? "You are an active role. Make your decision."
+                      : "Waiting for the AI / other roles."
+                  }
+                  onSubmit={handleSubmit}
+                />
+              ) : null}
             </>
           ) : null}
           {error ? <p className="text-sm text-red-400">{error}</p> : null}
@@ -735,38 +750,36 @@ function SetupView({
           >
             Send reply
           </button>
-          <button
-            type="button"
-            onClick={onLooksReady}
-            disabled={busy}
-            className="rounded border border-emerald-600 px-3 py-1 text-sm font-semibold text-emerald-300 disabled:opacity-50"
-            title={
-              hasPlan
-                ? "A plan is ready — clicking finalizes it and moves to the lobby."
-                : "Asks the AI to draft a plan; auto-finalizes it if one comes back."
-            }
-          >
-            {hasPlan ? "Looks ready — finalize plan" : "Looks ready — propose the plan"}
-          </button>
           {hasPlan ? (
+            // A draft plan exists — only one action (finalize) is meaningful.
             <button
               type="button"
               onClick={onApprovePlan}
               disabled={busy}
-              className="rounded bg-emerald-600 px-3 py-1 text-sm font-semibold text-white disabled:opacity-50"
+              className="rounded bg-emerald-600 px-3 py-1 text-sm font-semibold text-white hover:bg-emerald-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-emerald-300 disabled:opacity-50"
               title="Commits the existing draft plan immediately (no AI call)."
             >
               Approve &amp; start lobby
             </button>
-          ) : null}
+          ) : (
+            <button
+              type="button"
+              onClick={onLooksReady}
+              disabled={busy}
+              className="rounded border border-emerald-600 px-3 py-1 text-sm font-semibold text-emerald-300 hover:bg-emerald-700/20 focus-visible:outline focus-visible:outline-2 focus-visible:outline-emerald-300 disabled:opacity-50"
+              title="Asks the AI to draft a plan; auto-finalizes it if one comes back."
+            >
+              Looks ready — propose the plan
+            </button>
+          )}
           <button
             type="button"
             onClick={onSkipSetup}
             disabled={busy}
-            className="ml-auto rounded border border-slate-600 px-3 py-1 text-xs text-slate-400 hover:bg-slate-800 disabled:opacity-50"
+            className="ml-auto rounded border border-dashed border-slate-700 px-3 py-1 text-xs text-slate-500 opacity-70 hover:opacity-100 hover:bg-slate-800 disabled:opacity-50"
             title="Dev/testing only: skip the AI setup dialogue and use a generic default plan."
           >
-            Skip setup (dev)
+            Skip setup (dev only)
           </button>
         </div>
       </form>
@@ -788,6 +801,32 @@ function PlanPreview({ plan }: { plan: ScenarioPlan }) {
     </details>
   );
 }
+
+function EndedView({ onExport }: { onExport: () => void }) {
+  return (
+    <div
+      className="flex flex-col gap-3 rounded border border-emerald-700/60 bg-emerald-950/30 p-4"
+      role="status"
+      aria-live="polite"
+    >
+      <h2 className="text-lg font-semibold text-emerald-200">
+        Session ended — exercise complete
+      </h2>
+      <p className="text-sm text-emerald-100">
+        Download the markdown after-action report. It includes the full transcript,
+        per-role scores, the frozen scenario plan, and the audit log.
+      </p>
+      <button
+        type="button"
+        onClick={onExport}
+        className="self-start rounded bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-300"
+      >
+        Download AAR (.md)
+      </button>
+    </div>
+  );
+}
+
 
 function ReadyView({ plan }: { plan: SessionSnapshot["plan"] }) {
   return (

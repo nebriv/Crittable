@@ -48,7 +48,13 @@ class AuditLog:
         return deque(maxlen=self._ring_size)
 
     def emit(self, event: AuditEvent) -> None:
-        """Append to the per-session ring buffer and log as JSONL to stdout."""
+        """Append to the per-session ring buffer and log as JSONL to stdout.
+
+        Large fields in ``payload`` are truncated for the *log* line so a long
+        ``scenario_prompt`` or message body doesn't blow out a JSON log
+        record. The ring-buffer copy keeps the original (it goes into the
+        AAR appendix).
+        """
 
         self._buffers[event.session_id].append(event)
         _logger.info(
@@ -57,7 +63,7 @@ class AuditLog:
             audit_session=event.session_id,
             audit_turn=event.turn_id,
             audit_role=event.role_id,
-            audit_payload=event.payload,
+            audit_payload=_truncate(event.payload),
             audit_ts=event.ts.isoformat(),
         )
 
@@ -70,3 +76,24 @@ class AuditLog:
         """Forget a session's audit trail (used after export retention)."""
 
         self._buffers.pop(session_id, None)
+
+
+_LOG_FIELD_MAX_CHARS = 200
+
+
+def _truncate(payload: dict[str, Any]) -> dict[str, Any]:
+    """Return a copy with overlong strings / lists trimmed for log emission."""
+
+    out: dict[str, Any] = {}
+    for key, value in payload.items():
+        if isinstance(value, str) and len(value) > _LOG_FIELD_MAX_CHARS:
+            out[key] = value[:_LOG_FIELD_MAX_CHARS] + "…"
+        elif isinstance(value, (list, tuple)) and len(value) > 20:
+            out[key] = [*list(value[:20]), "…"]
+        elif isinstance(value, dict) and len(value) > 20:
+            keys = list(value)[:20]
+            out[key] = {k: value[k] for k in keys}
+            out[key]["…"] = f"+{len(value) - 20} more"
+        else:
+            out[key] = value
+    return out

@@ -27,6 +27,7 @@ from .llm.client import LLMClient
 from .llm.dispatch import ToolDispatcher
 from .llm.guardrail import InputGuardrail
 from .logging_setup import RequestContextMiddleware, configure_logging, get_logger
+from .rate_limit import RateLimitMiddleware
 from .sessions.manager import SessionManager
 from .sessions.repository import InMemoryRepository
 from .ws import register_ws_routes
@@ -137,6 +138,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    # Rate-limit middleware. Off by default (settings.rate_limit_enabled);
+    # the middleware itself short-circuits when disabled so adding it to the
+    # stack is cheap.
+    app.add_middleware(RateLimitMiddleware, settings=cfg)
 
     @app.get("/healthz")
     async def healthz() -> JSONResponse:

@@ -148,8 +148,20 @@ export function Play({ sessionId, token }: Props) {
           onAcknowledge={() => setCriticalBanner(null)}
         />
       ) : null}
-      {isMyTurn ? (
-        <div role="status" aria-live="assertive" className="bg-emerald-700 px-4 py-2 text-center text-sm font-semibold text-white">
+      {snapshot.state === "ENDED" ? (
+        <div
+          role="status"
+          aria-live="polite"
+          className="bg-emerald-800 px-4 py-3 text-center text-sm font-semibold text-emerald-50"
+        >
+          Exercise complete. Thanks for participating — your facilitator can download the AAR.
+        </div>
+      ) : isMyTurn ? (
+        <div
+          role="status"
+          aria-live="assertive"
+          className="sticky top-0 z-10 bg-emerald-700 px-4 py-2 text-center text-sm font-semibold text-white shadow-lg"
+        >
           Your turn — {myRole?.label} ({displayName})
         </div>
       ) : null}
@@ -183,6 +195,17 @@ export function Play({ sessionId, token }: Props) {
 
 function DisplayNameModal({ onSubmit }: { onSubmit: (name: string) => void }) {
   const [name, setName] = useState("");
+  const dialogRef = useRef<HTMLDialogElement | null>(null);
+
+  // Use a native <dialog open> so the browser handles focus-trap +
+  // background-inert + Escape semantics for free.
+  useEffect(() => {
+    const el = dialogRef.current;
+    if (el && !el.open && typeof el.showModal === "function") {
+      el.showModal();
+    }
+  }, []);
+
   function submit(e: FormEvent) {
     e.preventDefault();
     if (!name.trim()) return;
@@ -190,32 +213,39 @@ function DisplayNameModal({ onSubmit }: { onSubmit: (name: string) => void }) {
   }
   return (
     <main className="flex min-h-screen items-center justify-center bg-slate-950 p-6">
-      <form
-        onSubmit={submit}
-        className="flex w-full max-w-md flex-col gap-3 rounded border border-slate-700 bg-slate-900 p-6"
+      <dialog
+        ref={dialogRef}
         aria-labelledby="display-name-heading"
+        aria-modal="true"
+        className="rounded border border-slate-700 bg-slate-900 text-slate-100 backdrop:bg-slate-950/80"
       >
-        <h1 id="display-name-heading" className="text-lg font-semibold">
-          Join the tabletop exercise
-        </h1>
-        <label className="text-xs uppercase tracking-widest text-slate-400" htmlFor="display-name">
-          Your display name
-        </label>
-        <input
-          id="display-name"
-          autoFocus
-          required
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-          className="rounded border border-slate-700 bg-slate-950 p-2 text-sm"
-        />
-        <button
-          type="submit"
-          className="self-end rounded bg-sky-600 px-3 py-1 text-sm font-semibold text-white"
+        <form
+          onSubmit={submit}
+          method="dialog"
+          className="flex w-full max-w-md flex-col gap-3 p-6"
         >
-          Continue
-        </button>
-      </form>
+          <h1 id="display-name-heading" className="text-lg font-semibold">
+            Join the tabletop exercise
+          </h1>
+          <label className="text-xs uppercase tracking-widest text-slate-300" htmlFor="display-name">
+            Your display name
+          </label>
+          <input
+            id="display-name"
+            autoFocus
+            required
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            className="rounded border border-slate-700 bg-slate-950 p-2 text-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-400"
+          />
+          <button
+            type="submit"
+            className="self-end rounded bg-sky-600 px-3 py-1 text-sm font-semibold text-white hover:bg-sky-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-300"
+          >
+            Continue
+          </button>
+        </form>
+      </dialog>
     </main>
   );
 }

@@ -8,6 +8,7 @@ touching call sites.
 
 from __future__ import annotations
 
+import hashlib
 from typing import Literal, Protocol, TypedDict
 
 from itsdangerous import BadSignature, URLSafeSerializer
@@ -48,7 +49,13 @@ class HMACAuthenticator:
     def __init__(self, secret: str) -> None:
         if not secret or len(secret) < 16:
             raise ValueError("SESSION_SECRET must be at least 16 characters / bytes")
-        self._serializer = URLSafeSerializer(secret_key=secret, salt=self._SALT)
+        # Force HMAC-SHA256 instead of itsdangerous's SHA1 default — same
+        # authenticity guarantee, cleaner audit / compliance footprint.
+        self._serializer = URLSafeSerializer(
+            secret_key=secret,
+            salt=self._SALT,
+            signer_kwargs={"digest_method": hashlib.sha256},
+        )
 
     def mint(self, *, session_id: str, role_id: str, kind: ParticipantKindLiteral) -> str:
         payload: JoinTokenPayload = {

@@ -1,3 +1,5 @@
+import { useEffect, useRef } from "react";
+
 interface Props {
   severity: string;
   headline: string;
@@ -7,6 +9,14 @@ interface Props {
 }
 
 export function CriticalEventBanner({ severity, headline, body, onAcknowledge, canAcknowledge }: Props) {
+  const ackRef = useRef<HTMLButtonElement | null>(null);
+
+  // Pull focus to the acknowledge button so a keyboard / screen-reader user
+  // doesn't have to tab through the rest of the page to reach it.
+  useEffect(() => {
+    if (canAcknowledge) ackRef.current?.focus();
+  }, [canAcknowledge]);
+
   return (
     <div
       role="alert"
@@ -20,10 +30,11 @@ export function CriticalEventBanner({ severity, headline, body, onAcknowledge, c
           <p className="text-sm opacity-90">{body}</p>
         </div>
         <button
+          ref={ackRef}
           type="button"
           onClick={onAcknowledge}
           disabled={!canAcknowledge}
-          className="rounded bg-red-100 px-3 py-1 text-sm font-semibold text-red-900 disabled:opacity-50"
+          className="rounded bg-red-100 px-3 py-1 text-sm font-semibold text-red-900 hover:bg-red-200 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-red-300 disabled:opacity-50"
         >
           Acknowledge
         </button>
