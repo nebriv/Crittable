@@ -57,6 +57,12 @@ class TurnDriver:
 
         llm = self._manager.llm()
         dispatcher = self._manager.dispatcher()
+        _logger.info(
+            "setup_turn_start",
+            session_id=session.id,
+            note_count=len(session.setup_notes),
+            has_plan=session.plan is not None,
+        )
 
         for _ in range(4):  # safety cap on chained setup tool calls
             messages = _setup_messages(session)
@@ -102,6 +108,13 @@ class TurnDriver:
 
         dispatcher = self._manager.dispatcher()
         registry = self._manager.registry()
+        _logger.info(
+            "play_turn_start",
+            session_id=session.id,
+            turn_index=turn.index,
+            roster=len(session.roles),
+            roster_size=session.roster_size,
+        )
 
         attempt = 0
         strict = False

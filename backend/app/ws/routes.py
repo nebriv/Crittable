@@ -58,6 +58,13 @@ def register_ws_routes(app: FastAPI) -> None:
             role_id=payload["role_id"],
             is_creator=is_creator,
         )
+        _logger.info(
+            "ws_connected",
+            session_id=session_id,
+            role_id=payload["role_id"],
+            kind=payload["kind"],
+            is_creator=is_creator,
+        )
 
         recv_task = asyncio.create_task(
             _client_pump(
@@ -78,6 +85,11 @@ def register_ws_routes(app: FastAPI) -> None:
                 task.cancel()
         finally:
             await connections.unregister(conn)
+            _logger.info(
+                "ws_disconnected",
+                session_id=session_id,
+                role_id=payload["role_id"],
+            )
             clear_session_context()
 
 

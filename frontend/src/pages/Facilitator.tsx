@@ -53,6 +53,24 @@ export function Facilitator() {
     return "play";
   }, [snapshot]);
 
+  useEffect(() => {
+    if (snapshot) {
+      console.info("[facilitator] phase", {
+        phase,
+        backendState: snapshot.state,
+        currentTurn: snapshot.current_turn,
+        roleCount: snapshot.roles.length,
+        hasPlan: Boolean(snapshot.plan),
+        messageCount: snapshot.messages.length,
+        setupNoteCount: snapshot.setup_notes?.length ?? 0,
+      });
+    }
+  }, [phase, snapshot]);
+
+  useEffect(() => {
+    if (error) console.warn("[facilitator] error surfaced", error);
+  }, [error]);
+
   // ----------------------------------------------------- create session
   async function handleCreate(e: FormEvent) {
     e.preventDefault();

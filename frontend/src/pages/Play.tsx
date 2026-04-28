@@ -68,7 +68,11 @@ export function Play({ sessionId, token }: Props) {
         refreshSnapshot();
         break;
       case "state_changed":
+        console.info("[play] state changed", evt);
+        refreshSnapshot();
+        break;
       case "turn_changed":
+        console.info("[play] turn changed", evt);
         refreshSnapshot();
         break;
       case "critical_event":

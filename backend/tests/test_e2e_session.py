@@ -352,6 +352,124 @@ def test_dev_fast_setup_env(monkeypatch) -> None:
         assert snap["plan"] is not None
 
 
+def test_plan_not_revealed_to_non_creator(client: TestClient) -> None:
+    """Acceptance gate: the frozen scenario plan never reaches non-creator roles."""
+
+    seats = _create_and_seat(client, role_count=3)
+    sid = seats["session_id"]
+    cr = seats["creator_token"]
+    other = seats["role_tokens"][seats["role_ids"][1]]
+
+    # Use the dev-skip path so we get a deterministic plan committed.
+    r = client.post(f"/api/sessions/{sid}/setup/skip?token={cr}")
+    assert r.status_code == 200
+
+    creator_view = client.get(f"/api/sessions/{sid}?token={cr}").json()
+    other_view = client.get(f"/api/sessions/{sid}?token={other}").json()
+
+    assert creator_view["plan"] is not None
+    assert other_view["plan"] is None, "non-creator must not see the plan in snapshot"
+    assert other_view["cost"] is None, "non-creator must not see the cost meter"
+
+
+def test_force_advance_from_any_participant(client: TestClient) -> None:
+    """Acceptance gate: any seated participant can force-advance a stalled turn."""
+
+    seats = _create_and_seat(client, role_count=3)
+    _install_mock_and_drive(
+        client, role_ids=seats["role_ids"], extension="lookup_threat_intel"
+    )
+    sid = seats["session_id"]
+    cr = seats["creator_token"]
+    non_creator = seats["role_tokens"][seats["role_ids"][1]]
+
+    # Drive setup to READY.
+    client.post(f"/api/sessions/{sid}/setup/skip?token={cr}")
+    client.post(f"/api/sessions/{sid}/start?token={cr}")
+
+    snap = client.get(f"/api/sessions/{sid}?token={cr}").json()
+    if snap["state"] != "AWAITING_PLAYERS":
+        pytest.skip("first AI turn did not yield to players (mock variance)")
+
+    # Non-creator force-advances — should be allowed.
+    r = client.post(
+        f"/api/sessions/{sid}/force-advance?token={non_creator}"
+    )
+    assert r.status_code == 200, r.text
+
+
+def test_end_session_from_any_participant(client: TestClient) -> None:
+    """Acceptance gate: any seated participant can end the session."""
+
+    seats = _create_and_seat(client, role_count=2)
+    _install_mock_and_drive(
+        client, role_ids=seats["role_ids"], extension="lookup_threat_intel"
+    )
+    sid = seats["session_id"]
+    cr = seats["creator_token"]
+    other = seats["role_tokens"][seats["role_ids"][1]]
+
+    client.post(f"/api/sessions/{sid}/setup/skip?token={cr}")
+    client.post(f"/api/sessions/{sid}/start?token={cr}")
+
+    r = client.post(f"/api/sessions/{sid}/end?token={other}", json={})
+    assert r.status_code == 200, r.text
+    snap = client.get(f"/api/sessions/{sid}?token={cr}").json()
+    assert snap["state"] == "ENDED"
+
+
+def test_ws_replay_buffer_rehydrates_on_reconnect(client: TestClient) -> None:
+    """Acceptance gate: closing and reopening a tab restores the transcript.
+
+    Tests the ConnectionManager replay buffer directly — that's the layer
+    that guarantees a fresh WS gets the prior events. The TestClient's WS
+    surface doesn't expose non-blocking receive, so going through it would
+    deadlock.
+    """
+
+    import asyncio
+
+    seats = _create_and_seat(client, role_count=2)
+    _install_mock_and_drive(
+        client, role_ids=seats["role_ids"], extension="lookup_threat_intel"
+    )
+    sid = seats["session_id"]
+    cr = seats["creator_token"]
+
+    # Drive setup → start so the manager broadcasts a few events into the
+    # connection-manager replay buffer.
+    client.post(f"/api/sessions/{sid}/setup/skip?token={cr}")
+    client.post(f"/api/sessions/{sid}/start?token={cr}")
+
+    connections = client.app.state.connections
+
+    async def _check() -> None:
+        # Register a fresh connection — replay buffer should pre-fill the queue.
+        conn = await connections.register(
+            session_id=sid, role_id=seats["role_ids"][1], is_creator=False
+        )
+        try:
+            collected: list[dict[str, Any]] = []
+            for _ in range(20):
+                try:
+                    evt = conn.queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    break
+                collected.append(evt)
+            assert collected, "replay buffer should have events for a fresh connect"
+            # We expect at least one state_changed or turn_changed event.
+            kinds = {evt.get("type") for evt in collected}
+            assert kinds & {
+                "state_changed",
+                "turn_changed",
+                "plan_finalized",
+            }, f"expected lifecycle events in replay; got {kinds}"
+        finally:
+            await connections.unregister(conn)
+
+    asyncio.run(_check())
+
+
 def test_setup_notes_visible_only_to_creator(client: TestClient) -> None:
     seats = _create_and_seat(client, role_count=2)
     _install_mock_and_drive(

@@ -117,10 +117,42 @@ class LLMClient:
         if tools:
             kwargs["tools"] = tools
 
-        api = await self._messages()
-        response = await api.create(**kwargs)
+        import time as _t
 
-        return _normalize_response(response, model=model)
+        _logger.info(
+            "llm_call_start",
+            tier=tier,
+            model=model,
+            stream=False,
+            tools=len(tools or []),
+            messages=len(messages),
+        )
+        started = _t.monotonic()
+        try:
+            api = await self._messages()
+            response = await api.create(**kwargs)
+        except Exception as exc:
+            _logger.warning(
+                "llm_call_failed",
+                tier=tier,
+                model=model,
+                duration_ms=int((_t.monotonic() - started) * 1000),
+                error=str(exc),
+            )
+            raise
+
+        result = _normalize_response(response, model=model)
+        _logger.info(
+            "llm_call_complete",
+            tier=tier,
+            model=model,
+            duration_ms=int((_t.monotonic() - started) * 1000),
+            usage=result.usage,
+            estimated_usd=round(result.estimated_usd, 6),
+            stop_reason=result.stop_reason,
+            tool_uses=sum(1 for b in result.content if b.get("type") == "tool_use"),
+        )
+        return result
 
     async def astream(
         self,
@@ -144,21 +176,54 @@ class LLMClient:
         if tools:
             kwargs["tools"] = tools
 
+        import time as _t
+
+        _logger.info(
+            "llm_call_start",
+            tier=tier,
+            model=model,
+            stream=True,
+            tools=len(tools or []),
+            messages=len(messages),
+        )
+        started = _t.monotonic()
         api = await self._messages()
         stream = api.stream(**kwargs)
         text_buffer: list[str] = []
-        async with stream as s:
-            async for event in s:
-                etype = getattr(event, "type", None)
-                if etype == "content_block_delta":
-                    delta = getattr(event, "delta", None)
-                    if delta is not None and getattr(delta, "type", None) == "text_delta":
-                        text_buffer.append(delta.text)
-                        yield {"type": "text_delta", "text": delta.text}
-                # Other event types aren't surfaced in MVP — the SessionManager
-                # consumes the resolved final response below.
-            final = await s.get_final_message()
+        try:
+            async with stream as s:
+                async for event in s:
+                    etype = getattr(event, "type", None)
+                    if etype == "content_block_delta":
+                        delta = getattr(event, "delta", None)
+                        if delta is not None and getattr(delta, "type", None) == "text_delta":
+                            text_buffer.append(delta.text)
+                            yield {"type": "text_delta", "text": delta.text}
+                    # Other event types aren't surfaced in MVP.
+                final = await s.get_final_message()
+        except Exception as exc:
+            _logger.warning(
+                "llm_call_failed",
+                tier=tier,
+                model=model,
+                duration_ms=int((_t.monotonic() - started) * 1000),
+                stream=True,
+                error=str(exc),
+            )
+            raise
         result = _normalize_response(final, model=model)
+        _logger.info(
+            "llm_call_complete",
+            tier=tier,
+            model=model,
+            stream=True,
+            duration_ms=int((_t.monotonic() - started) * 1000),
+            usage=result.usage,
+            estimated_usd=round(result.estimated_usd, 6),
+            stop_reason=result.stop_reason,
+            tool_uses=sum(1 for b in result.content if b.get("type") == "tool_use"),
+            text_chars=sum(len(c) for c in text_buffer),
+        )
         yield {"type": "complete", "result": result, "text": "".join(text_buffer)}
 
 

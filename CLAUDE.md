@@ -66,6 +66,39 @@ Custom tools, resources, and prompts (Skills-style) are loaded at startup via en
 - All config through `pydantic-settings` env vars; never hard-code.
 - Commit style: `<area>: <imperative subject>` (e.g. `backend: add session repository`). Body explains *why*. Phase-1 bootstrap can use `chore:` / `docs:` / `ci:`.
 
+## Logging rules (read before adding any new code path)
+
+We have repeatedly hit "is the app stuck or working?" mysteries during manual testing. The cure is **observable boundaries**: every meaningful action should produce one log line at the start and one at the end on both backend and browser.
+
+### Backend (Python / `structlog`)
+
+- **Always use** `from app.logging_setup import get_logger`. Never `print`. Never `import logging` in business code.
+- **Bind context**, don't repeat fields. `RequestContextMiddleware` binds `request_id` per HTTP/WS request; the manager / WS layer binds `session_id`, `turn_id`, `role_id`. Once bound, every subsequent log line in that request inherits them — don't re-pass.
+- **`event` is reserved** by structlog (the message key). Don't pass an `event=` kwarg — use `audit_kind`, `tool_name`, etc.
+- **Log every external boundary**:
+  - **LLM calls** — `llm_call_start` / `llm_call_complete` (or `llm_call_failed`) with `tier`, `model`, `duration_ms`, `usage`, `estimated_usd`, `tool_uses`, `stop_reason`. See `app/llm/client.py`.
+  - **State transitions** — every `SessionState` change emits a `session_event` line with `audit_kind`, `state`, `turn_index`. See `SessionManager._emit`.
+  - **WebSocket connect/disconnect** — `ws_connected` / `ws_disconnected` with `session_id`, `role_id`, `kind`.
+  - **Tool dispatch** — `tool_use` / `tool_use_rejected` (already audit-emitted).
+  - **Extension dispatch** — `extension_invoked` / `extension_dispatch_failed`.
+- **Every `try/except` that catches a broad exception must log it** before re-raising or swallowing. Silent swallows are bugs.
+- **Don't log secrets**. `SESSION_SECRET`, `ANTHROPIC_API_KEY`, raw join tokens, or full participant message bodies (preview to ≤120 chars).
+- **Don't log oversized payloads**. The `_is_oversized` helper in `sessions/manager.py` caps individual fields; reuse it for any wide payload.
+
+### Browser (TypeScript / `console.*`)
+
+- **Use the right level**: `console.debug` for routine boundary tracing, `console.info` for state transitions and key user actions, `console.warn` for recoverable errors / surfaces shown to the user, `console.error` only for unrecoverable bugs.
+- **Always log API calls** — `lib/api/client.ts` already wraps every fetch with `[api] METHOD path → status (Nms)`. New endpoints inherit this for free; don't bypass the wrapper.
+- **Always log WS events** — `lib/ws.ts` logs `[ws] open`, `[ws] event`, `[ws] close`, `[ws] error`. Don't add direct `new WebSocket(...)` outside that module.
+- **Log state transitions** in pages — phase changes, route changes, modal open/close. See `pages/Facilitator.tsx`'s `useEffect` that logs `[facilitator] phase`.
+- **Log surfaced errors** — every `setError(...)` call should also `console.warn` with the same context. Users will paste the console into bug reports; make sure it tells the story.
+- **Prefix log lines** with the module: `[ws]`, `[api]`, `[facilitator]`, `[play]`. Greppable.
+- **Don't log tokens** to the console. The token is in the URL on `/play/:id/:token`; do not re-log it from any other handler.
+
+### Test rule
+
+When a manual-test issue requires more telemetry than the current logs provide, **add the log line first** (so the next operator finds it), then fix the bug. Don't fix-and-forget — the log is the regression detector.
+
 ## Always-do checklist (start of any task)
 
 1. `git fetch && git checkout claude/ai-cybersecurity-chat-app-fEYFi && git pull`

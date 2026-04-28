@@ -52,6 +52,16 @@ _logger = get_logger("session.manager")
 ParticipantKindLiteral = ParticipantKind
 
 
+def _is_oversized(value: Any) -> bool:
+    """Drop fields that would bloat per-event log lines (long strings, big dicts)."""
+
+    if isinstance(value, str):
+        return len(value) > 200
+    if isinstance(value, (list, dict)):
+        return len(value) > 20
+    return False
+
+
 class SessionManager:
     def __init__(
         self,
@@ -97,6 +107,21 @@ class SessionManager:
             payload=payload,
         )
         self._audit.emit(evt)
+        _logger.info(
+            "session_event",
+            audit_kind=kind,
+            session_id=session.id,
+            state=session.state.value,
+            turn_index=(
+                session.current_turn.index if session.current_turn else None
+            ),
+            **{
+                k: v
+                for k, v in payload.items()
+                # ``event`` is reserved by structlog as the message key.
+                if k != "event" and not _is_oversized(v)
+            },
+        )
 
     async def _broadcast_state(self, session: Session) -> None:
         await self._connections.broadcast(
