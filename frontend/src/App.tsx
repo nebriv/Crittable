@@ -1,16 +1,32 @@
+import { useEffect, useState } from "react";
+import { Facilitator } from "./pages/Facilitator";
+import { Play } from "./pages/Play";
+
+type Route =
+  | { kind: "facilitator" }
+  | { kind: "play"; sessionId: string; token: string };
+
+function parseRoute(): Route {
+  const path = window.location.pathname;
+  const playMatch = path.match(/^\/play\/([^/]+)\/([^/]+)$/);
+  if (playMatch) {
+    return { kind: "play", sessionId: playMatch[1], token: decodeURIComponent(playMatch[2]) };
+  }
+  return { kind: "facilitator" };
+}
+
 export default function App() {
+  const [route, setRoute] = useState<Route>(parseRoute);
+
+  useEffect(() => {
+    const handler = () => setRoute(parseRoute());
+    window.addEventListener("popstate", handler);
+    return () => window.removeEventListener("popstate", handler);
+  }, []);
+
   return (
-    <main className="mx-auto flex min-h-screen max-w-3xl flex-col items-center justify-center gap-4 p-8 text-center">
-      <h1 className="text-3xl font-semibold tracking-tight">
-        AI Cybersecurity Tabletop Facilitator
-      </h1>
-      <p className="text-slate-400">
-        Phase 1 bootstrap. The session UI lands in Phase 2 — see{" "}
-        <a className="underline" href="/docs/PLAN.md">
-          docs/PLAN.md
-        </a>
-        .
-      </p>
-    </main>
+    <div className="min-h-screen bg-slate-950 text-slate-100">
+      {route.kind === "facilitator" ? <Facilitator /> : <Play sessionId={route.sessionId} token={route.token} />}
+    </div>
   );
 }
