@@ -363,7 +363,7 @@ OAuth/SSO authentication, persistent repository (SQLite then Postgres), tenant/o
 2. **Run / dev commands** — Codespace, local Docker, backend-only, frontend-only.
 3. **Configuration reference** — every env var, default, and effect (linked to `docs/configuration.md`).
 4. **Milestones** — exact MCP commands to list current scope, e.g.
-   `mcp__github__list_issues` filtered to milestones `Phase 1`, `Phase 2`, `Phase 3`. **Always read this before starting work.**
+   `mcp__github__search_issues` with `repo:nebriv/ai-tabletop-facilitator is:issue is:open milestone:"Phase 1"` (and equivalents for `Phase 2` / `Phase 3`). Phase grouping is tracked via GitHub **milestones**, not labels. **Always read this before starting work.**
 5. **Sub-agent review protocol** — every major task (= any closed Phase-2 issue, every Phase-3 epic) requires three reviews before merge:
    - **QA Agent** — verifies tests cover golden path + edge cases, regression risk, validates the issue's acceptance criteria.
    - **Security Engineer Agent** — input validation, secret handling, AuthN/AuthZ correctness, WebSocket origin/token checks, rate limits, prompt-injection surface (with extra attention to the extensions pipeline), dependency CVEs.
