@@ -70,6 +70,13 @@ def register_ws_routes(app: FastAPI) -> None:
             await websocket.close(code=CLOSE_NOT_FOUND)
             return
 
+        # Token-version check — same revocation primitive as REST. A kicked
+        # role's tab gets a 4401 close on (re)connect.
+        role = session.role_by_id(payload["role_id"])
+        if role is None or int(payload.get("v", 0)) != role.token_version:
+            await websocket.close(code=CLOSE_BAD_TOKEN)
+            return
+
         is_creator = payload["role_id"] == session.creator_role_id
         bind_session_context(session_id=session_id, role_id=payload["role_id"])
         await websocket.accept()
@@ -141,10 +148,14 @@ async def _client_pump(
     # was a back door.
     from ..auth.authn import JoinTokenPayload as _Payload
 
+    # ``v`` is intentionally 0 here — the version match was already
+    # enforced at WS upgrade time. This payload is only used downstream by
+    # require_participant(), which only inspects ``kind``.
     token_payload: _Payload = {
         "session_id": session_id,
         "role_id": role_id,
         "kind": kind,
+        "v": 0,
     }
     try:
         while True:

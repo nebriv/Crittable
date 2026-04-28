@@ -74,11 +74,27 @@ def register_api_routes(app: FastAPI) -> None:
         except InvalidTokenError as exc:
             raise HTTPException(status.HTTP_401_UNAUTHORIZED, str(exc)) from exc
 
-    def _bind_token(req: Request, session_id: str) -> JoinTokenPayload:
+    async def _bind_token(req: Request, session_id: str) -> JoinTokenPayload:
+        """Verify token signature, session binding, AND that the role still
+        exists with a matching ``token_version``. The version check is what
+        makes "kick / revoke" effective — bumping ``role.token_version``
+        invalidates every previously-issued token for that role."""
+
         token = req.query_params.get("token")
         payload = _verify_token(_authn(req), token)
         if payload["session_id"] != session_id:
             raise HTTPException(status.HTTP_403_FORBIDDEN, "token / session mismatch")
+        try:
+            session = await _manager(req).get_session(session_id)
+        except SessionNotFoundError as exc:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "session not found") from exc
+        role = session.role_by_id(payload["role_id"])
+        if role is None:
+            raise HTTPException(status.HTTP_401_UNAUTHORIZED, "role no longer exists")
+        if int(payload.get("v", 0)) != role.token_version:
+            raise HTTPException(
+                status.HTTP_401_UNAUTHORIZED, "token has been revoked"
+            )
         return payload
 
     # ---------------------------------------------------- routes
@@ -131,7 +147,7 @@ def register_api_routes(app: FastAPI) -> None:
         session_id: str, body: AddRoleBody, request: Request
     ) -> dict[str, Any]:
         manager = _manager(request)
-        token = _bind_token(request, session_id)
+        token = await _bind_token(request, session_id)
         try:
             require_creator(token)
             role, role_token = await manager.add_role(
@@ -158,7 +174,7 @@ def register_api_routes(app: FastAPI) -> None:
     @router.get("/sessions/{session_id}")
     async def get_session(session_id: str, request: Request) -> dict[str, Any]:
         manager = _manager(request)
-        token = _bind_token(request, session_id)
+        token = await _bind_token(request, session_id)
         try:
             session = await manager.get_session(session_id)
         except SessionNotFoundError as exc:
@@ -224,7 +240,7 @@ def register_api_routes(app: FastAPI) -> None:
     @router.post("/sessions/{session_id}/start")
     async def start_session(session_id: str, request: Request) -> dict[str, Any]:
         manager = _manager(request)
-        token = _bind_token(request, session_id)
+        token = await _bind_token(request, session_id)
         try:
             require_creator(token)
             await manager.start_session(session_id=session_id)
@@ -252,7 +268,7 @@ def register_api_routes(app: FastAPI) -> None:
         session_id: str, body: SetupReplyBody, request: Request
     ) -> dict[str, Any]:
         manager = _manager(request)
-        token = _bind_token(request, session_id)
+        token = await _bind_token(request, session_id)
         try:
             require_creator(token)
         except AuthorizationError as exc:
@@ -279,7 +295,7 @@ def register_api_routes(app: FastAPI) -> None:
         """
 
         manager = _manager(request)
-        token = _bind_token(request, session_id)
+        token = await _bind_token(request, session_id)
         try:
             require_creator(token)
             session = await manager.get_session(session_id)
@@ -307,7 +323,7 @@ def register_api_routes(app: FastAPI) -> None:
         """
 
         manager = _manager(request)
-        token = _bind_token(request, session_id)
+        token = await _bind_token(request, session_id)
         try:
             require_creator(token)
             session = await manager.get_session(session_id)
@@ -331,7 +347,7 @@ def register_api_routes(app: FastAPI) -> None:
     @router.post("/sessions/{session_id}/force-advance")
     async def force_advance(session_id: str, request: Request) -> dict[str, Any]:
         manager = _manager(request)
-        token = _bind_token(request, session_id)
+        token = await _bind_token(request, session_id)
         try:
             require_participant(token)
             await manager.force_advance(session_id=session_id, by_role_id=token["role_id"])
@@ -353,7 +369,7 @@ def register_api_routes(app: FastAPI) -> None:
         session_id: str, body: EndBody, request: Request
     ) -> dict[str, Any]:
         manager = _manager(request)
-        token = _bind_token(request, session_id)
+        token = await _bind_token(request, session_id)
         try:
             require_participant(token)
             await manager.end_session(
@@ -372,7 +388,7 @@ def register_api_routes(app: FastAPI) -> None:
         session_id: str, body: PlanEditBody, request: Request
     ) -> dict[str, Any]:
         manager = _manager(request)
-        token = _bind_token(request, session_id)
+        token = await _bind_token(request, session_id)
         try:
             require_creator(token)
             await manager.edit_plan_field(
@@ -387,10 +403,74 @@ def register_api_routes(app: FastAPI) -> None:
             raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
         return {"ok": True}
 
+    @router.post("/sessions/{session_id}/roles/{role_id}/reissue")
+    async def reissue_role(
+        session_id: str, role_id: str, request: Request
+    ) -> dict[str, Any]:
+        """Re-mint the role's join token without invalidating the old one.
+
+        Use case: the creator lost the join URL and wants to recover it. The
+        token's signed payload is identical to the original, so existing
+        users with the old URL keep working.
+        """
+
+        manager = _manager(request)
+        token = await _bind_token(request, session_id)
+        try:
+            require_creator(token)
+            new_token = await manager.reissue_role_token(
+                session_id=session_id, role_id=role_id, revoke_previous=False
+            )
+        except AuthorizationError as exc:
+            raise HTTPException(status.HTTP_403_FORBIDDEN, str(exc)) from exc
+        except IllegalTransitionError as exc:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
+        return {"token": new_token, "join_url": f"/play/{session_id}/{new_token}"}
+
+    @router.post("/sessions/{session_id}/roles/{role_id}/revoke")
+    async def revoke_role(
+        session_id: str, role_id: str, request: Request
+    ) -> dict[str, Any]:
+        """Kick whoever is using this role and mint a fresh token.
+
+        Bumps ``role.token_version`` so any old token (including one already
+        in someone's tab) starts failing on the next request with 401.
+        """
+
+        manager = _manager(request)
+        token = await _bind_token(request, session_id)
+        try:
+            require_creator(token)
+            new_token = await manager.reissue_role_token(
+                session_id=session_id, role_id=role_id, revoke_previous=True
+            )
+        except AuthorizationError as exc:
+            raise HTTPException(status.HTTP_403_FORBIDDEN, str(exc)) from exc
+        except IllegalTransitionError as exc:
+            raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
+        return {"token": new_token, "join_url": f"/play/{session_id}/{new_token}"}
+
+    @router.delete("/sessions/{session_id}/roles/{role_id}")
+    async def remove_role(
+        session_id: str, role_id: str, request: Request
+    ) -> dict[str, Any]:
+        manager = _manager(request)
+        token = await _bind_token(request, session_id)
+        try:
+            require_creator(token)
+            await manager.remove_role(
+                session_id=session_id, role_id=role_id, by_role_id=token["role_id"]
+            )
+        except AuthorizationError as exc:
+            raise HTTPException(status.HTTP_403_FORBIDDEN, str(exc)) from exc
+        except IllegalTransitionError as exc:
+            raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
+        return {"ok": True}
+
     @router.get("/sessions/{session_id}/export.md", response_class=PlainTextResponse)
     async def export_md(session_id: str, request: Request) -> Response:
         manager = _manager(request)
-        token = _bind_token(request, session_id)
+        token = await _bind_token(request, session_id)
         try:
             require_participant(token)
             session = await manager.get_session(session_id)

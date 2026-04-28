@@ -16,7 +16,14 @@ def test_token_round_trip() -> None:
     authn = HMACAuthenticator("x" * 32)
     token = authn.mint(session_id="s1", role_id="r1", kind="creator")
     payload = authn.verify(token)
-    assert payload == {"session_id": "s1", "role_id": "r1", "kind": "creator"}
+    assert payload == {"session_id": "s1", "role_id": "r1", "kind": "creator", "v": 0}
+
+
+def test_token_version_round_trip() -> None:
+    authn = HMACAuthenticator("x" * 32)
+    token = authn.mint(session_id="s1", role_id="r1", kind="player", version=3)
+    payload = authn.verify(token)
+    assert payload["v"] == 3
 
 
 def test_token_tamper_rejected() -> None:

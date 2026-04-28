@@ -167,4 +167,37 @@ export const api = {
   exportUrl(sessionId: string, token: string): string {
     return `/api/sessions/${sessionId}/export.md?token=${encodeURIComponent(token)}`;
   },
+
+  async reissueRole(
+    sessionId: string,
+    creatorToken: string,
+    roleId: string,
+  ): Promise<{ token: string; join_url: string }> {
+    return request(
+      "POST",
+      `/api/sessions/${sessionId}/roles/${roleId}/reissue?token=${encodeURIComponent(creatorToken)}`,
+    );
+  },
+
+  async revokeRole(
+    sessionId: string,
+    creatorToken: string,
+    roleId: string,
+  ): Promise<{ token: string; join_url: string }> {
+    return request(
+      "POST",
+      `/api/sessions/${sessionId}/roles/${roleId}/revoke?token=${encodeURIComponent(creatorToken)}`,
+    );
+  },
+
+  async removeRole(
+    sessionId: string,
+    creatorToken: string,
+    roleId: string,
+  ): Promise<{ ok: boolean }> {
+    return request(
+      "DELETE",
+      `/api/sessions/${sessionId}/roles/${roleId}?token=${encodeURIComponent(creatorToken)}`,
+    );
+  },
 };

@@ -169,6 +169,7 @@ class SessionManager:
             session_id=session.id,
             role_id=creator_role.id,
             kind="creator",
+            version=creator_role.token_version,
         )
         self._emit("session_created", session, scenario_prompt=session.scenario_prompt)
         return session, token
@@ -197,6 +198,7 @@ class SessionManager:
             session_id=session_id,
             role_id=role.id,
             kind="player" if kind == "player" else "spectator",
+            version=role.token_version,
         )
         self._emit(
             "role_added",
@@ -219,6 +221,78 @@ class SessionManager:
 
     async def get_session(self, session_id: str) -> Session:
         return await self._repo.get(session_id)
+
+    # -------------------------------------------------- role management
+    async def reissue_role_token(
+        self,
+        *,
+        session_id: str,
+        role_id: str,
+        revoke_previous: bool,
+    ) -> str:
+        """Re-mint a role's join token.
+
+        ``revoke_previous=False`` is a "show me the link again" — same token
+        is regenerated (useful when the creator lost the original URL).
+        ``revoke_previous=True`` is a "kick" — bumps ``role.token_version`` so
+        any holder of the prior token gets a 4401 on next request.
+        """
+
+        async with await self._lock_for(session_id):
+            session = await self._repo.get(session_id)
+            role = session.role_by_id(role_id)
+            if role is None:
+                raise IllegalTransitionError(f"role not found: {role_id}")
+            if role.is_creator and revoke_previous:
+                raise IllegalTransitionError(
+                    "cannot revoke the creator's token mid-session; end and "
+                    "start a new session instead"
+                )
+            if revoke_previous:
+                role.token_version += 1
+                await self._repo.save(session)
+            kind = "creator" if role.is_creator else (
+                "player" if role.kind == "player" else "spectator"
+            )
+            token = self._authn.mint(
+                session_id=session.id,
+                role_id=role.id,
+                kind=kind,  # type: ignore[arg-type]
+                version=role.token_version,
+            )
+        self._emit(
+            ("role_token_revoked" if revoke_previous else "role_token_reissued"),
+            session,
+            role_id=role_id,
+            label=role.label,
+        )
+        return token
+
+    async def remove_role(
+        self, *, session_id: str, role_id: str, by_role_id: str
+    ) -> None:
+        async with await self._lock_for(session_id):
+            session = await self._repo.get(session_id)
+            if session.creator_role_id != by_role_id:
+                raise IllegalTransitionError("only the creator can remove roles")
+            role = session.role_by_id(role_id)
+            if role is None:
+                raise IllegalTransitionError(f"role not found: {role_id}")
+            if role.is_creator:
+                raise IllegalTransitionError("cannot remove the creator's role")
+            if session.current_turn and role_id in session.current_turn.active_role_ids:
+                # Drop the active-role slot so the turn isn't stuck waiting
+                # on a kicked player.
+                session.current_turn.active_role_ids = [
+                    r for r in session.current_turn.active_role_ids if r != role_id
+                ]
+            session.roles = [r for r in session.roles if r.id != role_id]
+            await self._repo.save(session)
+        self._emit("role_removed", session, role_id=role_id, by=by_role_id)
+        await self._connections.broadcast(
+            session.id,
+            {"type": "participant_left", "role_id": role_id},
+        )
 
     # ------------------------------------------------------- setup-phase API
     async def append_setup_message(

@@ -61,6 +61,10 @@ class Role(BaseModel):
     kind: ParticipantKind = "player"
     is_creator: bool = False
     joined_at: datetime = Field(default_factory=_now)
+    # Bumped on "kick / revoke link" — old tokens become invalid because
+    # ``authn.verify`` checks the embedded ``v`` against the role's current
+    # version. Default 0; only changes on explicit revocation.
+    token_version: int = 0
 
 
 class Message(BaseModel):

@@ -733,6 +733,87 @@ def test_play_after_auto_greet_then_skip_does_not_400(client: TestClient) -> Non
     assert not leaked, f"setup-tool messages leaked into play transcript: {leaked}"
 
 
+def test_reissue_role_does_not_invalidate_old_token(client: TestClient) -> None:
+    """Reissue is "show me the link again" — old token still works."""
+
+    seats = _create_and_seat(client, role_count=2)
+    sid = seats["session_id"]
+    cr = seats["creator_token"]
+    rid = seats["role_ids"][1]
+    old = seats["role_tokens"][rid]
+
+    r = client.post(f"/api/sessions/{sid}/roles/{rid}/reissue?token={cr}")
+    assert r.status_code == 200, r.text
+    new = r.json()["token"]
+    # Both tokens validate successfully.
+    assert client.get(f"/api/sessions/{sid}?token={old}").status_code == 200
+    assert client.get(f"/api/sessions/{sid}?token={new}").status_code == 200
+
+
+def test_revoke_role_invalidates_old_token(client: TestClient) -> None:
+    """Revoke is "kick" — bumps token_version so the old token 401s."""
+
+    seats = _create_and_seat(client, role_count=2)
+    sid = seats["session_id"]
+    cr = seats["creator_token"]
+    rid = seats["role_ids"][1]
+    old = seats["role_tokens"][rid]
+
+    r = client.post(f"/api/sessions/{sid}/roles/{rid}/revoke?token={cr}")
+    assert r.status_code == 200, r.text
+    new = r.json()["token"]
+
+    # Old token now 401s with "token has been revoked".
+    resp = client.get(f"/api/sessions/{sid}?token={old}")
+    assert resp.status_code == 401
+    assert "revoked" in resp.json()["detail"].lower()
+    # New token works.
+    assert client.get(f"/api/sessions/{sid}?token={new}").status_code == 200
+
+
+def test_revoke_creator_token_rejected(client: TestClient) -> None:
+    seats = _create_and_seat(client, role_count=2)
+    sid = seats["session_id"]
+    cr = seats["creator_token"]
+    creator_role_id = seats["creator_role_id"]
+    r = client.post(f"/api/sessions/{sid}/roles/{creator_role_id}/revoke?token={cr}")
+    assert r.status_code == 409, r.text
+
+
+def test_remove_role(client: TestClient) -> None:
+    seats = _create_and_seat(client, role_count=3)
+    sid = seats["session_id"]
+    cr = seats["creator_token"]
+    rid = seats["role_ids"][1]
+    old = seats["role_tokens"][rid]
+
+    r = client.delete(f"/api/sessions/{sid}/roles/{rid}?token={cr}")
+    assert r.status_code == 200, r.text
+
+    snap = client.get(f"/api/sessions/{sid}?token={cr}").json()
+    assert all(r["id"] != rid for r in snap["roles"])
+    # The kicked role's old token 401s ("role no longer exists").
+    resp = client.get(f"/api/sessions/{sid}?token={old}")
+    assert resp.status_code == 401
+
+
+def test_remove_creator_role_rejected(client: TestClient) -> None:
+    seats = _create_and_seat(client, role_count=2)
+    sid = seats["session_id"]
+    cr = seats["creator_token"]
+    r = client.delete(f"/api/sessions/{sid}/roles/{seats['creator_role_id']}?token={cr}")
+    assert r.status_code == 409, r.text
+
+
+def test_remove_role_non_creator_rejected(client: TestClient) -> None:
+    seats = _create_and_seat(client, role_count=3)
+    sid = seats["session_id"]
+    other = seats["role_tokens"][seats["role_ids"][1]]
+    target = seats["role_ids"][2]
+    r = client.delete(f"/api/sessions/{sid}/roles/{target}?token={other}")
+    assert r.status_code == 403
+
+
 def test_setup_notes_visible_only_to_creator(client: TestClient) -> None:
     seats = _create_and_seat(client, role_count=2)
     _install_mock_and_drive(

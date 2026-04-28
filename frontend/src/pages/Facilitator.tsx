@@ -8,7 +8,7 @@ import {
 } from "../api/client";
 import { Composer } from "../components/Composer";
 import { CriticalEventBanner } from "../components/CriticalEventBanner";
-import { RoleRoster } from "../components/RoleRoster";
+import { RolesPanel } from "../components/RolesPanel";
 import { SetupChat } from "../components/SetupChat";
 import { Transcript } from "../components/Transcript";
 import { ServerEvent, WsClient } from "../lib/ws";
@@ -263,24 +263,35 @@ export function Facilitator() {
     }
   }
 
-  async function handleAddRole(label: string) {
-    if (!state) return;
-    setBusy(true);
-    setBusyMessage(`Adding role "${label}"…`);
-    try {
-      const r = await api.addRole(state.sessionId, state.token, { label });
-      const link = `${window.location.origin}/play/${state.sessionId}/${encodeURIComponent(r.token)}`;
-      // Token-bearing URL — log identifiers only, never the link itself.
-      console.info("[facilitator] join link minted", { sessionId: state.sessionId, roleId: r.role_id, label: r.label });
-      await navigator.clipboard?.writeText(link).catch(() => undefined);
-      await refreshSnapshot();
-      return link;
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setBusy(false);
-      setBusyMessage(null);
+  async function handleNewSession() {
+    if (!state) {
+      // Already on intro screen.
+      return;
     }
+    if (snapshot && snapshot.state !== "ENDED") {
+      if (
+        !confirm(
+          "Start a new session? The current exercise will be ended (no AAR will be generated automatically).",
+        )
+      ) {
+        return;
+      }
+      try {
+        await api.endSession(state.sessionId, state.token, "ended via 'new session'");
+      } catch {
+        // Swallow — best-effort cleanup. The user wants to move on.
+      }
+    }
+    console.info("[facilitator] reset to intro");
+    wsRef.current?.close();
+    wsRef.current = null;
+    setState(null);
+    setSnapshot(null);
+    setStreamingText("");
+    setCriticalBanner(null);
+    setCost(null);
+    setSetupReply("");
+    setError(null);
   }
 
   async function handleStart() {
@@ -413,24 +424,33 @@ export function Facilitator() {
         busy={busy}
         busyMessage={busyMessage}
       />
-      <div className="mx-auto grid w-full max-w-6xl flex-1 grid-cols-1 gap-4 p-4 md:grid-cols-[260px_1fr]">
+      <div className="mx-auto grid w-full max-w-6xl flex-1 grid-cols-1 gap-4 p-4 md:grid-cols-[280px_1fr]">
         <section className="flex flex-col gap-4">
-          <RoleRoster
+          <RolesPanel
+            sessionId={state.sessionId}
+            creatorToken={state.token}
             roles={snapshot.roles}
-            activeRoleIds={activeRoleIds}
-            selfRoleId={state.creatorRoleId}
+            busy={busy}
+            onRoleAdded={refreshSnapshot}
+            onRoleChanged={refreshSnapshot}
+            onError={setError}
           />
+          {snapshot.current_turn?.active_role_ids?.length ? (
+            <ActiveRolesHint
+              activeRoleIds={activeRoleIds}
+              roles={snapshot.roles}
+            />
+          ) : null}
           <CostMeter cost={cost ?? snapshot.cost} />
           <Controls
             phase={phase}
-            onAddRole={handleAddRole}
             onStart={handleStart}
             onForceAdvance={handleForceAdvance}
             onEnd={handleEnd}
+            onNewSession={handleNewSession}
             onExport={() =>
               window.open(api.exportUrl(state.sessionId, state.token), "_blank", "noopener")
             }
-            roles={snapshot.roles}
             playerCount={playerCount}
             hasFinalizedPlan={Boolean(snapshot.plan)}
             busy={busy}
@@ -559,108 +579,63 @@ function CostMeter({ cost }: { cost: CostSnapshot | null }) {
   );
 }
 
+function ActiveRolesHint({
+  activeRoleIds,
+  roles,
+}: {
+  activeRoleIds: string[];
+  roles: RoleView[];
+}) {
+  const labels = activeRoleIds
+    .map((id) => roles.find((r) => r.id === id)?.label ?? id)
+    .join(", ");
+  return (
+    <div className="rounded border border-emerald-700/40 bg-emerald-950/30 p-2 text-xs text-emerald-200">
+      <p className="uppercase tracking-widest text-emerald-300">Active</p>
+      <p>{labels || "(none)"}</p>
+    </div>
+  );
+}
+
+
 function Controls(props: {
   phase: Phase;
-  roles: RoleView[];
-  onAddRole: (label: string) => Promise<string | undefined>;
   onStart: () => void;
   onForceAdvance: () => void;
   onEnd: () => void;
+  onNewSession: () => void;
   onExport: () => void;
   playerCount: number;
   hasFinalizedPlan: boolean;
   busy: boolean;
 }) {
-  const [newRole, setNewRole] = useState("");
-  const [lastJoinLink, setLastJoinLink] = useState<string | null>(null);
-  const [copyHint, setCopyHint] = useState<string | null>(null);
-
-  async function add(e: FormEvent) {
-    e.preventDefault();
-    if (!newRole.trim()) return;
-    const link = await props.onAddRole(newRole.trim());
-    setNewRole("");
-    if (link) {
-      setLastJoinLink(link);
-      setCopyHint("Copied to clipboard");
-      setTimeout(() => setCopyHint(null), 2000);
-    }
-  }
-
-  async function copyLink() {
-    if (!lastJoinLink) return;
-    try {
-      await navigator.clipboard.writeText(lastJoinLink);
-      setCopyHint("Copied to clipboard");
-      setTimeout(() => setCopyHint(null), 2000);
-    } catch {
-      setCopyHint("Copy failed — select & copy manually");
-    }
-  }
-
   const canStart =
     (props.phase === "ready" || props.phase === "setup") &&
     props.hasFinalizedPlan &&
     props.playerCount >= 2;
 
   return (
-    <div className="flex min-w-0 flex-col gap-3 rounded border border-slate-700 bg-slate-900 p-3 text-sm">
+    <div className="flex min-w-0 flex-col gap-2 rounded border border-slate-700 bg-slate-900 p-3 text-sm">
       {props.phase === "ready" || props.phase === "setup" ? (
-        <form onSubmit={add} className="flex flex-col gap-2">
-          <label className="text-xs uppercase tracking-widest text-slate-400">Add role</label>
-          <div className="flex flex-col gap-2">
-            <input
-              value={newRole}
-              onChange={(e) => setNewRole(e.target.value)}
-              placeholder="IR Lead"
-              className="w-full rounded border border-slate-700 bg-slate-950 p-1 text-sm"
-            />
-            <button
-              type="submit"
-              disabled={props.busy || !newRole.trim()}
-              className="rounded bg-sky-600 px-2 py-1 text-xs font-semibold text-white disabled:opacity-50"
-            >
-              Add role
-            </button>
-          </div>
-          {lastJoinLink ? (
-            <div className="flex flex-col gap-1">
-              <p className="break-all rounded bg-slate-950 p-1 text-xs text-emerald-300">
-                {lastJoinLink}
-              </p>
-              <div className="flex items-center justify-between gap-2">
-                <button
-                  type="button"
-                  onClick={copyLink}
-                  className="rounded border border-slate-700 px-2 py-0.5 text-xs text-slate-200 hover:bg-slate-800"
-                >
-                  Copy join URL
-                </button>
-                {copyHint ? <span className="text-xs text-emerald-300">{copyHint}</span> : null}
-              </div>
-            </div>
-          ) : null}
-          <p className="text-xs text-slate-500">
+        <>
+          <p className="text-xs text-slate-400">
             Players: {props.playerCount} (need ≥ 2 to start)
           </p>
-        </form>
-      ) : null}
-
-      {props.phase === "ready" || props.phase === "setup" ? (
-        <button
-          onClick={props.onStart}
-          disabled={!canStart || props.busy}
-          className="rounded bg-emerald-600 px-2 py-1 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"
-          title={
-            !props.hasFinalizedPlan
-              ? "Finalize the plan first"
-              : props.playerCount < 2
-                ? "Add at least 2 player roles"
-                : ""
-          }
-        >
-          Start session
-        </button>
+          <button
+            onClick={props.onStart}
+            disabled={!canStart || props.busy}
+            className="rounded bg-emerald-600 px-2 py-1 text-sm font-semibold text-white hover:bg-emerald-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-emerald-300 disabled:cursor-not-allowed disabled:opacity-50"
+            title={
+              !props.hasFinalizedPlan
+                ? "Finalize the plan first"
+                : props.playerCount < 2
+                  ? "Add at least 2 player roles"
+                  : ""
+            }
+          >
+            Start session
+          </button>
+        </>
       ) : null}
 
       {props.phase === "play" ? (
@@ -668,14 +643,14 @@ function Controls(props: {
           <button
             onClick={props.onForceAdvance}
             disabled={props.busy}
-            className="rounded border border-amber-500 px-2 py-1 text-sm font-semibold text-amber-200 disabled:opacity-50"
+            className="rounded border border-amber-500 px-2 py-1 text-sm font-semibold text-amber-200 hover:bg-amber-900/30 disabled:opacity-50"
           >
             Force-advance turn
           </button>
           <button
             onClick={props.onEnd}
             disabled={props.busy}
-            className="rounded border border-red-500 px-2 py-1 text-sm font-semibold text-red-300 disabled:opacity-50"
+            className="rounded border border-red-500 px-2 py-1 text-sm font-semibold text-red-300 hover:bg-red-900/30 disabled:opacity-50"
           >
             End session
           </button>
@@ -685,11 +660,20 @@ function Controls(props: {
       {props.phase === "ended" ? (
         <button
           onClick={props.onExport}
-          className="rounded bg-emerald-600 px-2 py-1 text-sm font-semibold text-white"
+          className="rounded bg-emerald-600 px-2 py-1 text-sm font-semibold text-white hover:bg-emerald-500"
         >
           Download AAR
         </button>
       ) : null}
+
+      <button
+        onClick={props.onNewSession}
+        disabled={props.busy}
+        className="mt-1 rounded border border-slate-600 px-2 py-1 text-xs text-slate-300 hover:bg-slate-800 disabled:opacity-50"
+        title="End the current session (if any) and return to the new-session form."
+      >
+        Start a new session
+      </button>
     </div>
   );
 }

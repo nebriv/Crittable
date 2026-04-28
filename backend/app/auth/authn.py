@@ -20,6 +20,7 @@ class JoinTokenPayload(TypedDict):
     session_id: str
     role_id: str
     kind: ParticipantKindLiteral
+    v: int  # role.token_version at mint time; checked on verify
 
 
 class InvalidTokenError(Exception):
@@ -29,7 +30,14 @@ class InvalidTokenError(Exception):
 class Authenticator(Protocol):
     """Mints and verifies role join tokens."""
 
-    def mint(self, *, session_id: str, role_id: str, kind: ParticipantKindLiteral) -> str:
+    def mint(
+        self,
+        *,
+        session_id: str,
+        role_id: str,
+        kind: ParticipantKindLiteral,
+        version: int = 0,
+    ) -> str:
         ...
 
     def verify(self, token: str) -> JoinTokenPayload:
@@ -57,11 +65,19 @@ class HMACAuthenticator:
             signer_kwargs={"digest_method": hashlib.sha256},
         )
 
-    def mint(self, *, session_id: str, role_id: str, kind: ParticipantKindLiteral) -> str:
+    def mint(
+        self,
+        *,
+        session_id: str,
+        role_id: str,
+        kind: ParticipantKindLiteral,
+        version: int = 0,
+    ) -> str:
         payload: JoinTokenPayload = {
             "session_id": session_id,
             "role_id": role_id,
             "kind": kind,
+            "v": int(version),
         }
         return self._serializer.dumps(payload)
 
@@ -77,8 +93,11 @@ class HMACAuthenticator:
                 raise InvalidTokenError(f"token missing field: {key}")
         if data["kind"] not in ("creator", "player", "spectator"):
             raise InvalidTokenError(f"unknown participant kind: {data['kind']}")
+        # Older tokens minted before versioning may not carry ``v`` — treat as 0.
+        version = int(data.get("v", 0))
         return JoinTokenPayload(
             session_id=data["session_id"],
             role_id=data["role_id"],
             kind=data["kind"],
+            v=version,
         )
