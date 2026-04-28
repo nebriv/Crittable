@@ -32,17 +32,17 @@ All config is via environment variables. The full reference lives in [`docs/conf
 
 ## Milestones
 
-This project is tracked by GitHub issues, labelled `phase-1` / `phase-2` / `phase-3`. **Always list the current scope before starting work**:
+Phase grouping is tracked via GitHub **milestones**, not labels. **Always list the current scope before starting work**:
 
 ```
-mcp__github__list_issues   owner=nebriv  repo=ai-tabletop-facilitator  labels=["phase-1"]  state=OPEN
-mcp__github__list_issues   owner=nebriv  repo=ai-tabletop-facilitator  labels=["phase-2"]  state=OPEN
-mcp__github__list_issues   owner=nebriv  repo=ai-tabletop-facilitator  labels=["phase-3"]  state=OPEN
+mcp__github__search_issues  query='repo:nebriv/ai-tabletop-facilitator is:issue is:open milestone:"Phase 1"'
+mcp__github__search_issues  query='repo:nebriv/ai-tabletop-facilitator is:issue is:open milestone:"Phase 2"'
+mcp__github__search_issues  query='repo:nebriv/ai-tabletop-facilitator is:issue is:open milestone:"Phase 3"'
 ```
 
-- **Phase 1 — Architecture & Bootstrap**: devcontainer, Docker, CI, docs, scaffolding. Granular issues (#1–#10).
-- **Phase 2 — MVP**: 9 epics (#11–#19) — split into per-component issues at Phase 2 kickoff.
-- **Phase 3 — Value-add**: 6 epics (#20–#25) — define their own success criteria when picked up.
+- **Phase 1 — Architecture & Bootstrap** (milestone #1): devcontainer, Docker, CI, docs, scaffolding. **Complete** — all 10 issues closed.
+- **Phase 2 — MVP** (milestone #2): 9 epics (#11–#19) — split into per-component issues at Phase 2 kickoff.
+- **Phase 3 — Value-add** (milestone #3): 6 epics (#20–#25) — define their own success criteria when picked up.
 
 ## Sub-agent review protocol
 
