@@ -12,6 +12,7 @@ venv/
 node_modules/
 dist/
 .eslintcache
+*.tsbuildinfo
 
 # Editors / OS
 .vscode/
