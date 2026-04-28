@@ -169,15 +169,13 @@ class ToolDispatcher:
 
         # ------------------ setup ------------------
         if name == "ask_setup_question":
-            outcome.appended_messages.append(
-                Message(
-                    kind=MessageKind.AI_TEXT,
-                    body=str(args.get("question", "")),
-                    turn_id=turn_id,
-                    tool_name=name,
-                    tool_args=args,
-                )
-            )
+            # Setup conversation is kept *separately* from session.messages
+            # (docs/PLAN.md § Setup phase) — it lives in session.setup_notes
+            # and is rendered to the creator via SetupChat. If we appended it
+            # to session.messages it would (a) leak into the play-tier
+            # message history sent to Sonnet (which rejects conversations
+            # ending in role=assistant), and (b) leak setup-only AI prose
+            # into the play transcript shown to non-creator roles.
             session.setup_notes.append(
                 SetupNote(
                     speaker="ai",

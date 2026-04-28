@@ -92,14 +92,9 @@ class TurnDriver:
                 critical_inject_allowed_cb=lambda: True,
             )
             await self._apply_setup_outcome(session, outcome)
-            if outcome.finalized_plan is not None:
-                return session
-            if outcome.proposed_plan is not None:
-                return session
-            # Otherwise the AI asked a question and is yielding — return.
-            if any(
-                m.tool_name == "ask_setup_question" for m in outcome.appended_messages
-            ):
+            # All three setup tools (ask_setup_question / propose / finalize)
+            # set ``had_yielding_call`` — that's our single yield signal.
+            if outcome.had_yielding_call:
                 return session
         return session
 
@@ -374,20 +369,35 @@ def _setup_messages(session: Session) -> list[dict[str, Any]]:
     return msgs
 
 
+_SETUP_TOOL_NAMES = frozenset(
+    {"ask_setup_question", "propose_scenario_plan", "finalize_setup"}
+)
+
+_KICKOFF_USER_MSG = (
+    "Begin the exercise. Open with a brief situation broadcast and yield to "
+    "the appropriate roles."
+)
+
+
 def _play_messages(session: Session) -> list[dict[str, Any]]:
+    """Build the Anthropic ``messages`` array for a play-tier call.
+
+    Invariants enforced here:
+
+    1. Setup-tool messages never appear (they belong in ``setup_notes`` only).
+       This is belt-and-braces: ``dispatch.py`` is the primary gate.
+    2. The list is non-empty.
+    3. The last message is ``role="user"``. Sonnet rejects conversations that
+       end with an assistant turn ("does not support assistant message
+       prefill"). When the cleaned transcript has no entries or trails on an
+       assistant turn we append a kickoff prompt as the user message.
+    """
+
     msgs: list[dict[str, Any]] = []
-    if not session.messages:
-        msgs.append(
-            {
-                "role": "user",
-                "content": (
-                    "Begin the exercise. Open with a brief situation broadcast and "
-                    "yield to the appropriate roles."
-                ),
-            }
-        )
-        return msgs
+
     for m in session.messages:
+        if m.tool_name in _SETUP_TOOL_NAMES:
+            continue  # setup conversation lives in setup_notes
         if m.kind == MessageKind.PLAYER:
             label = ""
             role = session.role_by_id(m.role_id) if m.role_id else None
@@ -407,6 +417,9 @@ def _play_messages(session: Session) -> list[dict[str, Any]]:
             msgs.append({"role": "user", "content": f"[system] {m.body}"})
         elif m.kind == MessageKind.CRITICAL_INJECT:
             msgs.append({"role": "assistant", "content": m.body})
+
+    if not msgs or msgs[-1]["role"] != "user":
+        msgs.append({"role": "user", "content": _KICKOFF_USER_MSG})
     return msgs
 
 

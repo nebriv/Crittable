@@ -630,6 +630,109 @@ def test_ws_rejects_session_mismatch(client: TestClient) -> None:
     assert exc_info.value.code == 4401
 
 
+def test_play_after_auto_greet_then_skip_does_not_400(client: TestClient) -> None:
+    """Regression for production bug observed via ``docker compose up``.
+
+    Flow:
+      1. POST /api/sessions auto-runs a setup turn — the AI may emit several
+         ``ask_setup_question`` tool calls in one turn.
+      2. Operator clicks "Skip setup (dev)" → POST /api/sessions/.../setup/skip
+         → state moves to READY without clearing the setup-era AI messages.
+      3. POST /api/sessions/.../start kicks the play turn.
+      4. ``_play_messages`` previously emitted those setup-era AI messages as
+         ``role=assistant``, so the conversation ended on assistant. Sonnet
+         rejected the request with ``invalid_request_error: This model does
+         not support assistant message prefill``.
+
+    Fix lives in two places:
+      a. ``dispatch.py`` no longer pushes ``ask_setup_question`` content into
+         ``session.messages`` (it stays in ``setup_notes`` only).
+      b. ``turn_driver._play_messages`` now filters setup-tool messages and
+         guarantees the message list ends with ``role=user``.
+    """
+
+    from tests.mock_anthropic import MockAnthropic, _ContentBlock, _Response
+
+    # Custom mock: the SETUP turn emits SIX ask_setup_question tool calls in
+    # one response — exactly what was observed in production. The PLAY turn
+    # then yields cleanly.
+    setup_burst = _Response(
+        content=[
+            _ContentBlock(
+                type="tool_use",
+                name="ask_setup_question",
+                input={"topic": f"q{i}", "question": f"What is q{i}?"},
+                id=f"tu_q{i}",
+            )
+            for i in range(6)
+        ],
+        stop_reason="tool_use",
+    )
+    play_yield = _Response(
+        content=[
+            _ContentBlock(type="text", text="Detection alarms firing."),
+            _ContentBlock(
+                type="tool_use",
+                name="set_active_roles",
+                input={"role_ids": []},  # filled in below
+                id="tu_set",
+            ),
+        ],
+        stop_reason="tool_use",
+    )
+
+    # Pre-seat one for the role-id we'll fill the script with, then drop the
+    # session — we recreate after the mock is installed so the auto-greet
+    # actually goes through the scripted SETUP burst.
+    seats = _create_and_seat(client, role_count=2)
+    play_yield.content[1].input = {"role_ids": [seats["role_ids"][1]]}
+
+    client.app.state.llm.set_transport(
+        MockAnthropic({"setup": [setup_burst], "play": [play_yield]}).messages
+    )
+
+    # Re-create the session AFTER mock is installed so the auto-kicked setup
+    # turn uses our scripted SETUP burst.
+    resp = client.post(
+        "/api/sessions",
+        json={
+            "scenario_prompt": "Ransomware via vendor portal at a mid-size bank",
+            "creator_label": "CISO",
+            "creator_display_name": "Alex",
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    new_sid = resp.json()["session_id"]
+    new_cr = resp.json()["creator_token"]
+
+    # Add a player so we can start the session.
+    r = client.post(
+        f"/api/sessions/{new_sid}/roles?token={new_cr}",
+        json={"label": "SOC Analyst", "display_name": "Sam"},
+    )
+    assert r.status_code == 200
+    play_yield.content[1].input = {"role_ids": [r.json()["role_id"]]}
+
+    r = client.post(f"/api/sessions/{new_sid}/setup/skip?token={new_cr}")
+    assert r.status_code == 200, r.text
+
+    # The bug: this would 500 with anthropic.BadRequestError.
+    r = client.post(f"/api/sessions/{new_sid}/start?token={new_cr}")
+    assert r.status_code == 200, r.text
+
+    # Confirm the play transcript doesn't carry any setup-tool messages.
+    snap = client.get(
+        f"/api/sessions/{new_sid}?token={new_cr}"
+    ).json()
+    leaked = [
+        m
+        for m in snap["messages"]
+        if m.get("tool_name")
+        in ("ask_setup_question", "propose_scenario_plan", "finalize_setup")
+    ]
+    assert not leaked, f"setup-tool messages leaked into play transcript: {leaked}"
+
+
 def test_setup_notes_visible_only_to_creator(client: TestClient) -> None:
     seats = _create_and_seat(client, role_count=2)
     _install_mock_and_drive(
