@@ -66,14 +66,18 @@ that still tries XML.
    require JSON in plain language and show a positive example.
 4. **Hard reject with a useful error.**
    `_reject_if_xml_emission` in
-   [`dispatch.py`](../backend/app/llm/dispatch.py) detects markup
-   tokens (`<parameter`, `</parameter>`, `<![CDATA[`, `<item>`,
-   `</item>`, `<invoke>`, `</invoke>`) anywhere in the JSON values
-   and raises a `_DispatchError` whose message names the offending
-   field, restates the canonical JSON shape, and shows an inline
-   JSON example. The dispatcher returns `is_error=true` on the
-   `tool_result`; the strict-retry path replays it into the next
-   call so the model self-corrects rather than looping blind.
+   [`dispatch.py`](../backend/app/llm/dispatch.py) walks the tool
+   input recursively (top-level fields, nested dicts, list elements
+   — including nested fields like `injects[].summary` and
+   `narrative_arc[].label`) and detects markup tokens (`<parameter`,
+   `</parameter>`, `<![CDATA[`, `<item>`, `</item>`, `<invoke>`,
+   `</invoke>`). On match it raises a `_DispatchError` whose message
+   names every offending field path (e.g.
+   `injects[0].summary`), restates the canonical JSON shape, and
+   shows an inline JSON example. The dispatcher returns
+   `is_error=true` on the `tool_result`; the strict-retry path
+   replays it into the next call so the model self-corrects rather
+   than looping blind.
 
 If you see `tool_use_rejected` events with `<parameter` /
 `<item>` substrings in `input_value`, the model is still emitting

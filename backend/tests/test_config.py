@@ -102,10 +102,11 @@ def test_max_tokens_for_uses_tier_defaults(monkeypatch) -> None:
         monkeypatch.delenv(key, raising=False)
     s = Settings()
     assert s.max_tokens_for("play") == 1024
-    # Setup tier needs comfortable headroom: tight budgets cause Haiku to
-    # truncate the plan body and fall back to legacy XML tool-call
-    # format mid-output, which the dispatcher then has to recover from.
-    # See ``backend/app/llm/dispatch.py::_recover_xml_to_plan``.
+    # Setup tier needs comfortable headroom: tight budgets cause Haiku
+    # to truncate the plan body and fall back to legacy XML tool-call
+    # format mid-output, which the dispatcher then hard-rejects (see
+    # ``backend/app/llm/dispatch.py::_reject_if_xml_emission``). The
+    # 12288 default is sized so a full JSON plan fits in one call.
     assert s.max_tokens_for("setup") == 12288
     assert s.max_tokens_for("aar") == 4096
     assert s.max_tokens_for("guardrail") == 12

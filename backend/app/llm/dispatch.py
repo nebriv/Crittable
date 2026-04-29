@@ -762,6 +762,38 @@ def _has_xml_marker(value: Any) -> bool:
     return any(marker in lowered for marker in _XML_EMISSION_MARKERS)
 
 
+def _walk_for_xml_markers(value: Any, *, path: str = "") -> list[str]:
+    """Walk ``value`` recursively and return JSON-pointer-ish paths
+    of every string leaf that carries an XML emission marker.
+
+    Path syntax: top-level keys are bare (``key_objectives``); list
+    indices use bracket notation (``injects[0].summary``); nested
+    dict keys join with a dot (``narrative_arc[1].label``). Empty path
+    means the value itself is a marker-bearing string.
+
+    Examples:
+        ``_walk_for_xml_markers({"injects": [{"summary": "<item>x</item>"}]})``
+        -> ``["injects[0].summary"]``
+    """
+
+    hits: list[str] = []
+    if isinstance(value, str):
+        if _has_xml_marker(value):
+            hits.append(path or "<root>")
+        return hits
+    if isinstance(value, dict):
+        for k, v in value.items():
+            child_path = f"{path}.{k}" if path else str(k)
+            hits.extend(_walk_for_xml_markers(v, path=child_path))
+        return hits
+    if isinstance(value, list):
+        for i, v in enumerate(value):
+            child_path = f"{path}[{i}]"
+            hits.extend(_walk_for_xml_markers(v, path=child_path))
+        return hits
+    return hits
+
+
 def _reject_if_xml_emission(args: dict[str, Any], *, tool_name: str) -> None:
     """Hard-reject tool calls whose JSON input contains XML
     function-call markup.
@@ -773,27 +805,35 @@ def _reject_if_xml_emission(args: dict[str, Any], *, tool_name: str) -> None:
     instead surface a precise, instructive rejection so the next
     turn carries enough context for the model to self-correct.
 
+    The detector walks the input recursively so XML inside nested
+    objects (e.g. ``injects[0].summary`` or
+    ``narrative_arc[1].label``) is caught alongside top-level
+    fields. Reported paths name the exact offending leaf so the
+    model knows where to look.
+
     The error message is fed back as ``is_error=True`` on the
     ``tool_result``. The strict-retry path in ``turn_driver.py`` then
     replays it into the next call so the model sees exactly what was
     wrong and how to fix it.
     """
 
-    offending: list[str] = [k for k, v in args.items() if _has_xml_marker(v)]
+    offending = _walk_for_xml_markers(args)
     if not offending:
         return
     raise _DispatchError(
-        f"{tool_name} input contains XML function-call markup in "
-        f"field(s) {offending}. The only accepted format is JSON "
-        "matching the tool's input_schema. Re-emit the call with: "
-        '"key_objectives": ["obj1", "obj2", "obj3"], '
+        f"{tool_name} input contains XML function-call markup at "
+        f"field path(s) {offending}. The only accepted format is "
+        "JSON matching the tool's input_schema. Re-emit the call "
+        'with: "key_objectives": ["obj1", "obj2", "obj3"], '
         '"narrative_arc": [{"beat": 1, "label": "Detection & '
         'triage", "expected_actors": ["CISO", "IR Lead"]}, ...], '
         '"injects": [{"trigger": "after beat 1", "type": "event", '
         '"summary": "..."}, ...]. Do NOT use <parameter '
         'name="...">...</parameter>, <![CDATA[...]]>, or '
-        "<item>...</item> markup — those are the legacy XML "
-        "function-call format and are not accepted here."
+        "<item>...</item> markup anywhere in the call (including "
+        "inside nested object fields like narrative_arc[].label or "
+        "injects[].summary) — those are the legacy XML function-"
+        "call format and are not accepted here."
     )
 
 

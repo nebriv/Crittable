@@ -21,6 +21,7 @@ from app.llm.dispatch import (
     _DispatchError,
     _has_xml_marker,
     _reject_if_xml_emission,
+    _walk_for_xml_markers,
 )
 
 # ------------------------ XML-detection helper ----------------------
@@ -131,6 +132,99 @@ def test_clean_json_input_does_not_raise() -> None:
         "guardrails": ["No real CVEs"],
     }
     _reject_if_xml_emission(args, tool_name="propose_scenario_plan")  # no raise
+
+
+# ---------------- recursive (nested) XML detection -----------------
+
+def test_reject_when_xml_nested_in_inject_summary() -> None:
+    """Regression for Copilot review: pre-fix the detector only
+    scanned top-level string values, so XML emitted inside
+    ``injects[0].summary`` (or any other nested string leaf) slipped
+    through and was accepted as a valid plan. The detector now walks
+    the input recursively."""
+
+    args = {
+        "title": "Plan",
+        "key_objectives": ["a", "b", "c"],
+        "narrative_arc": [
+            {"beat": 1, "label": "Detection", "expected_actors": ["CISO"]}
+        ],
+        "injects": [
+            {
+                "trigger": "after beat 1",
+                "type": "event",
+                "summary": "<![CDATA[ second host hit ]]>",
+            }
+        ],
+    }
+    with pytest.raises(_DispatchError) as ei:
+        _reject_if_xml_emission(args, tool_name="propose_scenario_plan")
+    msg = str(ei.value)
+    # Path must name the exact offending leaf, not just the top-level
+    # field, so the model can fix the right place on retry.
+    assert "injects[0].summary" in msg
+
+
+def test_reject_when_xml_nested_in_narrative_arc_label() -> None:
+    args = {
+        "title": "Plan",
+        "key_objectives": ["a", "b", "c"],
+        "narrative_arc": [
+            {"beat": 1, "label": "Detection", "expected_actors": ["CISO"]},
+            {
+                "beat": 2,
+                "label": "<parameter name='label'>Containment</parameter>",
+                "expected_actors": ["IR Lead"],
+            },
+        ],
+        "injects": [
+            {"trigger": "after beat 1", "type": "event", "summary": "x"}
+        ],
+    }
+    with pytest.raises(_DispatchError) as ei:
+        _reject_if_xml_emission(args, tool_name="propose_scenario_plan")
+    assert "narrative_arc[1].label" in str(ei.value)
+
+
+def test_walk_for_xml_markers_reports_all_paths() -> None:
+    """When XML appears at multiple nested depths, every offending
+    path must be reported so the model fixes them all in one
+    re-emit."""
+
+    args = {
+        "title": "<item>x</item>",
+        "key_objectives": ["clean", "<![CDATA[ dirty ]]>"],
+        "narrative_arc": [
+            {
+                "beat": 1,
+                "label": "Detection",
+                "expected_actors": ["CISO", "<parameter name='r'>x</parameter>"],
+            }
+        ],
+        "injects": [
+            {"trigger": "ok", "type": "event", "summary": "</invoke>"}
+        ],
+    }
+    paths = _walk_for_xml_markers(args)
+    assert "title" in paths
+    assert "key_objectives[1]" in paths
+    assert "narrative_arc[0].expected_actors[1]" in paths
+    assert "injects[0].summary" in paths
+    assert len(paths) == 4
+
+
+def test_walk_for_xml_markers_clean_input_is_empty() -> None:
+    args = {
+        "title": "Plan",
+        "key_objectives": ["a", "b"],
+        "narrative_arc": [
+            {"beat": 1, "label": "Detection", "expected_actors": ["CISO"]}
+        ],
+        "injects": [
+            {"trigger": "after beat 1", "type": "event", "summary": "x"}
+        ],
+    }
+    assert _walk_for_xml_markers(args) == []
 
 
 def test_string_value_with_innocent_angle_brackets_passes() -> None:
