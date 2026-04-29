@@ -98,7 +98,7 @@ def test_max_tokens_for_uses_tier_defaults(monkeypatch) -> None:
         monkeypatch.delenv(key, raising=False)
     s = Settings()
     assert s.max_tokens_for("play") == 1024
-    assert s.max_tokens_for("setup") == 1024
+    assert s.max_tokens_for("setup") == 4096
     assert s.max_tokens_for("aar") == 4096
     assert s.max_tokens_for("guardrail") == 12
 
@@ -110,7 +110,7 @@ def test_max_tokens_env_override_wins(monkeypatch) -> None:
     assert s.max_tokens_for("play") == 2048
     assert s.max_tokens_for("guardrail") == 16
     # Untouched tiers keep their defaults.
-    assert s.max_tokens_for("setup") == 1024
+    assert s.max_tokens_for("setup") == 4096
     assert s.max_tokens_for("aar") == 4096
 
 

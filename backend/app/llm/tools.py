@@ -13,6 +13,35 @@ from __future__ import annotations
 
 from typing import Any
 
+# Nested item schemas for the scenario-plan tool calls. Without these the
+# model treats ``narrative_arc`` / ``injects`` as opaque arrays and
+# improvises the per-item shape — observed failure mode is the model
+# emitting ``<parameter name="beat">1`` / ``<item>...</item>`` XML soup
+# as raw strings, which then fails Pydantic validation. Mirrors
+# ``ScenarioBeat`` / ``ScenarioInject`` in ``sessions/models.py``.
+_NARRATIVE_BEAT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "beat": {"type": "integer"},
+        "label": {"type": "string"},
+        "expected_actors": {
+            "type": "array",
+            "items": {"type": "string"},
+        },
+    },
+    "required": ["beat", "label", "expected_actors"],
+}
+
+_SCENARIO_INJECT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "trigger": {"type": "string"},
+        "type": {"type": "string", "enum": ["event", "critical"]},
+        "summary": {"type": "string"},
+    },
+    "required": ["trigger", "type", "summary"],
+}
+
 PLAY_TOOLS: list[dict[str, Any]] = [
     {
         "name": "address_role",
@@ -261,8 +290,16 @@ SETUP_TOOLS: list[dict[str, Any]] = [
                     "items": {"type": "string"},
                     "minItems": 1,
                 },
-                "narrative_arc": {"type": "array", "minItems": 1},
-                "injects": {"type": "array", "minItems": 1},
+                "narrative_arc": {
+                    "type": "array",
+                    "items": _NARRATIVE_BEAT_SCHEMA,
+                    "minItems": 1,
+                },
+                "injects": {
+                    "type": "array",
+                    "items": _SCENARIO_INJECT_SCHEMA,
+                    "minItems": 1,
+                },
                 "guardrails": {"type": "array", "items": {"type": "string"}},
                 "success_criteria": {"type": "array", "items": {"type": "string"}},
                 "out_of_scope": {"type": "array", "items": {"type": "string"}},
@@ -293,8 +330,16 @@ SETUP_TOOLS: list[dict[str, Any]] = [
                     "items": {"type": "string"},
                     "minItems": 1,
                 },
-                "narrative_arc": {"type": "array", "minItems": 1},
-                "injects": {"type": "array", "minItems": 1},
+                "narrative_arc": {
+                    "type": "array",
+                    "items": _NARRATIVE_BEAT_SCHEMA,
+                    "minItems": 1,
+                },
+                "injects": {
+                    "type": "array",
+                    "items": _SCENARIO_INJECT_SCHEMA,
+                    "minItems": 1,
+                },
                 "guardrails": {"type": "array", "items": {"type": "string"}},
                 "success_criteria": {"type": "array", "items": {"type": "string"}},
                 "out_of_scope": {"type": "array", "items": {"type": "string"}},
