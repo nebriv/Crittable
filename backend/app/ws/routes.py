@@ -26,6 +26,19 @@ CLOSE_FORBIDDEN_ORIGIN = 4403
 CLOSE_HEARTBEAT_TIMEOUT = 4408
 
 
+def _looks_like_question(content: str) -> bool:
+    """Heuristic: a player message intended as a direct question to the
+    facilitator. Trailing ``?`` after stripping whitespace is the
+    primary signal. Skips very short messages so casual ``what?`` or
+    ``???`` interjections don't trigger a full LLM call.
+    """
+
+    stripped = content.strip()
+    if len(stripped) < 8:
+        return False
+    return stripped.endswith("?")
+
+
 def register_ws_routes(app: FastAPI) -> None:
     @app.websocket("/ws/sessions/{session_id}")
     async def session_socket(websocket: WebSocket, session_id: str) -> None:
@@ -257,6 +270,21 @@ async def _client_pump(
                     turn = session.current_turn
                     if turn is not None:
                         await TurnDriver(manager=manager).run_play_turn(
+                            session=session, turn=turn
+                        )
+                elif _looks_like_question(content):
+                    # Side-channel facilitator response: when a player asks
+                    # a direct question (heuristic: trailing ``?``) and the
+                    # turn is NOT yet ready to advance, fire a constrained
+                    # AI mini-turn that answers the question without
+                    # yielding. Pre-fix the asking player had to wait for
+                    # every other active role to also submit before the AI
+                    # would say anything, which felt like the AI was
+                    # ignoring direct questions.
+                    session = await manager.get_session(session_id)
+                    turn = session.current_turn
+                    if turn is not None:
+                        await TurnDriver(manager=manager).run_interject(
                             session=session, turn=turn
                         )
             elif event_type == "request_force_advance":

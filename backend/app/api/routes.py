@@ -418,6 +418,18 @@ def register_api_routes(app: FastAPI) -> None:
             await TurnDriver(manager=manager).run_play_turn(
                 session=session, turn=session.current_turn
             )
+        elif (
+            session.current_turn is not None
+            and session.state == SessionState.AWAITING_PLAYERS
+            and _looks_like_question(content[:2000])
+        ):
+            # Mirror the WS submit path: when the proxy submission is a
+            # direct question and the turn isn't ready to advance, fire
+            # the constrained AI interject so the asking role gets an
+            # answer without waiting for every other active role.
+            await TurnDriver(manager=manager).run_interject(
+                session=session, turn=session.current_turn
+            )
         return {"ok": True}
 
     @router.post("/sessions/{session_id}/admin/proxy-submit-pending")
@@ -883,6 +895,20 @@ def register_api_routes(app: FastAPI) -> None:
         }
 
     app.include_router(router)
+
+
+def _looks_like_question(content: str) -> bool:
+    """Heuristic for "this player just asked the facilitator something" —
+    used to decide whether to fire a side-channel AI interject after a
+    submission. Mirrors the helper in ``ws/routes.py`` (kept duplicated
+    rather than shared because the import cycle is messy and the
+    function is 4 lines).
+    """
+
+    stripped = content.strip()
+    if len(stripped) < 8:
+        return False
+    return stripped.endswith("?")
 
 
 def _default_dev_plan(scenario_prompt: str) -> ScenarioPlan:

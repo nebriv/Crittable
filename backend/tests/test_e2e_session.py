@@ -2158,3 +2158,99 @@ def test_play_system_prompt_includes_open_followups() -> None:
     session.role_followups[0].status = "done"
     blocks3 = build_play_system_blocks(session, registry=registry)
     assert "Confluence findings?" not in blocks3[0]["text"]
+
+
+def test_ai_auto_interjects_on_direct_question(client: TestClient) -> None:
+    """When a player asks a direct question (heuristic: trailing ``?``)
+    and the turn isn't ready to advance, the AI fires a side-channel
+    response that:
+      * appends a broadcast / address_role chat bubble
+      * does NOT change ``submitted_role_ids`` (asking player's
+        submission already counted as their turn submission)
+      * does NOT advance the turn (other active roles still owe)
+      * does NOT yield via set_active_roles (interject is constrained)
+    """
+
+    import asyncio
+
+    from app.sessions.models import SessionState, Turn
+    from tests.mock_anthropic import MockAnthropic, _ContentBlock, _Response
+
+    seats = _create_and_seat(client, role_count=2)
+    sid = seats["session_id"]
+    cr = seats["creator_token"]
+    other_role_id = seats["role_ids"][1]
+
+    interject = _Response(
+        content=[
+            _ContentBlock(
+                type="tool_use",
+                name="broadcast",
+                input={"message": "Open items: revoke vendor account, finish .lockbit sweep."},
+                id="tu_b",
+            ),
+        ],
+        stop_reason="tool_use",
+    )
+    mock = MockAnthropic({"play": [interject]})
+    client.app.state.llm.set_transport(mock.messages)
+
+    client.post(f"/api/sessions/{sid}/setup/skip?token={cr}")
+
+    # Open an awaiting turn manually so we can test the interject path
+    # without going through a full setup-then-start cycle.
+    async def _open_awaiting() -> None:
+        manager = client.app.state.manager
+        session = await manager.get_session(sid)
+        turn = Turn(
+            index=0,
+            active_role_ids=seats["role_ids"],
+            status="awaiting",
+        )
+        session.turns.append(turn)
+        session.state = SessionState.AWAITING_PLAYERS
+        await manager._repo.save(session)
+
+    asyncio.run(_open_awaiting())
+
+    # Creator proxy-submits a question on behalf of the other role
+    # (cleaner than threading a real WS in tests).
+    r = client.post(
+        f"/api/sessions/{sid}/admin/proxy-respond?token={cr}",
+        json={
+            "as_role_id": other_role_id,
+            "content": "What open items do we have right now?",
+        },
+    )
+    assert r.status_code == 200, r.text
+
+    snap = client.get(f"/api/sessions/{sid}?token={cr}").json()
+    # State stays AWAITING_PLAYERS — the interject does NOT advance.
+    assert snap["state"] == "AWAITING_PLAYERS"
+    # Asking role's submission counted as a turn submission.
+    assert other_role_id in snap["current_turn"]["submitted_role_ids"]
+    # The other (creator) role has NOT submitted, so the turn is still
+    # waiting on them.
+    assert seats["creator_role_id"] not in snap["current_turn"]["submitted_role_ids"]
+    # The AI's interject broadcast is in the transcript.
+    ai_msgs = [m for m in snap["messages"] if m.get("tool_name") == "broadcast"]
+    assert ai_msgs, snap["messages"]
+    assert "Open items" in ai_msgs[-1]["body"]
+
+
+def test_interject_skipped_for_short_or_non_question(client: TestClient) -> None:
+    """``_looks_like_question`` filters out very short messages and
+    non-question text so trivial submissions don't burn an LLM call."""
+
+    from app.api.routes import _looks_like_question as api_looks
+    from app.ws.routes import _looks_like_question as ws_looks
+
+    for fn in (api_looks, ws_looks):
+        assert fn("What is our exposure?") is True
+        assert fn("Did the sweep complete?") is True
+        # Too short — common short reactions like "what?", "huh?"
+        assert fn("?") is False
+        assert fn("what?") is False
+        # Doesn't end with ?
+        assert fn("We are containing now.") is False
+        assert fn("Here's a question mark? in the middle.") is False

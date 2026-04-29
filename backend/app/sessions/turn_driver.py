@@ -201,6 +201,87 @@ class TurnDriver:
         )
         return session
 
+    async def run_interject(self, *, session: Session, turn: Turn) -> Session:
+        """Side-channel AI response that does NOT advance the turn.
+
+        Triggered when a player asks the facilitator a direct question
+        mid-turn (heuristic: trailing ``?``). The AI is restricted to
+        ``broadcast`` / ``address_role`` / ``mark_timeline_point``, with
+        ``tool_choice={"type":"any"}`` forcing at least one call.
+        ``set_active_roles`` and ``end_session`` are deliberately
+        excluded — the asking player's submission still counts toward
+        the active turn and the other roles continue to owe their own
+        responses; the interject just appends the AI's answer to the
+        chat. State stays ``AWAITING_PLAYERS`` throughout.
+
+        Pre-fix the operator had to either wait for every active role
+        to submit (so the AI could process the full batch) or hit
+        force-advance (which skipped the other roles entirely). Neither
+        was right when the question was simple ("what open items do we
+        have?") and the operator just wanted the AI to answer inline.
+        """
+
+        from ..llm.prompts import INTERJECT_NOTE
+
+        dispatcher = self._manager.dispatcher()
+        registry = self._manager.registry()
+        _logger.info(
+            "interject_start",
+            session_id=session.id,
+            turn_index=turn.index,
+        )
+
+        messages = _play_messages(session, strict=False)
+        system_blocks = build_play_system_blocks(session, registry=registry)
+        system_blocks.append({"type": "text", "text": INTERJECT_NOTE})
+
+        # Narrow tools to non-yielding narration only. ``set_active_roles``
+        # / ``end_session`` are the two yielding/terminal calls; excluding
+        # them guarantees the interject can't accidentally advance the
+        # turn or end the session.
+        allowed = {"broadcast", "address_role", "mark_timeline_point"}
+        tools = [t for t in PLAY_TOOLS if t["name"] in allowed]
+        tool_choice: dict[str, Any] = {"type": "any"}
+
+        result = await self._streamed_play_call(
+            session=session,
+            turn=turn,
+            tier="play",
+            system_blocks=system_blocks,
+            messages=messages,
+            tools=tools,
+            tool_choice=tool_choice,
+        )
+        await self._apply_cost(session.id, result)
+
+        tool_uses = _tool_uses(result)
+        outcome = await dispatcher.dispatch(
+            session=session,
+            tool_uses=tool_uses,
+            turn_id=turn.id,
+            critical_inject_allowed_cb=lambda: critical_inject_allowed(
+                session,
+                max_per_5_turns=self._manager.settings().max_critical_injects_per_5_turns,
+            ),
+        )
+        # Persist appended messages but do NOT touch turn state — the
+        # interject is purely additive content.
+        for msg in outcome.appended_messages:
+            session.messages.append(msg)
+            await self._manager.connections().broadcast(
+                session.id,
+                {
+                    "type": "message_complete",
+                    "kind": msg.kind.value,
+                    "body": msg.body,
+                    "tool_name": msg.tool_name,
+                    "tool_args": msg.tool_args,
+                    "turn_id": turn.id,
+                },
+            )
+        await self._manager._repo.save(session)
+        return session
+
     # ------------------------------------------------- internals
     async def _streamed_play_call(
         self,

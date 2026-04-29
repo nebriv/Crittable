@@ -63,6 +63,14 @@ _TOOL_USE_PROTOCOL = (
     "Every play-phase turn MUST end with `set_active_roles` (yield to one or "
     "more roles) or `end_session` (wrap the exercise). Free-form prose without "
     "one of those tool calls is invalid output and will be retried.\n\n"
+    "**Answer player questions first.** Scan the latest 1–3 player messages "
+    "before composing your turn. If a player asked a direct question of you "
+    "(the facilitator) — e.g. \"what open items do we have?\", \"is X "
+    "contained?\", \"can we lift containment?\" — your turn's first "
+    "``broadcast`` or ``address_role`` MUST answer that question concretely "
+    "before introducing any new injects or beats. Don't push new content "
+    "over an unanswered direct ask; players read it as the AI ignoring "
+    "them.\n\n"
     "**Make sure the active roles know what to do.** Use judgment: most "
     "turns should include a ``broadcast`` or ``address_role`` with the "
     "next concrete question or task, but sometimes letting players sit "
@@ -157,6 +165,27 @@ _AAR_SYSTEM = (
     "out both gaps and strengths), and grounded (every score has a one-sentence "
     "rationale tied to a moment in the transcript)."
 )
+
+INTERJECT_NOTE = (
+    "INTERJECT MODE — a player just asked you a direct question mid-turn. "
+    "Your job for THIS response only:\n"
+    "  * Answer their question concisely (1–4 sentences) using ``broadcast`` "
+    "or ``address_role``.\n"
+    "  * If pinning the moment is genuinely useful you may ALSO call "
+    "``mark_timeline_point`` (sparingly).\n"
+    "  * DO NOT call ``set_active_roles`` (the turn is NOT yielding — the "
+    "asking player has already submitted, the others are still expected "
+    "to respond on their own time).\n"
+    "  * DO NOT call ``end_session``, ``inject_event``, or "
+    "``inject_critical_event``.\n"
+    "  * DO NOT introduce a new beat — answer the question and stop. The "
+    "next normal play turn (when all active roles have submitted) will "
+    "drive the beat forward.\n"
+    "Look at the most recent player message to find the question; if "
+    "multiple players spoke, prioritize the one whose message ends with "
+    "``?`` or otherwise reads as a direct facilitator-question."
+)
+
 
 _GUARDRAIL_CLASSIFIER = (
     "You are an input classifier for a cybersecurity tabletop exercise. "
