@@ -276,6 +276,15 @@ def register_api_routes(app: FastAPI) -> None:
                 if is_creator
                 else None
             ),
+            # AI-emitted reasoning rationales (issue #55). Creator-only —
+            # exposing the AI's debug rationale to player roles would
+            # spoil narrative beats. Each entry: {id, ts, turn_index,
+            # turn_id, rationale}.
+            "decision_log": (
+                [e.model_dump(mode="json") for e in session.decision_log]
+                if is_creator
+                else None
+            ),
         }
 
     @router.post("/sessions/{session_id}/start")
@@ -726,10 +735,22 @@ def register_api_routes(app: FastAPI) -> None:
                 headers={"X-AAR-Status": session.aar_status},
             )
 
+        # Creator-only sections (the AI decision rationale appendix) are
+        # stripped before the markdown is handed to non-creator roles.
+        # See ``app/llm/export.py::strip_creator_only`` and issue #55.
+        from ..llm.export import strip_creator_only
+
+        is_creator = token["role_id"] == session.creator_role_id
+        body = (
+            session.aar_markdown
+            if is_creator
+            else strip_creator_only(session.aar_markdown)
+        )
+
         filename_slug = (session.plan.title if session.plan else "exercise")
         filename_slug = "-".join(filename_slug.lower().split())[:40] or "exercise"
         return PlainTextResponse(
-            content=session.aar_markdown,
+            content=body,
             media_type="text/markdown",
             headers={
                 "Content-Disposition": f'attachment; filename="{filename_slug}-aar.md"',

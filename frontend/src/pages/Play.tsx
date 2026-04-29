@@ -14,6 +14,16 @@ interface Props {
 
 const DISPLAY_NAME_KEY = "atf-display-name";
 
+// Receiver-side typing config. ``TYPING_VISIBLE_MS`` is how long an
+// indicator survives after the most recent ``typing_start`` arrival
+// before the cutoff sweep evicts it. ``TYPING_FADE_HEAD_START_MS`` is
+// the head start applied when ``typing_stop`` arrives — i.e. how long
+// we keep the chip visible after the sender goes quiet. Together they
+// keep the indicator on screen for ~3 seconds of actual conversation
+// and prevent the on/off flash reported in issue #53.
+const TYPING_VISIBLE_MS = 5000;
+const TYPING_FADE_HEAD_START_MS = TYPING_VISIBLE_MS - 1500;
+
 export function Play({ sessionId, token }: Props) {
   const [displayName, setDisplayName] = useState<string | null>(
     () => window.localStorage.getItem(`${DISPLAY_NAME_KEY}:${sessionId}`),
@@ -35,7 +45,13 @@ export function Play({ sessionId, token }: Props) {
   // a red banner that reads as "your action failed".
   const [notice, setNotice] = useState<string | null>(null);
   const [typing, setTyping] = useState<Record<string, number>>({});
+  // Set of role_ids whose tabs are currently connected via WebSocket.
+  // Server-driven via ``presence`` / ``presence_snapshot`` events; see
+  // issue #52. Used to render the green online dot in RoleRoster so the
+  // creator can tell at a glance who has actually opened their join link.
+  const [presence, setPresence] = useState<Set<string>>(() => new Set());
   const wsRef = useRef<WsClient | null>(null);
+  const scrollRegionRef = useRef<HTMLDivElement | null>(null);
 
   // Determine self by inspecting snapshot.roles and matching the role with the
   // missing display_name (server doesn't echo our token; we use the snapshot
@@ -102,11 +118,31 @@ export function Play({ sessionId, token }: Props) {
         console.info("[play] submission truncated", evt);
         setNotice(evt.message);
         break;
+      case "presence":
+        setPresence((prev) => {
+          const next = new Set(prev);
+          if (evt.active) next.add(evt.role_id);
+          else next.delete(evt.role_id);
+          return next;
+        });
+        break;
+      case "presence_snapshot":
+        setPresence(new Set(evt.role_ids));
+        break;
       case "typing":
         setTyping((prev) => {
           const next = { ...prev };
-          if (evt.typing) next[evt.role_id] = Date.now();
-          else delete next[evt.role_id];
+          if (evt.typing) {
+            // Refresh "last seen typing" so the indicator keeps living.
+            next[evt.role_id] = Date.now();
+          } else if (evt.role_id in next) {
+            // Don't yank the indicator the instant we hear ``typing_stop``
+            // — the sender already debounces for 3.5s of idle, so this
+            // event is "done for now". Schedule a graceful fade by setting
+            // last-seen back so the cutoff sweep removes it ~1.5s from now,
+            // avoiding the flash reported in #53.
+            next[evt.role_id] = Date.now() - TYPING_FADE_HEAD_START_MS;
+          }
           return next;
         });
         break;
@@ -128,11 +164,25 @@ export function Play({ sessionId, token }: Props) {
     }
   }
 
+  // Auto-scroll the chat region to the bottom when new messages or
+  // streaming chunks arrive. If the player has scrolled up to re-read
+  // an earlier beat (>120px from bottom) we leave their position alone
+  // so the chat doesn't yank under them mid-read.
+  const messageCount = snapshot?.messages.length ?? 0;
+  useEffect(() => {
+    const el = scrollRegionRef.current;
+    if (!el) return;
+    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+    if (distanceFromBottom < 120) {
+      el.scrollTop = el.scrollHeight;
+    }
+  }, [messageCount, streamingText]);
+
   // Expire stale typing entries.
   useEffect(() => {
     const id = setInterval(() => {
       setTyping((prev) => {
-        const cutoff = Date.now() - 4000;
+        const cutoff = Date.now() - TYPING_VISIBLE_MS;
         const next: Record<string, number> = {};
         let changed = false;
         for (const [k, v] of Object.entries(prev)) {
@@ -141,7 +191,7 @@ export function Play({ sessionId, token }: Props) {
         }
         return changed ? next : prev;
       });
-    }, 1000);
+    }, 750);
     return () => clearInterval(id);
   }, []);
 
@@ -218,7 +268,7 @@ export function Play({ sessionId, token }: Props) {
           : "Waiting for the AI.";
 
   return (
-    <main className="flex min-h-screen flex-col">
+    <main className="flex min-h-screen flex-col lg:h-screen lg:min-h-0 lg:overflow-hidden">
       {criticalBanner ? (
         <CriticalEventBanner
           {...criticalBanner}
@@ -251,7 +301,7 @@ export function Play({ sessionId, token }: Props) {
         <div
           role="status"
           aria-live="assertive"
-          className="sticky top-0 z-10 bg-emerald-700 px-4 py-2 text-center text-sm font-semibold text-white shadow-lg"
+          className="bg-emerald-700 px-4 py-2 text-center text-sm font-semibold text-white shadow-lg"
         >
           Your turn — {myRole?.label} ({displayName})
         </div>
@@ -264,7 +314,7 @@ export function Play({ sessionId, token }: Props) {
         <div
           role="status"
           aria-live="polite"
-          className="sticky top-0 z-10 bg-slate-800 px-4 py-2 text-center text-xs text-slate-200 shadow"
+          className="bg-slate-800 px-4 py-2 text-center text-xs text-slate-200 shadow"
         >
           Submitted as {myRole?.label} ({displayName}).{" "}
           {otherPending.length > 0
@@ -272,10 +322,15 @@ export function Play({ sessionId, token }: Props) {
             : "Waiting for the AI to respond."}
         </div>
       ) : null}
-      <div className="mx-auto grid w-full max-w-7xl flex-1 grid-cols-1 gap-4 p-4 lg:grid-cols-[220px_1fr_280px]">
-        <aside>
-          <RoleRoster roles={snapshot.roles} activeRoleIds={activeRoleIds} selfRoleId={selfRoleId} />
-          <div className="mt-3 flex flex-col gap-2 rounded border border-slate-700 bg-slate-900 p-2 text-xs">
+      <div className="mx-auto grid w-full max-w-7xl flex-1 grid-cols-1 gap-4 p-4 lg:min-h-0 lg:grid-cols-[220px_1fr_280px] lg:overflow-hidden">
+        <aside className="flex flex-col gap-4 lg:min-h-0 lg:overflow-y-auto lg:pr-1">
+          <RoleRoster
+            roles={snapshot.roles}
+            activeRoleIds={activeRoleIds}
+            selfRoleId={selfRoleId}
+            connectedRoleIds={presence}
+          />
+          <div className="flex flex-col gap-2 rounded border border-slate-700 bg-slate-900 p-2 text-xs">
             <button
               onClick={handleForceAdvance}
               className="rounded border border-amber-500 px-2 py-1 font-semibold text-amber-200 hover:bg-amber-900/30"
@@ -290,45 +345,61 @@ export function Play({ sessionId, token }: Props) {
             </button>
           </div>
         </aside>
-        <section className="flex flex-col gap-3">
-          <Transcript
-            messages={snapshot.messages}
-            roles={snapshot.roles}
-            streamingText={streamingText}
-            aiThinking={
-              snapshot.state !== "ENDED" &&
-              !streamingText &&
-              snapshot.current_turn?.status !== "errored" &&
-              (snapshot.state === "AI_PROCESSING" ||
-                snapshot.state === "BRIEFING" ||
-                snapshot.current_turn?.status === "processing")
-            }
-            typingRoleIds={Object.keys(typing).filter((rid) => rid !== selfRoleId)}
-          />
-          <Composer
-            enabled={isMyTurn && snapshot.state !== "ENDED"}
-            placeholder={placeholder}
-            onSubmit={handleSubmit}
-            onTypingChange={handleTypingChange}
-            submitErrorEpoch={submitErrorEpoch}
-          />
-          {notice ? (
-            <p
-              role="status"
-              aria-live="polite"
-              className="rounded border border-slate-600/60 bg-slate-800/60 px-2 py-1 text-xs text-slate-200"
-            >
-              {notice}{" "}
-              <button
-                type="button"
-                onClick={() => setNotice(null)}
-                className="ml-1 underline hover:text-slate-100"
+        <section className="flex min-w-0 flex-col gap-3 lg:min-h-0 lg:overflow-hidden">
+          {/*
+            On desktop the Composer must stay pinned at the bottom of the
+            section regardless of how long the transcript grows — issue #56
+            reported that invited users had no scroll region and the page
+            just got taller and taller. We split the section the same way
+            Facilitator.tsx does: the transcript scrolls inside its own
+            region while Composer + notice + error live below as a
+            shrink-0 footer.
+          */}
+          <div
+            ref={scrollRegionRef}
+            className="flex min-w-0 flex-col gap-3 lg:min-h-0 lg:flex-1 lg:overflow-y-auto lg:pr-1"
+          >
+            <Transcript
+              messages={snapshot.messages}
+              roles={snapshot.roles}
+              streamingText={streamingText}
+              aiThinking={
+                snapshot.state !== "ENDED" &&
+                !streamingText &&
+                snapshot.current_turn?.status !== "errored" &&
+                (snapshot.state === "AI_PROCESSING" ||
+                  snapshot.state === "BRIEFING" ||
+                  snapshot.current_turn?.status === "processing")
+              }
+              typingRoleIds={Object.keys(typing).filter((rid) => rid !== selfRoleId)}
+            />
+          </div>
+          <div className="flex shrink-0 flex-col gap-2">
+            <Composer
+              enabled={isMyTurn && snapshot.state !== "ENDED"}
+              placeholder={placeholder}
+              onSubmit={handleSubmit}
+              onTypingChange={handleTypingChange}
+              submitErrorEpoch={submitErrorEpoch}
+            />
+            {notice ? (
+              <p
+                role="status"
+                aria-live="polite"
+                className="rounded border border-slate-600/60 bg-slate-800/60 px-2 py-1 text-xs text-slate-200"
               >
-                dismiss
-              </button>
-            </p>
-          ) : null}
-          {error ? <p className="text-sm text-red-400" role="alert">{error}</p> : null}
+                {notice}{" "}
+                <button
+                  type="button"
+                  onClick={() => setNotice(null)}
+                  className="ml-1 underline hover:text-slate-100"
+                >
+                  dismiss
+                </button>
+              </p>
+            ) : null}
+            {error ? <p className="text-sm text-red-400" role="alert">{error}</p> : null}
+          </div>
         </section>
         <RightSidebar
           messages={snapshot.messages}

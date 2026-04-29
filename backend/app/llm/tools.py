@@ -191,6 +191,25 @@ PLAY_TOOLS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "record_decision_rationale",
+        "description": (
+            "One-sentence creator-only debug note (≤300 chars). "
+            "Format: `<plan-beat>: <one-clause why>`. NOT a place to "
+            "think out loud — keep your reasoning in your own thoughts. "
+            "NOT a player-facing message. Does NOT yield. Players never "
+            "see this. Skip on strict-retry attempts (the prior turn's "
+            "rationale still stands) and on INTERJECT MODE. Truncated "
+            "at 600 chars."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "rationale": {"type": "string"},
+            },
+            "required": ["rationale"],
+        },
+    },
+    {
         "name": "end_session",
         "description": "Terminate the exercise. Triggers the AAR generation pipeline.",
         "input_schema": {

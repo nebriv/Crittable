@@ -446,6 +446,49 @@ class ToolDispatcher:
             fu_target.resolved_at = datetime.now(UTC)
             return f"followup {status}"
 
+        if name == "record_decision_rationale":
+            from ..sessions.models import DecisionLogEntry
+
+            rationale = str(args.get("rationale", "")).strip()
+            if not rationale:
+                raise _DispatchError("rationale is required")
+            # Once-per-turn invariant. The prompt says "one per normal
+            # turn"; this is the structural backstop so a drifting model
+            # can't spam the creator log with retried thoughts mid-turn.
+            if turn_id and any(
+                e.turn_id == turn_id for e in session.decision_log
+            ):
+                raise _DispatchError(
+                    "rationale already recorded for this turn; one per "
+                    "normal play turn (skip on strict retries)"
+                )
+            # Hard cap so a runaway model can't explode the snapshot
+            # payload or AAR. The prompt asks for one sentence; this is
+            # belt-and-braces. Trim to 597 chars + ellipsis so the total
+            # stays ≤600 (matches the prompt's stated bound).
+            if len(rationale) > 600:
+                rationale = rationale[:597] + "…"
+            entry = DecisionLogEntry(
+                turn_index=(
+                    session.current_turn.index if session.current_turn else None
+                ),
+                turn_id=turn_id,
+                rationale=rationale,
+            )
+            session.decision_log.append(entry)
+            # Stream to the creator only — player roles never see the
+            # AI's debug rationale.
+            if session.creator_role_id:
+                await self._connections.send_to_role(
+                    session.id,
+                    session.creator_role_id,
+                    {
+                        "type": "decision_logged",
+                        "entry": entry.model_dump(mode="json"),
+                    },
+                )
+            return "rationale recorded"
+
         if name == "mark_timeline_point":
             # The actual title/note are stored in ``tool_args`` so the
             # frontend Timeline can extract them. We *intentionally* do

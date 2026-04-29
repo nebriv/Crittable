@@ -103,6 +103,34 @@ class ConnectionManager:
             self._connections.clear()
             self._replay.clear()
 
+    async def connected_role_ids(self, session_id: str) -> list[str]:
+        """Snapshot of role_ids that currently have at least one open
+        WS connection on this session.
+        """
+
+        async with self._lock:
+            seen: dict[str, bool] = {}
+            for c in self._connections.get(session_id, ()):
+                seen[c.role_id] = True
+            return list(seen.keys())
+
+    async def role_has_other_connections(
+        self, session_id: str, role_id: str, *, exclude: _Connection | None = None
+    ) -> bool:
+        """Return True if any connection besides ``exclude`` is open for
+        the given (session, role). Used by the presence broadcaster to
+        avoid emitting a misleading ``offline`` when a player has the
+        same role open in two browser tabs.
+        """
+
+        async with self._lock:
+            for c in self._connections.get(session_id, ()):
+                if c is exclude:
+                    continue
+                if c.role_id == role_id:
+                    return True
+            return False
+
     # -------------------------------------------------------- internals
     async def _enqueue(self, conn: _Connection, event: dict[str, Any]) -> None:
         try:

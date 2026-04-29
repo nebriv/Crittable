@@ -193,6 +193,25 @@ class RoleFollowup(BaseModel):
     resolved_at: datetime | None = None
 
 
+class DecisionLogEntry(BaseModel):
+    """One AI-emitted rationale line attached to a play turn.
+
+    Captured via the ``record_decision_rationale`` tool. Surfaced to the
+    creator (live, via WebSocket) and embedded in the AAR appendix so
+    the operator can replay why the AI picked the actions it did. See
+    issue #55. Player roles never see this content — the rationale is
+    creator/debug-only by design.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str = Field(default_factory=_short_id)
+    ts: datetime = Field(default_factory=_now)
+    turn_index: int | None = None
+    turn_id: str | None = None
+    rationale: str
+
+
 class Session(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -211,6 +230,12 @@ class Session(BaseModel):
 
     setup_notes: list[SetupNote] = Field(default_factory=list)
     role_followups: list[RoleFollowup] = Field(default_factory=list)
+    # AI-emitted reasoning lines, one per ``record_decision_rationale``
+    # call. Creator-only on the snapshot; embedded in the AAR appendix.
+    # Bounded by the per-turn dispatcher (no cap on total length here —
+    # the play-tier prompt asks for one short line per turn, so an
+    # exercise that runs 30 turns produces ~30 short entries).
+    decision_log: list[DecisionLogEntry] = Field(default_factory=list)
 
     turns: list[Turn] = Field(default_factory=list)
     messages: list[Message] = Field(default_factory=list)

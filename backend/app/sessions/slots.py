@@ -74,6 +74,7 @@ TOOL_TO_SLOT: dict[str, Slot] = {
     "request_artifact": Slot.BOOKKEEPING,
     "lookup_resource": Slot.BOOKKEEPING,
     "use_extension_tool": Slot.BOOKKEEPING,
+    "record_decision_rationale": Slot.BOOKKEEPING,
     # setup tier
     "ask_setup_question": Slot.ASK_QUESTION,
     "propose_scenario_plan": Slot.PLAN_PROPOSE,

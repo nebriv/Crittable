@@ -1,4 +1,4 @@
-import { FormEvent, useEffect, useRef, useState } from "react";
+import { FormEvent, KeyboardEvent, useEffect, useRef, useState } from "react";
 
 interface ImpersonateOption {
   /** Role-id to submit as. */
@@ -50,8 +50,19 @@ export function Composer({
   // Empty string == speak as the local participant. Anything else is a
   // role_id passed up to the parent for proxy submission.
   const [asRoleId, setAsRoleId] = useState<string>("");
-  const typingTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Idle timer fires ``typing_stop`` after the user has been idle long
+  // enough that the indicator should disappear. Pending-start timer waits
+  // until the user has been typing continuously for a couple of seconds
+  // before announcing — without the delay the indicator flashes on every
+  // single keystroke and creates the "blinking screen" pattern reported
+  // in issue #53.
+  const idleTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pendingStartTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isTyping = useRef(false);
+  // Debounce config. The thresholds are intentionally separated so a
+  // user who pauses to think briefly (~1s) doesn't churn start/stop.
+  const TYPING_START_DELAY_MS = 1500;
+  const TYPING_IDLE_MS = 3500;
   // Last text the user attempted to submit. Held outside React state
   // so we can restore it without an extra render on the success path.
   const lastAttemptedRef = useRef<string>("");
@@ -71,6 +82,14 @@ export function Composer({
     // doesn't accidentally post under the previous proxy role. Sticky
     // proxy mode was a real footgun in solo testing.
     setAsRoleId("");
+    if (pendingStartTimer.current) {
+      clearTimeout(pendingStartTimer.current);
+      pendingStartTimer.current = null;
+    }
+    if (idleTimer.current) {
+      clearTimeout(idleTimer.current);
+      idleTimer.current = null;
+    }
     if (isTyping.current) {
       isTyping.current = false;
       onTypingChange?.(false);
@@ -90,29 +109,96 @@ export function Composer({
     }
   }, [submitErrorEpoch]);
 
+  function handleKeyDown(e: KeyboardEvent<HTMLTextAreaElement>) {
+    // Enter submits; Shift+Enter inserts a newline. IME composition events
+    // (Japanese / Chinese / Korean input) keep the default newline behavior so
+    // accepting a candidate doesn't accidentally send the message.
+    if (e.key !== "Enter" || e.shiftKey || e.nativeEvent.isComposing) return;
+    e.preventDefault();
+    if (!enabled || !text.trim()) return;
+    handle(e as unknown as FormEvent);
+  }
+
   function handleChange(value: string) {
     setText(value);
     if (!enabled || !onTypingChange) return;
-    if (!isTyping.current) {
-      isTyping.current = true;
-      onTypingChange(true);
+    // If the textarea is now empty (e.g. user cleared with backspace),
+    // tear down the timers and emit a stop if needed. Holding "typing"
+    // on an empty composer is misleading.
+    if (!value.trim()) {
+      if (pendingStartTimer.current) {
+        clearTimeout(pendingStartTimer.current);
+        pendingStartTimer.current = null;
+      }
+      if (idleTimer.current) {
+        clearTimeout(idleTimer.current);
+        idleTimer.current = null;
+      }
+      if (isTyping.current) {
+        isTyping.current = false;
+        onTypingChange(false);
+      }
+      return;
     }
-    if (typingTimer.current) clearTimeout(typingTimer.current);
-    typingTimer.current = setTimeout(() => {
-      isTyping.current = false;
-      onTypingChange(false);
-    }, 1500);
+    // Start path: don't broadcast immediately. Schedule a delayed
+    // ``typing_start`` so a user who types one character and stops
+    // never lights up the indicator.
+    if (!isTyping.current && !pendingStartTimer.current) {
+      pendingStartTimer.current = setTimeout(() => {
+        pendingStartTimer.current = null;
+        // Re-check enabled — the turn may have flipped while we waited.
+        if (!enabled) return;
+        isTyping.current = true;
+        onTypingChange?.(true);
+      }, TYPING_START_DELAY_MS);
+    }
+    // Refresh the idle timer on every keystroke. When it fires we emit
+    // ``typing_stop`` and cancel any pending start so a buffered start
+    // can't sneak through after we've already gone quiet.
+    if (idleTimer.current) clearTimeout(idleTimer.current);
+    idleTimer.current = setTimeout(() => {
+      idleTimer.current = null;
+      if (pendingStartTimer.current) {
+        clearTimeout(pendingStartTimer.current);
+        pendingStartTimer.current = null;
+      }
+      if (isTyping.current) {
+        isTyping.current = false;
+        onTypingChange?.(false);
+      }
+    }, TYPING_IDLE_MS);
   }
 
   useEffect(() => {
     return () => {
-      if (typingTimer.current) clearTimeout(typingTimer.current);
+      if (pendingStartTimer.current) clearTimeout(pendingStartTimer.current);
+      if (idleTimer.current) clearTimeout(idleTimer.current);
       if (isTyping.current && onTypingChange) {
         isTyping.current = false;
         onTypingChange(false);
       }
     };
   }, [onTypingChange]);
+
+  // When the turn ends mid-typing burst the composer goes ``disabled``
+  // but the timers are still in flight. Without this hook the indicator
+  // would linger on other clients for up to TYPING_IDLE_MS after the
+  // turn flipped, falsely suggesting we're still composing.
+  useEffect(() => {
+    if (enabled) return;
+    if (pendingStartTimer.current) {
+      clearTimeout(pendingStartTimer.current);
+      pendingStartTimer.current = null;
+    }
+    if (idleTimer.current) {
+      clearTimeout(idleTimer.current);
+      idleTimer.current = null;
+    }
+    if (isTyping.current) {
+      isTyping.current = false;
+      onTypingChange?.(false);
+    }
+  }, [enabled, onTypingChange]);
 
   const hasImpersonate = (impersonateOptions?.length ?? 0) > 0;
 
@@ -177,6 +263,7 @@ export function Composer({
         id="composer"
         value={text}
         onChange={(e) => handleChange(e.target.value)}
+        onKeyDown={handleKeyDown}
         placeholder={placeholder}
         disabled={!enabled}
         rows={3}
@@ -184,17 +271,26 @@ export function Composer({
           asRoleId ? "border-amber-600/60" : "border-slate-700"
         } bg-slate-900 p-2 text-sm text-slate-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-400 disabled:opacity-50`}
       />
-      <button
-        type="submit"
-        disabled={!enabled || !text.trim()}
-        className={`self-end rounded px-3 py-1 text-sm font-semibold text-white focus-visible:outline focus-visible:outline-2 disabled:opacity-50 ${
-          asRoleId
-            ? "bg-amber-600 hover:bg-amber-500 focus-visible:outline-amber-300"
-            : "bg-sky-600 hover:bg-sky-500 focus-visible:outline-sky-300"
-        }`}
-      >
-        Submit{asRoleId ? " (proxy)" : ""}
-      </button>
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-[11px] text-slate-300">
+          <kbd className="rounded border border-slate-600 bg-slate-800 px-1 font-mono text-[10px]">Enter</kbd>{" "}
+          to send,{" "}
+          <kbd className="rounded border border-slate-600 bg-slate-800 px-1 font-mono text-[10px]">Shift</kbd>+
+          <kbd className="rounded border border-slate-600 bg-slate-800 px-1 font-mono text-[10px]">Enter</kbd>{" "}
+          for a new line
+        </span>
+        <button
+          type="submit"
+          disabled={!enabled || !text.trim()}
+          className={`rounded px-3 py-1 text-sm font-semibold text-white focus-visible:outline focus-visible:outline-2 disabled:opacity-50 ${
+            asRoleId
+              ? "bg-amber-600 hover:bg-amber-500 focus-visible:outline-amber-300"
+              : "bg-sky-600 hover:bg-sky-500 focus-visible:outline-sky-300"
+          }`}
+        >
+          Submit{asRoleId ? " (proxy)" : ""}
+        </button>
+      </div>
     </form>
   );
 }
