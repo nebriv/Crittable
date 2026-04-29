@@ -66,6 +66,12 @@ export function Facilitator() {
   } | null>(null);
   const [cost, setCost] = useState<CostSnapshot | null>(null);
   const [godMode, setGodMode] = useState(false);
+  // Page-level state for the AAR popup so a single "View AAR" button in
+  // the sidebar Controls is the only surface that opens it. Pre-fix the
+  // sidebar had a "Download AAR" that bypassed the popup AND the chat
+  // area had a duplicate "Show AAR report" button — two competing CTAs
+  // for the same task.
+  const [showAarPopup, setShowAarPopup] = useState(false);
   // role_id -> last typing-true timestamp (ms). Filtered to "currently typing"
   // by the consuming components which check freshness < 4s.
   const [typing, setTyping] = useState<Record<string, number>>({});
@@ -75,6 +81,12 @@ export function Facilitator() {
   // fixed where they were last reading and they don't realise a new AI
   // beat just landed.
   const scrollRegionRef = useRef<HTMLDivElement | null>(null);
+  // Force-scroll latch: bumped whenever the local user takes an action
+  // (submit, proxy submit, force-advance) so the next render pins the
+  // chat to the bottom regardless of where they were scrolled. The
+  // slack-based "only if near bottom" rule below still applies for
+  // *incoming* messages from other roles.
+  const [forceScrollNonce, setForceScrollNonce] = useState(0);
 
   const phase: Phase = useMemo(() => {
     if (!snapshot) return "intro";
@@ -221,20 +233,24 @@ export function Facilitator() {
   }, []);
 
   // Auto-scroll the chat region to the bottom when the message count or
-  // streaming buffer grows — but only if the operator was already near
-  // the bottom. If they've scrolled up to re-read an earlier beat we
-  // leave their position alone (otherwise scrolling becomes a fight).
+  // streaming buffer grows. For incoming messages we keep the operator's
+  // scroll position if they've scrolled up to re-read an earlier beat
+  // (120px slack). For local-user actions (submit / proxy / force-
+  // advance) ``forceScrollNonce`` is bumped so we ALWAYS pin to the
+  // bottom — they just took an action and want to see the result.
   const messageCount = snapshot?.messages.length ?? 0;
   useEffect(() => {
     const el = scrollRegionRef.current;
     if (!el) return;
+    if (forceScrollNonce > 0) {
+      el.scrollTop = el.scrollHeight;
+      return;
+    }
     const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
-    // 120px slack so a tiny manual scroll-up doesn't pin the operator
-    // out of follow mode.
     if (distanceFromBottom < 120) {
       el.scrollTop = el.scrollHeight;
     }
-  }, [messageCount, streamingText]);
+  }, [messageCount, streamingText, forceScrollNonce]);
 
   async function refreshSnapshot() {
     if (!state) return;
@@ -397,6 +413,9 @@ export function Facilitator() {
 
   async function handleSubmit(text: string, asRoleId?: string) {
     if (!state) return;
+    // Force scroll-to-bottom on the next render so the user sees their
+    // own message commit. Mirrors what every chat client does on send.
+    setForceScrollNonce((n) => n + 1);
     try {
       if (asRoleId && asRoleId !== state.creatorRoleId) {
         // Creator impersonation — go through the REST proxy endpoint so
@@ -425,6 +444,7 @@ export function Facilitator() {
     if (!state) return;
     setBusy(true);
     setBusyMessage("Force-advancing turn — AI is drafting the next beat…");
+    setForceScrollNonce((n) => n + 1);
     try {
       await api.forceAdvance(state.sessionId, state.token);
       await refreshSnapshot();
@@ -596,9 +616,7 @@ export function Facilitator() {
             onForceAdvance={handleForceAdvance}
             onEnd={handleEnd}
             onNewSession={handleNewSession}
-            onExport={() =>
-              window.open(api.exportUrl(state.sessionId, state.token), "_blank", "noopener")
-            }
+            onViewAar={() => setShowAarPopup(true)}
             playerCount={playerCount}
             hasFinalizedPlan={Boolean(snapshot.plan)}
             aarStatus={snapshot.aar_status ?? null}
@@ -791,6 +809,13 @@ export function Facilitator() {
           sessionId={state.sessionId}
           creatorToken={state.token}
           onClose={() => setGodMode(false)}
+        />
+      ) : null}
+      {showAarPopup ? (
+        <AARPopup
+          sessionId={state.sessionId}
+          token={state.token}
+          onClose={() => setShowAarPopup(false)}
         />
       ) : null}
     </main>
@@ -1005,7 +1030,8 @@ function Controls(props: {
   onForceAdvance: () => void;
   onEnd: () => void;
   onNewSession: () => void;
-  onExport: () => void;
+  /** Opens the single AAR popup (which contains the actual Download button). */
+  onViewAar: () => void;
   playerCount: number;
   hasFinalizedPlan: boolean;
   /** "pending" | "generating" | "ready" | "failed" — null while loading. */
@@ -1061,19 +1087,17 @@ function Controls(props: {
       ) : null}
 
       {props.phase === "ended" ? (() => {
-        // Don't surface a Download button until the AAR pipeline reports
-        // ``ready``. The pre-fix disabled-button-with-tooltip pattern was
-        // unreliable on touch and read as broken; the User Agent flagged
-        // it as HIGH. Now: an honest inline pill with a live indicator
-        // for pending/generating, an actionable retry-via-reload chip
-        // for failure, and the real Download button only when ready.
+        // Single AAR entry point. The popup contains the actual Download
+        // button; this CTA only opens the viewer. Pre-fix there were two
+        // competing buttons (sidebar "Download AAR" that bypassed the
+        // popup, plus an in-chat "Show AAR report").
         if (props.aarStatus === "ready") {
           return (
             <button
-              onClick={props.onExport}
+              onClick={props.onViewAar}
               className="rounded bg-emerald-600 px-2 py-1 text-sm font-semibold text-white hover:bg-emerald-500"
             >
-              Download AAR
+              View AAR
             </button>
           );
         }
@@ -1085,7 +1109,7 @@ function Controls(props: {
             >
               <span>AAR generation failed.</span>
               <span className="text-[11px] text-red-200/80">
-                Reload the page to retry, or end + restart the session.
+                Use Retry in the main panel, or end + restart the session.
               </span>
             </div>
           );
@@ -1432,7 +1456,6 @@ function EndedView({ sessionId, token }: { sessionId: string; token: string }) {
   type AARState = "generating" | "ready" | "failed";
   const [aarState, setAarState] = useState<AARState>("generating");
   const [errMsg, setErrMsg] = useState<string | null>(null);
-  const [showPopup, setShowPopup] = useState(false);
 
   // Poll the export endpoint with HEAD-style behavior: if 425, keep
   // polling. If 200, mark ready (the popup will fetch the body on open).
@@ -1498,26 +1521,13 @@ function EndedView({ sessionId, token }: { sessionId: string; token: string }) {
           Generating after-action report (this can take 30–60 s)…
         </p>
       ) : aarState === "ready" ? (
-        <>
-          <p className="text-sm text-emerald-100">
-            After-action report is ready. It includes the full transcript,
-            per-role scores, the frozen scenario plan, and the audit log.
-          </p>
-          <button
-            type="button"
-            onClick={() => setShowPopup(true)}
-            className="self-start rounded bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-300"
-          >
-            Show AAR report
-          </button>
-          {showPopup ? (
-            <AARPopup
-              sessionId={sessionId}
-              token={token}
-              onClose={() => setShowPopup(false)}
-            />
-          ) : null}
-        </>
+        <p className="text-sm text-emerald-100">
+          After-action report is ready. Use{" "}
+          <span className="font-semibold">View AAR</span> in the sidebar
+          Controls to read it (the popup contains a Download .md button).
+          The report includes the full transcript, per-role scores, the
+          frozen scenario plan, and the audit log.
+        </p>
       ) : (
         <div className="flex flex-col gap-2">
           <p className="text-sm text-red-300">

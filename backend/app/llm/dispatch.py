@@ -350,6 +350,57 @@ class ToolDispatcher:
             )
             return "event injected"
 
+        if name == "track_role_followup":
+            ref = args.get("role_id")
+            resolved, unresolved = _resolve_role_refs(session, [ref])
+            if not resolved:
+                raise _DispatchError(
+                    f"unknown role_id: {ref!r} — pass an opaque role_id from "
+                    "Block 10."
+                )
+            from datetime import UTC, datetime
+
+            from ..sessions.models import RoleFollowup
+
+            target_id = resolved[0]
+            prompt_text = str(args.get("prompt", "")).strip()
+            if not prompt_text:
+                raise _DispatchError("prompt is required")
+            fu = RoleFollowup(role_id=target_id, prompt=prompt_text)
+            session.role_followups.append(fu)
+            target = session.role_by_id(target_id)
+            label = target.label if target else target_id
+            outcome.appended_messages.append(
+                Message(
+                    kind=MessageKind.SYSTEM,
+                    body=f"Follow-up tracked for {label}: {prompt_text}",
+                    turn_id=turn_id,
+                    tool_name=name,
+                    tool_args={**args, "role_id": target_id, "followup_id": fu.id},
+                )
+            )
+            _ = unresolved  # consumed via raise above; silence lint
+            _ = datetime.now(UTC)  # imported for parity with other handlers
+            return f"followup tracked id={fu.id}"
+
+        if name == "resolve_role_followup":
+            from datetime import UTC, datetime
+
+            fid = str(args.get("followup_id", "")).strip()
+            status = args.get("status")
+            if status not in ("done", "dropped"):
+                raise _DispatchError("status must be 'done' or 'dropped'")
+            fu_target = next(
+                (f for f in session.role_followups if f.id == fid), None
+            )
+            if fu_target is None:
+                raise _DispatchError(f"unknown followup_id: {fid}")
+            if fu_target.status != "open":
+                return f"followup already {fu_target.status}"
+            fu_target.status = status
+            fu_target.resolved_at = datetime.now(UTC)
+            return f"followup {status}"
+
         if name == "mark_timeline_point":
             # The actual title/note are stored in ``tool_args`` so the
             # frontend Timeline can extract them. We *intentionally* do

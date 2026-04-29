@@ -117,6 +117,42 @@ PLAY_TOOLS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "track_role_followup",
+        "description": (
+            "Open a per-role follow-up item — an unanswered question or a "
+            "deferred ask you want to circle back to later. Keeps a running "
+            "todo list per role so you can pick up the thread on a future "
+            "turn instead of forgetting. Block 11 of your system prompt "
+            "echoes the open list back to you every turn. Use ``prompt`` "
+            "to phrase the ask in 1 short sentence (the players see this)."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "role_id": {"type": "string"},
+                "prompt": {"type": "string"},
+            },
+            "required": ["role_id", "prompt"],
+        },
+    },
+    {
+        "name": "resolve_role_followup",
+        "description": (
+            "Close a previously-tracked follow-up. ``status``: ``done`` if "
+            "the role addressed it, ``dropped`` if the beat moved on and "
+            "you no longer need it. Once resolved it stops showing in "
+            "Block 11."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "followup_id": {"type": "string"},
+                "status": {"type": "string", "enum": ["done", "dropped"]},
+            },
+            "required": ["followup_id", "status"],
+        },
+    },
+    {
         "name": "mark_timeline_point",
         "description": (
             "Pin a key beat to the right-sidebar timeline. Use sparingly — "

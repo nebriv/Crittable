@@ -164,6 +164,24 @@ class SetupNote(BaseModel):
     options: list[str] | None = None
 
 
+class RoleFollowup(BaseModel):
+    """A per-role open item the AI is tracking across turns.
+
+    Maintained by the AI via the ``track_role_followup`` /
+    ``resolve_role_followup`` tools. Surfaced back into the play system
+    prompt every turn so the AI doesn't forget unanswered asks.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str = Field(default_factory=_short_id)
+    role_id: str
+    prompt: str
+    status: Literal["open", "done", "dropped"] = "open"
+    created_at: datetime = Field(default_factory=_now)
+    resolved_at: datetime | None = None
+
+
 class Session(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -181,6 +199,7 @@ class Session(BaseModel):
     creator_role_id: str | None = None
 
     setup_notes: list[SetupNote] = Field(default_factory=list)
+    role_followups: list[RoleFollowup] = Field(default_factory=list)
 
     turns: list[Turn] = Field(default_factory=list)
     messages: list[Message] = Field(default_factory=list)

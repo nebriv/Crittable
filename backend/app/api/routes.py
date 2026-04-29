@@ -252,6 +252,15 @@ def register_api_routes(app: FastAPI) -> None:
             # sidebar Download-AAR button without hitting /export.md early
             # and seeing a 425.
             "aar_status": session.aar_status,
+            # Per-role follow-up todo list maintained by the AI. Creator-
+            # only because seeing other roles' open asks could spoil the
+            # narrative. Each item: {id, role_id, prompt, status,
+            # created_at, resolved_at}.
+            "role_followups": (
+                [f.model_dump(mode="json") for f in session.role_followups]
+                if is_creator
+                else None
+            ),
         }
 
     @router.post("/sessions/{session_id}/start")

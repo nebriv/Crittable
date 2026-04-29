@@ -2017,3 +2017,144 @@ def test_address_role_rejects_unknown_label() -> None:
         assert outcome2.appended_messages[0].tool_args["role_id"] == "role-ciso"
 
     asyncio.run(_run())
+
+
+def test_role_followup_tracker_lifecycle() -> None:
+    """The AI maintains a per-role follow-up todo list via
+    ``track_role_followup`` / ``resolve_role_followup``. The list survives
+    on the session and (by separate test) feeds back into the play system
+    prompt so the model can pick up unanswered asks across turns."""
+
+    import asyncio
+
+    from app.auth.audit import AuditLog
+    from app.extensions.dispatch import ExtensionDispatcher
+    from app.extensions.registry import FrozenRegistry
+    from app.llm.dispatch import ToolDispatcher
+    from app.sessions.models import Role, Session, SessionState
+    from app.ws.connection_manager import ConnectionManager
+
+    session = Session(
+        scenario_prompt="x",
+        roles=[Role(id="role-soc", label="SOC", is_creator=True)],
+        state=SessionState.AWAITING_PLAYERS,
+    )
+    audit = AuditLog()
+    registry = FrozenRegistry(tools={}, resources={}, prompts={})
+    dispatcher = ToolDispatcher(
+        connections=ConnectionManager(),
+        audit=audit,
+        extension_dispatcher=ExtensionDispatcher(registry=registry, audit=audit),
+        registry=registry,
+    )
+
+    async def _run() -> None:
+        # Open a follow-up via opaque id.
+        out = await dispatcher.dispatch(
+            session=session,
+            tool_uses=[
+                {
+                    "name": "track_role_followup",
+                    "id": "tu_open",
+                    "input": {
+                        "role_id": "role-soc",
+                        "prompt": "How wide is the scope?",
+                    },
+                }
+            ],
+            turn_id=None,
+            critical_inject_allowed_cb=lambda: True,
+        )
+        ok = [r for r in out.tool_results if r["tool_use_id"] == "tu_open"]
+        assert ok and not ok[0].get("is_error"), out.tool_results
+        assert len(session.role_followups) == 1
+        fid = session.role_followups[0].id
+        assert session.role_followups[0].status == "open"
+
+        # Open another by LABEL (resolution must work for follow-ups too).
+        out2 = await dispatcher.dispatch(
+            session=session,
+            tool_uses=[
+                {
+                    "name": "track_role_followup",
+                    "id": "tu_open2",
+                    "input": {"role_id": "SOC", "prompt": "Confluence findings?"},
+                }
+            ],
+            turn_id=None,
+            critical_inject_allowed_cb=lambda: True,
+        )
+        assert not out2.tool_results[0].get("is_error")
+        assert len(session.role_followups) == 2
+        # Label resolved to opaque id on the persisted record.
+        assert session.role_followups[1].role_id == "role-soc"
+
+        # Resolve as done.
+        out3 = await dispatcher.dispatch(
+            session=session,
+            tool_uses=[
+                {
+                    "name": "resolve_role_followup",
+                    "id": "tu_close",
+                    "input": {"followup_id": fid, "status": "done"},
+                }
+            ],
+            turn_id=None,
+            critical_inject_allowed_cb=lambda: True,
+        )
+        assert not out3.tool_results[0].get("is_error")
+        assert session.role_followups[0].status == "done"
+        assert session.role_followups[0].resolved_at is not None
+
+        # Resolving an unknown id → tool error.
+        out4 = await dispatcher.dispatch(
+            session=session,
+            tool_uses=[
+                {
+                    "name": "resolve_role_followup",
+                    "id": "tu_bad",
+                    "input": {"followup_id": "does-not-exist", "status": "done"},
+                }
+            ],
+            turn_id=None,
+            critical_inject_allowed_cb=lambda: True,
+        )
+        bad = [r for r in out4.tool_results if r["tool_use_id"] == "tu_bad"]
+        assert bad and bad[0].get("is_error"), out4.tool_results
+
+    asyncio.run(_run())
+
+
+def test_play_system_prompt_includes_open_followups() -> None:
+    """Block 11 must echo open follow-ups back to the AI and stay quiet
+    when there are none. Without this the tracker would be write-only."""
+
+    from app.extensions.registry import FrozenRegistry
+    from app.llm.prompts import build_play_system_blocks
+    from app.sessions.models import Role, RoleFollowup, ScenarioPlan, Session
+
+    session = Session(
+        scenario_prompt="x",
+        roles=[Role(id="role-soc", label="SOC", is_creator=True)],
+        plan=ScenarioPlan(title="t", key_objectives=["o"]),
+    )
+    registry = FrozenRegistry(tools={}, resources={}, prompts={})
+
+    blocks = build_play_system_blocks(session, registry=registry)
+    text = blocks[0]["text"]
+    assert "Block 11 — Open per-role follow-ups" in text
+    assert "(none open)" in text
+
+    # Once tracked, the open prompt + opaque id appear in Block 11.
+    session.role_followups.append(
+        RoleFollowup(role_id="role-soc", prompt="Confluence findings?")
+    )
+    blocks2 = build_play_system_blocks(session, registry=registry)
+    text2 = blocks2[0]["text"]
+    assert "Confluence findings?" in text2
+    assert "role-soc" in text2
+
+    # Resolved items drop out of the block.
+    session.role_followups[0].status = "done"
+    blocks3 = build_play_system_blocks(session, registry=registry)
+    assert "Confluence findings?" not in blocks3[0]["text"]

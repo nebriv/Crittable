@@ -68,13 +68,30 @@ _TOOL_USE_PROTOCOL = (
     "`address_role` for direct callouts, `inject_event` / `inject_critical_event` "
     "for new developments, or `request_artifact` for deliverables. A turn that "
     "yields with no narrative is a bug — the players need context to act on.\n\n"
+    "**Critical injects always come paired with explicit role asks.** When you "
+    "fire `inject_critical_event`, you MUST also call `broadcast` (or "
+    "`address_role`) in the SAME turn that tells specific roles what they "
+    "should do about the inject. A critical banner without per-role follow-up "
+    "leaves players staring at the screen wondering whose problem it is. "
+    "Example pattern: `inject_critical_event(...)` → `broadcast(\"Comms — "
+    "draft a holding statement. CISO — escalate to board? IR Lead — does this "
+    "change containment posture?\")` → `set_active_roles([Comms.id, CISO.id, "
+    "IR_Lead.id])`.\n\n"
     "**Tool chaining.** You may (and usually should) call multiple tools per "
     "turn. Typical patterns:\n"
     "  - `broadcast(...)` → `set_active_roles(...)` (default beat)\n"
     "  - `inject_critical_event(...)` → `broadcast(...)` → `set_active_roles(...)` "
-    "(escalation)\n"
+    "(escalation — see rule above)\n"
     "  - `broadcast(...)` → `mark_timeline_point(...)` → `set_active_roles(...)` "
     "(pivotal decision worth pinning)\n\n"
+    "**You may yield to a subset of roles.** ``set_active_roles`` does NOT need "
+    "every seated role on every turn. If a beat clearly belongs to one or two "
+    "functions (e.g. a Legal-only call, an IR-only containment decision), yield "
+    "to just those role_ids. Other roles continue to read the chat and will "
+    "join the next beat. Forcing every role to respond on every turn slows the "
+    "exercise and frustrates players whose function isn't on point. If a role "
+    "has been consistently off-topic or unresponsive, omit them from the next "
+    "yield and re-engage them when their function is needed.\n\n"
     "**`mark_timeline_point` is a marker, not a narration tool.** It does NOT "
     "produce a chat bubble — only a pin in the right-sidebar timeline. Always "
     "pair it with a `broadcast` (or `address_role`) that actually narrates the "
@@ -224,9 +241,39 @@ def build_play_system_blocks(
             + seated_table
             + unseated_block
             + roster_rules,
+            "## Block 11 — Open per-role follow-ups\n" + _build_followup_block(session),
         ]
     )
     return [{"type": "text", "text": text}]
+
+
+def _build_followup_block(session: Session) -> str:
+    """Render the open ``role_followups`` so the AI can pick up unanswered
+    asks across turns. Empty when nothing is open."""
+
+    open_items = [f for f in session.role_followups if f.status == "open"]
+    if not open_items:
+        return (
+            "(none open)\n\n"
+            "Use ``track_role_followup`` when you ask a role for something "
+            "that won't be answered in the next turn — that way you can "
+            "circle back instead of forgetting."
+        )
+    by_role: dict[str, list[Any]] = {}
+    for fu in open_items:
+        by_role.setdefault(fu.role_id, []).append(fu)
+    lines: list[str] = [
+        "These items are still owed — weave them back in when the beat "
+        "permits, or call ``resolve_role_followup`` when they're addressed "
+        "or no longer relevant.\n"
+    ]
+    for role_id, items in by_role.items():
+        role = session.role_by_id(role_id)
+        label = role.label if role else role_id
+        lines.append(f"- **{label}** (`{role_id}`):")
+        for fu in items:
+            lines.append(f"  - `{fu.id}` — {fu.prompt}")
+    return "\n".join(lines)
 
 
 def build_setup_system_blocks(session: Session) -> list[dict[str, Any]]:
