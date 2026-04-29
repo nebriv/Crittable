@@ -1,0 +1,365 @@
+"""Turn validator — "what makes a valid turn at state X?"
+
+The play-tier AI has a flexible toolbox (broadcast, address_role,
+inject_event, mark_timeline_point, set_active_roles, end_session, ...)
+and is free to compose tool calls in any order. The engine does not
+trust the AI to compose a complete turn; instead it inspects what
+*actually fired* (via :class:`~app.llm.dispatch.DispatchOutcome.slots`)
+against a state-aware :class:`TurnContract` and emits zero-or-more
+:class:`RecoveryDirective`s when the output is incomplete.
+
+The driver loop in ``turn_driver.py`` runs each directive as a
+narrowed follow-up LLM call (tools allowlisted, ``tool_choice``
+pinned, prior-attempt tool-loop spliced in for context) until the
+contract is satisfied or the shared retry budget is exhausted.
+
+Two design points worth preserving:
+
+1. The validator is a *pure function*. It reads ``DispatchOutcome``
+   plus session context and emits directives. It writes no state and
+   has no I/O. This makes it trivial to unit-test and means new
+   contract entries can be added without touching the driver.
+
+2. ``phase_policy.py`` (authorization: "is this LLM call permitted?")
+   and this module (completeness: "did the turn produce a valid
+   output?") are deliberately separate. They never import each other.
+   See ``docs/architecture.md`` for the table.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Any
+
+from ..logging_setup import get_logger
+from .models import MessageKind, Session, SessionState
+from .slots import Slot
+
+if True:  # forward reference to avoid a circular import at runtime
+    from ..llm.dispatch import DispatchOutcome  # noqa: F401  (TYPE_CHECKING below)
+
+
+_logger = get_logger("session.turn_validator")
+
+
+# ----------------------------------------------------------------- contracts
+
+
+@dataclass(frozen=True)
+class TurnContract:
+    """Declarative spec of what slots a turn must / must not contain.
+
+    A turn is *valid* under a contract iff:
+      * every slot in ``required_slots`` fired, AND
+      * no slot in ``forbidden_slots`` fired.
+
+    ``soft_drive_when_open_question`` carves out the "AI just answered
+    a direct question and players are still mid-discussion" case: if
+    DRIVE is required but the most-recent un-replied player message is
+    `?`-terminated AND no new beat fired this turn, the missing-DRIVE
+    is downgraded from a violation to a warning. Lets a silent yield
+    pass when it's clearly the right move.
+    """
+
+    required_slots: frozenset[Slot]
+    forbidden_slots: frozenset[Slot] = frozenset()
+    soft_drive_when_open_question: bool = False
+
+    @property
+    def requires_drive(self) -> bool:
+        return Slot.DRIVE in self.required_slots
+
+    @property
+    def requires_yield(self) -> bool:
+        return Slot.YIELD in self.required_slots
+
+
+@dataclass(frozen=True)
+class RecoveryDirective:
+    """Recipe for one recovery LLM call.
+
+    ``priority`` orders directives when multiple violations fire on
+    the same turn. Lower number = run first. DRIVE recoveries
+    (priority=10) run before YIELD recoveries (priority=20) because
+    semantically the brief precedes the handoff.
+
+    ``replays_prior_tool_loop=True`` tells the driver to splice the
+    prior attempt's ``tool_use`` blocks + dispatcher's ``tool_result``
+    blocks into the messages array as a proper Anthropic tool-loop
+    pair so the model sees what it already produced and can
+    self-correct. Used by every existing recovery path.
+    """
+
+    kind: str
+    tools_allowlist: frozenset[str]
+    tool_choice: dict[str, Any] | None
+    system_addendum: str
+    user_nudge: str
+    replays_prior_tool_loop: bool = True
+    priority: int = 100
+
+
+@dataclass(frozen=True)
+class ValidationResult:
+    """Output of :func:`validate`."""
+
+    violations: list[RecoveryDirective] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
+
+    @property
+    def ok(self) -> bool:
+        return not self.violations
+
+
+# ----------------------------------------------------------------- directives
+
+
+_STRICT_YIELD_NOTE = (
+    "STRICT RETRY: your previous attempt(s) on this turn did not yield. "
+    "If you have seen this note already on this same turn, the prior "
+    "tool-narrowing did not produce a yielding call — do NOT re-narrate "
+    "or re-explain, just emit `set_active_roles` and stop. The narrative "
+    "beat is already in the transcript. Your only job on this turn is to "
+    "call `set_active_roles` with the role_ids that should respond next. "
+    "The tool surface has been narrowed and `tool_choice` forces a call "
+    "to `set_active_roles`; you cannot end the session on a recovery "
+    "pass."
+)
+_STRICT_YIELD_USER_NUDGE = (
+    "[system] Your previous tool calls did not include a yielding tool. "
+    "The narrative is already in the transcript. Call `set_active_roles` "
+    "now with the role_ids that should respond."
+)
+
+_DRIVE_RECOVERY_NOTE = (
+    "RECOVERY: you yielded to the active roles via `set_active_roles` "
+    "(or are about to) but did not produce a player-facing question. "
+    "`inject_event` and `mark_timeline_point` are stage directions — "
+    "they do NOT give players anything to respond to. Issue a concrete "
+    "next question now via `broadcast` (≤200 words). Address the active "
+    "roles by label + display name and end with the specific decision / "
+    "question you need from them. Do NOT call any other tool. Do NOT "
+    "re-narrate timeline pins or system events."
+)
+_DRIVE_RECOVERY_USER_NUDGE = (
+    "[system] You skipped the player-facing question on this turn. "
+    "Issue it now via `broadcast` so the active roles know what they "
+    "are deciding."
+)
+
+
+def strict_yield_directive() -> RecoveryDirective:
+    """Recovery: AI didn't yield. Pin to ``set_active_roles`` only."""
+
+    return RecoveryDirective(
+        kind="missing_yield",
+        tools_allowlist=frozenset({"set_active_roles"}),
+        tool_choice={"type": "tool", "name": "set_active_roles"},
+        system_addendum=_STRICT_YIELD_NOTE,
+        user_nudge=_STRICT_YIELD_USER_NUDGE,
+        replays_prior_tool_loop=True,
+        priority=20,
+    )
+
+
+def drive_recovery_directive() -> RecoveryDirective:
+    """Recovery: AI yielded (or wants to) without a player-facing
+    drive. Pin to ``broadcast`` only."""
+
+    return RecoveryDirective(
+        kind="missing_drive",
+        tools_allowlist=frozenset({"broadcast"}),
+        tool_choice={"type": "tool", "name": "broadcast"},
+        system_addendum=_DRIVE_RECOVERY_NOTE,
+        user_nudge=_DRIVE_RECOVERY_USER_NUDGE,
+        replays_prior_tool_loop=True,
+        priority=10,
+    )
+
+
+# ----------------------------------------------------------------- contracts table
+
+
+# Play-tier contracts. ``mode`` discriminates the recovery path
+# (normal play turn vs interject vs mid-recovery).
+PLAY_CONTRACT_NORMAL: TurnContract = TurnContract(
+    required_slots=frozenset({Slot.DRIVE, Slot.YIELD}),
+    forbidden_slots=frozenset(),
+    soft_drive_when_open_question=True,
+)
+
+# Briefing turn — same shape, but DRIVE is hard-required (no soft
+# carve-out): there's no "mid-discussion" on the very first turn, so
+# a yield without a brief always needs recovery.
+PLAY_CONTRACT_BRIEFING: TurnContract = TurnContract(
+    required_slots=frozenset({Slot.DRIVE, Slot.YIELD}),
+    forbidden_slots=frozenset(),
+    soft_drive_when_open_question=False,
+)
+
+# Interject path — the asking player has already submitted, others
+# still owe responses. AI must drive (answer the question) but must
+# NOT yield or terminate.
+PLAY_CONTRACT_INTERJECT: TurnContract = TurnContract(
+    required_slots=frozenset({Slot.DRIVE}),
+    forbidden_slots=frozenset({Slot.YIELD, Slot.TERMINATE}),
+    soft_drive_when_open_question=False,
+)
+
+
+def contract_for(
+    *,
+    tier: str,
+    state: SessionState,
+    mode: str,
+    drive_required: bool = True,
+) -> TurnContract:
+    """Pick the contract for a tier/state/mode triple.
+
+    ``drive_required=False`` (operator kill-switch via the
+    ``LLM_RECOVERY_DRIVE_REQUIRED`` env flag) drops DRIVE from the
+    play-tier required set, falling back to the pre-validator
+    "yield-only" semantics.
+    """
+
+    if tier != "play":
+        # Setup / AAR / guardrail tiers don't currently need turn-level
+        # validation — the dispatcher's existing setup-tier yield flag
+        # and AAR's pinned ``tool_choice=finalize_report`` cover them.
+        return TurnContract(required_slots=frozenset())
+
+    if mode == "interject":
+        return PLAY_CONTRACT_INTERJECT
+    if state == SessionState.BRIEFING:
+        contract = PLAY_CONTRACT_BRIEFING
+    else:
+        contract = PLAY_CONTRACT_NORMAL
+
+    if not drive_required:
+        return TurnContract(
+            required_slots=frozenset({Slot.YIELD}),
+            forbidden_slots=contract.forbidden_slots,
+            soft_drive_when_open_question=False,
+        )
+    return contract
+
+
+# ----------------------------------------------------------------- validate
+
+
+def validate(
+    *,
+    session: Session,
+    cumulative_slots: set[Slot],
+    contract: TurnContract,
+    soft_drive_carve_out_enabled: bool = True,
+) -> ValidationResult:
+    """Pure validator. Inspects what slots fired this turn (cumulative
+    across all attempts) against the contract; returns directives for
+    each violation and warnings for soft mismatches.
+
+    No I/O, no state writes. Safe to unit-test directly.
+    """
+
+    violations: list[RecoveryDirective] = []
+    warnings: list[str] = []
+
+    # Forbidden slots: hard fail without a directive — the driver will
+    # log + audit and the operator sees the rejection. We don't try to
+    # auto-recover from "AI yielded during interject" because the
+    # right call is operator intervention, not another LLM call.
+    forbidden_fired = cumulative_slots & contract.forbidden_slots
+    if forbidden_fired:
+        warnings.append(
+            f"forbidden slots fired: {sorted(s.value for s in forbidden_fired)}"
+        )
+
+    # Missing DRIVE on a yielding turn: the player-facing question
+    # never landed. This is the headline failure mode the validator
+    # exists to catch — see docs/PLAN.md.
+    if contract.requires_drive and Slot.DRIVE not in cumulative_slots:
+        # Soft carve-out: when the most-recent un-replied player
+        # message is `?`-terminated AND no new beat fired this turn,
+        # treat missing-DRIVE as a warning (players are mid-discussion
+        # on an open ask; the AI yielding silently is the right move).
+        if (
+            soft_drive_carve_out_enabled
+            and contract.soft_drive_when_open_question
+            and _open_player_question(session)
+            and not _new_beat_fired(cumulative_slots)
+        ):
+            warnings.append(
+                "drive missing but downgraded — players are mid-discussion "
+                "on an open `?` and no new beat fired this turn"
+            )
+        else:
+            violations.append(drive_recovery_directive())
+
+    # Missing YIELD: the turn never advanced. Same as the legacy
+    # strict-retry path.
+    if contract.requires_yield and Slot.YIELD not in cumulative_slots:
+        # ``end_session`` (TERMINATE slot) is also a valid yielding
+        # outcome — players don't need a next active-roles set if the
+        # exercise is wrapping. Don't fire recovery in that case.
+        if Slot.TERMINATE not in cumulative_slots:
+            violations.append(strict_yield_directive())
+
+    return ValidationResult(violations=violations, warnings=warnings)
+
+
+def order_directives(
+    directives: list[RecoveryDirective],
+) -> list[RecoveryDirective]:
+    """Sort by ``priority`` (smaller = earlier). Stable so ties keep
+    insertion order."""
+
+    return sorted(directives, key=lambda d: d.priority)
+
+
+# ----------------------------------------------------------------- helpers
+
+
+def _open_player_question(session: Session) -> bool:
+    """True iff the most recent player message is `?`-terminated and
+    no AI broadcast/address_role has answered it yet.
+
+    Used for the "AI yielding silently is fine when players are
+    mid-discussion" carve-out. We walk the transcript from the end:
+    if we hit a player message ending in `?` before any AI player-
+    facing message, there's an open question.
+    """
+
+    for msg in reversed(session.messages):
+        if msg.kind == MessageKind.AI_TEXT and msg.tool_name in {
+            "broadcast",
+            "address_role",
+        }:
+            return False
+        if msg.kind == MessageKind.PLAYER:
+            stripped = (msg.body or "").strip()
+            return stripped.endswith("?")
+    return False
+
+
+def _new_beat_fired(slots: set[Slot]) -> bool:
+    """Did this turn introduce a new narrative beat? (Inject / pin /
+    escalate). When True the AI has 'moved the story' and yielding
+    silently looks like ignoring the players, so the soft carve-out
+    no longer applies — DRIVE recovery fires."""
+
+    return bool(slots & {Slot.NARRATE, Slot.PIN, Slot.ESCALATE})
+
+
+__all__ = [
+    "PLAY_CONTRACT_BRIEFING",
+    "PLAY_CONTRACT_INTERJECT",
+    "PLAY_CONTRACT_NORMAL",
+    "RecoveryDirective",
+    "TurnContract",
+    "ValidationResult",
+    "contract_for",
+    "drive_recovery_directive",
+    "order_directives",
+    "strict_yield_directive",
+    "validate",
+]

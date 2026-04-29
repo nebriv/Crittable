@@ -1,3 +1,44 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+/*
+ * Timeline → transcript scroll target highlight. The Timeline component
+ * sets ``data-flash="1"`` on the message bubble for ~1.4s after a click;
+ * this rule pulses an amber ring without depending on imperative
+ * classList mutations that React would clobber on re-render.
+ */
+[data-flash="1"] {
+  box-shadow: 0 0 0 2px rgba(252, 211, 77, 0.7);
+  transition: box-shadow 200ms ease-out;
+}
+
+/*
+ * Markdown table overflow hint. The chat bubble + AAR popup wrap GFM
+ * tables in ``overflow-x-auto`` divs marked ``data-table-scroll``;
+ * this CSS adds a subtle right-edge gradient when the table is wider
+ * than the bubble so the user notices they can scroll horizontally
+ * instead of assuming the right column is gone.
+ */
+[data-table-scroll] {
+  position: relative;
+}
+[data-table-scroll]::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 1.25rem;
+  pointer-events: none;
+  background: linear-gradient(
+    to right,
+    rgba(15, 23, 42, 0) 0%,
+    rgba(15, 23, 42, 0.85) 100%
+  );
+  opacity: 0;
+  transition: opacity 150ms ease-out;
+}
+[data-table-scroll][data-overflowing="1"]::after {
+  opacity: 1;
+}
