@@ -17,6 +17,65 @@ last system block so per-session reuse is cheap.
 
 ---
 
+## Tool-call format: JSON only
+
+Every prompt-→-tool path in this codebase uses **JSON tool use** —
+the modern Anthropic ``tool_use`` block whose ``input`` is a JSON
+object that matches the tool's declared ``input_schema``. We do NOT
+accept the legacy ``<invoke>`` /
+``<parameter name="...">…</parameter>`` / ``<![CDATA[]]>`` /
+``<item>…</item>`` XML function-call format anywhere — not as a
+fallback, not as a recovery shape, not at all.
+
+What this means in practice:
+
+- Tool definitions in [`backend/app/llm/tools.py`](../backend/app/llm/tools.py)
+  declare ``"input_schema": {"type": "object", "properties": {…}}``
+  with explicit ``items`` schemas on every array. The Anthropic SDK
+  forwards Claude's tool call as a parsed JSON dict.
+- Dispatch handlers in
+  [`backend/app/llm/dispatch.py`](../backend/app/llm/dispatch.py)
+  read ``args`` as a Python dict and call
+  ``Pydantic.model_validate`` on the structured fields.
+- The setup-tier system prompt (`_SETUP_SYSTEM` in `prompts.py`)
+  carries an explicit ``<format_rules>`` block plus a complete JSON
+  ``<example>`` of a `propose_scenario_plan` body so the model has
+  the shape to mimic.
+
+### Three-layer enforcement
+
+We empirically observed Haiku falling back to the legacy XML
+representation when the per-tier ``max_tokens`` budget was too tight
+for a full plan body — the JSON gets truncated mid-output and the
+model "saves space" by switching format. We do not paper over that
+with a recovery layer; we eliminate the conditions that produce it
+and hard-reject any call that still tries XML.
+
+1. **Headroom.** `LLM_MAX_TOKENS_SETUP` defaults to `12288` — enough
+   for a full plan in JSON without truncation.
+   [`docs/configuration.md`](configuration.md) covers tuning.
+2. **Instruction.** The setup prompt and the
+   `propose_scenario_plan` / `finalize_setup` tool descriptions both
+   require JSON in plain language and show a positive example.
+3. **Hard reject with a useful error.**
+   `_reject_if_xml_emission` in
+   [`dispatch.py`](../backend/app/llm/dispatch.py) detects markup
+   tokens (`<parameter`, `</parameter>`, `<![CDATA[`, `<item>`,
+   `</item>`, `<invoke>`, `</invoke>`) anywhere in the JSON values
+   and raises a `_DispatchError` whose message names the offending
+   field, restates the canonical JSON shape, and shows an inline
+   JSON example. The dispatcher returns `is_error=true` on the
+   `tool_result`; the strict-retry path replays it into the next
+   call so the model self-corrects rather than looping blind.
+
+If you see `tool_use_rejected` events with `<parameter` /
+`<item>` substrings in `input_value`, the model is still emitting
+XML despite the prompt. The fix is to investigate why (often: a new
+field type the schema doesn't constrain enough, a model swap to a
+weaker tier) — *not* to add an XML parser.
+
+---
+
 ## Play-tier system blocks
 
 Composed by `build_play_system_blocks(session, registry)` and cached

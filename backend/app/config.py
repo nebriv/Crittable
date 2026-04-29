@@ -46,7 +46,17 @@ _MAX_TOKENS_DEFAULTS: dict[ModelTier, int] = {
     # plan calls were the cause of the "AI didn't propose a plan yet"
     # loop observed on 2026-04-29 — every retry hit ``stop_reason:
     # max_tokens`` and the partial JSON failed validation.
-    "setup": 4096,
+    #
+    # 4096 was still too tight for verbose Haiku plans on rich
+    # scenarios (observed in a follow-up session: model emitted JSON
+    # for half the fields, then truncated and fell back to legacy
+    # ``<parameter name="…">…</parameter>`` XML for the rest, which
+    # ``_normalize_plan`` now recovers but at the cost of a wasted
+    # call). 12288 gives the model ~3x headroom for a typical plan
+    # body and is still cheap on Haiku 4.5 (Haiku is dollar-cheap; the
+    # bottleneck is wall-clock, not spend). Operators on a tight
+    # budget can dial it back via ``LLM_MAX_TOKENS_SETUP``.
+    "setup": 12288,
     "aar": 4096,
     "guardrail": 12,
 }

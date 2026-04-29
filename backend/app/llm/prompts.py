@@ -165,7 +165,42 @@ _SETUP_SYSTEM = (
     "Tools with empty arrays are rejected and the call fails. The play "
     "tier has nothing to facilitate against without this structure — "
     "it produces a stuck, freeforming exercise. Take the time to "
-    "populate them properly even if the creator says 'just go'."
+    "populate them properly even if the creator says 'just go'.\n\n"
+    "<format_rules>\n"
+    "Emit the tool ``input`` as a JSON object matching the tool's "
+    "``input_schema``. Strings are JSON strings; arrays are JSON "
+    "arrays; objects are JSON objects. The dispatcher hard-rejects "
+    "any call whose JSON values contain legacy XML function-call "
+    "markup (``<parameter name=\"...\">``, ``<![CDATA[...]]>``, "
+    "``<item>...</item>``, ``<invoke>``). When rejected you will see "
+    "``is_error=true`` on the next turn's ``tool_result`` — re-emit "
+    "the same content as JSON, do not retry the XML form.\n"
+    "<example>\n"
+    "{\n"
+    '  "title": "Phishing-led ransomware",\n'
+    '  "executive_summary": "Finance team breach via vendor token.",\n'
+    '  "key_objectives": [\n'
+    '    "Containment decision documented before beat 3",\n'
+    '    "Comms drafted and reviewed by Legal",\n'
+    '    "Vendor service account rotated"\n'
+    "  ],\n"
+    '  "narrative_arc": [\n'
+    '    {"beat": 1, "label": "Detection & triage", '
+    '"expected_actors": ["CISO", "SOC"]},\n'
+    '    {"beat": 2, "label": "Containment", '
+    '"expected_actors": ["IR Lead"]},\n'
+    '    {"beat": 3, "label": "Comms", '
+    '"expected_actors": ["Comms", "Legal"]}\n'
+    "  ],\n"
+    '  "injects": [\n'
+    '    {"trigger": "after beat 1", "type": "event", '
+    '"summary": "Second host shows lateral activity"},\n'
+    '    {"trigger": "after beat 2", "type": "critical", '
+    '"summary": "Reporter calls about leaked screenshot"}\n'
+    "  ]\n"
+    "}\n"
+    "</example>\n"
+    "</format_rules>"
 )
 
 _AAR_SYSTEM = (
