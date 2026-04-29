@@ -112,6 +112,10 @@ export const api = {
     scenario_prompt: string;
     creator_label: string;
     creator_display_name: string;
+    /** Skip the AI auto-greet + drop the default plan in one shot.
+     *  Mirrors ``POST /api/sessions/{id}/setup/skip`` but avoids the
+     *  wasted auto-greet LLM call. Used by the frontend's Dev mode. */
+    skip_setup?: boolean;
   }): Promise<{
     session_id: string;
     creator_role_id: string;

@@ -168,18 +168,28 @@ export function Facilitator() {
     e.preventDefault();
     setError(null);
     setBusy(true);
-    setBusyMessage("Creating session and starting AI setup dialogue…");
+    setBusyMessage(
+      devMode
+        ? "Dev mode: drafting the plan and starting the exercise…"
+        : "Creating session and starting AI setup dialogue…",
+    );
     try {
       const created = await api.createSession({
         scenario_prompt: _composeScenarioPrompt(setupParts),
         creator_label: creatorLabel,
         creator_display_name: creatorDisplayName,
+        // Dev mode skips the AI auto-greet AND installs the default
+        // plan in the SAME request. Saves an LLM call and avoids the
+        // bare-text-leak failure mode that pollutes the play
+        // transcript with setup-style assistant prose.
+        skip_setup: devMode,
       });
       // Don't log the response object — it carries the creator token in
       // ``creator_token`` and ``creator_join_url``. Log only non-secret IDs.
       console.info("[facilitator] session created", {
         sessionId: created.session_id,
         creatorRoleId: created.creator_role_id,
+        devMode,
       });
       setState({
         sessionId: created.session_id,
@@ -188,9 +198,23 @@ export function Facilitator() {
         joinUrl: created.creator_join_url,
       });
       if (devMode) {
-        setBusyMessage("Dev mode: skipping setup with a default plan…");
-        await api.setupSkip(created.session_id, created.creator_token);
-        console.info("[facilitator] dev mode auto-skipped setup");
+        // ``start_session`` requires ≥ 2 player roles. Dev mode auto-
+        // adds a SOC Analyst seat so the operator can solo-test via the
+        // ``Respond as`` dropdown. The role is a normal player — the
+        // operator can kick + reissue / remove it like any other.
+        setBusyMessage("Dev mode: adding SOC Analyst seat…");
+        await api.addRole(created.session_id, created.creator_token, {
+          label: "SOC Analyst",
+          display_name: "Dev Bot",
+          kind: "player",
+        });
+        // Auto-start the exercise: by the time the user lands on the
+        // play screen the AI's first beat is already in the transcript
+        // (``/start`` runs the play turn synchronously). Restores the
+        // pre-multi-prompt one-click dev flow.
+        setBusyMessage("Dev mode: AI drafting the first beat…");
+        await api.start(created.session_id, created.creator_token);
+        console.info("[facilitator] dev mode auto-started exercise");
       }
       const snap = await api.getSession(created.session_id, created.creator_token);
       setSnapshot(snap);

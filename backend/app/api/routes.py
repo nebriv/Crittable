@@ -24,9 +24,19 @@ from ..sessions.turn_engine import IllegalTransitionError
 
 class CreateSessionBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    scenario_prompt: str = Field(min_length=1, max_length=4000)
+    # Bumped from 4000 to 8000: the multi-prompt intro composes four
+    # sections (scenario / team / environment / constraints) plus
+    # headers, which can run past 4000 chars on a richly-described
+    # exercise.
+    scenario_prompt: str = Field(min_length=1, max_length=8000)
     creator_label: str = Field(min_length=1, max_length=64)
     creator_display_name: str = Field(min_length=1, max_length=64)
+    # When true, skip the AI auto-greet during session creation, drop
+    # the default ransomware plan, and transition straight to READY.
+    # Same end-state as ``POST /api/sessions/{id}/setup/skip`` but
+    # avoids the wasted auto-greet LLM call (and the bare-text leak
+    # bug it can produce). Used by the frontend's "Dev mode" toggle.
+    skip_setup: bool = False
 
 
 class AddRoleBody(BaseModel):
@@ -110,11 +120,16 @@ def register_api_routes(app: FastAPI) -> None:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
 
         settings = request.app.state.settings
-        fast_setup = bool(settings.dev_fast_setup)
+        # Either env (``DEV_FAST_SETUP``) or per-request (``skip_setup``)
+        # triggers the no-auto-greet path. Per-request wins: an operator
+        # might want dev mode for one session and full setup for another.
+        skip_setup = body.skip_setup or bool(settings.dev_fast_setup)
 
-        if fast_setup:
+        if skip_setup:
             # Dev convenience: skip the AI setup dialogue, drop a minimal plan,
-            # and transition straight to READY.
+            # and transition straight to READY. Avoids the auto-greet LLM
+            # call AND the bare-text-leak failure mode that can pollute
+            # the play transcript with setup-style assistant prose.
             await manager.finalize_setup(
                 session_id=session.id,
                 plan=_default_dev_plan(session.scenario_prompt),
@@ -138,7 +153,7 @@ def register_api_routes(app: FastAPI) -> None:
             "creator_role_id": session.creator_role_id,
             "creator_token": token,
             "creator_join_url": f"/play/{token}",
-            "fast_setup": fast_setup,
+            "skip_setup": skip_setup,
         }
 
     @router.post("/sessions/{session_id}/roles")

@@ -97,11 +97,24 @@ class TurnDriver:
 
             tool_uses = _tool_uses(result)
             if not tool_uses:
-                # Bare text — append and yield to creator
+                # Bare text — append and yield to creator. Tag with the
+                # ``setup_bare_text`` synthetic tool_name so
+                # ``_play_messages`` filters it out: the setup-tier
+                # conversation must NOT leak into the play history (the
+                # play AI would otherwise continue the setup-style
+                # thread and ask follow-up questions instead of
+                # narrating the brief). Pre-fix this was a real bug —
+                # operators using dev mode + multi-prompt setup would
+                # land on the play screen and see the AI re-asking
+                # setup questions.
                 text = _all_text(result)
                 if text:
                     session.messages.append(
-                        Message(kind=MessageKind.AI_TEXT, body=text)
+                        Message(
+                            kind=MessageKind.AI_TEXT,
+                            body=text,
+                            tool_name="setup_bare_text",
+                        )
                     )
                 return session
 
@@ -518,7 +531,17 @@ def _setup_messages(session: Session) -> list[dict[str, Any]]:
 
 
 _SETUP_TOOL_NAMES = frozenset(
-    {"ask_setup_question", "propose_scenario_plan", "finalize_setup"}
+    {
+        "ask_setup_question",
+        "propose_scenario_plan",
+        "finalize_setup",
+        # Synthetic marker: see ``run_setup_turn`` bare-text branch.
+        # Tagging the setup-tier AI text with this name lets
+        # ``_play_messages`` filter it the same way actual setup-tool
+        # messages are filtered — keeping the setup conversation out
+        # of the play tier's history.
+        "setup_bare_text",
+    }
 )
 
 _KICKOFF_USER_MSG = (

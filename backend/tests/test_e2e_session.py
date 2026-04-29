@@ -376,7 +376,7 @@ def test_dev_fast_setup_env(monkeypatch) -> None:
             },
         )
         body = resp.json()
-        assert body["fast_setup"] is True
+        assert body["skip_setup"] is True
         snap = c.get(
             f"/api/sessions/{body['session_id']}?token={body['creator_token']}"
         ).json()
@@ -2352,6 +2352,99 @@ def test_max_participant_submission_chars_truncates(monkeypatch) -> None:
         assert "[message truncated by server]" in body
         # The user-visible content (before the marker) is exactly capped.
         assert len(body.split("\n[message truncated by server]")[0]) == 30
+
+
+def test_skip_setup_flag_avoids_auto_greet(client: TestClient) -> None:
+    """``POST /api/sessions`` with ``skip_setup=true`` should NOT call
+    the setup-tier model — the default plan is dropped in one shot
+    and the session lands in READY. Counter-test: without the flag,
+    the auto-greet runs (one setup-tier call)."""
+
+    from tests.mock_anthropic import MockAnthropic, _ContentBlock, _Response
+
+    # If the auto-greet runs, this script will be popped (and the test
+    # will see a setup_tier call in the call log).
+    bare_text = _Response(
+        content=[_ContentBlock(type="text", text="Welcome to setup.")],
+        stop_reason="end_turn",
+    )
+    mock = MockAnthropic({"setup": [bare_text, bare_text]})
+    client.app.state.llm.set_transport(mock.messages)
+
+    # ``skip_setup=true`` path.
+    r = client.post(
+        "/api/sessions",
+        json={
+            "scenario_prompt": "Ransomware via vendor portal",
+            "creator_label": "CISO",
+            "creator_display_name": "Alex",
+            "skip_setup": True,
+        },
+    )
+    assert r.status_code == 200, r.text
+    sid = r.json()["session_id"]
+    cr = r.json()["creator_token"]
+    snap = client.get(f"/api/sessions/{sid}?token={cr}").json()
+    # Default plan is in place + state is READY immediately.
+    assert snap["state"] == "READY"
+    assert snap["plan"] is not None
+    # CRITICAL: no setup-tier LLM call happened.
+    assert len(mock.messages.calls) == 0, mock.messages.calls
+
+
+def test_setup_bare_text_does_not_leak_into_play_messages(client: TestClient) -> None:
+    """When the setup-tier model returns bare text (no tool call) the
+    text used to land in ``session.messages`` without a ``tool_name``,
+    so the play-tier ``_play_messages`` builder didn't filter it. The
+    play AI then continued the setup-style thread and asked follow-up
+    questions instead of narrating the brief.
+
+    The fix tags the bare text with ``tool_name='setup_bare_text'`` so
+    it's filtered alongside the proper setup-tool messages."""
+
+    from app.sessions.turn_driver import _play_messages
+    from tests.mock_anthropic import MockAnthropic, _ContentBlock, _Response
+
+    bare_text = _Response(
+        content=[
+            _ContentBlock(
+                type="text",
+                text="Good morning. Question 1: Scope?",
+            ),
+        ],
+        stop_reason="end_turn",
+    )
+    mock = MockAnthropic({"setup": [bare_text]})
+    client.app.state.llm.set_transport(mock.messages)
+
+    # Auto-greet creates a session and runs the setup turn — bare text
+    # gets tagged with ``setup_bare_text`` and lands in messages.
+    r = client.post(
+        "/api/sessions",
+        json={
+            "scenario_prompt": "Ransomware via vendor portal",
+            "creator_label": "CISO",
+            "creator_display_name": "Alex",
+        },
+    )
+    assert r.status_code == 200
+    sid = r.json()["session_id"]
+
+    import asyncio
+
+    async def _fetch_session():
+        return await client.app.state.manager.get_session(sid)
+
+    session = asyncio.run(_fetch_session())
+    # The bare text IS persisted (auditable) — but tagged.
+    assert any(
+        m.tool_name == "setup_bare_text" and "Question 1" in m.body
+        for m in session.messages
+    ), [(m.kind, m.tool_name, m.body[:30]) for m in session.messages]
+    # The play-message builder filters it out.
+    play_msgs = _play_messages(session, strict=False)
+    rendered = "\n".join(str(m.get("content", "")) for m in play_msgs)
+    assert "Question 1: Scope" not in rendered, play_msgs
 
 
 def test_max_setup_turns_caps_chained_calls(monkeypatch) -> None:
