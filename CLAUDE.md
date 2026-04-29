@@ -61,6 +61,16 @@ Run them with `Agent({ subagent_type: "general-purpose", run_in_background: true
 
 Custom tools, resources, and prompts (Skills-style) are loaded at startup via env-var JSON. See [`docs/extensions.md`](docs/extensions.md) for the schema and the **prompt-injection guardrails** — extension content always flows through Claude as `tool_result`, never as system content; declarative handlers only (`templated_text`, `static_text`).
 
+## Engine-side phase policy (read before touching any LLM call site)
+
+[`backend/app/sessions/phase_policy.py`](backend/app/sessions/phase_policy.py) is the **single source of truth** for "what is the LLM allowed to do in tier X at session state Y?" Do not duplicate these rules elsewhere. Three enforcement points consume it:
+
+1. **`turn_driver.py`** — every `run_*_turn` calls `assert_state(tier, session.state)` at entry. A `PhaseViolation` here means the calling code is wrong, not the LLM.
+2. **`llm/client.py` (`acomplete` + `astream`)** — calls `filter_allowed_tools(tier, tools, extension_tool_names=…)` before forwarding to Anthropic and logs `phase_policy_dropped_tools` for any dropped names. Pass extension tool names explicitly when running the play tier so they survive the filter.
+3. **`llm/dispatch.py`** — rejects forbidden tool calls at runtime and returns `is_error=True` in the `tool_result`. The strict-retry path in `turn_driver.py` feeds those `tool_result` blocks back to the model so it self-corrects rather than retrying blind. **Never silently drop a tool call** — the model will get stuck repeating it.
+
+Adding a new tier or tool: update `phase_policy.POLICIES`, add `ALLOWED_*_TOOL_NAMES` to the relevant frozenset, and run `pytest backend/tests/test_phase_policy.py`. Adding a new tool to an existing tier: add it to that tier's `_<TIER>_TOOL_NAMES` constant.
+
 ## Coding conventions
 
 - Python: `ruff` (config in `backend/pyproject.toml`), `mypy --strict`. No `print` or stdlib `logging` in business code — use `structlog`.

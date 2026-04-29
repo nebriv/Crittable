@@ -48,7 +48,7 @@ rationale for each default lives in `backend/app/config.py`
 |---|---|---|
 | `LLM_STRICT_RETRY_MAX` | `1` | Number of strict retries the play-turn driver attempts when the AI fails to yield via `set_active_roles`. Lift to `2`–`3` for flakier models (e.g. local LLMs that struggle with tool-use enforcement); set to `0` to disable strict retry entirely. |
 | `MAX_SETUP_TURNS` | `4` | Safety cap on chained tool calls within a single setup turn. Lift if you want the setup model to chain `ask_setup_question` → `propose_scenario_plan` → `finalize_setup` in one cycle. |
-| `MAX_PARTICIPANT_SUBMISSION_CHARS` | `4000` | Hard cap on a player message. Submissions are *truncated* (not rejected); the engine sends an `error` WS event so the player knows their text was clipped. |
+| `MAX_PARTICIPANT_SUBMISSION_CHARS` | `4000` | Hard cap on a player message. Submissions are *truncated* (not rejected); the engine appends a `[message truncated by server]` marker and sends a `submission_truncated` WS event (rendered as a slate info pill, not a red error) so the player knows their text was clipped. |
 
 ## Session limits
 

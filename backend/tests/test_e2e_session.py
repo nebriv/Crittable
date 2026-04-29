@@ -2392,15 +2392,13 @@ def test_skip_setup_flag_avoids_auto_greet(client: TestClient) -> None:
     assert len(mock.messages.calls) == 0, mock.messages.calls
 
 
-def test_setup_bare_text_does_not_leak_into_play_messages(client: TestClient) -> None:
-    """When the setup-tier model returns bare text (no tool call) the
-    text used to land in ``session.messages`` without a ``tool_name``,
-    so the play-tier ``_play_messages`` builder didn't filter it. The
-    play AI then continued the setup-style thread and asked follow-up
-    questions instead of narrating the brief.
-
-    The fix tags the bare text with ``tool_name='setup_bare_text'`` so
-    it's filtered alongside the proper setup-tool messages."""
+def test_setup_bare_text_is_discarded(client: TestClient) -> None:
+    """If the setup-tier model returns bare text (no tool call) — which
+    should be impossible under the structural ``tool_choice="any"``
+    pin, but tests can bypass that — the engine MUST discard the
+    text rather than persist it. Pre-fix the bare text landed in
+    ``session.messages`` and the play AI continued the setup-style
+    thread on its first play turn."""
 
     from app.sessions.turn_driver import _play_messages
     from tests.mock_anthropic import MockAnthropic, _ContentBlock, _Response
@@ -2417,8 +2415,6 @@ def test_setup_bare_text_does_not_leak_into_play_messages(client: TestClient) ->
     mock = MockAnthropic({"setup": [bare_text]})
     client.app.state.llm.set_transport(mock.messages)
 
-    # Auto-greet creates a session and runs the setup turn — bare text
-    # gets tagged with ``setup_bare_text`` and lands in messages.
     r = client.post(
         "/api/sessions",
         json={
@@ -2436,12 +2432,13 @@ def test_setup_bare_text_does_not_leak_into_play_messages(client: TestClient) ->
         return await client.app.state.manager.get_session(sid)
 
     session = asyncio.run(_fetch_session())
-    # The bare text IS persisted (auditable) — but tagged.
-    assert any(
-        m.tool_name == "setup_bare_text" and "Question 1" in m.body
-        for m in session.messages
-    ), [(m.kind, m.tool_name, m.body[:30]) for m in session.messages]
-    # The play-message builder filters it out.
+    # The bare text MUST NOT be persisted to session.messages. No
+    # message body should contain the setup-style prose.
+    for m in session.messages:
+        assert "Question 1: Scope" not in m.body, (
+            "setup-tier bare text leaked into session.messages: " f"{m!r}"
+        )
+    # And the play-message builder shouldn't see it either.
     play_msgs = _play_messages(session, strict=False)
     rendered = "\n".join(str(m.get("content", "")) for m in play_msgs)
     assert "Question 1: Scope" not in rendered, play_msgs
@@ -2509,6 +2506,86 @@ def test_max_setup_turns_caps_chained_calls(monkeypatch) -> None:
 
         asyncio.run(_drive_again())
         assert len(mock.messages.calls) == 4, mock.messages.calls
+
+
+def test_strict_retry_feeds_dispatcher_rejection_back_to_model(client: TestClient) -> None:
+    """When the model emits a non-yielding tool call (e.g. ``broadcast``
+    only), the dispatcher records ``tool_results`` and the engine flips
+    to strict mode. On the strict retry, those tool_results MUST be
+    fed back to the model as the user turn so the model sees its own
+    prior ``tool_use`` blocks + the engine's "not a yielding call"
+    feedback. Pre-fix the rejection was recorded but the model never
+    saw it — it was retrying blind.
+
+    The contract: the strict-retry API call's ``messages`` array must
+    contain (somewhere) an assistant turn with the prior
+    ``tool_use(name='broadcast')`` and a user turn with a matching
+    ``tool_result`` block."""
+
+    from tests.mock_anthropic import MockAnthropic, _ContentBlock, _Response
+
+    seats = _create_and_seat(client, role_count=2)
+    sid = seats["session_id"]
+    cr = seats["creator_token"]
+
+    # Attempt 1: non-yielding broadcast.
+    non_yielding = _Response(
+        content=[
+            _ContentBlock(
+                type="tool_use",
+                name="broadcast",
+                input={"message": "FYI."},
+                id="tu_b1",
+            ),
+        ],
+        stop_reason="tool_use",
+    )
+    # Attempt 2: actually yields.
+    yielding = _Response(
+        content=[
+            _ContentBlock(
+                type="tool_use",
+                name="set_active_roles",
+                input={"role_ids": [seats["role_ids"][1]]},
+                id="tu_set",
+            ),
+        ],
+        stop_reason="tool_use",
+    )
+    mock = MockAnthropic({"play": [non_yielding, yielding]})
+    client.app.state.llm.set_transport(mock.messages)
+
+    client.post(f"/api/sessions/{sid}/setup/skip?token={cr}")
+    r = client.post(f"/api/sessions/{sid}/start?token={cr}")
+    assert r.status_code == 200, r.text
+
+    # Two play-tier calls: one non-yielding, one strict-retry yielding.
+    assert len(mock.messages.calls) == 2
+    retry_kwargs = mock.messages.calls[1]
+    msgs = retry_kwargs["messages"]
+    # The retry must include an assistant turn with the prior tool_use
+    # AND a user turn with the matching tool_result. Find them.
+    found_assistant_tool_use = False
+    found_user_tool_result = False
+    for m in msgs:
+        if m["role"] == "assistant" and isinstance(m.get("content"), list):
+            for block in m["content"]:
+                if (
+                    isinstance(block, dict)
+                    and block.get("type") == "tool_use"
+                    and block.get("name") == "broadcast"
+                ):
+                    found_assistant_tool_use = True
+        if m["role"] == "user" and isinstance(m.get("content"), list):
+            for block in m["content"]:
+                if (
+                    isinstance(block, dict)
+                    and block.get("type") == "tool_result"
+                    and block.get("tool_use_id") == "tu_b1"
+                ):
+                    found_user_tool_result = True
+    assert found_assistant_tool_use, msgs
+    assert found_user_tool_result, msgs
 
 
 def test_strict_retry_max_two_runs_three_attempts(monkeypatch) -> None:

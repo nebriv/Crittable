@@ -99,6 +99,16 @@ ai-tabletop-facilitator/
 
 `SessionManager` holds a per-session `asyncio.Lock` so transitions on one session never block another. A global lock is explicitly avoided. `TurnEngine` is a pure state machine (no I/O); the manager is the only thing that mutates session state and persists via the repository.
 
+### Engine-side phase policy (do not trust the LLM)
+
+`backend/app/sessions/phase_policy.py` is the single source of truth for "what is the LLM allowed to do in tier X at session state Y?" The prompts express the facilitator's intent, but the engine enforces the contract in Python at three boundaries:
+
+1. **Entry-state assertion** — every `run_*_turn` calls `assert_state(tier, session.state)` so a refactor that calls the play tier during `ENDED`, etc., fails loudly instead of producing surprising LLM output.
+2. **Tool-list filter** — `LLMClient.acomplete` / `astream` call `filter_allowed_tools(tier, tools, extension_tool_names=…)` before forwarding to Anthropic and audit-log any dropped names. Operator extensions are passed through on the play tier; no other tier accepts them.
+3. **Tool-choice posture + dispatcher rejection** — each tier pins a `tool_choice` posture (setup = `{"type":"any"}` always, AAR = `{"type":"tool","name":"finalize_report"}`, play = `auto` with strict-retry pinning to `set_active_roles`). The dispatcher rejects forbidden tool calls at runtime and returns `is_error=True` `tool_result` blocks; the strict-retry path feeds those back to the model so it self-corrects on the next attempt rather than retrying blind.
+
+See [`architecture.md`](architecture.md#phase-policy--engine-side-guardrails) for the table.
+
 ### WebSocket fan-out
 
 `ConnectionManager` maintains, per session, a set of connections. Each connection has its own `asyncio.Queue` so a slow client cannot block fan-out to others. The manager exposes `broadcast(session_id, event)` and `send_to_role(session_id, role_id, event)` — these are the **only** API the rest of the app uses, so a Phase-3 swap to Redis pub-sub is an internal change to this class.
@@ -320,6 +330,16 @@ CLAUDE.md must reference these milestones explicitly; every sub-agent review beg
 ---
 
 ## Phase 2 — MVP
+
+> **Status: complete.** All 9 epics (#11–#19) closed; the bow-tying
+> additions in PR #29 added per-tier sampling/timeout knobs,
+> `ANTHROPIC_BASE_URL`, the engine-side phase policy guardrails
+> (`backend/app/sessions/phase_policy.py`), the strict-retry feedback
+> loop (the model sees its own prior `tool_use` + dispatcher
+> `tool_result` blocks on retry), the HTTP access-log middleware, AI
+> auto-interject on direct questions, and the multi-section setup
+> intro. See [`architecture.md`](architecture.md#phase-policy--engine-side-guardrails)
+> for the live shape.
 
 No authentication beyond signed join tokens, but every modern necessity scaffolded.
 

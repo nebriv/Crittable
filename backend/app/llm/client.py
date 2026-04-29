@@ -229,6 +229,7 @@ class LLMClient:
         max_tokens: int | None = None,
         session_id: str | None = None,
         tool_choice: dict[str, Any] | None = None,
+        extension_tool_names: frozenset[str] | None = None,
     ) -> LLMResult:
         """One-shot, non-streamed completion. Streaming for play turns goes via
         :meth:`astream`.
@@ -253,7 +254,24 @@ class LLMClient:
             "max_tokens": max_tokens,
         }
         if tools:
-            kwargs["tools"] = tools
+            # Engine-side tool gate. Drop anything not in the tier's
+            # ``allowed_tool_names`` (plus ``extension_tool_names`` for
+            # the play tier). Pre-fix a misbehaving caller could pass
+            # ``SETUP_TOOLS`` to a play call and the model would have
+            # access to ``ask_setup_question`` mid-exercise.
+            from ..sessions.phase_policy import filter_allowed_tools
+
+            kept, dropped = filter_allowed_tools(
+                tier, tools, extension_tool_names=extension_tool_names
+            )
+            if dropped:
+                _logger.warning(
+                    "phase_policy_dropped_tools",
+                    tier=tier,
+                    dropped=dropped,
+                )
+            if kept:
+                kwargs["tools"] = kept
         _validate_tool_choice(tool_choice)
         if tool_choice:
             kwargs["tool_choice"] = tool_choice
@@ -316,6 +334,7 @@ class LLMClient:
         max_tokens: int | None = None,
         session_id: str | None = None,
         tool_choice: dict[str, Any] | None = None,
+        extension_tool_names: frozenset[str] | None = None,
     ) -> AsyncIterator[dict[str, Any]]:
         """Yield streamed events. The terminal event has ``type == "complete"``
         and carries the final ``LLMResult`` under the ``result`` key.
@@ -337,7 +356,24 @@ class LLMClient:
             "max_tokens": max_tokens,
         }
         if tools:
-            kwargs["tools"] = tools
+            # Engine-side tool gate. Drop anything not in the tier's
+            # ``allowed_tool_names`` (plus ``extension_tool_names`` for
+            # the play tier). Pre-fix a misbehaving caller could pass
+            # ``SETUP_TOOLS`` to a play call and the model would have
+            # access to ``ask_setup_question`` mid-exercise.
+            from ..sessions.phase_policy import filter_allowed_tools
+
+            kept, dropped = filter_allowed_tools(
+                tier, tools, extension_tool_names=extension_tool_names
+            )
+            if dropped:
+                _logger.warning(
+                    "phase_policy_dropped_tools",
+                    tier=tier,
+                    dropped=dropped,
+                )
+            if kept:
+                kwargs["tools"] = kept
         _validate_tool_choice(tool_choice)
         if tool_choice:
             kwargs["tool_choice"] = tool_choice

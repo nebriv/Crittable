@@ -36,6 +36,7 @@ from .models import (
     SessionState,
     Turn,
 )
+from .phase_policy import assert_state, tool_choice_for
 from .turn_engine import critical_inject_allowed
 
 _logger = get_logger("session.turn_driver")
@@ -70,6 +71,12 @@ class TurnDriver:
     async def run_setup_turn(self, *, session: Session) -> Session:
         """Drive one setup-tier turn. May loop internally if Claude chains tools."""
 
+        # Engine-side guardrail: setup tier may only run in SETUP state.
+        # The dispatcher already rejects play-tier tools during SETUP,
+        # but this prevents an upstream caller (refactor / new code
+        # path) from invoking the setup driver in the wrong state.
+        assert_state("setup", session.state)
+
         llm = self._manager.llm()
         dispatcher = self._manager.dispatcher()
         _logger.info(
@@ -89,6 +96,12 @@ class TurnDriver:
                 tier="setup",
                 system_blocks=build_setup_system_blocks(session),
                 messages=messages,
+                # Pin ``tool_choice`` to "any" so the model MUST emit a
+                # setup tool call. Eliminates the bare-text leak path
+                # entirely — the only way the setup tier can produce
+                # text without a tool is if the SDK contract is
+                # violated, in which case we discard below.
+                tool_choice=tool_choice_for("setup"),
                 tools=SETUP_TOOLS,
                 # Per-tier default from settings.max_tokens_for(tier) — call passes None.
                 session_id=session.id,
@@ -97,24 +110,21 @@ class TurnDriver:
 
             tool_uses = _tool_uses(result)
             if not tool_uses:
-                # Bare text — append and yield to creator. Tag with the
-                # ``setup_bare_text`` synthetic tool_name so
-                # ``_play_messages`` filters it out: the setup-tier
-                # conversation must NOT leak into the play history (the
-                # play AI would otherwise continue the setup-style
-                # thread and ask follow-up questions instead of
-                # narrating the brief). Pre-fix this was a real bug —
-                # operators using dev mode + multi-prompt setup would
-                # land on the play screen and see the AI re-asking
-                # setup questions.
+                # Bare text from the setup tier should be impossible:
+                # ``tool_choice={"type":"any"}`` forces a tool call.
+                # If we land here anyway (SDK contract violation, mock
+                # in tests, or a future refactor that drops the pin),
+                # discard the text rather than persist it — the
+                # transcript belongs to the play tier and we don't
+                # want setup-style assistant prose leaking into the
+                # play history. Log loudly so the regression is
+                # visible.
                 text = _all_text(result)
                 if text:
-                    session.messages.append(
-                        Message(
-                            kind=MessageKind.AI_TEXT,
-                            body=text,
-                            tool_name="setup_bare_text",
-                        )
+                    _logger.warning(
+                        "setup_tier_bare_text_discarded",
+                        session_id=session.id,
+                        chars=len(text),
                     )
                 return session
 
@@ -134,6 +144,12 @@ class TurnDriver:
     async def run_play_turn(self, *, session: Session, turn: Turn) -> Session:
         """Drive one play-tier turn. May retry once strictly on missing yield."""
 
+        # Engine-side guardrail: play tier may only run in BRIEFING /
+        # AI_PROCESSING (or AWAITING_PLAYERS, which is the interject
+        # path's state but ``run_play_turn`` is also reachable from
+        # ``run_interject`` via the shared ``_streamed_play_call``).
+        assert_state("play", session.state)
+
         dispatcher = self._manager.dispatcher()
         registry = self._manager.registry()
         _logger.info(
@@ -151,9 +167,35 @@ class TurnDriver:
         max_attempts = 1 + self._manager.settings().llm_strict_retry_max
         attempt = 0
         strict = False
+        # Carry the prior attempt's assistant blocks + dispatcher
+        # ``tool_result`` blocks forward so the strict-retry message
+        # context includes them as a proper Anthropic tool-loop. The
+        # model then SEES the dispatcher's rejections (e.g. "tool 'X'
+        # not allowed during STATE", "unknown role_ids: [...]") and can
+        # self-correct on the next pass instead of repeating the
+        # mistake. Pre-fix the dispatcher's ``is_error`` tool_results
+        # were recorded but never fed back to the model.
+        prior_assistant_blocks: list[dict[str, Any]] | None = None
+        prior_tool_results: list[dict[str, Any]] | None = None
         while attempt < max_attempts:
             attempt += 1
             messages = _play_messages(session, strict=strict)
+            if (
+                strict
+                and prior_assistant_blocks is not None
+                and prior_tool_results is not None
+            ):
+                # Prepend the prior attempt's tool-loop pair before the
+                # strict-retry user nudge that ``_play_messages`` appended
+                # at the end. Anthropic requires that every ``tool_use``
+                # in an assistant turn be answered by a matching
+                # ``tool_result`` in the next user turn, which is exactly
+                # what the dispatcher produced.
+                trailing_user_nudge = messages.pop() if messages and messages[-1]["role"] == "user" else None
+                messages.append({"role": "assistant", "content": prior_assistant_blocks})
+                messages.append({"role": "user", "content": prior_tool_results})
+                if trailing_user_nudge is not None:
+                    messages.append(trailing_user_nudge)
             system_blocks = build_play_system_blocks(session, registry=registry)
             tool_choice: dict[str, Any] | None = None
 
@@ -215,6 +257,12 @@ class TurnDriver:
             if attempt < max_attempts:
                 strict = True
                 turn.retried_with_strict = True
+                # Capture the model's last response + the dispatcher's
+                # rejection content so the next attempt's messages
+                # include the tool-loop pair. The model sees its own
+                # prior tool_uses + the engine's rejection rationale.
+                prior_assistant_blocks = result.content
+                prior_tool_results = list(outcome.tool_results)
 
         # Attempts exhausted — mark errored
         turn.status = "errored"
@@ -243,12 +291,27 @@ class TurnDriver:
         responses; the interject just appends the AI's answer to the
         chat. State stays ``AWAITING_PLAYERS`` throughout.
 
+        Engine-side guardrail: state must be ``AWAITING_PLAYERS`` (the
+        play tier policy permits all three play states; this path
+        narrows further).
+
         Pre-fix the operator had to either wait for every active role
         to submit (so the AI could process the full batch) or hit
         force-advance (which skipped the other roles entirely). Neither
         was right when the question was simple ("what open items do we
         have?") and the operator just wanted the AI to answer inline.
         """
+
+        # Stricter than the play-tier policy: interject only ever runs
+        # while we're waiting on players. If the engine called this in
+        # AI_PROCESSING that'd indicate a state-machine bug — fail loud.
+        if session.state != SessionState.AWAITING_PLAYERS:
+            from .phase_policy import PhaseViolation
+
+            raise PhaseViolation(
+                "run_interject requires state=AWAITING_PLAYERS; "
+                f"got {session.state.value!r}"
+            )
 
         from ..llm.prompts import INTERJECT_NOTE
 
