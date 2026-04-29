@@ -91,13 +91,13 @@ export function Composer({
           Your turn
         </label>
         {hasImpersonate ? (
-          <label className="flex items-center gap-1 text-[11px] text-slate-400">
+          <label className="flex items-center gap-1 text-xs text-slate-300">
             Respond as
             <select
               value={asRoleId}
               onChange={(e) => setAsRoleId(e.target.value)}
               disabled={!enabled}
-              className="rounded border border-slate-700 bg-slate-900 px-1 py-0.5 text-[11px] text-slate-200 focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-400 disabled:opacity-50"
+              className="rounded border border-slate-700 bg-slate-900 px-1 py-0.5 text-xs text-slate-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-400 disabled:opacity-50"
               title="Creator-only solo-test helper. Submit on behalf of another active role."
             >
               <option value="">{selfLabel ?? "self"} (you)</option>
@@ -110,6 +110,23 @@ export function Composer({
           </label>
         ) : null}
       </div>
+      {asRoleId ? (
+        // Loud impersonation banner so a creator who picked "as: SOC" but
+        // then types fast can't miss that they're about to post under
+        // someone else's name. The submit button colour shifts to amber
+        // for the same reason.
+        <p
+          className="rounded border border-amber-600/60 bg-amber-950/40 px-2 py-1 text-xs text-amber-100"
+          role="status"
+          aria-live="polite"
+        >
+          Submitting as{" "}
+          <span className="font-semibold">
+            {(impersonateOptions ?? []).find((o) => o.id === asRoleId)?.label ?? asRoleId}
+          </span>{" "}
+          (proxy)
+        </p>
+      ) : null}
       <textarea
         id="composer"
         value={text}
@@ -117,12 +134,18 @@ export function Composer({
         placeholder={placeholder}
         disabled={!enabled}
         rows={3}
-        className="w-full rounded border border-slate-700 bg-slate-900 p-2 text-sm text-slate-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-400 disabled:opacity-50"
+        className={`w-full rounded border ${
+          asRoleId ? "border-amber-600/60" : "border-slate-700"
+        } bg-slate-900 p-2 text-sm text-slate-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-400 disabled:opacity-50`}
       />
       <button
         type="submit"
         disabled={!enabled || !text.trim()}
-        className="self-end rounded bg-sky-600 px-3 py-1 text-sm font-semibold text-white hover:bg-sky-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-300 disabled:opacity-50"
+        className={`self-end rounded px-3 py-1 text-sm font-semibold text-white focus-visible:outline focus-visible:outline-2 disabled:opacity-50 ${
+          asRoleId
+            ? "bg-amber-600 hover:bg-amber-500 focus-visible:outline-amber-300"
+            : "bg-sky-600 hover:bg-sky-500 focus-visible:outline-sky-300"
+        }`}
       >
         Submit{asRoleId ? " (proxy)" : ""}
       </button>

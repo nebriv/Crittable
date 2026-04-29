@@ -21,7 +21,7 @@ interface Props {
 export function RightSidebar({ messages, roles, notesStorageKey }: Props) {
   return (
     <>
-      <aside className="hidden flex-col gap-4 lg:flex min-h-0">
+      <aside className="hidden flex-col gap-4 lg:flex lg:min-h-0 lg:overflow-y-auto lg:pr-1">
         <Timeline messages={messages} roles={roles} />
         {notesStorageKey ? <NotesPanel storageKey={notesStorageKey} /> : null}
       </aside>

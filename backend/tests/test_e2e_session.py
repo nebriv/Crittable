@@ -1876,3 +1876,135 @@ def test_admin_proxy_respond_impersonates_role(client: TestClient) -> None:
     ]
     assert len(proxied) == 1, [m for m in snap["messages"] if m["role_id"] == other_role_id]
     assert other_role_id in (snap["current_turn"]["submitted_role_ids"] or [])
+
+    # Submitting again for the same role must 409 — ``can_submit`` rejects
+    # double-submits.
+    r = client.post(
+        f"/api/sessions/{sid}/admin/proxy-respond?token={cr}",
+        json={"as_role_id": other_role_id, "content": "second"},
+    )
+    assert r.status_code == 409, r.text
+
+
+def test_play_block_10_lists_seated_and_unseated_roles() -> None:
+    """Lock the Block 10 contract: every seated role.id appears in the
+    rendered system text, the "Plan-mentioned but NOT seated" header is
+    present, the explicit roster_rules instruction is appended, and the
+    AI is told it can re-read the block on every turn (mid-session
+    role-join support)."""
+
+    from app.extensions.registry import FrozenRegistry
+    from app.llm.prompts import build_play_system_blocks
+    from app.sessions.models import (
+        Role,
+        ScenarioBeat,
+        ScenarioPlan,
+        Session,
+        SessionState,
+    )
+
+    session = Session(
+        scenario_prompt="ransomware",
+        roles=[
+            Role(id="role-ciso", label="CISO", display_name="Alex", is_creator=True),
+            Role(id="role-soc", label="SOC Analyst", display_name="Sam"),
+        ],
+        state=SessionState.AWAITING_PLAYERS,
+        plan=ScenarioPlan(
+            title="Test",
+            executive_summary="x",
+            key_objectives=["a"],
+            narrative_arc=[
+                ScenarioBeat(
+                    beat=1,
+                    label="Containment",
+                    expected_actors=["SOC Analyst", "IR Lead", "Legal"],
+                ),
+            ],
+        ),
+    )
+    blocks = build_play_system_blocks(
+        session,
+        registry=FrozenRegistry(tools={}, resources={}, prompts={}),
+    )
+    text = blocks[0]["text"]
+    # Every seated role.id must appear in the table so the model can pass
+    # opaque ids.
+    assert "`role-ciso`" in text
+    assert "`role-soc`" in text
+    # Unseated plan actors must appear in the dedicated section, NOT in
+    # the seated table.
+    assert "Plan-mentioned but NOT seated" in text
+    assert "IR Lead" in text
+    assert "Legal" in text
+    # Mid-session join hint.
+    assert "mid-session" in text
+    # Hard rule: opaque ids only.
+    assert "opaque id" in text
+
+
+def test_address_role_rejects_unknown_label() -> None:
+    """``address_role`` and ``request_artifact`` are still hard-error on
+    an unresolvable single ref (asymmetric vs ``set_active_roles`` which
+    is now soft-success). Lock the contract so a future refactor doesn't
+    silently flip behavior."""
+
+    import asyncio
+
+    from app.auth.audit import AuditLog
+    from app.extensions.dispatch import ExtensionDispatcher
+    from app.extensions.registry import FrozenRegistry
+    from app.llm.dispatch import ToolDispatcher
+    from app.sessions.models import Role, Session, SessionState
+    from app.ws.connection_manager import ConnectionManager
+
+    session = Session(
+        scenario_prompt="x",
+        roles=[Role(id="role-ciso", label="CISO", is_creator=True)],
+        state=SessionState.AWAITING_PLAYERS,
+    )
+    audit = AuditLog()
+    registry = FrozenRegistry(tools={}, resources={}, prompts={})
+    dispatcher = ToolDispatcher(
+        connections=ConnectionManager(),
+        audit=audit,
+        extension_dispatcher=ExtensionDispatcher(registry=registry, audit=audit),
+        registry=registry,
+    )
+
+    async def _run() -> None:
+        # Bad ref → tool_result with is_error=True
+        outcome = await dispatcher.dispatch(
+            session=session,
+            tool_uses=[
+                {
+                    "name": "address_role",
+                    "id": "tu_bad",
+                    "input": {"role_id": "Marketing", "message": "hi"},
+                }
+            ],
+            turn_id=None,
+            critical_inject_allowed_cb=lambda: True,
+        )
+        bad = [r for r in outcome.tool_results if r["tool_use_id"] == "tu_bad"]
+        assert bad and bad[0]["is_error"], outcome.tool_results
+
+        # Valid label → resolves to id and produces a message.
+        outcome2 = await dispatcher.dispatch(
+            session=session,
+            tool_uses=[
+                {
+                    "name": "address_role",
+                    "id": "tu_ok",
+                    "input": {"role_id": "CISO", "message": "Hi CISO"},
+                }
+            ],
+            turn_id=None,
+            critical_inject_allowed_cb=lambda: True,
+        )
+        ok = [r for r in outcome2.tool_results if r["tool_use_id"] == "tu_ok"]
+        assert ok and not ok[0].get("is_error"), outcome2.tool_results
+        assert outcome2.appended_messages
+        assert outcome2.appended_messages[0].tool_args["role_id"] == "role-ciso"
+
+    asyncio.run(_run())

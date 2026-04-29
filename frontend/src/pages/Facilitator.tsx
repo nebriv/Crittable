@@ -517,7 +517,7 @@ export function Facilitator() {
   const playerCount = snapshot.roles.filter((r) => r.kind === "player").length;
 
   return (
-    <main className="flex h-screen min-h-0 flex-col overflow-hidden">
+    <main className="flex min-h-screen flex-col lg:h-screen lg:min-h-0 lg:overflow-hidden">
       {criticalBanner ? (
         <CriticalEventBanner
           {...criticalBanner}
@@ -534,8 +534,8 @@ export function Facilitator() {
         onToggleGodMode={() => setGodMode((g) => !g)}
         godMode={godMode}
       />
-      <div className="mx-auto grid min-h-0 w-full max-w-7xl flex-1 grid-cols-1 gap-4 overflow-hidden p-4 lg:grid-cols-[280px_1fr_280px]">
-        <aside className="flex min-h-0 flex-col gap-4 overflow-y-auto pr-1">
+      <div className="mx-auto grid w-full max-w-7xl flex-1 grid-cols-1 gap-4 p-4 lg:min-h-0 lg:grid-cols-[280px_1fr_280px] lg:overflow-hidden">
+        <aside className="flex flex-col gap-4 lg:min-h-0 lg:overflow-y-auto lg:pr-1">
           <RolesPanel
             sessionId={state.sessionId}
             creatorToken={state.token}
@@ -575,7 +575,7 @@ export function Facilitator() {
           />
         </aside>
 
-        <section className="flex min-h-0 flex-col gap-3 overflow-hidden">
+        <section className="flex flex-col gap-3 lg:min-h-0 lg:overflow-hidden">
           {phase === "setup" ? (
             <SetupView
               snapshot={snapshot}
@@ -624,7 +624,7 @@ export function Facilitator() {
                   </button>
                 </div>
               ) : null}
-              <div className="min-h-0 flex-1 overflow-y-auto pr-1">
+              <div className="lg:min-h-0 lg:flex-1 lg:overflow-y-auto lg:pr-1">
                 <Transcript
                   messages={snapshot.messages}
                   roles={snapshot.roles}
