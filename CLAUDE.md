@@ -79,6 +79,35 @@ Adding a new tier or tool: update `phase_policy.POLICIES`, add `ALLOWED_*_TOOL_N
 - All config through `pydantic-settings` env vars; never hard-code.
 - Commit style: `<area>: <imperative subject>` (e.g. `backend: add session repository`). Body explains *why*. Phase-1 bootstrap can use `chore:` / `docs:` / `ci:`.
 
+## Closing GitHub issues via PRs
+
+GitHub auto-closes issues on merge **only when each issue number is preceded by its own closing keyword**. The keyword applies to one reference at a time — listing several issues after a single keyword silently leaves all but the first open. This has bitten this repo twice: PR #29 (Phase 2 epics #11–#19, none auto-closed because the body just listed bare `#11 #12 …` with no keyword) and PR #57 (`Closes #52, #53, #54, #55, #56` — only #52 closed; the rest had to be closed manually).
+
+Use one of these forms — and `Closes` / `Fixes` / `Resolves` are interchangeable:
+
+```
+Closes #52
+Closes #53
+Closes #54
+```
+
+or inline with the keyword repeated each time:
+
+```
+Closes #52, closes #53, closes #54, closes #55, closes #56.
+```
+
+What does **not** work:
+
+```
+Closes #52, #53, #54   ← only #52 auto-closes
+Lands #11 #12 #13      ← bare references, none auto-close
+```
+
+A cross-repo close needs the full `owner/repo#N` form (`Closes nebriv/ai-tabletop-facilitator#52`). Auto-close only fires when the PR merges into the **default branch** (`main`); merging into a feature branch never closes anything via these keywords.
+
+If you forget and the PR is already merged, the cleanest recovery is to comment "Delivered in #PR — auto-close didn't fire because of comma-list keyword" on each issue and close it manually via `mcp__github__issue_write` with `state="closed"` and `state_reason="completed"`.
+
 ## Dependency intake (NEW deps must pass these checks)
 
 Before adding ANY new third-party dependency (npm, pip, action, container image), spend ~2 minutes on the smell test and write the answers in the PR description:
