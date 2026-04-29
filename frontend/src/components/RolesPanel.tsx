@@ -9,6 +9,13 @@ interface Props {
   onRoleAdded: () => void;
   onRoleChanged: () => void;
   onError: (msg: string) => void;
+  /**
+   * Server-reported set of role_ids whose tabs are currently connected
+   * via WebSocket. Surfaces as a green/grey dot per row so the creator
+   * can tell whether an invited player has actually opened the link.
+   * See issue #52.
+   */
+  connectedRoleIds?: ReadonlySet<string>;
 }
 
 /**
@@ -24,6 +31,7 @@ export function RolesPanel({
   onRoleAdded,
   onRoleChanged,
   onError,
+  connectedRoleIds,
 }: Props) {
   const [newRole, setNewRole] = useState("");
   const [linksByRole, setLinksByRole] = useState<Record<string, string>>({});
@@ -103,17 +111,51 @@ export function RolesPanel({
     <div className="flex min-w-0 flex-col gap-3 rounded border border-slate-700 bg-slate-900 p-3 text-sm">
       <div className="flex items-center justify-between gap-2">
         <h3 className="text-xs uppercase tracking-widest text-slate-300">Roles</h3>
-        <span className="text-xs text-slate-400">{roles.length} seated</span>
+        <span className="text-xs text-slate-400">
+          {roles.length} seated
+          {connectedRoleIds
+            ? ` · ${
+                roles.filter((r) => connectedRoleIds.has(r.id)).length
+              } joined`
+            : null}
+        </span>
       </div>
+      {connectedRoleIds ? (
+        <p
+          className="flex flex-wrap items-center gap-2 text-[11px] text-slate-400"
+          aria-hidden="true"
+        >
+          <span className="inline-flex items-center gap-1">
+            <span className="inline-block h-2 w-2 rounded-full bg-emerald-400" />
+            joined
+          </span>
+          <span className="inline-flex items-center gap-1">
+            <span className="inline-block h-2 w-2 rounded-full bg-slate-500" />
+            link not opened yet
+          </span>
+        </p>
+      ) : null}
 
       <ul className="flex flex-col gap-2">
-        {roles.map((r) => (
+        {roles.map((r) => {
+          const isOnline = connectedRoleIds?.has(r.id) ?? false;
+          return (
           <li
             key={r.id}
             className="flex flex-col gap-1 rounded border border-slate-700 bg-slate-950 p-2"
           >
             <div className="flex items-baseline justify-between gap-2">
               <div className="flex items-baseline gap-2">
+                {connectedRoleIds ? (
+                  <span
+                    aria-hidden="true"
+                    title={isOnline ? "Joined" : "Hasn’t opened the join link yet"}
+                    className={
+                      "inline-block h-2 w-2 shrink-0 self-center rounded-full " +
+                      (isOnline ? "bg-emerald-400" : "bg-slate-500")
+                    }
+                  />
+                ) : null}
                 <span className="font-semibold">{r.label}</span>
                 {r.display_name ? (
                   <span className="text-xs text-slate-300">{r.display_name}</span>
@@ -121,6 +163,14 @@ export function RolesPanel({
                 {r.is_creator ? (
                   <span className="text-xs text-amber-300" title="Creator">
                     ★
+                  </span>
+                ) : null}
+                {connectedRoleIds && !isOnline && !r.is_creator ? (
+                  <span className="text-[11px] text-slate-500">not joined</span>
+                ) : null}
+                {connectedRoleIds ? (
+                  <span className="sr-only">
+                    {isOnline ? "online" : "offline"}
                   </span>
                 ) : null}
               </div>
@@ -162,7 +212,8 @@ export function RolesPanel({
               </p>
             ) : null}
           </li>
-        ))}
+          );
+        })}
       </ul>
 
       <form onSubmit={add} className="flex flex-col gap-2 border-t border-slate-700 pt-3">

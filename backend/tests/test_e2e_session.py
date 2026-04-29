@@ -578,8 +578,13 @@ def test_ws_rejects_spectator_for_mutating_events(client: TestClient) -> None:
     ) as ws:
         ws.send_json({"type": "submit_response", "content": "hello"})
         # Drain until we see the rejection or the connection closes.
+        # ``state_changed`` / ``presence`` / ``presence_snapshot`` /
+        # ``message_complete`` etc. all flow through the WS during the
+        # spectator's read window (replay buffer + live broadcasts);
+        # the cap just has to be larger than however many of those land
+        # before the rejection.
         saw_rejection = False
-        for _ in range(8):
+        for _ in range(64):
             try:
                 evt = ws.receive_json()
             except Exception:
@@ -587,8 +592,6 @@ def test_ws_rejects_spectator_for_mutating_events(client: TestClient) -> None:
             if evt.get("type") == "error" and evt.get("scope") == "submit_response":
                 saw_rejection = True
                 break
-            if evt.get("type") == "state_changed":
-                continue
         assert saw_rejection, "spectator token must be rejected on submit_response"
     # Touch unused import sentinel for ruff
     _ = os

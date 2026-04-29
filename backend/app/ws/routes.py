@@ -176,6 +176,27 @@ def register_ws_routes(app: FastAPI) -> None:
             is_creator=is_creator,
         )
 
+        # Presence: tell every other connection that this role is now
+        # online, and tell the new connection who is currently online so
+        # its UI doesn't have to wait for the next event to populate.
+        # Presence frames are NOT recorded in the replay buffer — they
+        # describe live state, not history; replaying a stale "online"
+        # event after the player has actually disconnected would be
+        # misleading. See issue #52.
+        connected = await connections.connected_role_ids(session_id)
+        await websocket.send_json(
+            {"type": "presence_snapshot", "role_ids": connected}
+        )
+        await connections.broadcast(
+            session_id,
+            {
+                "type": "presence",
+                "role_id": payload["role_id"],
+                "active": True,
+            },
+            record=False,
+        )
+
         recv_task = asyncio.create_task(
             _client_pump(
                 websocket=websocket,
@@ -201,6 +222,22 @@ def register_ws_routes(app: FastAPI) -> None:
                 session_id=session_id,
                 role_id=payload["role_id"],
             )
+            # Only emit ``offline`` when this was the role's last open
+            # connection. A creator with two tabs open who closes one
+            # should still show as active in everyone else's roster.
+            still_connected = await connections.role_has_other_connections(
+                session_id, payload["role_id"]
+            )
+            if not still_connected:
+                await connections.broadcast(
+                    session_id,
+                    {
+                        "type": "presence",
+                        "role_id": payload["role_id"],
+                        "active": False,
+                    },
+                    record=False,
+                )
             clear_session_context()
 
 

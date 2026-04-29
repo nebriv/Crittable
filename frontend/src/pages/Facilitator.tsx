@@ -5,12 +5,14 @@ import { TableScroll } from "../components/TableScroll";
 import {
   api,
   CostSnapshot,
+  DecisionLogEntry,
   RoleView,
   ScenarioPlan,
   SessionSnapshot,
 } from "../api/client";
 import { Composer } from "../components/Composer";
 import { CriticalEventBanner } from "../components/CriticalEventBanner";
+import { DecisionLogPanel } from "../components/DecisionLogPanel";
 import { GodModePanel } from "../components/GodModePanel";
 import { RightSidebar } from "../components/RightSidebar";
 import { RolesPanel } from "../components/RolesPanel";
@@ -29,6 +31,12 @@ interface CreatorState {
 }
 
 const NUDGE_PROPOSE = "I think we have enough context. Please draft the scenario plan now.";
+
+// Receiver-side typing indicator timings — kept in sync with Play.tsx.
+// See issue #53: the indicator should appear cleanly on a real typing
+// burst and persist for about three seconds, never flickering.
+const TYPING_VISIBLE_MS = 5000;
+const TYPING_FADE_HEAD_START_MS = TYPING_VISIBLE_MS - 1500;
 
 /**
  * Sample setup answers prefilled when the operator toggles "Dev mode" on
@@ -124,6 +132,17 @@ export function Facilitator() {
   // role_id -> last typing-true timestamp (ms). Filtered to "currently typing"
   // by the consuming components which check freshness < 4s.
   const [typing, setTyping] = useState<Record<string, number>>({});
+  // role_ids whose tabs are currently connected. Server-pushed via the
+  // ``presence`` / ``presence_snapshot`` WS events. See issue #52 — the
+  // creator needs to know which invites have actually been opened
+  // before kicking off the exercise.
+  const [presence, setPresence] = useState<Set<string>>(() => new Set());
+  // Live AI decision rationale stream (issue #55). Entries arrive via
+  // ``decision_logged`` events as the AI calls
+  // ``record_decision_rationale``; on snapshot refresh we replace the
+  // local state with the canonical server list to avoid drift if a
+  // WebSocket frame was missed during reconnect.
+  const [decisionLog, setDecisionLog] = useState<DecisionLogEntry[]>([]);
   const wsRef = useRef<WsClient | null>(null);
   // Wraps the chat scroll region so we can auto-pin the latest message to
   // the bottom on each new arrival. Without this the user's view stays
@@ -263,13 +282,36 @@ export function Facilitator() {
       case "cost_updated":
         setCost(evt.cost as unknown as CostSnapshot);
         break;
+      case "decision_logged":
+        setDecisionLog((prev) => {
+          // De-dupe defensively in case the snapshot fetch and the WS
+          // frame race during a reconnect.
+          if (prev.some((e) => e.id === evt.entry.id)) return prev;
+          return [...prev, evt.entry];
+        });
+        break;
+      case "presence":
+        setPresence((prev) => {
+          const next = new Set(prev);
+          if (evt.active) next.add(evt.role_id);
+          else next.delete(evt.role_id);
+          return next;
+        });
+        break;
+      case "presence_snapshot":
+        setPresence(new Set(evt.role_ids));
+        break;
       case "typing":
         setTyping((prev) => {
           const next = { ...prev };
           if (evt.typing) {
             next[evt.role_id] = Date.now();
-          } else {
-            delete next[evt.role_id];
+          } else if (evt.role_id in next) {
+            // Don't yank the indicator on ``typing_stop`` — schedule a
+            // graceful fade so it persists ~1.5s after the sender goes
+            // quiet. See issue #53; the immediate-delete behavior was
+            // the source of the on/off flash.
+            next[evt.role_id] = Date.now() - TYPING_FADE_HEAD_START_MS;
           }
           return next;
         });
@@ -298,12 +340,14 @@ export function Facilitator() {
     }
   }
 
-  // Expire stale typing entries every second so the indicator disappears
-  // even if the typing_stop event got dropped.
+  // Expire stale typing entries so the indicator disappears even if a
+  // ``typing_stop`` got dropped. See issue #53 for the timing rationale —
+  // we want a stable ~3s on-screen window per typing burst, with no
+  // flashing between bursts.
   useEffect(() => {
     const id = setInterval(() => {
       setTyping((prev) => {
-        const cutoff = Date.now() - 4000;
+        const cutoff = Date.now() - TYPING_VISIBLE_MS;
         const next: Record<string, number> = {};
         let changed = false;
         for (const [k, v] of Object.entries(prev)) {
@@ -312,7 +356,7 @@ export function Facilitator() {
         }
         return changed ? next : prev;
       });
-    }, 1000);
+    }, 750);
     return () => clearInterval(id);
   }, []);
 
@@ -341,6 +385,9 @@ export function Facilitator() {
     try {
       const snap = await api.getSession(state.sessionId, state.token);
       setSnapshot(snap);
+      if (snap.decision_log) {
+        setDecisionLog(snap.decision_log);
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
@@ -475,6 +522,8 @@ export function Facilitator() {
     setSnapshot(null);
     setStreamingText("");
     setCriticalBanner(null);
+    setDecisionLog([]);
+    setPresence(new Set());
     setCost(null);
     setSetupReply("");
     setError(null);
@@ -720,6 +769,7 @@ export function Facilitator() {
             onRoleAdded={refreshSnapshot}
             onRoleChanged={refreshSnapshot}
             onError={setError}
+            connectedRoleIds={presence}
           />
           {snapshot.current_turn?.active_role_ids?.length ? (
             <ActiveRolesHint
@@ -734,6 +784,7 @@ export function Facilitator() {
             onForceAdvance={handleForceAdvance}
             busy={busy}
           />
+          <DecisionLogPanel entries={decisionLog} />
           <CostMeter cost={cost ?? snapshot.cost} />
           <Controls
             phase={phase}

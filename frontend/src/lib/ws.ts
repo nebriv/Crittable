@@ -21,6 +21,18 @@ export type ServerEvent =
   | { type: "plan_edited"; field: string }
   | { type: "aar_status_changed"; status: "pending" | "generating" | "ready" | "failed" }
   | { type: "typing"; role_id: string; typing: boolean }
+  | { type: "presence"; role_id: string; active: boolean }
+  | { type: "presence_snapshot"; role_ids: string[] }
+  | {
+      type: "decision_logged";
+      entry: {
+        id: string;
+        ts: string;
+        turn_index: number | null;
+        turn_id: string | null;
+        rationale: string;
+      };
+    }
   | { type: "error"; scope: string; message: string };
 
 export type ClientEvent =
@@ -124,6 +136,20 @@ export class WsClient {
           case "typing":
             safe.role_id = parsed.role_id;
             safe.typing = parsed.typing;
+            break;
+          case "presence":
+            safe.role_id = parsed.role_id;
+            safe.active = parsed.active;
+            break;
+          case "presence_snapshot":
+            safe.role_count = parsed.role_ids?.length ?? 0;
+            break;
+          case "decision_logged":
+            // Don't log the rationale text itself — it's debug content
+            // intended for the creator panel and could leak narrative
+            // information into a console paste. Length only.
+            safe.rationale_chars = parsed.entry?.rationale?.length ?? 0;
+            safe.turn_index = parsed.entry?.turn_index ?? null;
             break;
           case "error":
             safe.scope = parsed.scope;

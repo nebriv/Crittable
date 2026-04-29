@@ -15,6 +15,20 @@ export interface SessionSnapshot {
   cost: CostSnapshot | null;
   /** "pending" | "generating" | "ready" | "failed" — surfaced for download-button gating. */
   aar_status?: string | null;
+  /**
+   * Creator-only AI rationale log (issue #55). Each entry is a short
+   * sentence the AI emitted via ``record_decision_rationale`` explaining
+   * why it picked a turn's actions. ``null`` for non-creator roles.
+   */
+  decision_log?: DecisionLogEntry[] | null;
+}
+
+export interface DecisionLogEntry {
+  id: string;
+  ts: string;
+  turn_index: number | null;
+  turn_id: string | null;
+  rationale: string;
 }
 
 export interface SetupNoteView {

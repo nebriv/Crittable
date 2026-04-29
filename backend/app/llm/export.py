@@ -20,6 +20,42 @@ from .tools import AAR_TOOL
 _logger = get_logger("llm.export")
 
 
+# Sentinel HTML comments wrap creator-only sections (currently the AI
+# decision rationale appendix). Markdown viewers ignore HTML comments,
+# so the creator's copy renders normally; the export route strips
+# everything between these markers when serving a non-creator role
+# (see ``strip_creator_only`` below). See issue #55 + the security
+# review on the QoL patch — the AAR is participant-readable and we
+# don't want player roles seeing the AI's debug rationale.
+CREATOR_ONLY_BEGIN = "<!-- BEGIN_CREATOR_ONLY -->"
+CREATOR_ONLY_END = "<!-- END_CREATOR_ONLY -->"
+
+
+def strip_creator_only(markdown: str) -> str:
+    """Remove every ``CREATOR_ONLY_BEGIN`` … ``CREATOR_ONLY_END`` block
+    from ``markdown``. Non-greedy, multi-block, tolerant of leading or
+    trailing whitespace around each marker."""
+
+    out: list[str] = []
+    cursor = 0
+    while True:
+        start = markdown.find(CREATOR_ONLY_BEGIN, cursor)
+        if start == -1:
+            out.append(markdown[cursor:])
+            break
+        out.append(markdown[cursor:start])
+        end = markdown.find(CREATOR_ONLY_END, start)
+        if end == -1:
+            # Unterminated marker — drop the rest defensively. Better to
+            # truncate than leak.
+            break
+        cursor = end + len(CREATOR_ONLY_END)
+        # Skip trailing newline so we don't leave a blank gap.
+        if cursor < len(markdown) and markdown[cursor] == "\n":
+            cursor += 1
+    return "".join(out)
+
+
 class AARGenerator:
     def __init__(self, *, llm: LLMClient, audit: AuditLog) -> None:
         self._llm = llm
@@ -180,6 +216,28 @@ def _render_markdown(
     else:
         lines.append("_(no audit events captured)_")
     lines.append("")
+
+    # Appendix D is creator-only (the AI's debug rationale leaks
+    # narrative reasoning that players shouldn't see). Wrapped in
+    # sentinel HTML comments so the export endpoint strips this section
+    # for non-creator downloads. Markdown viewers ignore HTML comments,
+    # so the creator's copy renders normally.
+    lines.append(CREATOR_ONLY_BEGIN)
+    lines.append("## Appendix D — AI decision rationale log _(facilitator only)_")
+    if session.decision_log:
+        for entry in session.decision_log:
+            ts = entry.ts.isoformat()
+            beat = (
+                f"turn {entry.turn_index}"
+                if entry.turn_index is not None
+                else "pre-turn"
+            )
+            rationale = entry.rationale.replace("\n", " ").strip()
+            lines.append(f"- _{ts}_ — **{beat}**: {rationale}")
+    else:
+        lines.append("_(no rationale entries recorded)_")
+    lines.append("")
+    lines.append(CREATOR_ONLY_END)
 
     return "\n".join(lines)
 
