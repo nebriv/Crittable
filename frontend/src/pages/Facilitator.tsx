@@ -1648,13 +1648,17 @@ function PlanView({
 }
 
 function EndedView({ sessionId, token }: { sessionId: string; token: string }) {
-  type AARState = "generating" | "ready" | "failed";
+  // ``expired`` = backend evicted the session after EXPORT_RETENTION_MIN —
+  // the AAR is gone for good. Distinct from ``failed`` (transient generation
+  // error, retry is meaningful) so we don't surface a Retry button that
+  // would itself 404.
+  type AARState = "generating" | "ready" | "failed" | "expired";
   const [aarState, setAarState] = useState<AARState>("generating");
   const [errMsg, setErrMsg] = useState<string | null>(null);
 
   // Poll the export endpoint with HEAD-style behavior: if 425, keep
   // polling. If 200, mark ready (the popup will fetch the body on open).
-  // If 5xx, mark failed.
+  // If 410, mark expired (retention window elapsed). If 5xx, mark failed.
   useEffect(() => {
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
@@ -1673,6 +1677,10 @@ function EndedView({ sessionId, token }: { sessionId: string; token: string }) {
           setAarState("generating");
           // Build-time tunable; default 2500ms.
           timer = setTimeout(tick, __ATF_AAR_POLL_MS__);
+          return;
+        }
+        if (res.status === 410) {
+          setAarState("expired");
           return;
         }
         setAarState("failed");
@@ -1724,6 +1732,20 @@ function EndedView({ sessionId, token }: { sessionId: string; token: string }) {
           The report includes the full transcript, per-role scores, the
           frozen scenario plan, and the audit log.
         </p>
+      ) : aarState === "expired" ? (
+        <div className="flex flex-col gap-2">
+          <p className="text-sm text-amber-200">
+            This after-action report has expired and is no longer
+            available.
+          </p>
+          <p className="text-xs text-amber-100/80">
+            Sessions are purged from server memory after the configured
+            retention window (<code>EXPORT_RETENTION_MIN</code>, default
+            60 minutes) to limit data retention. There is no recovery — to
+            preserve a future AAR, download the <code>.md</code> file
+            before the window elapses.
+          </p>
+        </div>
       ) : (
         <div className="flex flex-col gap-2">
           <p className="text-sm text-red-300">
@@ -1780,7 +1802,15 @@ function AARPopup({
         const res = await fetch(downloadHref);
         if (cancelled) return;
         if (!res.ok) {
-          setErr(`HTTP ${res.status}`);
+          // 410 Gone = backend evicted the session after the retention
+          // window. Surface a plain-English message instead of "HTTP 410".
+          if (res.status === 410) {
+            setErr(
+              "This after-action report has expired and is no longer available — sessions are purged after the configured retention window.",
+            );
+          } else {
+            setErr(`HTTP ${res.status}`);
+          }
           return;
         }
         const text = await res.text();

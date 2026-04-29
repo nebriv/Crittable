@@ -57,6 +57,8 @@ mcp__github__search_issues  query='repo:nebriv/ai-tabletop-facilitator is:issue 
 
 Run them with `Agent({ subagent_type: "general-purpose", run_in_background: true, ... })` so they execute in parallel; wait for all six to complete; address every BLOCK / CRITICAL / HIGH; document any deferred findings in the commit body. **Skipping the reviews is a process bug** — earlier rounds shipped CRITICAL plan-disclosure leaks, token-logging bugs, stuck-setup states, an unscrollable READY view that hid the Approve button, a force-advance loop, and an over-aggressive guardrail dropping casual replies — all caught (or missed) by the review pipeline. The Prompt Expert specifically guards against the "AI does the wrong thing because the prompt told it to" class of bug.
 
+**Logging-and-debuggability findings are always in scope, regardless of severity.** Any review finding (LOW or otherwise) that calls out a swallowed exception, a missing log line at a meaningful boundary, an unprefixed `console.*`, a silent fallback path, or anything else that would hinder debugging in production must be addressed in the same commit — *not deferred to a follow-up*. Once a session is stuck in production, the only useful asset is the log; a "minor" missing log line is what turns a 5-minute diagnose into a 5-hour one. Triage these as if they were HIGH for the purpose of "must-fix-before-push".
+
 ## Extension authoring
 
 Custom tools, resources, and prompts (Skills-style) are loaded at startup via env-var JSON. See [`docs/extensions.md`](docs/extensions.md) for the schema and the **prompt-injection guardrails** — extension content always flows through Claude as `tool_result`, never as system content; declarative handlers only (`templated_text`, `static_text`).
