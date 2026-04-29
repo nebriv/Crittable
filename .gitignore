@@ -7,6 +7,12 @@ venv/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+# uv generates uv.lock when running ``uv sync`` locally. The repo
+# does not currently pin a lockfile (decision deferred until we have
+# a CI pipeline that needs reproducible installs); ignore the local
+# artifact so a dev that ran ``uv sync`` doesn't accidentally land it
+# in an unrelated PR.
+uv.lock
 
 # Node
 node_modules/
