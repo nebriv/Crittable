@@ -81,12 +81,13 @@ class TurnDriver:
 
         if result.stop_reason != "max_tokens":
             return
+        output_tokens = result.usage.get("output")
         _logger.warning(
             "llm_truncated",
             session_id=session_id,
             tier=tier,
             model=result.model,
-            output_tokens=result.usage.get("output_tokens"),
+            output_tokens=output_tokens,
         )
         self._manager.audit().emit(
             AuditEvent(
@@ -96,7 +97,7 @@ class TurnDriver:
                 payload={
                     "tier": tier,
                     "model": result.model,
-                    "output_tokens": result.usage.get("output_tokens"),
+                    "output_tokens": output_tokens,
                     "hint": (
                         "raise LLM_MAX_TOKENS_"
                         + tier.upper()

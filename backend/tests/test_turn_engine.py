@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import pytest
 
+from app.auth.audit import AuditLog
+from app.llm.client import LLMResult
 from app.sessions.models import Session, SessionState, Turn
+from app.sessions.turn_driver import TurnDriver
 from app.sessions.turn_engine import (
     IllegalTransitionError,
     all_submitted,
@@ -63,3 +66,62 @@ def test_critical_inject_rate_limit() -> None:
     # Advance the turn index by 6 — window slides
     s.turns.append(Turn(index=6, active_role_ids=[]))
     assert critical_inject_allowed(s, max_per_5_turns=1) is True
+
+
+class _StubManager:
+    """Minimal SessionManager stand-in for ``TurnDriver._check_truncation``.
+
+    The method only touches ``self._manager.audit()``; constructing a full
+    manager (which needs an LLM client, dispatcher, registry, settings,
+    repository, …) just to exercise an audit emission would be churn.
+    """
+
+    def __init__(self, audit: AuditLog) -> None:
+        self._audit = audit
+
+    def audit(self) -> AuditLog:
+        return self._audit
+
+
+def _llm_result(*, stop_reason: str, output: int = 1024) -> LLMResult:
+    return LLMResult(
+        model="claude-test",
+        content=[],
+        stop_reason=stop_reason,
+        usage={"input": 0, "output": output, "cache_read": 0, "cache_creation": 0},
+        estimated_usd=0.0,
+    )
+
+
+def test_check_truncation_records_output_token_count() -> None:
+    """Regression for PR #60: the audit payload + log line must read
+    ``LLMResult.usage["output"]`` (the normalized key emitted by
+    ``_normalize_response``), not ``"output_tokens"`` (the raw
+    Anthropic key, which is always absent post-normalization). A
+    silent ``None`` would defeat the whole point of surfacing
+    ``llm_truncated`` to the operator panel.
+    """
+
+    audit = AuditLog(ring_size=10)
+    driver = TurnDriver(manager=_StubManager(audit))
+    result = _llm_result(stop_reason="max_tokens", output=1024)
+    driver._check_truncation(session_id="s1", tier="setup", result=result)
+
+    events = audit.dump("s1")
+    assert len(events) == 1
+    evt = events[0]
+    assert evt.kind == "llm_truncated"
+    assert evt.payload["output_tokens"] == 1024
+    assert evt.payload["tier"] == "setup"
+    assert "LLM_MAX_TOKENS_SETUP" in evt.payload["hint"]
+
+
+def test_check_truncation_noop_on_other_stop_reasons() -> None:
+    audit = AuditLog(ring_size=10)
+    driver = TurnDriver(manager=_StubManager(audit))
+    driver._check_truncation(
+        session_id="s1",
+        tier="setup",
+        result=_llm_result(stop_reason="end_turn"),
+    )
+    assert audit.dump("s1") == []
