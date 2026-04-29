@@ -264,6 +264,64 @@ def test_llm_client_omits_temperature_and_top_p_when_unset(monkeypatch) -> None:
     assert kwargs["max_tokens"] == 1024
 
 
+def test_strict_retry_max_default_and_override(monkeypatch) -> None:
+    """``LLM_STRICT_RETRY_MAX`` controls how many strict-retry passes the
+    play-turn driver runs after a non-yielding first attempt. Default 1."""
+
+    monkeypatch.delenv("LLM_STRICT_RETRY_MAX", raising=False)
+    s = Settings()
+    assert s.llm_strict_retry_max == 1
+    monkeypatch.setenv("LLM_STRICT_RETRY_MAX", "3")
+    assert Settings().llm_strict_retry_max == 3
+    monkeypatch.setenv("LLM_STRICT_RETRY_MAX", "0")
+    assert Settings().llm_strict_retry_max == 0
+
+
+def test_max_setup_turns_default_and_override(monkeypatch) -> None:
+    monkeypatch.delenv("MAX_SETUP_TURNS", raising=False)
+    s = Settings()
+    assert s.max_setup_turns == 4
+    monkeypatch.setenv("MAX_SETUP_TURNS", "2")
+    assert Settings().max_setup_turns == 2
+
+
+def test_max_participant_submission_chars_default_and_override(monkeypatch) -> None:
+    monkeypatch.delenv("MAX_PARTICIPANT_SUBMISSION_CHARS", raising=False)
+    s = Settings()
+    assert s.max_participant_submission_chars == 4000
+    monkeypatch.setenv("MAX_PARTICIPANT_SUBMISSION_CHARS", "500")
+    assert Settings().max_participant_submission_chars == 500
+
+
+def test_timeout_for_uses_per_tier_defaults(monkeypatch) -> None:
+    """Per-tier timeout resolution: explicit env override → per-tier
+    default → global ``ANTHROPIC_TIMEOUT_S``. The guardrail tier defaults
+    to a tight 15 s (locks the per-session lock during classification);
+    AAR defaults to 900 s (long Opus runs); play/setup inherit the
+    global 600 s default."""
+
+    for key in (
+        "LLM_TIMEOUT_PLAY",
+        "LLM_TIMEOUT_SETUP",
+        "LLM_TIMEOUT_AAR",
+        "LLM_TIMEOUT_GUARDRAIL",
+        "ANTHROPIC_TIMEOUT_S",
+    ):
+        monkeypatch.delenv(key, raising=False)
+    s = Settings()
+    assert s.timeout_for("play") == 600.0
+    assert s.timeout_for("setup") == 600.0
+    assert s.timeout_for("aar") == 900.0
+    assert s.timeout_for("guardrail") == 15.0
+    monkeypatch.setenv("LLM_TIMEOUT_GUARDRAIL", "5")
+    monkeypatch.setenv("LLM_TIMEOUT_AAR", "1200")
+    s2 = Settings()
+    assert s2.timeout_for("guardrail") == 5.0
+    assert s2.timeout_for("aar") == 1200.0
+    # Tiers that didn't get an override still inherit the global.
+    assert s2.timeout_for("play") == 600.0
+
+
 def test_llm_client_forwards_temperature_when_set(monkeypatch) -> None:
     """Counter-example: when the env knob IS set, the value must reach the
     Anthropic kwargs."""

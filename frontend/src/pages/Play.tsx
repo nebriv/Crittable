@@ -26,6 +26,10 @@ export function Play({ sessionId, token }: Props) {
     body: string;
   } | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Non-error informational toast (e.g. submission was truncated but
+  // posted). Distinct from ``error`` because that surface is rendered as
+  // a red banner that reads as "your action failed".
+  const [notice, setNotice] = useState<string | null>(null);
   const [typing, setTyping] = useState<Record<string, number>>({});
   const wsRef = useRef<WsClient | null>(null);
 
@@ -86,6 +90,13 @@ export function Play({ sessionId, token }: Props) {
         // player understands why their text didn't post.
         console.warn("[play] guardrail blocked", evt.verdict, evt.message);
         setError(`Blocked (${evt.verdict}): ${evt.message}`);
+        break;
+      case "submission_truncated":
+        // Distinct from ``error`` — the message DID post, just clipped.
+        // Shown as a slate info pill so the player doesn't think their
+        // submission failed.
+        console.info("[play] submission truncated", evt);
+        setNotice(evt.message);
         break;
       case "typing":
         setTyping((prev) => {
@@ -286,6 +297,22 @@ export function Play({ sessionId, token }: Props) {
             onSubmit={handleSubmit}
             onTypingChange={handleTypingChange}
           />
+          {notice ? (
+            <p
+              role="status"
+              aria-live="polite"
+              className="rounded border border-slate-600/60 bg-slate-800/60 px-2 py-1 text-xs text-slate-200"
+            >
+              {notice}{" "}
+              <button
+                type="button"
+                onClick={() => setNotice(null)}
+                className="ml-1 underline hover:text-slate-100"
+              >
+                dismiss
+              </button>
+            </p>
+          ) : null}
           {error ? <p className="text-sm text-red-400" role="alert">{error}</p> : null}
         </section>
         <RightSidebar

@@ -31,21 +31,70 @@ interface CreatorState {
 const NUDGE_PROPOSE = "I think we have enough context. Please draft the scenario plan now.";
 
 /**
- * Sample scenario prefilled when the operator toggles "Dev mode" on the
- * intro page. Mirrors the backend's ``_default_dev_plan`` ransomware brief
- * so the resulting plan is consistent end-to-end.
+ * Sample setup answers prefilled when the operator toggles "Dev mode" on
+ * the intro page. Mirrors the backend's ``_default_dev_plan`` ransomware
+ * brief so the resulting plan is consistent end-to-end.
+ *
+ * Split into four short sections (scenario / team / environment /
+ * constraints) so the AI gets structured context up front and the
+ * setup dialogue can move past the boilerplate questions faster.
  */
-const DEV_SCENARIO_PROMPT =
-  "Ransomware via compromised vendor portal at a mid-size regional bank. " +
-  "Finance laptops are encrypting; attribution is unclear; a vendor that was " +
-  "publicly breached two weeks ago shares a service account that was never " +
-  "rotated. The team has ~90 minutes of simulated time to contain, decide on " +
-  "regulator/comms posture, and respond to an attacker demand.";
+const DEV_SETUP_PREFILL = {
+  scenario:
+    "Ransomware via compromised vendor portal at a mid-size regional bank. " +
+    "Finance laptops are encrypting; attribution is unclear; a vendor that " +
+    "was publicly breached two weeks ago shares a service account that was " +
+    "never rotated. The team has ~90 minutes of simulated time to contain, " +
+    "decide on regulator/comms posture, and respond to an attacker demand.",
+  team:
+    "CISO (lead, on-call), IR Lead (3 yrs exp, on-call), SOC Analyst " +
+    "(L1, on-call), Legal (corp counsel, business hours only), Comms " +
+    "(internal-comms lead, on retainer). No dedicated threat-intel role.",
+  environment:
+    "Hybrid: 70% Microsoft 365 + Azure AD + on-prem AD; 30% on-prem " +
+    "Windows file shares. EDR: Microsoft Defender for Endpoint. SIEM: " +
+    "Sentinel. IdP: Entra ID. Crown jewels: customer PII, daily ACH " +
+    "batches, internal audit reports. Month-end finance close in progress.",
+  constraints:
+    "No real CVE / exploit code. Avoid law-enforcement specifics " +
+    "(jurisdictional differences). Keep regulator framing US-state-AG " +
+    "+ FFIEC / OCC. Do NOT ask the team to invent attacker attribution.",
+};
+
+/**
+ * Combine the four setup sections into a single seed string the backend
+ * already knows how to handle (``scenario_prompt``). Sections that the
+ * operator left blank are dropped entirely so the AI doesn't see empty
+ * headers it has to interpret.
+ */
+function _composeScenarioPrompt(parts: typeof DEV_SETUP_PREFILL): string {
+  const sections: [string, string][] = [
+    ["SCENARIO BRIEF", parts.scenario],
+    ["TEAM", parts.team],
+    ["ENVIRONMENT", parts.environment],
+    ["CONSTRAINTS / AVOID", parts.constraints],
+  ];
+  return sections
+    .filter(([, body]) => body.trim().length > 0)
+    .map(([title, body]) => `${title}\n${body.trim()}`)
+    .join("\n\n");
+}
 
 export function Facilitator() {
   const [state, setState] = useState<CreatorState | null>(null);
   const [snapshot, setSnapshot] = useState<SessionSnapshot | null>(null);
-  const [scenarioPrompt, setScenarioPrompt] = useState("");
+  // Multi-section setup intro. Each section is optional except
+  // ``scenario`` which is required by the backend. The four sections
+  // are combined into a single ``scenario_prompt`` string at submit
+  // time so the API surface doesn't need to change. Pre-fix the intro
+  // had a single textarea; operators were either leaving the AI to
+  // ask 5+ setup questions OR pasting a wall of text into one box.
+  const [setupParts, setSetupParts] = useState({
+    scenario: "",
+    team: "",
+    environment: "",
+    constraints: "",
+  });
   const [creatorLabel, setCreatorLabel] = useState("CISO");
   const [creatorDisplayName, setCreatorDisplayName] = useState("");
   // Dev-mode toggle on the intro page: prefills a known scenario + creator
@@ -122,7 +171,7 @@ export function Facilitator() {
     setBusyMessage("Creating session and starting AI setup dialogue…");
     try {
       const created = await api.createSession({
-        scenario_prompt: scenarioPrompt,
+        scenario_prompt: _composeScenarioPrompt(setupParts),
         creator_label: creatorLabel,
         creator_display_name: creatorDisplayName,
       });
@@ -212,6 +261,10 @@ export function Facilitator() {
         // so the operator at minimum sees *why* their message vanished.
         console.warn("[facilitator] guardrail blocked", evt.verdict, evt.message);
         setError(`Submission blocked (${evt.verdict}): ${evt.message}`);
+        break;
+      case "submission_truncated":
+        // Don't escalate to error — the message DID post.
+        console.info("[facilitator] submission truncated", evt);
         break;
       case "error":
         setError(evt.message);
@@ -484,27 +537,35 @@ export function Facilitator() {
     const onToggleDevMode = (next: boolean) => {
       setDevMode(next);
       if (next) {
-        // Prefill only if the user hasn't typed anything custom.
-        if (!scenarioPrompt.trim()) {
-          setScenarioPrompt(DEV_SCENARIO_PROMPT);
-        }
+        // Prefill only sections the user hasn't typed into. Lets a tester
+        // partially customise (e.g. tweak the team list) and still get
+        // the rest of the boilerplate filled.
+        setSetupParts((cur) => ({
+          scenario: cur.scenario.trim() ? cur.scenario : DEV_SETUP_PREFILL.scenario,
+          team: cur.team.trim() ? cur.team : DEV_SETUP_PREFILL.team,
+          environment: cur.environment.trim() ? cur.environment : DEV_SETUP_PREFILL.environment,
+          constraints: cur.constraints.trim() ? cur.constraints : DEV_SETUP_PREFILL.constraints,
+        }));
         if (!creatorDisplayName.trim()) {
           setCreatorDisplayName("Dev Tester");
         }
       }
     };
+    const setPart = (key: keyof typeof setupParts) => (value: string) =>
+      setSetupParts((cur) => ({ ...cur, [key]: value }));
     return (
-      <main className="mx-auto flex max-w-2xl flex-col gap-4 p-8">
+      <main className="mx-auto flex max-w-3xl flex-col gap-4 p-8">
         <h1 className="text-2xl font-semibold">New tabletop exercise</h1>
         <p className="text-sm text-slate-400">
-          Provide a scenario prompt and your facilitator details. The AI will then walk you through
-          structured setup before you invite players.
+          Give the facilitator AI a few sections of context up front so it
+          can skip the boilerplate questions. Only the scenario brief is
+          required; richer answers shorten the setup dialogue.
         </p>
         <ol className="flex flex-col gap-1 rounded border border-slate-700 bg-slate-900 p-3 text-xs text-slate-300">
           <li className="text-[11px] uppercase tracking-widest text-slate-400">
             What to expect
           </li>
-          <li>1. <span className="text-slate-200">Setup</span> — the AI asks 3–5 questions about scope, regulators, roles, then drafts a plan you can edit, approve, or skip.</li>
+          <li>1. <span className="text-slate-200">Setup</span> — the AI reads what you wrote below, asks 1–3 follow-up questions, then drafts a plan you can edit, approve, or skip.</li>
           <li>2. <span className="text-slate-200">Invite</span> — copy a per-role join link to each participant; you can also play one of the roles yourself.</li>
           <li>3. <span className="text-slate-200">Run</span> — the AI narrates beats, throws injects, and yields turns to specific roles. Typical session: 30–60 min.</li>
           <li>4. <span className="text-slate-200">After-action</span> — when you end the session, the AI generates a markdown report with per-role scores and a transcript.</li>
@@ -521,17 +582,50 @@ export function Facilitator() {
               Dev mode
             </label>
             <span id="dev-mode-hint" className="text-[12px] text-amber-100/90">
-              Prefills a known ransomware scenario + display name and skips the
-              AI setup dialogue. Use this for local QA only.
+              Prefills all four sections with a known ransomware brief +
+              "Dev Tester" display name and skips the AI setup dialogue.
+              Use this for local QA only.
             </span>
           </div>
-          <label className="text-xs uppercase tracking-widest text-slate-400">Scenario prompt</label>
+          <label className="text-xs uppercase tracking-widest text-slate-400">
+            Scenario brief <span className="text-rose-400">*</span>
+          </label>
           <textarea
-            value={scenarioPrompt}
-            onChange={(e) => setScenarioPrompt(e.target.value)}
-            rows={4}
+            value={setupParts.scenario}
+            onChange={(e) => setPart("scenario")(e.target.value)}
+            rows={3}
             required
-            placeholder="Ransomware via vendor portal compromise, mid-size regional bank…"
+            placeholder="What happened, when, at what severity. e.g. 'Ransomware via vendor portal at a regional bank, finance laptops encrypting, ~90 min of simulated time.'"
+            className="rounded border border-slate-700 bg-slate-900 p-2 text-sm"
+          />
+          <label className="text-xs uppercase tracking-widest text-slate-400">
+            About your team
+          </label>
+          <textarea
+            value={setupParts.team}
+            onChange={(e) => setPart("team")(e.target.value)}
+            rows={3}
+            placeholder="Roles + seniority + on-call posture. e.g. 'CISO (lead, on-call), IR Lead (3 yrs), SOC L1, Legal (business hours).' Optional — leave blank to let the AI ask."
+            className="rounded border border-slate-700 bg-slate-900 p-2 text-sm"
+          />
+          <label className="text-xs uppercase tracking-widest text-slate-400">
+            About your environment
+          </label>
+          <textarea
+            value={setupParts.environment}
+            onChange={(e) => setPart("environment")(e.target.value)}
+            rows={3}
+            placeholder="Stack, IdP, EDR/SIEM, crown jewels, regulatory regime. e.g. 'Microsoft 365 + Azure AD, Defender + Sentinel, customer PII + ACH, FFIEC / state-AG.' Optional."
+            className="rounded border border-slate-700 bg-slate-900 p-2 text-sm"
+          />
+          <label className="text-xs uppercase tracking-widest text-slate-400">
+            Constraints / things to avoid
+          </label>
+          <textarea
+            value={setupParts.constraints}
+            onChange={(e) => setPart("constraints")(e.target.value)}
+            rows={2}
+            placeholder="Hard NOs, learning objectives, pacing tolerance. e.g. 'No real CVEs; keep regulator framing US-state-AG; don't invent attacker attribution.' Optional."
             className="rounded border border-slate-700 bg-slate-900 p-2 text-sm"
           />
           <div className="grid grid-cols-2 gap-3">
@@ -1502,7 +1596,8 @@ function EndedView({ sessionId, token }: { sessionId: string; token: string }) {
         }
         if (res.status === 425) {
           setAarState("generating");
-          timer = setTimeout(tick, 2500);
+          // Build-time tunable; default 2500ms.
+          timer = setTimeout(tick, __ATF_AAR_POLL_MS__);
           return;
         }
         setAarState("failed");

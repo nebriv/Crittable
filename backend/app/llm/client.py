@@ -132,6 +132,30 @@ class LLMClient:
 
         self._transport = transport
 
+    async def _messages_for_tier(self, tier: ModelTier) -> _AnthropicCallable:
+        """Resolve the messages-API surface for a tier, applying any
+        per-tier timeout override via ``with_options``.
+
+        The base ``AsyncAnthropic`` client carries the global timeout
+        (``ANTHROPIC_TIMEOUT_S``); ``settings.timeout_for(tier)`` either
+        returns the same value (no override) or a tier-specific one.
+        ``with_options`` is the SDK's per-call surface — cheap.
+        """
+
+        base = await self._messages()
+        if self._transport is not None:
+            # Tests inject a flat transport that doesn't model with_options.
+            return base
+        per_tier = self._settings.timeout_for(tier)
+        if abs(per_tier - self._settings.anthropic_timeout_s) < 1e-6:
+            return base
+        # ``self._client`` is the AsyncAnthropic; ``with_options`` returns
+        # a derived client; we want its ``messages`` surface.
+        from typing import cast
+
+        derived = self._client.with_options(timeout=per_tier)  # type: ignore[union-attr]
+        return cast(_AnthropicCallable, derived.messages)
+
     async def _messages(self) -> _AnthropicCallable:
         if self._transport is not None:
             return self._transport
@@ -255,7 +279,7 @@ class LLMClient:
         call = self._begin_call(session_id=session_id, tier=tier, model=model, stream=False)
         started = time.monotonic()
         try:
-            api = await self._messages()
+            api = await self._messages_for_tier(tier)
             response = await api.create(**kwargs)
         except Exception as exc:
             _logger.warning(
@@ -338,7 +362,7 @@ class LLMClient:
         )
         call = self._begin_call(session_id=session_id, tier=tier, model=model, stream=True)
         started = time.monotonic()
-        api = await self._messages()
+        api = await self._messages_for_tier(tier)
         stream = api.stream(**kwargs)
         text_buffer: list[str] = []
         # try/finally rather than try/except: ``CancelledError`` is BaseException

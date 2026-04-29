@@ -13,6 +13,7 @@ export type ServerEvent =
   | { type: "critical_event"; severity: string; headline: string; body: string }
   | { type: "cost_updated"; cost: Record<string, number>; max_turns: number }
   | { type: "guardrail_blocked"; verdict: string; message: string }
+  | { type: "submission_truncated"; scope: string; cap: number; original_len: number; message: string }
   | { type: "plan_proposed"; plan: Record<string, unknown> }
   | { type: "plan_finalized"; plan: Record<string, unknown> }
   | { type: "plan_proposed_announcement" }
@@ -130,6 +131,10 @@ export class WsClient {
             break;
           case "guardrail_blocked":
             safe.verdict = parsed.verdict;
+            break;
+          case "submission_truncated":
+            safe.cap = parsed.cap;
+            safe.original_len = parsed.original_len;
             break;
           default:
             break;

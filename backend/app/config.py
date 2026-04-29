@@ -55,6 +55,19 @@ _TEMPERATURE_DEFAULTS: dict[ModelTier, float | None] = {
     "guardrail": 0.0,
 }
 
+# Per-tier timeout defaults (seconds). ``None`` means "inherit
+# ANTHROPIC_TIMEOUT_S". The guardrail explicitly tightens to 15 s
+# because the per-session lock is held during classification — a hung
+# Haiku call would otherwise freeze the session for the full 600 s.
+# AAR loosens to 900 s because Opus on a 30-message exercise can
+# legitimately run 1–3 minutes.
+_TIMEOUT_DEFAULTS: dict[ModelTier, float | None] = {
+    "play": None,
+    "setup": None,
+    "aar": 900.0,
+    "guardrail": 15.0,
+}
+
 
 class Settings(BaseSettings):
     """Application configuration. One instance per process."""
@@ -116,6 +129,49 @@ class Settings(BaseSettings):
     llm_top_p_aar: float | None = Field(default=None, alias="LLM_TOP_P_AAR", gt=0.0, le=1.0)
     llm_top_p_guardrail: float | None = Field(
         default=None, alias="LLM_TOP_P_GUARDRAIL", gt=0.0, le=1.0
+    )
+
+    # ---- Per-tier timeout overrides ------------------------------------
+    # Falls back to ``ANTHROPIC_TIMEOUT_S`` (default 600s) when unset.
+    # Operators typically want a *short* guardrail timeout (the per-session
+    # lock is held during classification; a 10-minute hang freezes a
+    # session) and a *long* AAR timeout (Opus on a 30-message exercise can
+    # legitimately run 1–3 minutes).
+    llm_timeout_play: float | None = Field(
+        default=None, alias="LLM_TIMEOUT_PLAY", gt=0.0
+    )
+    llm_timeout_setup: float | None = Field(
+        default=None, alias="LLM_TIMEOUT_SETUP", gt=0.0
+    )
+    llm_timeout_aar: float | None = Field(
+        default=None, alias="LLM_TIMEOUT_AAR", gt=0.0
+    )
+    llm_timeout_guardrail: float | None = Field(
+        default=None, alias="LLM_TIMEOUT_GUARDRAIL", gt=0.0
+    )
+
+    # ---- Engine retry / loop caps -------------------------------------
+    # Number of strict retries the play turn driver attempts when the AI
+    # fails to yield via ``set_active_roles``. Default 1 — operators on
+    # local / smaller models that struggle with tool-use enforcement may
+    # want 2 or 3 to reduce force-advance churn. Upper-bounded at 10 to
+    # cap the worst-case token spend per stuck turn (a misconfigured
+    # ``LLM_STRICT_RETRY_MAX=1000`` would otherwise burn the per-session
+    # lock + tokens on a thousand strict-pin'd calls).
+    llm_strict_retry_max: int = Field(
+        default=1, alias="LLM_STRICT_RETRY_MAX", ge=0, le=10
+    )
+    # Cap on chained tool calls within a single setup turn. The setup-tier
+    # model occasionally chains ``ask_setup_question`` → ``propose_plan``
+    # → ``finalize_setup`` in one response cycle; the cap prevents an
+    # infinite loop if the model never yields. Default 4. Upper bound 20.
+    max_setup_turns: int = Field(default=4, alias="MAX_SETUP_TURNS", ge=1, le=20)
+    # Hard cap on the byte length of a participant submission (player
+    # message). Mirrors the per-call backend cap that previously lived as
+    # a magic ``[:2000]`` slice; tunable so operators with chatty teams
+    # can lift it without recompiling.
+    max_participant_submission_chars: int = Field(
+        default=4000, alias="MAX_PARTICIPANT_SUBMISSION_CHARS", ge=1
     )
 
     # ---- Session limits -----------------------------------------------
@@ -220,6 +276,24 @@ class Settings(BaseSettings):
         if explicit is not None:
             return float(explicit)
         return None
+
+    def timeout_for(self, tier: ModelTier) -> float:
+        """Resolve the per-call timeout for the tier.
+
+        Order: ``LLM_TIMEOUT_<TIER>`` env override → tier default in
+        :data:`_TIMEOUT_DEFAULTS` → ``ANTHROPIC_TIMEOUT_S`` (the global
+        SDK-wide default). The guardrail tier defaults to a tight 15 s
+        so a hung classifier doesn't freeze the per-session lock for
+        the full 600 s; AAR defaults to 900 s for long Opus runs.
+        """
+
+        explicit = getattr(self, f"llm_timeout_{tier}", None)
+        if explicit is not None:
+            return float(explicit)
+        per_tier_default = _TIMEOUT_DEFAULTS.get(tier)
+        if per_tier_default is not None:
+            return float(per_tier_default)
+        return float(self.anthropic_timeout_s)
 
     def cors_origin_list(self) -> list[str] | Literal["*"]:
         """Parse ``CORS_ORIGINS``: ``*`` returns the literal ``"*"``, else a list."""

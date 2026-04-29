@@ -21,11 +21,27 @@ function _gitSha(): string {
   }
 }
 
+function _envInt(name: string, fallback: number): number {
+  // Build-time env knob: `VITE_*` variables are read here and baked into
+  // the bundle as a literal so we don't need a runtime config endpoint.
+  // Falls back to the historical default when unset.
+  const raw = process.env[name];
+  if (raw === undefined || raw === "") return fallback;
+  const n = Number.parseInt(raw, 10);
+  return Number.isFinite(n) && n > 0 ? n : fallback;
+}
+
 export default defineConfig({
   plugins: [react()],
   define: {
     __ATF_GIT_SHA__: JSON.stringify(_gitSha()),
     __ATF_BUILD_TS__: JSON.stringify(new Date().toISOString()),
+    // Frontend poll cadences. Defaults preserve the historical 3000 /
+    // 2500 ms values so this commit is behavior-identical for any
+    // operator who doesn't set the env var. Operators who run the
+    // engine on slow hardware (or want to reduce backend load) can bump.
+    __ATF_ACTIVITY_POLL_MS__: JSON.stringify(_envInt("VITE_ACTIVITY_POLL_MS", 3000)),
+    __ATF_AAR_POLL_MS__: JSON.stringify(_envInt("VITE_AAR_POLL_MS", 2500)),
   },
   server: {
     port: 5173,

@@ -235,6 +235,33 @@ async def _client_pump(
                         {"type": "error", "scope": "submit_response", "message": "empty"}
                     )
                     continue
+                # Hard cap on participant submission length — protects the
+                # transcript + the message payload that flows into the next
+                # AI turn. Truncate (don't reject) so a chatty player gets
+                # *something* through; a dedicated ``submission_truncated``
+                # event (NOT ``error``) tells them their text was clipped
+                # so the frontend can render it as info, not a red banner
+                # that reads as "didn't post". The truncated content also
+                # gets a server-appended ``[message truncated by server]``
+                # marker so the AI doesn't read a clipped sentence as a
+                # real fragment and try to "complete the thought".
+                cap = manager.settings().max_participant_submission_chars
+                if len(content) > cap:
+                    original_len = len(content)
+                    await websocket.send_json(
+                        {
+                            "type": "submission_truncated",
+                            "scope": "submit_response",
+                            "cap": cap,
+                            "original_len": original_len,
+                            "message": (
+                                f"Posted the first {cap} characters; "
+                                f"{original_len - cap} more were dropped. "
+                                "Your reply did go through."
+                            ),
+                        }
+                    )
+                    content = content[:cap] + "\n[message truncated by server]"
                 # Optional input-side guardrail. Only ``prompt_injection``
                 # blocks (see ``llm/guardrail.py``); everything else flows
                 # through. Pre-fix this also blocked ``off_topic``, which

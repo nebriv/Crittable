@@ -24,10 +24,10 @@ If `ANTHROPIC_MODEL` is set, it is the fallback for any unset tier.
 
 ### Per-tier sampling tunables
 
-Each tier has independent `max_tokens`, `temperature`, and `top_p` knobs.
-Leave a knob unset to use the per-tier default; the rationale for each
-default lives in `backend/app/config.py::_MAX_TOKENS_DEFAULTS` and
-`_TEMPERATURE_DEFAULTS`.
+Each tier has independent `max_tokens`, `temperature`, `top_p`, and
+`timeout` knobs. Leave a knob unset to use the per-tier default; the
+rationale for each default lives in `backend/app/config.py`
+(`_MAX_TOKENS_DEFAULTS`, `_TEMPERATURE_DEFAULTS`).
 
 | Var | Default | Effect |
 |---|---|---|
@@ -40,6 +40,15 @@ default lives in `backend/app/config.py::_MAX_TOKENS_DEFAULTS` and
 | `LLM_TEMPERATURE_AAR` | `0.4` | Lower = more faithful summaries. |
 | `LLM_TEMPERATURE_GUARDRAIL` | `0.0` | Deterministic verdict. |
 | `LLM_TOP_P_PLAY` / `_SETUP` / `_AAR` / `_GUARDRAIL` | _SDK default_ | Nucleus sampling. Only forwarded when explicitly set. |
+| `LLM_TIMEOUT_PLAY` / `_SETUP` / `_AAR` / `_GUARDRAIL` | inherits `ANTHROPIC_TIMEOUT_S` | Per-call timeout (seconds). Operators typically tighten guardrail (e.g. 5s — the per-session lock is held during classification) and loosen AAR (e.g. 900s — Opus on a 30-message exercise can run 1–3 min). |
+
+### Engine retry / loop caps
+
+| Var | Default | Effect |
+|---|---|---|
+| `LLM_STRICT_RETRY_MAX` | `1` | Number of strict retries the play-turn driver attempts when the AI fails to yield via `set_active_roles`. Lift to `2`–`3` for flakier models (e.g. local LLMs that struggle with tool-use enforcement); set to `0` to disable strict retry entirely. |
+| `MAX_SETUP_TURNS` | `4` | Safety cap on chained tool calls within a single setup turn. Lift if you want the setup model to chain `ask_setup_question` → `propose_scenario_plan` → `finalize_setup` in one cycle. |
+| `MAX_PARTICIPANT_SUBMISSION_CHARS` | `4000` | Hard cap on a player message. Submissions are *truncated* (not rejected); the engine sends an `error` WS event so the player knows their text was clipped. |
 
 ## Session limits
 
@@ -54,6 +63,21 @@ default lives in `backend/app/config.py::_MAX_TOKENS_DEFAULTS` and
 | `WS_HEARTBEAT_S` | `20` | WebSocket heartbeat interval |
 | `INPUT_GUARDRAIL_ENABLED` | `true` | Toggle the Haiku off-topic pre-classifier |
 | `DEV_FAST_SETUP` | `false` | Dev/testing only: skip the AI setup dialogue at session creation, drop a generic default plan, and land in `READY`. **Never enable in production.** A creator can also trigger this mid-flow via `POST /api/sessions/{id}/setup/skip`. |
+
+## Frontend (Vite build-time)
+
+> **Build-time, not runtime.** These vars are read by `vite.config.ts`
+> during `npm run build` and baked into the bundle as numeric literals.
+> Setting them in your runtime environment after the bundle is built has
+> no effect — re-run `npm run build` (or rebuild the docker image) to
+> pick up changes.
+
+Defaults preserve historical behaviour so unset = no change.
+
+| Var | Default | Effect |
+|---|---|---|
+| `VITE_ACTIVITY_POLL_MS` | `3000` | Cadence at which the creator's activity panel polls `/api/sessions/{id}/activity`. |
+| `VITE_AAR_POLL_MS` | `2500` | Cadence at which `EndedView` polls `/api/sessions/{id}/export.md` while the AAR is generating. |
 
 ## Logging
 

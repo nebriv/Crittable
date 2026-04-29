@@ -42,12 +42,15 @@ _logger = get_logger("session.turn_driver")
 
 
 _STRICT_RETRY_NOTE = (
-    "STRICT RETRY: your previous attempt did not yield. The narrative beat "
-    "has already been narrated — DO NOT repeat or rephrase it. Your only "
-    "job on this turn is to call `set_active_roles` with the role_ids that "
-    "should respond next. The tool surface has been narrowed and "
-    "tool_choice forces a call to `set_active_roles`; you cannot end the "
-    "session on a strict-retry pass."
+    "STRICT RETRY: your previous attempt(s) on this turn did not yield. "
+    "If you have seen this note already on this same turn, the prior "
+    "tool-narrowing did not produce a yielding call — do NOT re-narrate "
+    "or re-explain, just emit `set_active_roles` and stop. The narrative "
+    "beat is already in the transcript. Your only job on this turn is to "
+    "call `set_active_roles` with the role_ids that should respond next. "
+    "The tool surface has been narrowed and `tool_choice` forces a call "
+    "to `set_active_roles`; you cannot end the session on a strict-retry "
+    "pass."
 )
 
 # Replaces the generic ``_KICKOFF_USER_MSG`` on the strict-retry pass so the
@@ -76,7 +79,11 @@ class TurnDriver:
             has_plan=session.plan is not None,
         )
 
-        for _ in range(4):  # safety cap on chained setup tool calls
+        # Safety cap on chained setup tool calls — operator-tunable via
+        # ``MAX_SETUP_TURNS``. Lifting it lets a model that wants to
+        # ``ask_setup_question`` → ``propose_scenario_plan`` → ``finalize_setup``
+        # in one cycle do so without a premature break.
+        for _ in range(self._manager.settings().max_setup_turns):
             messages = _setup_messages(session)
             result = await llm.acomplete(
                 tier="setup",
@@ -124,9 +131,14 @@ class TurnDriver:
             roster_size=session.roster_size,
         )
 
+        # First attempt = non-strict; subsequent attempts (capped by the
+        # operator's ``LLM_STRICT_RETRY_MAX``) run strict with the tool
+        # surface narrowed to ``set_active_roles``. Max attempts =
+        # 1 (non-strict) + N strict retries.
+        max_attempts = 1 + self._manager.settings().llm_strict_retry_max
         attempt = 0
         strict = False
-        while attempt < 2:
+        while attempt < max_attempts:
             attempt += 1
             messages = _play_messages(session, strict=strict)
             system_blocks = build_play_system_blocks(session, registry=registry)
@@ -184,10 +196,14 @@ class TurnDriver:
             if outcome.had_yielding_call:
                 return session
 
-            strict = True
-            turn.retried_with_strict = True
+            # Only flip to strict + flag the turn if we're actually about
+            # to retry. With ``LLM_STRICT_RETRY_MAX=0`` the loop exits
+            # here and the turn remains marked as never-strict-retried.
+            if attempt < max_attempts:
+                strict = True
+                turn.retried_with_strict = True
 
-        # Both attempts failed — mark errored
+        # Attempts exhausted — mark errored
         turn.status = "errored"
         turn.error_reason = "model did not yield via a tool call"
         await self._manager.connections().broadcast(

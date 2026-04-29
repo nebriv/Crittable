@@ -48,7 +48,10 @@ export function SessionActivityPanel({
   sessionId,
   creatorToken,
   roles,
-  pollMs = 3000,
+  // Default sourced from the build-time ``VITE_ACTIVITY_POLL_MS`` env
+  // var so operators can tune without a code change. Falls back to
+  // 3000ms when unset (historical default).
+  pollMs = __ATF_ACTIVITY_POLL_MS__,
   onForceAdvance,
   busy,
 }: Props) {

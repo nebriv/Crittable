@@ -399,11 +399,20 @@ def register_api_routes(app: FastAPI) -> None:
                     status.HTTP_400_BAD_REQUEST,
                     "use the normal submit endpoint for your own role",
                 )
+            cap = manager.settings().max_participant_submission_chars
+            # Mirror the WS submit path: when truncating, append a server
+            # marker so the AI doesn't read a clipped sentence as a real
+            # fragment.
+            posted = (
+                content[:cap] + "\n[message truncated by server]"
+                if len(content) > cap
+                else content
+            )
             await manager.proxy_submit_as(
                 session_id=session_id,
                 by_role_id=token["role_id"],
                 as_role_id=as_role_id,
-                content=content[:2000],
+                content=posted,
             )
         except AuthorizationError as exc:
             raise HTTPException(status.HTTP_403_FORBIDDEN, str(exc)) from exc
@@ -421,7 +430,7 @@ def register_api_routes(app: FastAPI) -> None:
         elif (
             session.current_turn is not None
             and session.state == SessionState.AWAITING_PLAYERS
-            and _looks_like_question(content[:2000])
+            and _looks_like_question(content[:cap])
         ):
             # Mirror the WS submit path: when the proxy submission is a
             # direct question and the turn isn't ready to advance, fire

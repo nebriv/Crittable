@@ -2254,3 +2254,332 @@ def test_interject_skipped_for_short_or_non_question(client: TestClient) -> None
         # Doesn't end with ?
         assert fn("We are containing now.") is False
         assert fn("Here's a question mark? in the middle.") is False
+
+
+def test_strict_retry_max_zero_marks_errored_immediately(monkeypatch) -> None:
+    """``LLM_STRICT_RETRY_MAX=0`` disables the strict-retry pass: a single
+    non-yielding attempt should error the turn straight away, not retry."""
+
+    from app.config import reset_settings_cache
+    from app.main import create_app
+    from tests.mock_anthropic import MockAnthropic, _ContentBlock, _Response
+
+    monkeypatch.setenv("LLM_STRICT_RETRY_MAX", "0")
+    reset_settings_cache()
+    app = create_app()
+    with TestClient(app) as c:
+        _install_minimal_mock(c)
+        seats = _create_and_seat(c, role_count=2)
+        sid = seats["session_id"]
+        cr = seats["creator_token"]
+
+        # Non-yielding response. With strict-retry-max=0 we expect ONE
+        # call only — locked by checking the mock's call log length below.
+        non_yielding = _Response(
+            content=[
+                _ContentBlock(
+                    type="tool_use",
+                    name="broadcast",
+                    input={"message": "Just broadcasting."},
+                    id="tu_b",
+                ),
+            ],
+            stop_reason="tool_use",
+        )
+        mock = MockAnthropic({"play": [non_yielding]})
+        c.app.state.llm.set_transport(mock.messages)
+        c.post(f"/api/sessions/{sid}/setup/skip?token={cr}")
+        r = c.post(f"/api/sessions/{sid}/start?token={cr}")
+        assert r.status_code == 200, r.text
+
+        snap = c.get(f"/api/sessions/{sid}?token={cr}").json()
+        assert snap["current_turn"]["status"] == "errored"
+        # No strict retry happened.
+        snap_debug = c.get(f"/api/sessions/{sid}/debug?token={cr}").json()
+        last_turn = snap_debug["turns"][-1]
+        assert last_turn["retried_with_strict"] is False
+        # Exactly one play-tier streaming call (set_active_roles never fired).
+        assert len(mock.messages.calls) == 1, mock.messages.calls
+
+
+def test_max_participant_submission_chars_truncates(monkeypatch) -> None:
+    """A submission longer than ``MAX_PARTICIPANT_SUBMISSION_CHARS`` is
+    truncated (not rejected). Operator can lift the cap; default 4000."""
+
+    import asyncio
+
+    from app.config import reset_settings_cache
+    from app.main import create_app
+    from app.sessions.models import SessionState, Turn
+
+    monkeypatch.setenv("MAX_PARTICIPANT_SUBMISSION_CHARS", "30")
+    reset_settings_cache()
+    app = create_app()
+    with TestClient(app) as c:
+        _install_minimal_mock(c)
+        seats = _create_and_seat(c, role_count=2)
+        sid = seats["session_id"]
+        cr = seats["creator_token"]
+        other = seats["role_ids"][1]
+
+        c.post(f"/api/sessions/{sid}/setup/skip?token={cr}")
+
+        async def _open_awaiting() -> None:
+            mgr = c.app.state.manager
+            session = await mgr.get_session(sid)
+            session.turns.append(
+                Turn(index=0, active_role_ids=seats["role_ids"], status="awaiting")
+            )
+            session.state = SessionState.AWAITING_PLAYERS
+            await mgr._repo.save(session)
+
+        asyncio.run(_open_awaiting())
+
+        long_msg = "x" * 200
+        r = c.post(
+            f"/api/sessions/{sid}/admin/proxy-respond?token={cr}",
+            json={"as_role_id": other, "content": long_msg},
+        )
+        assert r.status_code == 200, r.text
+        snap = c.get(f"/api/sessions/{sid}?token={cr}").json()
+        proxied = [m for m in snap["messages"] if m["role_id"] == other]
+        assert proxied, snap["messages"]
+        body = proxied[-1]["body"]
+        # The cap (30 char) bound the original content; the server then
+        # appended a marker so the AI doesn't read a clipped sentence as
+        # a real fragment. Both must be present.
+        assert body.startswith("x" * 30)
+        assert "[message truncated by server]" in body
+        # The user-visible content (before the marker) is exactly capped.
+        assert len(body.split("\n[message truncated by server]")[0]) == 30
+
+
+def test_max_setup_turns_caps_chained_calls(monkeypatch) -> None:
+    """``MAX_SETUP_TURNS`` is the binding constraint when the setup
+    model returns a NON-yielding response. With cap=2, two LLM calls
+    happen and the loop returns; with cap=4 (default) it would loop
+    four times. Uses ``end_session`` (which is play-only — rejected
+    during SETUP, never sets ``had_yielding_call``) so each iteration
+    is forced to retry."""
+
+    from app.config import reset_settings_cache
+    from app.main import create_app
+    from app.sessions.turn_driver import TurnDriver
+    from tests.mock_anthropic import MockAnthropic, _ContentBlock, _Response
+
+    monkeypatch.setenv("MAX_SETUP_TURNS", "2")
+    reset_settings_cache()
+    app = create_app()
+    with TestClient(app) as c:
+        # ``end_session`` is rejected during SETUP — the dispatcher
+        # records a tool_use_rejected and ``had_yielding_call`` stays
+        # False, so the loop continues until the cap binds.
+        non_yielding = _Response(
+            content=[
+                _ContentBlock(
+                    type="tool_use",
+                    name="end_session",
+                    input={"reason": "test"},
+                    id="tu_end",
+                ),
+            ],
+            stop_reason="tool_use",
+        )
+        mock = MockAnthropic(
+            {"setup": [non_yielding, non_yielding, non_yielding, non_yielding]}
+        )
+        c.app.state.llm.set_transport(mock.messages)
+
+        r = c.post(
+            "/api/sessions",
+            json={
+                "scenario_prompt": "Ransomware",
+                "creator_label": "CISO",
+                "creator_display_name": "Alex",
+            },
+        )
+        assert r.status_code == 200
+        # Session creation auto-greets — exactly cap=2 calls before the
+        # loop bails (proves the cap is binding).
+        assert len(mock.messages.calls) == 2, mock.messages.calls
+
+        # Second invocation: another two calls. Total = 4.
+        import asyncio
+
+        async def _drive_again() -> None:
+            from app.sessions.models import Session
+
+            sid = r.json()["session_id"]
+            mgr = c.app.state.manager
+            session: Session = await mgr.get_session(sid)
+            await TurnDriver(manager=mgr).run_setup_turn(session=session)
+
+        asyncio.run(_drive_again())
+        assert len(mock.messages.calls) == 4, mock.messages.calls
+
+
+def test_strict_retry_max_two_runs_three_attempts(monkeypatch) -> None:
+    """``LLM_STRICT_RETRY_MAX=2`` should run 3 play-tier attempts (1
+    non-strict + 2 strict) before marking the turn errored. Locks the
+    multi-pass strict-retry behaviour the prompt-expert review flagged
+    as untested."""
+
+    from app.config import reset_settings_cache
+    from app.main import create_app
+    from tests.mock_anthropic import MockAnthropic, _ContentBlock, _Response
+
+    monkeypatch.setenv("LLM_STRICT_RETRY_MAX", "2")
+    reset_settings_cache()
+    app = create_app()
+    with TestClient(app) as c:
+        _install_minimal_mock(c)
+        seats = _create_and_seat(c, role_count=2)
+        sid = seats["session_id"]
+        cr = seats["creator_token"]
+
+        non_yielding = _Response(
+            content=[
+                _ContentBlock(
+                    type="tool_use",
+                    name="broadcast",
+                    input={"message": "broadcast only."},
+                    id="tu_b",
+                ),
+            ],
+            stop_reason="tool_use",
+        )
+        mock = MockAnthropic({"play": [non_yielding] * 5})
+        c.app.state.llm.set_transport(mock.messages)
+        c.post(f"/api/sessions/{sid}/setup/skip?token={cr}")
+        r = c.post(f"/api/sessions/{sid}/start?token={cr}")
+        assert r.status_code == 200, r.text
+
+        snap = c.get(f"/api/sessions/{sid}?token={cr}").json()
+        assert snap["current_turn"]["status"] == "errored"
+        # 1 non-strict + 2 strict = 3 attempts.
+        assert len(mock.messages.calls) == 3, mock.messages.calls
+        snap_debug = c.get(f"/api/sessions/{sid}/debug?token={cr}").json()
+        last_turn = snap_debug["turns"][-1]
+        assert last_turn["retried_with_strict"] is True
+
+
+def test_per_tier_timeout_passed_to_anthropic(monkeypatch) -> None:
+    """When ``LLM_TIMEOUT_<TIER>`` differs from the global, the
+    per-call ``with_options(timeout=…)`` path should fire and pass the
+    override through to the Anthropic SDK. Locks the SDK plumbing the
+    QA review flagged as untested (the existing settings-resolver
+    test only covers the resolver, not the wire)."""
+
+    import asyncio
+
+    from app.config import Settings
+    from app.llm.client import LLMClient
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.setenv("ANTHROPIC_TIMEOUT_S", "600")
+    monkeypatch.setenv("LLM_TIMEOUT_GUARDRAIL", "5")
+
+    captured: dict[str, Any] = {}
+
+    class _StubMessages:
+        async def create(self, **kwargs: Any) -> Any:
+            captured["kwargs"] = kwargs
+            from tests.mock_anthropic import _ContentBlock, _Response
+
+            return _Response(content=[_ContentBlock(type="text", text="on_topic")])
+
+        def stream(self, **kwargs: Any) -> Any:
+            raise NotImplementedError
+
+    class _StubClient:
+        """Stand-in for the ``AsyncAnthropic`` instance — captures the
+        per-call timeout via ``with_options``."""
+
+        def __init__(self) -> None:
+            self.messages = _StubMessages()
+            self._with_options_calls: list[float] = []
+
+        def with_options(self, *, timeout: float) -> _StubClient:
+            # Return a fresh instance so the production code path mirrors
+            # the real SDK shape (each call gets its own derived client).
+            new = _StubClient()
+            new._with_options_calls = [*self._with_options_calls, timeout]
+            captured["with_options_timeout"] = timeout
+            return new
+
+    s = Settings()
+    llm = LLMClient(settings=s)
+    # Inject the stub at the ``_client`` level (NOT via ``set_transport``,
+    # which short-circuits ``_messages_for_tier``).
+    llm._client = _StubClient()  # type: ignore[assignment]
+
+    async def _go() -> None:
+        await llm.acomplete(
+            tier="guardrail",
+            system_blocks=[{"type": "text", "text": "x"}],
+            messages=[{"role": "user", "content": "hi"}],
+        )
+
+    asyncio.run(_go())
+    # The override kicked in (5 s != 600 s global) so with_options was
+    # called exactly once with the override.
+    assert captured.get("with_options_timeout") == 5.0
+
+
+def test_ws_submit_truncates_with_marker_and_warning(monkeypatch) -> None:
+    """The WS ``submit_response`` path must (a) emit a
+    ``submission_truncated`` event (NOT ``error``) so the frontend can
+    render it as info, (b) append the server marker so the AI doesn't
+    read a clipped sentence as a real fragment, (c) cap the user-
+    visible portion at the configured max."""
+
+    monkeypatch.setenv("MAX_PARTICIPANT_SUBMISSION_CHARS", "20")
+    from app.config import reset_settings_cache
+    from app.main import create_app
+
+    reset_settings_cache()
+    app = create_app()
+    with TestClient(app) as c:
+        _install_minimal_mock(c)
+        seats = _create_and_seat(c, role_count=2)
+        sid = seats["session_id"]
+        cr = seats["creator_token"]
+        creator_role_id = seats["creator_role_id"]
+
+        # Open an awaiting turn so the creator can submit.
+        import asyncio
+
+        from app.sessions.models import SessionState, Turn
+
+        async def _open_awaiting() -> None:
+            mgr = c.app.state.manager
+            session = await mgr.get_session(sid)
+            session.turns.append(
+                Turn(index=0, active_role_ids=[creator_role_id], status="awaiting")
+            )
+            session.state = SessionState.AWAITING_PLAYERS
+            await mgr._repo.save(session)
+
+        c.post(f"/api/sessions/{sid}/setup/skip?token={cr}")
+        asyncio.run(_open_awaiting())
+
+        with c.websocket_connect(f"/ws/sessions/{sid}?token={cr}") as ws:
+            ws.send_json({"type": "submit_response", "content": "y" * 100})
+            seen_truncated = False
+            for _ in range(8):
+                evt = ws.receive_json()
+                if evt.get("type") == "submission_truncated":
+                    seen_truncated = True
+                    assert evt.get("scope") == "submit_response"
+                    assert evt.get("cap") == 20
+                    assert evt.get("original_len") == 100
+                    break
+            assert seen_truncated, "submission_truncated event not received"
+
+        # Verify the persisted message has the server marker + capped body.
+        snap = c.get(f"/api/sessions/{sid}?token={cr}").json()
+        creator_msgs = [m for m in snap["messages"] if m["role_id"] == creator_role_id]
+        assert creator_msgs
+        body = creator_msgs[-1]["body"]
+        assert body.startswith("y" * 20)
+        assert "[message truncated by server]" in body
