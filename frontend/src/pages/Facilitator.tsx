@@ -689,16 +689,16 @@ export function Facilitator() {
                   className="flex shrink-0 flex-wrap items-center justify-between gap-2 rounded border border-amber-700/60 bg-amber-950/40 p-3 text-sm text-amber-100"
                 >
                   <span>
-                    The AI failed to yield via a tool. Force-advance to skip
-                    this turn, or end the session.
+                    The AI failed to yield via a tool. Click below to nudge
+                    it forward, or end the session.
                   </span>
                   <button
                     type="button"
                     onClick={handleForceAdvance}
                     disabled={busy}
-                    className="rounded border border-amber-500 bg-amber-900/30 px-3 py-1 text-xs font-semibold text-amber-100 hover:bg-amber-800/40 disabled:opacity-50"
+                    className="rounded border border-emerald-500 bg-emerald-900/30 px-3 py-1 text-xs font-semibold text-emerald-100 hover:bg-emerald-700/40 disabled:opacity-50"
                   >
-                    Force-advance turn
+                    AI: take next beat
                   </button>
                 </div>
               ) : null}
@@ -1076,12 +1076,29 @@ function Controls(props: {
 
       {props.phase === "play" ? (
         <>
+          {/*
+            Same backend call (``force_advance``) under two friendlier
+            framings. Operators kept asking "how do I tell the AI to
+            jump in?" — the answer was force-advance, but the label
+            implied "skip a stuck input" not "AI, take the next beat".
+            Both buttons land on the same handler; the system message
+            on the backend is shared too.
+          */}
           <button
             onClick={props.onForceAdvance}
             disabled={props.busy}
-            className="rounded border border-amber-500 px-2 py-1 text-sm font-semibold text-amber-200 hover:bg-amber-900/30 disabled:opacity-50"
+            className="rounded border border-emerald-500 bg-emerald-900/30 px-2 py-1 text-sm font-semibold text-emerald-100 hover:bg-emerald-700/40 disabled:opacity-50"
+            title="Mark the current player turn complete and let the AI take the next beat now. Use when conversation has stalled or you want the AI to inject."
           >
-            Force-advance turn
+            AI: take next beat
+          </button>
+          <button
+            onClick={props.onForceAdvance}
+            disabled={props.busy}
+            className="rounded border border-amber-500 px-2 py-1 text-xs font-semibold text-amber-200 hover:bg-amber-900/30 disabled:opacity-50"
+            title="Same action — framed as 'skip the missing role responses' for when one player is unresponsive."
+          >
+            Force-advance (skip missing voices)
           </button>
           <button
             onClick={props.onEnd}
