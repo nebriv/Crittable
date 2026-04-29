@@ -561,6 +561,14 @@ class SessionManager:
                 )
             )
             ready_to_advance = all_submitted(turn)
+            # Mirror submit_response: when this fills the last seat we
+            # MUST flip state to AI_PROCESSING so the route knows to
+            # drive the next AI turn. Pre-fix the proxy path left the
+            # session stuck in AWAITING_PLAYERS even though every active
+            # role had submitted.
+            if ready_to_advance:
+                turn.status = "processing"
+                session.state = SessionState.AI_PROCESSING
             await self._repo.save(session)
         await self.connections().broadcast(
             session_id,

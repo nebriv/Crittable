@@ -1,6 +1,7 @@
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { TableScroll } from "../components/TableScroll";
 import {
   api,
   CostSnapshot,
@@ -69,6 +70,11 @@ export function Facilitator() {
   // by the consuming components which check freshness < 4s.
   const [typing, setTyping] = useState<Record<string, number>>({});
   const wsRef = useRef<WsClient | null>(null);
+  // Wraps the chat scroll region so we can auto-pin the latest message to
+  // the bottom on each new arrival. Without this the user's view stays
+  // fixed where they were last reading and they don't realise a new AI
+  // beat just landed.
+  const scrollRegionRef = useRef<HTMLDivElement | null>(null);
 
   const phase: Phase = useMemo(() => {
     if (!snapshot) return "intro";
@@ -213,6 +219,22 @@ export function Facilitator() {
     }, 1000);
     return () => clearInterval(id);
   }, []);
+
+  // Auto-scroll the chat region to the bottom when the message count or
+  // streaming buffer grows — but only if the operator was already near
+  // the bottom. If they've scrolled up to re-read an earlier beat we
+  // leave their position alone (otherwise scrolling becomes a fight).
+  const messageCount = snapshot?.messages.length ?? 0;
+  useEffect(() => {
+    const el = scrollRegionRef.current;
+    if (!el) return;
+    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+    // 120px slack so a tiny manual scroll-up doesn't pin the operator
+    // out of follow mode.
+    if (distanceFromBottom < 120) {
+      el.scrollTop = el.scrollHeight;
+    }
+  }, [messageCount, streamingText]);
 
   async function refreshSnapshot() {
     if (!state) return;
@@ -451,6 +473,15 @@ export function Facilitator() {
           Provide a scenario prompt and your facilitator details. The AI will then walk you through
           structured setup before you invite players.
         </p>
+        <ol className="flex flex-col gap-1 rounded border border-slate-700 bg-slate-900 p-3 text-xs text-slate-300">
+          <li className="text-[11px] uppercase tracking-widest text-slate-400">
+            What to expect
+          </li>
+          <li>1. <span className="text-slate-200">Setup</span> — the AI asks 3–5 questions about scope, regulators, roles, then drafts a plan you can edit, approve, or skip.</li>
+          <li>2. <span className="text-slate-200">Invite</span> — copy a per-role join link to each participant; you can also play one of the roles yourself.</li>
+          <li>3. <span className="text-slate-200">Run</span> — the AI narrates beats, throws injects, and yields turns to specific roles. Typical session: 30–60 min.</li>
+          <li>4. <span className="text-slate-200">After-action</span> — when you end the session, the AI generates a markdown report with per-role scores and a transcript.</li>
+        </ol>
         <form onSubmit={handleCreate} className="flex flex-col gap-3">
           <div className="flex items-start gap-2 rounded border border-amber-600/60 bg-amber-950/30 p-2 text-xs text-amber-100">
             <label className="flex items-center gap-2 font-semibold">
@@ -575,7 +606,7 @@ export function Facilitator() {
           />
         </aside>
 
-        <section className="flex flex-col gap-3 lg:min-h-0 lg:overflow-hidden">
+        <section className="flex min-w-0 flex-col gap-3 lg:min-h-0 lg:overflow-hidden">
           {/*
             Every phase view (setup / ready / ended / play) renders inside the
             same scrollable region. Pre-fix the wrapping ``<div>`` only
@@ -583,7 +614,19 @@ export function Facilitator() {
             the SETUP chat both got clipped on desktop with no scrollbar —
             an operator literally couldn't reach the "Approve plan" button.
           */}
-          <div className="flex flex-col gap-3 lg:min-h-0 lg:flex-1 lg:overflow-y-auto lg:pr-1">
+          {/*
+            Scroll region: holds whatever scrolls within a phase. For
+            setup/ready/ended this is the entire phase content. For play
+            the *transcript only* lives here so the Composer (a sibling
+            below) stays pinned to the bottom of the section regardless
+            of how long the chat grows. Pre-fix the Composer was nested
+            *inside* this scroller, which buried the Submit button as
+            soon as the transcript outgrew the viewport.
+          */}
+          <div
+            ref={scrollRegionRef}
+            className="flex min-w-0 flex-col gap-3 lg:min-h-0 lg:flex-1 lg:overflow-y-auto lg:pr-1"
+          >
           {phase === "setup" ? (
             <SetupView
               snapshot={snapshot}
@@ -597,7 +640,9 @@ export function Facilitator() {
               busy={busy}
             />
           ) : null}
-          {phase === "ready" ? <ReadyView plan={snapshot.plan} /> : null}
+          {phase === "ready" ? (
+            <ReadyView plan={snapshot.plan} sessionId={state.sessionId} />
+          ) : null}
           {phase === "ended" ? (
             <EndedView
               sessionId={state.sessionId}
@@ -632,88 +677,103 @@ export function Facilitator() {
                   </button>
                 </div>
               ) : null}
-              <div>
-                <Transcript
-                  messages={snapshot.messages}
-                  roles={snapshot.roles}
-                  streamingText={streamingText}
-                  aiThinking={
-                    phase === "play" &&
-                    !streamingText &&
-                    // Don't spin the indicator if the turn errored — the
-                    // AI is no longer working; the activity panel surfaces
-                    // the error and the operator can force-advance.
-                    snapshot.current_turn?.status !== "errored" &&
-                    (snapshot.state === "AI_PROCESSING" ||
-                      snapshot.state === "BRIEFING" ||
-                      snapshot.current_turn?.status === "processing")
-                  }
-                  typingRoleIds={Object.keys(typing).filter(
-                    (rid) => rid !== state.creatorRoleId,
-                  )}
-                />
-              </div>
-              {phase === "play" ? (
-                <div className="shrink-0">
-                  {!isMyTurn && snapshot.current_turn?.active_role_ids?.length ? (
-                    <WaitingChip
-                      activeRoleIds={activeRoleIds}
-                      submittedRoleIds={
-                        snapshot.current_turn?.submitted_role_ids ?? []
-                      }
-                      roles={snapshot.roles}
-                    />
-                  ) : null}
-                  {(() => {
-                    // Creator-only "respond as" dropdown: list every active
-                    // role except the creator's own seat. Lets a solo
-                    // tester answer for SOC Analyst etc. without juggling
-                    // browser tabs. Empty for non-active roles or when
-                    // there's nothing to impersonate.
-                    const impersonateOptions = activeRoleIds
-                      .filter((rid) => rid !== state.creatorRoleId)
-                      .filter(
-                        (rid) =>
-                          !(snapshot.current_turn?.submitted_role_ids ?? []).includes(rid),
-                      )
-                      .map((rid) => {
-                        const r = snapshot.roles.find((x) => x.id === rid);
-                        return {
-                          id: rid,
-                          label: r ? r.label : rid,
-                        };
-                      });
-                    const selfRole = snapshot.roles.find(
-                      (r) => r.id === state.creatorRoleId,
-                    );
-                    // The composer is enabled when EITHER the creator can
-                    // speak as themselves OR they have other seats to
-                    // proxy for — solo testers need both paths.
-                    const canSelfSpeak = isMyTurn && !busy;
-                    const canProxy = impersonateOptions.length > 0 && !busy;
-                    return (
-                      <Composer
-                        enabled={canSelfSpeak || canProxy}
-                        placeholder={
-                          canSelfSpeak
-                            ? "You are an active role. Make your decision."
-                            : canProxy
-                              ? "Solo test: respond on behalf of a pending role using the dropdown."
-                              : "Waiting for the AI / other roles."
-                        }
-                        onSubmit={handleSubmit}
-                        onTypingChange={handleTypingChange}
-                        impersonateOptions={impersonateOptions}
-                        selfLabel={selfRole?.label}
-                      />
-                    );
-                  })()}
-                </div>
-              ) : null}
+              <Transcript
+                messages={snapshot.messages}
+                roles={snapshot.roles}
+                streamingText={streamingText}
+                aiThinking={
+                  phase === "play" &&
+                  !streamingText &&
+                  // Don't spin the indicator if the turn errored — the
+                  // AI is no longer working; the activity panel surfaces
+                  // the error and the operator can force-advance.
+                  snapshot.current_turn?.status !== "errored" &&
+                  (snapshot.state === "AI_PROCESSING" ||
+                    snapshot.state === "BRIEFING" ||
+                    snapshot.current_turn?.status === "processing")
+                }
+                typingRoleIds={Object.keys(typing).filter(
+                  (rid) => rid !== state.creatorRoleId,
+                )}
+              />
             </>
           ) : null}
           {error ? <p className="text-sm text-red-400">{error}</p> : null}
           </div>
+          {phase === "play" ? (
+            // Composer + WaitingChip live OUTSIDE the scroll region so they
+            // stay pinned at the bottom of the section regardless of
+            // transcript length. ``shrink-0`` here is what keeps Submit
+            // reachable on a 30-message exercise.
+            <div className="shrink-0">
+              {!isMyTurn && snapshot.current_turn?.active_role_ids?.length ? (
+                <WaitingChip
+                  activeRoleIds={activeRoleIds}
+                  submittedRoleIds={
+                    snapshot.current_turn?.submitted_role_ids ?? []
+                  }
+                  roles={snapshot.roles}
+                  sessionId={state.sessionId}
+                  creatorToken={state.token}
+                />
+              ) : null}
+              {(() => {
+                // Creator-only "respond as" dropdown: list every active
+                // role except the creator's own seat. Lets a solo
+                // tester answer for SOC Analyst etc. without juggling
+                // browser tabs. Empty when no other seats need a voice.
+                const impersonateOptions = activeRoleIds
+                  .filter((rid) => rid !== state.creatorRoleId)
+                  .filter(
+                    (rid) =>
+                      !(snapshot.current_turn?.submitted_role_ids ?? []).includes(rid),
+                  )
+                  .map((rid) => {
+                    const r = snapshot.roles.find((x) => x.id === rid);
+                    return {
+                      id: rid,
+                      label: r ? r.label : rid,
+                    };
+                  });
+                const selfRole = snapshot.roles.find(
+                  (r) => r.id === state.creatorRoleId,
+                );
+                // The composer is enabled when EITHER the creator can
+                // speak as themselves OR they have other seats to proxy
+                // for — solo testers need both paths.
+                const canSelfSpeak = isMyTurn && !busy;
+                const canProxy = impersonateOptions.length > 0 && !busy;
+                return (
+                  <>
+                    {canProxy && impersonateOptions.length > 0 ? (
+                      // One-line hint addressing the user-agent CRITICAL —
+                      // a fresh creator should know WHY a "Respond as"
+                      // dropdown just appeared and that it's optional.
+                      <p className="mb-1 text-[11px] text-slate-400">
+                        Tip: {impersonateOptions.length === 1 ? "1 role hasn't" : `${impersonateOptions.length} roles haven't`}{" "}
+                        joined yet — share their invite link, or use
+                        "Respond as" to answer for them while solo-testing.
+                      </p>
+                    ) : null}
+                    <Composer
+                      enabled={canSelfSpeak || canProxy}
+                      placeholder={
+                        canSelfSpeak
+                          ? "You are an active role. Make your decision."
+                          : canProxy
+                            ? "Solo test: respond on behalf of a pending role using the dropdown."
+                            : "Waiting for the AI / other roles."
+                      }
+                      onSubmit={handleSubmit}
+                      onTypingChange={handleTypingChange}
+                      impersonateOptions={impersonateOptions}
+                      selfLabel={selfRole?.label}
+                    />
+                  </>
+                );
+              })()}
+            </div>
+          ) : null}
         </section>
 
         <RightSidebar
@@ -770,6 +830,15 @@ function StatusBar({
           state: {backendState} · phase: {phase}
         </span>
         <span className={wsColour}>● ws: {wsStatus}</span>
+        {/* Build identification — surfaced so a creator filing a bug
+            report can tell us which version they're on without opening
+            DevTools. Vite injects ``__ATF_GIT_SHA__`` at build time. */}
+        <span
+          className="rounded bg-slate-800 px-2 py-0.5 font-mono text-[10px] text-slate-400"
+          title={`Build: ${__ATF_GIT_SHA__} · ${__ATF_BUILD_TS__}`}
+        >
+          v {__ATF_GIT_SHA__}
+        </span>
         {busy ? (
           <span
             role="status"
@@ -848,32 +917,83 @@ function WaitingChip({
   activeRoleIds,
   submittedRoleIds,
   roles,
+  sessionId,
+  creatorToken,
 }: {
   activeRoleIds: string[];
   submittedRoleIds: string[];
   roles: RoleView[];
+  /** When provided, the chip exposes a "Copy invite link" button per
+   *  pending role so the operator can re-share a join link without
+   *  scrolling up to the Roles panel. Tokens are fetched on-demand via
+   *  ``api.reissueRole`` so they're never embedded in the snapshot. */
+  sessionId?: string;
+  creatorToken?: string;
 }) {
+  const [copiedRoleId, setCopiedRoleId] = useState<string | null>(null);
+  const [copyErr, setCopyErr] = useState<string | null>(null);
   const submitted = new Set(submittedRoleIds);
   const pending = activeRoleIds.filter((id) => !submitted.has(id));
   if (pending.length === 0) return null;
-  const labels = pending
-    .map((id) => roles.find((r) => r.id === id)?.label ?? id)
-    .join(", ");
+  const pendingRoles = pending.map(
+    (id) => roles.find((r) => r.id === id) ?? { id, label: id, display_name: null },
+  );
+  const canResend = Boolean(sessionId && creatorToken);
+
+  async function copyInvite(roleId: string) {
+    if (!sessionId || !creatorToken) return;
+    setCopyErr(null);
+    try {
+      const r = await api.reissueRole(sessionId, creatorToken, roleId);
+      await navigator.clipboard.writeText(r.join_url);
+      setCopiedRoleId(roleId);
+      setTimeout(() => {
+        setCopiedRoleId((cur) => (cur === roleId ? null : cur));
+      }, 2000);
+    } catch (err) {
+      setCopyErr(err instanceof Error ? err.message : String(err));
+    }
+  }
+
   return (
     <div
       role="status"
       aria-live="polite"
-      className="mb-2 flex items-center gap-2 rounded border border-amber-700/40 bg-amber-950/30 px-2 py-1 text-xs text-amber-100"
+      className="mb-2 flex flex-col gap-1 rounded border border-amber-700/40 bg-amber-950/30 px-2 py-1 text-xs text-amber-100"
     >
-      <span
-        aria-hidden="true"
-        className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-amber-300"
-      />
-      <span>
-        Waiting on <span className="font-semibold">{pending.length} of {activeRoleIds.length}</span>
-        {": "}
-        <span className="text-amber-200">{labels}</span>
+      <span className="flex items-center gap-2">
+        <span
+          aria-hidden="true"
+          className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-amber-300"
+        />
+        <span>
+          Waiting on{" "}
+          <span className="font-semibold">{pending.length} of {activeRoleIds.length}</span>
+        </span>
       </span>
+      <ul className="flex flex-wrap items-center gap-1">
+        {pendingRoles.map((r) => (
+          <li
+            key={r.id}
+            className="inline-flex items-center gap-1 rounded bg-amber-950/60 px-1.5 py-0.5"
+          >
+            <span className="text-amber-200">{r.label}</span>
+            {canResend ? (
+              <button
+                type="button"
+                onClick={() => copyInvite(r.id)}
+                className="rounded border border-amber-500/50 px-1 py-0 text-[10px] text-amber-100 hover:bg-amber-900/40"
+                title={`Reissue and copy ${r.label}'s join link.`}
+              >
+                {copiedRoleId === r.id ? "Copied!" : "Copy invite"}
+              </button>
+            ) : null}
+          </li>
+        ))}
+      </ul>
+      {copyErr ? (
+        <p className="text-[10px] text-red-300">copy failed: {copyErr}</p>
+      ) : null}
     </div>
   );
 }
@@ -942,8 +1062,11 @@ function Controls(props: {
 
       {props.phase === "ended" ? (() => {
         // Don't surface a Download button until the AAR pipeline reports
-        // ``ready``. Showing it during ``pending`` / ``generating`` led to
-        // operators clicking it and getting a 425 Too Early error.
+        // ``ready``. The pre-fix disabled-button-with-tooltip pattern was
+        // unreliable on touch and read as broken; the User Agent flagged
+        // it as HIGH. Now: an honest inline pill with a live indicator
+        // for pending/generating, an actionable retry-via-reload chip
+        // for failure, and the real Download button only when ready.
         if (props.aarStatus === "ready") {
           return (
             <button
@@ -956,20 +1079,29 @@ function Controls(props: {
         }
         if (props.aarStatus === "failed") {
           return (
-            <p className="rounded border border-red-500/60 bg-red-950/30 px-2 py-1 text-xs text-red-200">
-              AAR generation failed — check backend logs.
-            </p>
+            <div
+              role="status"
+              className="flex flex-col gap-1 rounded border border-red-500/60 bg-red-950/30 px-2 py-1 text-xs text-red-200"
+            >
+              <span>AAR generation failed.</span>
+              <span className="text-[11px] text-red-200/80">
+                Reload the page to retry, or end + restart the session.
+              </span>
+            </div>
           );
         }
         return (
-          <button
-            type="button"
-            disabled
-            className="cursor-not-allowed rounded bg-slate-700 px-2 py-1 text-sm font-semibold text-slate-300 opacity-70"
-            title="AAR is still generating — the EndedView panel will pop the report when it's ready."
+          <span
+            role="status"
+            aria-live="polite"
+            className="inline-flex items-center gap-1.5 rounded bg-slate-800/80 px-2 py-1 text-xs text-slate-300"
           >
-            AAR generating…
-          </button>
+            <span
+              aria-hidden="true"
+              className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-400"
+            />
+            AAR generating… (~30 s)
+          </span>
         );
       })() : null}
 
@@ -1082,19 +1214,19 @@ function SetupView({
         </div>
       </form>
 
-      {hasPlan ? <PlanPreview plan={snapshot.plan!} /> : null}
+      {hasPlan ? <PlanPreview plan={snapshot.plan!} sessionId={snapshot.id} /> : null}
     </div>
   );
 }
 
-function PlanPreview({ plan }: { plan: ScenarioPlan }) {
+function PlanPreview({ plan, sessionId }: { plan: ScenarioPlan; sessionId?: string }) {
   return (
     <details className="rounded border border-emerald-700/60 bg-emerald-950/20 p-2 text-xs" open>
       <summary className="cursor-pointer text-emerald-300">
         Proposed plan: {plan.title}
       </summary>
       <div className="mt-2">
-        <PlanView plan={plan} />
+        <PlanView plan={plan} sessionId={sessionId} />
       </div>
     </details>
   );
@@ -1114,10 +1246,27 @@ function PlanPreview({ plan }: { plan: ScenarioPlan }) {
  * ``injects`` are spoiler-hidden behind a Reveal toggle whose state is
  * persisted in localStorage so it carries across reloads.
  */
-function PlanView({ plan }: { plan: ScenarioPlan }) {
+function PlanView({
+  plan,
+  sessionId,
+}: {
+  plan: ScenarioPlan;
+  /**
+   * Optional session id used to scope the spoiler-reveal preference.
+   * Without this the preference would persist across sessions and a
+   * creator who screen-shares with their team after a previous solo
+   * test would silently spoil the next plan. Per-session scoping makes
+   * each new exercise reset to the safe (hidden) default while still
+   * respecting the user's choice within the current session.
+   */
+  sessionId?: string;
+}) {
+  const storageKey = sessionId
+    ? `atf-plan-reveal:${sessionId}`
+    : "atf-plan-reveal";
   const [reveal, setReveal] = useState<boolean>(() => {
     try {
-      return window.localStorage.getItem("atf-plan-reveal") === "1";
+      return window.localStorage.getItem(storageKey) === "1";
     } catch {
       return false;
     }
@@ -1126,7 +1275,7 @@ function PlanView({ plan }: { plan: ScenarioPlan }) {
     setReveal((cur) => {
       const next = !cur;
       try {
-        window.localStorage.setItem("atf-plan-reveal", next ? "1" : "0");
+        window.localStorage.setItem(storageKey, next ? "1" : "0");
       } catch {
         /* localStorage may be disabled; preference is best-effort. */
       }
@@ -1210,22 +1359,29 @@ function PlanView({ plan }: { plan: ScenarioPlan }) {
         <section className="flex flex-col gap-2 rounded border border-amber-700/40 bg-amber-950/20 p-2">
           <header className="flex flex-wrap items-center justify-between gap-2">
             <h4 className="text-xs uppercase tracking-widest text-amber-200">
-              Spoilers — narrative arc &amp; injects
+              Narrative arc &amp; injects
             </h4>
             <button
               type="button"
               onClick={toggleReveal}
               className="rounded border border-amber-500/60 px-2 py-0.5 text-xs font-semibold text-amber-100 hover:bg-amber-900/30"
               aria-pressed={reveal}
+              title={
+                reveal
+                  ? "Switch to participant mode — hide upcoming injects so you can play fresh."
+                  : "Switch to facilitator mode — show upcoming injects so you can pace the meeting."
+              }
             >
-              {reveal ? "Hide spoilers" : "Reveal spoilers"}
+              {reveal ? "Switch to participant mode" : "Switch to facilitator mode"}
             </button>
           </header>
           {!reveal ? (
             <p className="text-xs text-amber-200/80">
+              <span className="font-semibold">Participant mode.</span>{" "}
               Hidden so you can play through fresh. {plan.narrative_arc.length}{" "}
               beat{plan.narrative_arc.length === 1 ? "" : "s"}, {plan.injects.length}{" "}
-              inject{plan.injects.length === 1 ? "" : "s"} planned.
+              inject{plan.injects.length === 1 ? "" : "s"} planned. Switch to
+              facilitator mode if you need to pace the meeting block.
             </p>
           ) : (
             <>
@@ -1312,12 +1468,17 @@ function EndedView({ sessionId, token }: { sessionId: string; token: string }) {
         timer = setTimeout(tick, 5000);
       }
     }
-    tick();
+    // Only run the polling loop while we believe AAR is still in flight.
+    // Retry-on-failure flips the local state back to "generating" which
+    // re-runs this effect (via the dep array below) and restarts polling.
+    if (aarState !== "failed") {
+      tick();
+    }
     return () => {
       cancelled = true;
       if (timer) clearTimeout(timer);
     };
-  }, [sessionId, token]);
+  }, [sessionId, token, aarState]);
 
   return (
     <div
@@ -1358,9 +1519,33 @@ function EndedView({ sessionId, token }: { sessionId: string; token: string }) {
           ) : null}
         </>
       ) : (
-        <p className="text-sm text-red-300">
-          AAR generation failed: {errMsg ?? "unknown error"}. Check the backend logs.
-        </p>
+        <div className="flex flex-col gap-2">
+          <p className="text-sm text-red-300">
+            AAR generation failed{errMsg ? `: ${errMsg}` : ""}.
+          </p>
+          <p className="text-xs text-red-200/80">
+            Most failures are transient (model timeout, rate limit). Click
+            Retry — if it keeps failing, check the backend logs or contact
+            your operator.
+          </p>
+          <button
+            type="button"
+            onClick={async () => {
+              setAarState("generating");
+              setErrMsg(null);
+              try {
+                await api.adminRetryAar(sessionId, token);
+                console.info("[facilitator] AAR retry kicked");
+              } catch (err) {
+                setAarState("failed");
+                setErrMsg(err instanceof Error ? err.message : String(err));
+              }
+            }}
+            className="self-start rounded bg-amber-600 px-3 py-1 text-sm font-semibold text-white hover:bg-amber-500"
+          >
+            Retry AAR generation
+          </button>
+        </div>
       )}
     </div>
   );
@@ -1505,9 +1690,9 @@ function AARPopup({
                   <del className="text-slate-400 line-through">{children}</del>
                 ),
                 table: ({ children }) => (
-                  <div className="mb-3 overflow-x-auto">
+                  <TableScroll>
                     <table className="min-w-full border-collapse text-xs">{children}</table>
-                  </div>
+                  </TableScroll>
                 ),
                 thead: ({ children }) => (
                   <thead className="bg-slate-900/60">{children}</thead>
@@ -1554,13 +1739,19 @@ function AARPopup({
 }
 
 
-function ReadyView({ plan }: { plan: SessionSnapshot["plan"] }) {
+function ReadyView({
+  plan,
+  sessionId,
+}: {
+  plan: SessionSnapshot["plan"];
+  sessionId?: string;
+}) {
   return (
     <div className="flex flex-col gap-3">
       <h2 className="text-lg font-semibold">Plan finalized — ready to start</h2>
       {plan ? (
         <div className="rounded border border-slate-700 bg-slate-900 p-3">
-          <PlanView plan={plan} />
+          <PlanView plan={plan} sessionId={sessionId} />
         </div>
       ) : null}
       <p className="text-sm text-slate-400">Add at least 2 roles, then click "Start session".</p>

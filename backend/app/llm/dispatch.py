@@ -352,15 +352,19 @@ class ToolDispatcher:
 
         if name == "mark_timeline_point":
             # The actual title/note are stored in ``tool_args`` so the
-            # frontend Timeline can extract them. The visible message body
-            # is just the note (or the title if no note); keep this short
-            # because it shows in the chat too.
+            # frontend Timeline can extract them. We *intentionally* do
+            # NOT render this as an AI_TEXT chat bubble because Sonnet
+            # was using ``mark_timeline_point`` as a substitute for
+            # ``broadcast`` (firing one pin per turn and skipping
+            # narration entirely). Surfacing only as a SYSTEM-kind message
+            # forces the model to ALSO call ``broadcast`` /
+            # ``address_role`` when it wants to narrate the beat.
             title = str(args.get("title", "")).strip()
             note = str(args.get("note", "")).strip()
             outcome.appended_messages.append(
                 Message(
-                    kind=MessageKind.AI_TEXT,
-                    body=note or title,
+                    kind=MessageKind.SYSTEM,
+                    body=f"Pinned: {title}" + (f" — {note}" if note else ""),
                     turn_id=turn_id,
                     tool_name=name,
                     tool_args=args,

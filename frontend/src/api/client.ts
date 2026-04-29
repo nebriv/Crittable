@@ -172,6 +172,17 @@ export const api = {
     );
   },
 
+  /** Creator-only: re-kick the AAR pipeline after a ``failed`` status. */
+  async adminRetryAar(
+    sessionId: string,
+    creatorToken: string,
+  ): Promise<{ ok: boolean; status?: string; noop?: boolean }> {
+    return request(
+      "POST",
+      `/api/sessions/${sessionId}/admin/retry-aar?token=${encodeURIComponent(creatorToken)}`,
+    );
+  },
+
   /** Creator-only solo-test helper: submit on behalf of a specific role. */
   async adminProxyRespond(
     sessionId: string,

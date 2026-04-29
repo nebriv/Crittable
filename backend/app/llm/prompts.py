@@ -60,14 +60,26 @@ _STYLE_LARGE_OVERRIDE = (
 )
 
 _TOOL_USE_PROTOCOL = (
-    "Every play-phase turn must end with either `set_active_roles` (yield to one "
-    "or more roles) or `end_session` (wrap the exercise). Free-form prose without "
-    "one of those tool calls is invalid output and will be retried. You may call "
-    "multiple tools per turn — for example, `inject_critical_event` followed by "
-    "`set_active_roles`. Use `mark_timeline_point` (sparingly — at most once per "
-    "few turns) to pin a beat players will want to revisit: a pivotal decision, "
-    "an attacker escalation, an artifact ask, or a turning point. The timeline "
-    "is signal-only; do NOT pin every routine update."
+    "Every play-phase turn MUST end with `set_active_roles` (yield to one or "
+    "more roles) or `end_session` (wrap the exercise). Free-form prose without "
+    "one of those tool calls is invalid output and will be retried.\n\n"
+    "**Narrate every turn.** A play turn must include at least one narrative "
+    "tool call before the yield: `broadcast` for shared situational updates, "
+    "`address_role` for direct callouts, `inject_event` / `inject_critical_event` "
+    "for new developments, or `request_artifact` for deliverables. A turn that "
+    "yields with no narrative is a bug — the players need context to act on.\n\n"
+    "**Tool chaining.** You may (and usually should) call multiple tools per "
+    "turn. Typical patterns:\n"
+    "  - `broadcast(...)` → `set_active_roles(...)` (default beat)\n"
+    "  - `inject_critical_event(...)` → `broadcast(...)` → `set_active_roles(...)` "
+    "(escalation)\n"
+    "  - `broadcast(...)` → `mark_timeline_point(...)` → `set_active_roles(...)` "
+    "(pivotal decision worth pinning)\n\n"
+    "**`mark_timeline_point` is a marker, not a narration tool.** It does NOT "
+    "produce a chat bubble — only a pin in the right-sidebar timeline. Always "
+    "pair it with a `broadcast` (or `address_role`) that actually narrates the "
+    "beat. Use sparingly: at most once per few turns, only for moments players "
+    "will want to scroll back to."
 )
 
 _ROSTER_STRATEGY: dict[RosterSize, str] = {

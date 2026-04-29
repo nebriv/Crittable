@@ -2,6 +2,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { MessageView, RoleView } from "../api/client";
 import { ChatIndicator } from "./ChatIndicator";
+import { TableScroll } from "./TableScroll";
 
 interface Props {
   messages: MessageView[];
@@ -76,9 +77,9 @@ function MarkdownBody({ body }: { body: string }) {
             </a>
           ),
           table: ({ children }) => (
-            <div className="mb-2 overflow-x-auto">
+            <TableScroll>
               <table className="min-w-full border-collapse text-xs">{children}</table>
-            </div>
+            </TableScroll>
           ),
           thead: ({ children }) => <thead className="bg-slate-900/60">{children}</thead>,
           tr: ({ children }) => <tr className="border-b border-slate-800">{children}</tr>,
@@ -142,7 +143,7 @@ export function Transcript({ messages, roles, streamingText, aiThinking, typingR
           <article
             key={m.id}
             id={`msg-${m.id}`}
-            className={`scroll-mt-24 rounded-md border p-3 ${colour}`}
+            className={`scroll-mt-24 min-w-0 break-words rounded-md border p-3 ${colour}`}
             data-kind={m.kind}
             data-message-id={m.id}
           >
@@ -163,7 +164,7 @@ export function Transcript({ messages, roles, streamingText, aiThinking, typingR
       })}
       {streamingText ? (
         <article
-          className="rounded-md border border-emerald-500/60 bg-emerald-900/30 p-3"
+          className="min-w-0 break-words rounded-md border border-emerald-500/60 bg-emerald-900/30 p-3"
           aria-busy="true"
         >
           <header className="mb-1 text-xs uppercase tracking-wide text-emerald-300">

@@ -451,6 +451,43 @@ def register_api_routes(app: FastAPI) -> None:
             )
         return {"ok": True, "filled": filled}
 
+    @router.post("/sessions/{session_id}/admin/retry-aar")
+    async def admin_retry_aar(session_id: str, request: Request) -> dict[str, Any]:
+        """Creator-only: re-kick the AAR pipeline after a ``failed`` status.
+
+        Most failure modes are transient (Anthropic timeout, rate limit).
+        Resets ``aar_status`` to ``pending`` and spawns a fresh
+        ``_generate_aar_bg`` task. No-ops if the AAR is already
+        generating or ready.
+        """
+
+        manager = _manager(request)
+        token = await _bind_token(request, session_id)
+        try:
+            require_creator(token)
+            session = await manager.get_session(session_id)
+        except AuthorizationError as exc:
+            raise HTTPException(status.HTTP_403_FORBIDDEN, str(exc)) from exc
+        except SessionNotFoundError as exc:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "session not found") from exc
+
+        if session.state != SessionState.ENDED:
+            raise HTTPException(
+                status.HTTP_409_CONFLICT, "session is not ENDED — nothing to retry"
+            )
+        if session.aar_status in ("pending", "generating"):
+            return {"ok": True, "status": session.aar_status, "noop": True}
+        # Reset state + clear stale error so the polling client knows the
+        # next 425 from /export.md is a fresh attempt.
+        async with await manager._lock_for(session_id):
+            fresh = await manager.get_session(session_id)
+            fresh.aar_status = "pending"
+            fresh.aar_error = None
+            fresh.aar_markdown = None
+            await manager._repo.save(fresh)
+        await manager.trigger_aar_generation(session_id)
+        return {"ok": True, "status": "pending"}
+
     @router.post("/sessions/{session_id}/admin/abort-turn")
     async def admin_abort_turn(session_id: str, request: Request) -> dict[str, Any]:
         """God-mode-only: kill the current turn so the operator can recover.

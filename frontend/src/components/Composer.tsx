@@ -49,6 +49,10 @@ export function Composer({
     if (!enabled || !text.trim()) return;
     onSubmit(text.trim(), asRoleId || undefined);
     setText("");
+    // Reset back to "speak as me" after every submit so the next message
+    // doesn't accidentally post under the previous proxy role. Sticky
+    // proxy mode was a real footgun in solo testing.
+    setAsRoleId("");
     if (isTyping.current) {
       isTyping.current = false;
       onTypingChange?.(false);
@@ -114,18 +118,29 @@ export function Composer({
         // Loud impersonation banner so a creator who picked "as: SOC" but
         // then types fast can't miss that they're about to post under
         // someone else's name. The submit button colour shifts to amber
-        // for the same reason.
-        <p
-          className="rounded border border-amber-600/60 bg-amber-950/40 px-2 py-1 text-xs text-amber-100"
+        // for the same reason. The inline "back to me" button is the
+        // user-agent's MEDIUM ask: switching out of proxy mode shouldn't
+        // require reopening the dropdown.
+        <div
+          className="flex flex-wrap items-center justify-between gap-2 rounded border border-amber-600/60 bg-amber-950/40 px-2 py-1 text-xs text-amber-100"
           role="status"
           aria-live="polite"
         >
-          Submitting as{" "}
-          <span className="font-semibold">
-            {(impersonateOptions ?? []).find((o) => o.id === asRoleId)?.label ?? asRoleId}
-          </span>{" "}
-          (proxy)
-        </p>
+          <span>
+            Submitting as{" "}
+            <span className="font-semibold">
+              {(impersonateOptions ?? []).find((o) => o.id === asRoleId)?.label ?? asRoleId}
+            </span>{" "}
+            (proxy)
+          </span>
+          <button
+            type="button"
+            onClick={() => setAsRoleId("")}
+            className="rounded border border-amber-500/60 px-2 py-0.5 text-[11px] font-semibold text-amber-100 hover:bg-amber-900/40"
+          >
+            Back to {selfLabel ?? "me"}
+          </button>
+        </div>
       ) : null}
       <textarea
         id="composer"

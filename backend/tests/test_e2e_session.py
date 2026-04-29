@@ -1730,9 +1730,13 @@ def test_mark_timeline_point_does_not_yield(client: TestClient) -> None:
     assert snap["current_turn"]["status"] == "errored"
 
 
-def test_mark_timeline_point_dispatch_emits_message(client: TestClient) -> None:
-    """``mark_timeline_point`` must surface as an AI message with the tool
-    args preserved so the frontend Timeline can extract its title."""
+def test_mark_timeline_point_dispatch_emits_system_marker(client: TestClient) -> None:
+    """``mark_timeline_point`` must surface as a SYSTEM-kind marker (not an
+    AI_TEXT chat bubble) with ``tool_args`` preserved so the Timeline can
+    extract its title. The SYSTEM kind is intentional: pre-fix the AI
+    started using ``mark_timeline_point`` as a substitute for ``broadcast``,
+    so we now route the visual output through the Timeline only and force
+    the model to call ``broadcast`` for actual narration."""
 
     from tests.mock_anthropic import MockAnthropic, _ContentBlock, _Response
 
@@ -1767,7 +1771,12 @@ def test_mark_timeline_point_dispatch_emits_message(client: TestClient) -> None:
     pinned = [m for m in snap["messages"] if m.get("tool_name") == "mark_timeline_point"]
     assert len(pinned) == 1
     assert pinned[0]["tool_args"]["title"] == "Containment decision"
-    assert pinned[0]["body"] == "IR ordered isolation."
+    # SYSTEM kind so it doesn't render as a primary AI bubble — the body
+    # is a small "Pinned: <title> — <note>" prefix; the real surface for
+    # this is the right-sidebar Timeline.
+    assert pinned[0]["kind"] == "system"
+    assert "Containment decision" in pinned[0]["body"]
+    assert "IR ordered isolation" in pinned[0]["body"]
 
 
 def test_set_active_roles_resolves_label_fallback(client: TestClient) -> None:
