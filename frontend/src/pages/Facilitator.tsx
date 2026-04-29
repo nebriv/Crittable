@@ -538,6 +538,32 @@ export function Facilitator() {
           ) : null}
           {phase === "play" || phase === "ended" ? (
             <>
+              {phase === "play" && snapshot.current_turn?.status === "errored" ? (
+                // Mirror the player-side amber banner inside the chat area
+                // for the creator. The sidebar activity panel also shows
+                // this with an inline force-advance button — the chat-area
+                // banner is the next-action affordance for an operator
+                // who's reading the transcript and didn't notice the
+                // sidebar update.
+                <div
+                  role="status"
+                  aria-live="polite"
+                  className="flex flex-wrap items-center justify-between gap-2 rounded border border-amber-700/60 bg-amber-950/40 p-3 text-sm text-amber-100"
+                >
+                  <span>
+                    The AI failed to yield via a tool. Force-advance to skip
+                    this turn, or end the session.
+                  </span>
+                  <button
+                    type="button"
+                    onClick={handleForceAdvance}
+                    disabled={busy}
+                    className="rounded border border-amber-500 bg-amber-900/30 px-3 py-1 text-xs font-semibold text-amber-100 hover:bg-amber-800/40 disabled:opacity-50"
+                  >
+                    Force-advance turn
+                  </button>
+                </div>
+              ) : null}
               <Transcript
                 messages={snapshot.messages}
                 roles={snapshot.roles}
