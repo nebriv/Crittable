@@ -42,7 +42,7 @@ class InputGuardrail:
                 # Wide enough to receive ``prompt_injection`` (~4 tokens
                 # alone) — the prior 4-token cap could truncate the verdict
                 # word and make the substring match unreliable.
-                max_tokens=12,
+                # Per-tier default from settings.max_tokens_for("guardrail").
             )
         except Exception as exc:  # fall open
             _logger.warning("guardrail_classifier_failed", error=str(exc))

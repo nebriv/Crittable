@@ -16,7 +16,11 @@ from typing import Any
 PLAY_TOOLS: list[dict[str, Any]] = [
     {
         "name": "address_role",
-        "description": "Address a single role directly (still visible to all roles).",
+        "description": (
+            "Direct a message at a single role (still visible to all roles). "
+            "Does NOT yield the turn — pair with `set_active_roles` to "
+            "actually hand over."
+        ),
         "input_schema": {
             "type": "object",
             "properties": {
@@ -28,7 +32,10 @@ PLAY_TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "broadcast",
-        "description": "Send a message visible to all roles.",
+        "description": (
+            "Send a message visible to all roles. Does NOT yield the turn "
+            "— pair with `set_active_roles`."
+        ),
         "input_schema": {
             "type": "object",
             "properties": {"message": {"type": "string"}},
@@ -37,7 +44,12 @@ PLAY_TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "inject_event",
-        "description": "Narrate a routine new development in the scenario.",
+        "description": (
+            "Narrate a *routine* development that doesn't deserve a banner. "
+            "Renders as a SYSTEM-kind chat note — quieter than `broadcast`. "
+            "Use for status confirmations, time advances, technical "
+            "details. Does NOT yield."
+        ),
         "input_schema": {
             "type": "object",
             "properties": {"description": {"type": "string"}},
@@ -47,8 +59,14 @@ PLAY_TOOLS: list[dict[str, Any]] = [
     {
         "name": "inject_critical_event",
         "description": (
-            "Push a high-prominence breaking-news event into the transcript. "
-            "Use sparingly (rate-limited)."
+            "Headline-grade escalation: data exfil confirmed, regulator "
+            "inbound, public disclosure, attacker demand. Renders as a "
+            "red banner above the chat that requires acknowledgement. "
+            "MUST be followed in the SAME turn by a `broadcast` (or "
+            "`address_role`) naming who acts on it, then a "
+            "`set_active_roles` yielding to those roles. Routine "
+            "developments use `inject_event`. Rate-limited (default 1 "
+            "per 5 turns)."
         ),
         "input_schema": {
             "type": "object",

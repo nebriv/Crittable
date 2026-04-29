@@ -37,7 +37,7 @@ class AARGenerator:
             system_blocks=build_aar_system_blocks(session),
             messages=messages,
             tools=[AAR_TOOL],
-            max_tokens=4096,
+            # Per-tier default lives in settings.max_tokens_for("aar").
             session_id=session.id,
         )
         report = _extract_report(result.content)

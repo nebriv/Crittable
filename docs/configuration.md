@@ -19,6 +19,27 @@ If `ANTHROPIC_MODEL` is set, it is the fallback for any unset tier.
 | `ANTHROPIC_MODEL_AAR` | `claude-opus-4-7` | Final after-action report generation |
 | `ANTHROPIC_MODEL_GUARDRAIL` | `claude-haiku-4-5` | Optional input-side classifier |
 | `ANTHROPIC_MAX_RETRIES` | `4` | SDK retry budget on 429/5xx |
+| `ANTHROPIC_TIMEOUT_S` | `600` | Per-request timeout in seconds |
+| `ANTHROPIC_BASE_URL` | _unset_ | Forwarded to `AsyncAnthropic(base_url=…)`. Lets the engine talk to any Anthropic-compatible endpoint (Bedrock/Vertex via litellm, OpenRouter, internal gateway). See [`llm_providers.md`](llm_providers.md). |
+
+### Per-tier sampling tunables
+
+Each tier has independent `max_tokens`, `temperature`, and `top_p` knobs.
+Leave a knob unset to use the per-tier default; the rationale for each
+default lives in `backend/app/config.py::_MAX_TOKENS_DEFAULTS` and
+`_TEMPERATURE_DEFAULTS`.
+
+| Var | Default | Effect |
+|---|---|---|
+| `LLM_MAX_TOKENS_PLAY` | `1024` | Per-turn cap during play. Bump to ~2048 if Sonnet is truncating beats. |
+| `LLM_MAX_TOKENS_SETUP` | `1024` | Per-turn cap during setup. |
+| `LLM_MAX_TOKENS_AAR` | `4096` | Cap on the AAR report tokens. |
+| `LLM_MAX_TOKENS_GUARDRAIL` | `12` | Cap on the guardrail classifier (one-word verdict). |
+| `LLM_TEMPERATURE_PLAY` | _SDK default_ | Higher = more narrative variance. |
+| `LLM_TEMPERATURE_SETUP` | _SDK default_ | |
+| `LLM_TEMPERATURE_AAR` | `0.4` | Lower = more faithful summaries. |
+| `LLM_TEMPERATURE_GUARDRAIL` | `0.0` | Deterministic verdict. |
+| `LLM_TOP_P_PLAY` / `_SETUP` / `_AAR` / `_GUARDRAIL` | _SDK default_ | Nucleus sampling. Only forwarded when explicitly set. |
 
 ## Session limits
 

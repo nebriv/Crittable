@@ -918,6 +918,12 @@ function CostMeter({ cost }: { cost: CostSnapshot | null }) {
         {cost.cache_read_tokens.toLocaleString()}
       </p>
       <p className="font-semibold text-emerald-300">≈ ${cost.estimated_usd.toFixed(4)}</p>
+      <p
+        className="mt-0.5 text-[10px] leading-tight text-slate-500"
+        title="Anthropic API spend, attributed to the operator's ANTHROPIC_API_KEY. Not billed to participants."
+      >
+        Charged to the operator's Anthropic key. Cumulative for this session.
+      </p>
     </div>
   );
 }
@@ -1077,29 +1083,25 @@ function Controls(props: {
       {props.phase === "play" ? (
         <>
           {/*
-            Same backend call (``force_advance``) under two friendlier
-            framings. Operators kept asking "how do I tell the AI to
-            jump in?" — the answer was force-advance, but the label
-            implied "skip a stuck input" not "AI, take the next beat".
-            Both buttons land on the same handler; the system message
-            on the backend is shared too.
+            Single force-advance button. The User-Agent review flagged
+            two stacked buttons that landed on the same handler as
+            "reads like an unfinished refactor" — fair. We now ship one
+            primary action with a clarifying tooltip + a one-line
+            inline hint that covers both intents (nudge AI / skip
+            missing voices).
           */}
           <button
             onClick={props.onForceAdvance}
             disabled={props.busy}
             className="rounded border border-emerald-500 bg-emerald-900/30 px-2 py-1 text-sm font-semibold text-emerald-100 hover:bg-emerald-700/40 disabled:opacity-50"
-            title="Mark the current player turn complete and let the AI take the next beat now. Use when conversation has stalled or you want the AI to inject."
+            title="Hand the turn to the AI now. Use when conversation has stalled OR when one player is unresponsive."
           >
             AI: take next beat
           </button>
-          <button
-            onClick={props.onForceAdvance}
-            disabled={props.busy}
-            className="rounded border border-amber-500 px-2 py-1 text-xs font-semibold text-amber-200 hover:bg-amber-900/30 disabled:opacity-50"
-            title="Same action — framed as 'skip the missing role responses' for when one player is unresponsive."
-          >
-            Force-advance (skip missing voices)
-          </button>
+          <p className="text-[10px] leading-tight text-slate-500">
+            Marks the current player turn complete (skipping any missing
+            voices) and lets the AI run the next beat.
+          </p>
           <button
             onClick={props.onEnd}
             disabled={props.busy}

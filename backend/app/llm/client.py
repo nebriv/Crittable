@@ -140,10 +140,44 @@ class LLMClient:
                 if self._client is None:
                     from anthropic import AsyncAnthropic
 
-                    self._client = AsyncAnthropic(
-                        api_key=self._settings.require_anthropic_key(),
-                        max_retries=self._settings.anthropic_max_retries,
-                    )
+                    kwargs: dict[str, Any] = {
+                        "api_key": self._settings.require_anthropic_key(),
+                        "max_retries": self._settings.anthropic_max_retries,
+                        "timeout": self._settings.anthropic_timeout_s,
+                    }
+                    if self._settings.anthropic_base_url:
+                        # Operators can point the engine at any
+                        # Anthropic-compatible endpoint (Bedrock proxy,
+                        # OpenRouter anthropic-compat, internal LLM
+                        # gateway, etc). See docs/llm_providers.md.
+                        kwargs["base_url"] = self._settings.anthropic_base_url
+                        _logger.info(
+                            "anthropic_base_url_override",
+                            base_url=self._settings.anthropic_base_url,
+                        )
+                        # Insecure-scheme warning. Plain ``http://`` to a
+                        # non-localhost host means every prompt + tool
+                        # call (containing scenario data + participant
+                        # chat) egresses in cleartext. Localhost loopback
+                        # is fine for local-LLM-via-litellm.
+                        from urllib.parse import urlparse
+
+                        parsed = urlparse(self._settings.anthropic_base_url)
+                        host = (parsed.hostname or "").lower()
+                        loopback = host in {"localhost", "127.0.0.1", "::1"} or host.startswith(
+                            "127."
+                        )
+                        if parsed.scheme == "http" and not loopback:
+                            _logger.warning(
+                                "anthropic_base_url_insecure",
+                                base_url=self._settings.anthropic_base_url,
+                                hint=(
+                                    "Plain http:// to a non-loopback host: prompts"
+                                    " + participant chat will egress in cleartext."
+                                    " Use https:// or a loopback proxy."
+                                ),
+                            )
+                    self._client = AsyncAnthropic(**kwargs)
         from typing import cast
 
         return cast(_AnthropicCallable, self._client.messages)
@@ -168,7 +202,7 @@ class LLMClient:
         system_blocks: list[dict[str, Any]],
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]] | None = None,
-        max_tokens: int = 1024,
+        max_tokens: int | None = None,
         session_id: str | None = None,
         tool_choice: dict[str, Any] | None = None,
     ) -> LLMResult:
@@ -179,9 +213,15 @@ class LLMClient:
         ``{"type": "any"}`` to force the model to emit at least one tool
         call (used by the strict-retry path), or omit it for the default
         ``"auto"`` behaviour.
+
+        ``max_tokens`` defaults to the per-tier value resolved from
+        ``settings.max_tokens_for(tier)``; an explicit caller value
+        wins.
         """
 
         model = self.model_for(tier)
+        if max_tokens is None:
+            max_tokens = self._settings.max_tokens_for(tier)
         kwargs: dict[str, Any] = {
             "model": model,
             "system": _with_cache(system_blocks),
@@ -193,6 +233,12 @@ class LLMClient:
         _validate_tool_choice(tool_choice)
         if tool_choice:
             kwargs["tool_choice"] = tool_choice
+        temperature = self._settings.temperature_for(tier)
+        if temperature is not None:
+            kwargs["temperature"] = temperature
+        top_p = self._settings.top_p_for(tier)
+        if top_p is not None:
+            kwargs["top_p"] = top_p
 
         _logger.info(
             "llm_call_start",
@@ -201,6 +247,9 @@ class LLMClient:
             stream=False,
             tools=len(tools or []),
             messages=len(messages),
+            max_tokens=max_tokens,
+            temperature=temperature,
+            top_p=top_p,
             tool_choice=tool_choice.get("type") if tool_choice else None,
         )
         call = self._begin_call(session_id=session_id, tier=tier, model=model, stream=False)
@@ -240,7 +289,7 @@ class LLMClient:
         system_blocks: list[dict[str, Any]],
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]] | None = None,
-        max_tokens: int = 1024,
+        max_tokens: int | None = None,
         session_id: str | None = None,
         tool_choice: dict[str, Any] | None = None,
     ) -> AsyncIterator[dict[str, Any]]:
@@ -249,9 +298,14 @@ class LLMClient:
 
         ``tool_choice`` is passed through to Anthropic. Use ``{"type":
         "any"}`` on the strict-retry path to guarantee a tool call.
+
+        ``max_tokens`` defaults to the per-tier value resolved from
+        ``settings.max_tokens_for(tier)``.
         """
 
         model = self.model_for(tier)
+        if max_tokens is None:
+            max_tokens = self._settings.max_tokens_for(tier)
         kwargs: dict[str, Any] = {
             "model": model,
             "system": _with_cache(system_blocks),
@@ -263,6 +317,12 @@ class LLMClient:
         _validate_tool_choice(tool_choice)
         if tool_choice:
             kwargs["tool_choice"] = tool_choice
+        temperature = self._settings.temperature_for(tier)
+        if temperature is not None:
+            kwargs["temperature"] = temperature
+        top_p = self._settings.top_p_for(tier)
+        if top_p is not None:
+            kwargs["top_p"] = top_p
 
         _logger.info(
             "llm_call_start",
@@ -271,6 +331,9 @@ class LLMClient:
             stream=True,
             tools=len(tools or []),
             messages=len(messages),
+            max_tokens=max_tokens,
+            temperature=temperature,
+            top_p=top_p,
             tool_choice=tool_choice.get("type") if tool_choice else None,
         )
         call = self._begin_call(session_id=session_id, tier=tier, model=model, stream=True)

@@ -32,6 +32,29 @@ _TIER_DEFAULTS: dict[ModelTier, str] = {
     "guardrail": "claude-haiku-4-5",
 }
 
+# Per-tier max_tokens defaults. Picked so the model has room to reason +
+# emit a small set of tool calls without truncation. Operators can tune
+# via ``LLM_MAX_TOKENS_<TIER>`` env vars; the rationale lives in
+# ``docs/configuration.md``.
+_MAX_TOKENS_DEFAULTS: dict[ModelTier, int] = {
+    "play": 1024,
+    "setup": 1024,
+    "aar": 4096,
+    "guardrail": 12,
+}
+
+# Per-tier temperature defaults. ``None`` means "let Anthropic pick"
+# (currently 1.0). Lower temperatures are safer for the guardrail
+# classifier (we want deterministic verdicts) and for the AAR (we want
+# faithful summaries). Play and setup stay at the default to preserve
+# narrative variance.
+_TEMPERATURE_DEFAULTS: dict[ModelTier, float | None] = {
+    "play": None,
+    "setup": None,
+    "aar": 0.4,
+    "guardrail": 0.0,
+}
+
 
 class Settings(BaseSettings):
     """Application configuration. One instance per process."""
@@ -47,6 +70,14 @@ class Settings(BaseSettings):
 
     # ---- Anthropic -----------------------------------------------------
     anthropic_api_key: SecretStr | None = Field(default=None, alias="ANTHROPIC_API_KEY")
+    # Optional ``base_url`` override for the AsyncAnthropic client. Lets
+    # the operator point the engine at an Anthropic-compatible proxy
+    # (Bedrock-via-litellm, OpenRouter's anthropic-compat endpoint, an
+    # internal LLM gateway, a self-hosted Anthropic-shaped server, etc.)
+    # without code changes. ``None`` = use the SDK default
+    # (``https://api.anthropic.com``). See ``docs/llm_providers.md`` for
+    # worked examples.
+    anthropic_base_url: str | None = Field(default=None, alias="ANTHROPIC_BASE_URL")
     anthropic_model: str | None = Field(default=None, alias="ANTHROPIC_MODEL")
     anthropic_model_play: str | None = Field(default=None, alias="ANTHROPIC_MODEL_PLAY")
     anthropic_model_setup: str | None = Field(default=None, alias="ANTHROPIC_MODEL_SETUP")
@@ -55,6 +86,37 @@ class Settings(BaseSettings):
         default=None, alias="ANTHROPIC_MODEL_GUARDRAIL"
     )
     anthropic_max_retries: int = Field(default=4, alias="ANTHROPIC_MAX_RETRIES", ge=0)
+    anthropic_timeout_s: float = Field(
+        default=600.0, alias="ANTHROPIC_TIMEOUT_S", gt=0.0
+    )
+
+    # ---- Per-tier sampling tunables ------------------------------------
+    # Each tier has independent ``max_tokens``, ``temperature`` and
+    # ``top_p`` knobs. ``None`` means "use the SDK default".
+    llm_max_tokens_play: int | None = Field(default=None, alias="LLM_MAX_TOKENS_PLAY", ge=1)
+    llm_max_tokens_setup: int | None = Field(default=None, alias="LLM_MAX_TOKENS_SETUP", ge=1)
+    llm_max_tokens_aar: int | None = Field(default=None, alias="LLM_MAX_TOKENS_AAR", ge=1)
+    llm_max_tokens_guardrail: int | None = Field(
+        default=None, alias="LLM_MAX_TOKENS_GUARDRAIL", ge=1
+    )
+    llm_temperature_play: float | None = Field(
+        default=None, alias="LLM_TEMPERATURE_PLAY", ge=0.0, le=2.0
+    )
+    llm_temperature_setup: float | None = Field(
+        default=None, alias="LLM_TEMPERATURE_SETUP", ge=0.0, le=2.0
+    )
+    llm_temperature_aar: float | None = Field(
+        default=None, alias="LLM_TEMPERATURE_AAR", ge=0.0, le=2.0
+    )
+    llm_temperature_guardrail: float | None = Field(
+        default=None, alias="LLM_TEMPERATURE_GUARDRAIL", ge=0.0, le=2.0
+    )
+    llm_top_p_play: float | None = Field(default=None, alias="LLM_TOP_P_PLAY", gt=0.0, le=1.0)
+    llm_top_p_setup: float | None = Field(default=None, alias="LLM_TOP_P_SETUP", gt=0.0, le=1.0)
+    llm_top_p_aar: float | None = Field(default=None, alias="LLM_TOP_P_AAR", gt=0.0, le=1.0)
+    llm_top_p_guardrail: float | None = Field(
+        default=None, alias="LLM_TOP_P_GUARDRAIL", gt=0.0, le=1.0
+    )
 
     # ---- Session limits -----------------------------------------------
     max_sessions: int = Field(default=10, alias="MAX_SESSIONS", ge=1)
@@ -125,6 +187,39 @@ class Settings(BaseSettings):
         if self.anthropic_model:
             return str(self.anthropic_model)
         return _TIER_DEFAULTS[tier]
+
+    def max_tokens_for(self, tier: ModelTier) -> int:
+        """Resolve ``max_tokens`` for the tier.
+
+        Order: ``LLM_MAX_TOKENS_<TIER>`` env override → tier default in
+        :data:`_MAX_TOKENS_DEFAULTS`.
+        """
+
+        explicit = getattr(self, f"llm_max_tokens_{tier}", None)
+        if explicit is not None:
+            return int(explicit)
+        return _MAX_TOKENS_DEFAULTS[tier]
+
+    def temperature_for(self, tier: ModelTier) -> float | None:
+        """Resolve ``temperature`` for the tier; ``None`` = SDK default.
+
+        Order: ``LLM_TEMPERATURE_<TIER>`` env override → tier default in
+        :data:`_TEMPERATURE_DEFAULTS`.
+        """
+
+        explicit = getattr(self, f"llm_temperature_{tier}", None)
+        if explicit is not None:
+            return float(explicit)
+        return _TEMPERATURE_DEFAULTS[tier]
+
+    def top_p_for(self, tier: ModelTier) -> float | None:
+        """Resolve ``top_p`` for the tier. No tier default — only
+        forwarded to Anthropic when explicitly set."""
+
+        explicit = getattr(self, f"llm_top_p_{tier}", None)
+        if explicit is not None:
+            return float(explicit)
+        return None
 
     def cors_origin_list(self) -> list[str] | Literal["*"]:
         """Parse ``CORS_ORIGINS``: ``*`` returns the literal ``"*"``, else a list."""

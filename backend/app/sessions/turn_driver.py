@@ -83,7 +83,7 @@ class TurnDriver:
                 system_blocks=build_setup_system_blocks(session),
                 messages=messages,
                 tools=SETUP_TOOLS,
-                max_tokens=1024,
+                # Per-tier default from settings.max_tokens_for(tier) — call passes None.
                 session_id=session.id,
             )
             await self._apply_cost(session.id, result)
@@ -300,7 +300,7 @@ class TurnDriver:
             system_blocks=system_blocks,
             messages=messages,
             tools=tools,
-            max_tokens=1024,
+            # Per-tier default from settings.max_tokens_for(tier) — call passes None.
             session_id=session.id,
             tool_choice=tool_choice,
         ):

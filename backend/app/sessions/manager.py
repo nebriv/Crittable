@@ -755,6 +755,10 @@ class SessionManager:
                 session.aar_status = "failed"
                 session.aar_error = str(exc)[:500]
                 await self._repo.save(session)
+            # Audit-log emission so the failure shows up in God Mode + the
+            # JSONL audit dump alongside the WS-only ``aar_status_changed``
+            # event. PM review flagged the gap.
+            self._emit("aar_failed", session, error=str(exc)[:500])
             await self._connections.broadcast(
                 session_id, {"type": "aar_status_changed", "status": "failed"}
             )

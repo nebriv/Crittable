@@ -79,3 +79,219 @@ def test_require_anthropic_key_strict(monkeypatch) -> None:
 
     with pytest.raises(RuntimeError, match="ANTHROPIC_API_KEY"):
         s.require_anthropic_key()
+
+
+# --------------------------- per-tier sampling knobs -----------------------
+
+
+def test_max_tokens_for_uses_tier_defaults(monkeypatch) -> None:
+    """Without env overrides ``max_tokens_for`` returns the per-tier
+    constants in ``_MAX_TOKENS_DEFAULTS``. Lock the contract so a
+    refactor doesn't silently shrink the AAR budget."""
+
+    for key in (
+        "LLM_MAX_TOKENS_PLAY",
+        "LLM_MAX_TOKENS_SETUP",
+        "LLM_MAX_TOKENS_AAR",
+        "LLM_MAX_TOKENS_GUARDRAIL",
+    ):
+        monkeypatch.delenv(key, raising=False)
+    s = Settings()
+    assert s.max_tokens_for("play") == 1024
+    assert s.max_tokens_for("setup") == 1024
+    assert s.max_tokens_for("aar") == 4096
+    assert s.max_tokens_for("guardrail") == 12
+
+
+def test_max_tokens_env_override_wins(monkeypatch) -> None:
+    monkeypatch.setenv("LLM_MAX_TOKENS_PLAY", "2048")
+    monkeypatch.setenv("LLM_MAX_TOKENS_GUARDRAIL", "16")
+    s = Settings()
+    assert s.max_tokens_for("play") == 2048
+    assert s.max_tokens_for("guardrail") == 16
+    # Untouched tiers keep their defaults.
+    assert s.max_tokens_for("setup") == 1024
+    assert s.max_tokens_for("aar") == 4096
+
+
+def test_temperature_for_uses_tier_defaults(monkeypatch) -> None:
+    for key in (
+        "LLM_TEMPERATURE_PLAY",
+        "LLM_TEMPERATURE_SETUP",
+        "LLM_TEMPERATURE_AAR",
+        "LLM_TEMPERATURE_GUARDRAIL",
+    ):
+        monkeypatch.delenv(key, raising=False)
+    s = Settings()
+    # ``play`` and ``setup`` keep the SDK default (return ``None``); ``aar``
+    # and ``guardrail`` have explicit defaults so the AAR is faithful and
+    # the classifier deterministic.
+    assert s.temperature_for("play") is None
+    assert s.temperature_for("setup") is None
+    assert s.temperature_for("aar") == 0.4
+    assert s.temperature_for("guardrail") == 0.0
+
+
+def test_temperature_env_override_wins(monkeypatch) -> None:
+    monkeypatch.setenv("LLM_TEMPERATURE_PLAY", "0.7")
+    monkeypatch.setenv("LLM_TEMPERATURE_AAR", "0.0")
+    s = Settings()
+    assert s.temperature_for("play") == 0.7
+    assert s.temperature_for("aar") == 0.0
+
+
+def test_top_p_only_returned_when_explicitly_set(monkeypatch) -> None:
+    for key in (
+        "LLM_TOP_P_PLAY",
+        "LLM_TOP_P_SETUP",
+        "LLM_TOP_P_AAR",
+        "LLM_TOP_P_GUARDRAIL",
+    ):
+        monkeypatch.delenv(key, raising=False)
+    s = Settings()
+    for tier in ("play", "setup", "aar", "guardrail"):
+        assert s.top_p_for(tier) is None  # type: ignore[arg-type]
+    monkeypatch.setenv("LLM_TOP_P_PLAY", "0.9")
+    s2 = Settings()
+    assert s2.top_p_for("play") == 0.9
+    assert s2.top_p_for("setup") is None
+
+
+def test_anthropic_base_url_default_is_unset(monkeypatch) -> None:
+    monkeypatch.delenv("ANTHROPIC_BASE_URL", raising=False)
+    s = Settings()
+    assert s.anthropic_base_url is None
+
+
+def test_anthropic_base_url_can_be_overridden(monkeypatch) -> None:
+    monkeypatch.setenv("ANTHROPIC_BASE_URL", "http://litellm:4000")
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setenv("TEST_MODE", "false")
+    s = Settings()
+    assert s.anthropic_base_url == "http://litellm:4000"
+    # Anthropic key is still required (the override doesn't bypass it).
+    import pytest
+
+    with pytest.raises(RuntimeError, match="ANTHROPIC_API_KEY"):
+        s.require_anthropic_key()
+
+
+# --------------------------- access-log scrubber ---------------------------
+
+
+def test_scrub_path_strips_token_query() -> None:
+    """Token query fragments must be redacted before logging. Pre-fix the
+    middleware logged ``?token=eyJ…`` verbatim, exposing creator + player
+    bearer credentials in the JSON pipeline."""
+
+    from app.logging_setup import _scrub_path_bytes
+
+    assert _scrub_path_bytes(b"/api/x?token=secret") == "/api/x?token=***"
+    assert _scrub_path_bytes(b"/api/x?foo=1&token=secret&bar=2") == (
+        "/api/x?foo=1&token=***&bar=2"
+    )
+    # Case insensitivity.
+    assert _scrub_path_bytes(b"/api/x?Token=SECRET") == "/api/x?Token=***"
+    # Doesn't over-match unrelated query keys.
+    assert _scrub_path_bytes(b"/api/x?access_token=foo") == "/api/x?access_token=foo"
+
+
+def test_scrub_path_strips_path_token() -> None:
+    """``/play/<sid>/<token>`` is the join-link shape; the token segment
+    must be redacted but the session id preserved (it's already public)."""
+
+    from app.logging_setup import _scrub_path_bytes
+
+    assert (
+        _scrub_path_bytes(b"/play/abc123/eyJhbGciOiJIUzI1NiJ9.zzz")
+        == "/play/abc123/***"
+    )
+    # Trailing path segments after the token are also redacted.
+    assert _scrub_path_bytes(b"/play/abc/secret/extra") == "/play/abc/***/extra"
+
+
+def test_scrub_path_passthrough_for_unrelated_paths() -> None:
+    from app.logging_setup import _scrub_path_bytes
+
+    assert _scrub_path_bytes(b"/api/sessions/abc") == "/api/sessions/abc"
+    assert _scrub_path_bytes(b"/healthz") == "/healthz"
+    assert _scrub_path_bytes(b"") == ""
+
+
+# --------------------------- LLMClient kwargs contract --------------------
+
+
+def test_llm_client_omits_temperature_and_top_p_when_unset(monkeypatch) -> None:
+    """The Anthropic SDK is forgiving but this contract matters when the
+    operator points ``ANTHROPIC_BASE_URL`` at a stricter Anthropic-shaped
+    proxy (some validate-then-reject unknown keys). Pin it: when no
+    per-tier env override is set, the kwargs dict passed to
+    ``messages.create`` must NOT contain ``temperature`` (for tiers
+    where the default is ``None``) or ``top_p``."""
+
+    import asyncio
+
+    from app.config import Settings
+    from app.llm.client import LLMClient
+    from tests.mock_anthropic import MockAnthropic
+
+    # Defaults: play+setup temperature is None, top_p is None for all tiers.
+    for key in (
+        "LLM_TEMPERATURE_PLAY",
+        "LLM_TEMPERATURE_SETUP",
+        "LLM_TOP_P_PLAY",
+        "LLM_TOP_P_SETUP",
+    ):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    s = Settings()
+    mock = MockAnthropic({"play": [], "setup": []})
+    llm = LLMClient(settings=s)
+    llm.set_transport(mock.messages)
+
+    async def _go() -> None:
+        await llm.acomplete(
+            tier="play",
+            system_blocks=[{"type": "text", "text": "x"}],
+            messages=[{"role": "user", "content": "hi"}],
+        )
+
+    asyncio.run(_go())
+    kwargs = mock.messages.calls[0]
+    assert "temperature" not in kwargs
+    assert "top_p" not in kwargs
+    # max_tokens always present + comes from the per-tier default.
+    assert kwargs["max_tokens"] == 1024
+
+
+def test_llm_client_forwards_temperature_when_set(monkeypatch) -> None:
+    """Counter-example: when the env knob IS set, the value must reach the
+    Anthropic kwargs."""
+
+    import asyncio
+
+    from app.config import Settings
+    from app.llm.client import LLMClient
+    from tests.mock_anthropic import MockAnthropic
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.setenv("LLM_TEMPERATURE_PLAY", "0.3")
+    monkeypatch.setenv("LLM_TOP_P_PLAY", "0.85")
+    monkeypatch.setenv("LLM_MAX_TOKENS_PLAY", "777")
+    s = Settings()
+    mock = MockAnthropic({"play": []})
+    llm = LLMClient(settings=s)
+    llm.set_transport(mock.messages)
+
+    async def _go() -> None:
+        await llm.acomplete(
+            tier="play",
+            system_blocks=[{"type": "text", "text": "x"}],
+            messages=[{"role": "user", "content": "hi"}],
+        )
+
+    asyncio.run(_go())
+    kwargs = mock.messages.calls[0]
+    assert kwargs["temperature"] == 0.3
+    assert kwargs["top_p"] == 0.85
+    assert kwargs["max_tokens"] == 777
