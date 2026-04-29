@@ -1,17 +1,24 @@
 """Drive a single AI turn end-to-end.
 
-Sits on top of :class:`~.manager.SessionManager`. Pulled out of the manager so
-the manager file stays focused on state transitions and locking.
+Sits on top of :class:`~.manager.SessionManager`. Pulled out of the
+manager so the manager file stays focused on state transitions and
+locking.
 
-Flow per turn (BRIEFING / AI_PROCESSING):
+Flow per play turn:
 1. Build messages from current transcript.
-2. Call the LLM (streamed for play, non-streamed for setup).
-3. If the model returned text deltas, fan them out as ``message_chunk``
-   events.
-4. Dispatch tool_use blocks via the ToolDispatcher.
-5. If the dispatcher reports no yielding tool call, retry once with a strict
-   "you must yield via a tool" system note. Mark errored if it still fails.
-6. Apply outcome: append messages, persist plan, set active roles, end session.
+2. Call the LLM (streamed); fan text deltas to clients.
+3. Dispatch tool_use blocks via the ToolDispatcher; collect slots.
+4. Run the turn validator against a state-aware contract. If the
+   outcome is incomplete, the validator emits one or more
+   :class:`~.turn_validator.RecoveryDirective`s — for each (in
+   priority order, sharing one budget) run a narrowed follow-up LLM
+   call that splices the prior tool-loop in for context.
+5. Apply outcome: append messages, persist plan, set active roles,
+   end session.
+
+Recovery infrastructure used to be two ad-hoc paths inline here
+(strict-retry + briefing-broadcast). They are now expressed as
+directive factories in ``turn_validator.py``.
 """
 
 from __future__ import annotations
@@ -37,51 +44,16 @@ from .models import (
     Turn,
 )
 from .phase_policy import assert_state, tool_choice_for
+from .slots import Slot
 from .turn_engine import critical_inject_allowed
+from .turn_validator import (
+    RecoveryDirective,
+    contract_for,
+    order_directives,
+    validate,
+)
 
 _logger = get_logger("session.turn_driver")
-
-
-_STRICT_RETRY_NOTE = (
-    "STRICT RETRY: your previous attempt(s) on this turn did not yield. "
-    "If you have seen this note already on this same turn, the prior "
-    "tool-narrowing did not produce a yielding call — do NOT re-narrate "
-    "or re-explain, just emit `set_active_roles` and stop. The narrative "
-    "beat is already in the transcript. Your only job on this turn is to "
-    "call `set_active_roles` with the role_ids that should respond next. "
-    "The tool surface has been narrowed and `tool_choice` forces a call "
-    "to `set_active_roles`; you cannot end the session on a strict-retry "
-    "pass."
-)
-
-# Replaces the generic ``_KICKOFF_USER_MSG`` on the strict-retry pass so the
-# trailing user turn doesn't tell the model to "begin the exercise" (which
-# would conflict with the strict note's "do not re-narrate").
-_STRICT_RETRY_USER_NUDGE = (
-    "[system] Your previous tool calls did not include a yielding tool. "
-    "The narrative is already in the transcript. Call `set_active_roles` "
-    "now with the role_ids that should respond."
-)
-
-# Used on the BRIEFING-broadcast recovery pass: the model already yielded
-# but never produced a player-facing message (no ``broadcast`` /
-# ``address_role``), leaving the active roles staring at a screen with a
-# timeline pin and an inject_event but no actual situation brief. The
-# recovery pass narrows the tool surface to ``broadcast`` and forces a
-# call so the players get the kickoff narrative they need.
-_BRIEFING_BROADCAST_RECOVERY_NOTE = (
-    "RECOVERY: this is the first turn of the exercise. You yielded to the "
-    "active roles via `set_active_roles` but did not issue a situation "
-    "broadcast — the players have no narrative beat to respond to. "
-    "Issue the situation brief now via `broadcast` (≤200 words). Address "
-    "the active roles by label + display name. Do NOT call any other "
-    "tool. Do NOT re-narrate timeline pins or system events."
-)
-_BRIEFING_BROADCAST_USER_NUDGE = (
-    "[system] You already yielded on this turn but skipped the situation "
-    "brief. Issue the brief now via `broadcast` so the active roles know "
-    "what just happened and what to do."
-)
 
 
 class TurnDriver:
@@ -162,16 +134,33 @@ class TurnDriver:
         return session
 
     async def run_play_turn(self, *, session: Session, turn: Turn) -> Session:
-        """Drive one play-tier turn. May retry once strictly on missing yield."""
+        """Drive one play-tier turn end-to-end via the turn validator.
 
-        # Engine-side guardrail: play tier may only run in BRIEFING /
-        # AI_PROCESSING (or AWAITING_PLAYERS, which is the interject
-        # path's state but ``run_play_turn`` is also reachable from
-        # ``run_interject`` via the shared ``_streamed_play_call``).
+        Loop shape:
+          1. Run the LLM with the full play tool palette.
+          2. Dispatch the resulting tool_uses; collect slots.
+          3. Validate the cumulative slots against a state-aware
+             contract.
+          4. If the contract is satisfied: apply the outcome, return.
+          5. Otherwise: pick the highest-priority recovery directive
+             (DRIVE before YIELD), run a narrowed follow-up LLM call
+             with the prior tool-loop spliced in, dispatch it, merge
+             slots/messages/tool_results into a *cumulative* outcome,
+             and re-validate.
+          6. Repeat until satisfied or the shared budget
+             (``LLM_STRICT_RETRY_MAX + 1``) is exhausted.
+
+        The cumulative outcome means a DRIVE produced on attempt 1
+        still counts toward the contract on attempt 2, so a single
+        recovery pass that yields without re-driving doesn't blow up
+        the validation.
+        """
+
         assert_state("play", session.state)
 
         dispatcher = self._manager.dispatcher()
         registry = self._manager.registry()
+        settings = self._manager.settings()
         _logger.info(
             "play_turn_start",
             session_id=session.id,
@@ -180,75 +169,88 @@ class TurnDriver:
             roster_size=session.roster_size,
         )
 
-        # First attempt = non-strict; subsequent attempts (capped by the
-        # operator's ``LLM_STRICT_RETRY_MAX``) run strict with the tool
-        # surface narrowed to ``set_active_roles``. Max attempts =
-        # 1 (non-strict) + N strict retries.
-        max_attempts = 1 + self._manager.settings().llm_strict_retry_max
+        contract = contract_for(
+            tier="play",
+            state=session.state,
+            mode="normal",
+            drive_required=settings.llm_recovery_drive_required,
+        )
+
+        # Shared budget across the whole turn — the user explicitly
+        # asked for this in the plan-design step. A turn missing both
+        # DRIVE and YIELD does not amplify the budget; both directives
+        # share the same total cap.
+        budget = 1 + settings.llm_strict_retry_max
         attempt = 0
-        strict = False
-        # Carry the prior attempt's assistant blocks + dispatcher
-        # ``tool_result`` blocks forward so the strict-retry message
-        # context includes them as a proper Anthropic tool-loop. The
-        # model then SEES the dispatcher's rejections (e.g. "tool 'X'
-        # not allowed during STATE", "unknown role_ids: [...]") and can
-        # self-correct on the next pass instead of repeating the
-        # mistake. Pre-fix the dispatcher's ``is_error`` tool_results
-        # were recorded but never fed back to the model.
+
+        # Cumulative outcome across attempts. Holds the merged slot
+        # set + appended messages + tool_results so the validator sees
+        # everything that fired this turn, not just the latest attempt.
+        cumulative = DispatchOutcome()
+
+        # The directive (if any) that informed THIS attempt's narrowing.
+        # On attempt 1 it's None (full palette). On recovery passes it
+        # narrows tools + pins tool_choice + appends a system note.
+        active_directive: RecoveryDirective | None = None
+
+        # Prior LLM result + tool_results to splice into the next
+        # attempt's messages array (the tool-loop feedback that lets
+        # the model see what it just did + the dispatcher's response).
         prior_assistant_blocks: list[dict[str, Any]] | None = None
         prior_tool_results: list[dict[str, Any]] | None = None
-        # Cumulative across all attempts on this turn — a broadcast
-        # produced on a non-yielding attempt 1 still counts as "the
-        # players got their narrative beat" once attempt 2's strict
-        # retry yields.
-        turn_had_player_facing_message = False
-        while attempt < max_attempts:
+
+        while attempt < budget:
             attempt += 1
-            messages = _play_messages(session, strict=strict)
+            recovery = active_directive is not None
+
+            # Build messages. On a recovery pass replace the trailing
+            # kickoff/strict nudge with the directive's user_nudge,
+            # then splice the prior assistant tool_use blocks +
+            # dispatcher tool_results in as a proper Anthropic tool-
+            # loop pair.
+            messages = _play_messages(session, strict=recovery)
             if (
-                strict
+                recovery
+                and active_directive is not None
+                and active_directive.replays_prior_tool_loop
                 and prior_assistant_blocks is not None
                 and prior_tool_results is not None
             ):
-                # Prepend the prior attempt's tool-loop pair before the
-                # strict-retry user nudge that ``_play_messages`` appended
-                # at the end. Anthropic requires that every ``tool_use``
-                # in an assistant turn be answered by a matching
-                # ``tool_result`` in the next user turn, which is exactly
-                # what the dispatcher produced.
-                trailing_user_nudge = messages.pop() if messages and messages[-1]["role"] == "user" else None
+                # Drop the trailing user nudge that ``_play_messages``
+                # appended; we'll re-insert a directive-specific one
+                # *after* the tool-loop pair.
+                if messages and messages[-1]["role"] == "user":
+                    messages.pop()
                 messages.append({"role": "assistant", "content": prior_assistant_blocks})
-                messages.append({"role": "user", "content": prior_tool_results})
-                if trailing_user_nudge is not None:
-                    messages.append(trailing_user_nudge)
-            system_blocks = build_play_system_blocks(session, registry=registry)
-            tool_choice: dict[str, Any] | None = None
-
-            if strict:
-                # Sonnet has been observed running ``broadcast`` only and
-                # ignoring the "yield via a tool" instruction even when the
-                # strict-retry note is appended. To make recovery
-                # *structural* rather than relying on prompt obedience:
-                #
-                #   1. Narrow the tool list to only ``set_active_roles``.
-                #   2. Pin ``tool_choice`` to that specific tool so Anthropic
-                #      MUST emit a ``set_active_roles`` call — the model
-                #      cannot end the session on a recovery pass (which
-                #      would be a worse UX than the original stuck turn).
-                #
-                # End-of-exercise still happens via the AI's normal
-                # ``end_session`` call on a regular play turn — never as a
-                # side-effect of recovery.
-                tools = [t for t in PLAY_TOOLS if t["name"] == "set_active_roles"]
-                tool_choice = {"type": "tool", "name": "set_active_roles"}
-                system_blocks.append(
-                    {
-                        "type": "text",
-                        "text": _STRICT_RETRY_NOTE,
-                    }
+                # tool_results + the directive's user_nudge in one user
+                # turn so the message sequence stays user → assistant →
+                # user (Anthropic accepts mixed tool_result + text
+                # blocks within a single user message).
+                recovery_blocks: list[dict[str, Any]] = list(prior_tool_results)
+                recovery_blocks.append(
+                    {"type": "text", "text": active_directive.user_nudge}
                 )
+                messages.append({"role": "user", "content": recovery_blocks})
+
+            system_blocks = build_play_system_blocks(session, registry=registry)
+            if active_directive is not None:
+                system_blocks.append(
+                    {"type": "text", "text": active_directive.system_addendum}
+                )
+
+            # Tool surface. Recovery narrows to the directive's
+            # allowlist and pins tool_choice; first attempt exposes
+            # the full palette + extensions.
+            if active_directive is not None:
+                tools = [
+                    t
+                    for t in PLAY_TOOLS
+                    if t["name"] in active_directive.tools_allowlist
+                ]
+                tool_choice = active_directive.tool_choice
             else:
                 tools = PLAY_TOOLS + dispatcher_extension_specs(registry)
+                tool_choice = None
 
             result = await self._streamed_play_call(
                 session=session,
@@ -268,61 +270,73 @@ class TurnDriver:
                 turn_id=turn.id,
                 critical_inject_allowed_cb=lambda: critical_inject_allowed(
                     session,
-                    max_per_5_turns=self._manager.settings().max_critical_injects_per_5_turns,
+                    max_per_5_turns=settings.max_critical_injects_per_5_turns,
                 ),
             )
 
-            if outcome.had_player_facing_message:
-                turn_had_player_facing_message = True
+            # Merge into the cumulative outcome — this is what the
+            # validator inspects.
+            _merge_outcomes(cumulative, outcome)
 
-            # Briefing-broadcast guard. The first play turn (state ==
-            # BRIEFING) MUST end with the AI handing the active roles a
-            # narrative beat to respond to — otherwise players see a
-            # "your turn" indicator with no situation brief and stall.
-            # Sonnet has been observed firing only ``mark_timeline_point``
-            # + ``inject_event`` + ``set_active_roles`` and skipping the
-            # ``broadcast`` entirely; the strict-retry path doesn't
-            # catch it because the yield itself is fine. This guard
-            # detects the missing brief, runs a recovery LLM call
-            # narrowed to ``broadcast``, and merges the brief into the
-            # outcome BEFORE state advances to AWAITING_PLAYERS.
-            #
-            # Uses the *cumulative* flag (across all attempts on this
-            # turn) so a broadcast on attempt 1 still counts even if
-            # the strict-retry attempt 2 only emits ``set_active_roles``.
-            if (
-                session.state == SessionState.BRIEFING
-                and outcome.had_yielding_call
-                and not turn_had_player_facing_message
-            ):
-                await self._recover_briefing_broadcast(
-                    session=session,
-                    turn=turn,
-                    prior_result=result,
-                    outcome=outcome,
+            # Validate cumulative state against the contract.
+            validation = validate(
+                session=session,
+                cumulative_slots=cumulative.slots,
+                contract=contract,
+                soft_drive_carve_out_enabled=settings.llm_recovery_drive_soft_on_open_question,
+            )
+
+            _logger.info(
+                "turn_validation",
+                session_id=session.id,
+                turn_index=turn.index,
+                attempt=attempt,
+                slots=sorted(s.value for s in cumulative.slots),
+                violations=[d.kind for d in validation.violations],
+                warnings=validation.warnings,
+                ok=validation.ok,
+            )
+
+            if validation.ok:
+                # Persist + advance state.
+                await self._apply_play_outcome(
+                    session,
+                    turn,
+                    cumulative,
+                    result_text=_all_text(result),
                 )
-                if outcome.had_player_facing_message:
-                    turn_had_player_facing_message = True
-
-            await self._apply_play_outcome(session, turn, outcome, result_text=_all_text(result))
-
-            if outcome.had_yielding_call:
                 return session
 
-            # Only flip to strict + flag the turn if we're actually about
-            # to retry. With ``LLM_STRICT_RETRY_MAX=0`` the loop exits
-            # here and the turn remains marked as never-strict-retried.
-            if attempt < max_attempts:
-                strict = True
-                turn.retried_with_strict = True
-                # Capture the model's last response + the dispatcher's
-                # rejection content so the next attempt's messages
-                # include the tool-loop pair. The model sees its own
-                # prior tool_uses + the engine's rejection rationale.
-                prior_assistant_blocks = result.content
-                prior_tool_results = list(outcome.tool_results)
+            # Not ok — pick the highest-priority directive and run
+            # another attempt (sequential calls, per the plan: DRIVE
+            # before YIELD).
+            if attempt >= budget:
+                break
 
-        # Attempts exhausted — mark errored
+            ordered = order_directives(validation.violations)
+            active_directive = ordered[0]
+            turn.retried_with_strict = True
+            prior_assistant_blocks = result.content
+            prior_tool_results = list(outcome.tool_results)
+            _logger.info(
+                "turn_recovery_directive",
+                session_id=session.id,
+                turn_index=turn.index,
+                attempt=attempt,
+                kind=active_directive.kind,
+                tools=sorted(active_directive.tools_allowlist),
+            )
+
+        # Budget exhausted with violations remaining. If a YIELD did
+        # land at some point we can still apply the outcome — players
+        # at least see the partial work. If no YIELD ever fired the
+        # turn is errored.
+        if Slot.YIELD in cumulative.slots or Slot.TERMINATE in cumulative.slots:
+            await self._apply_play_outcome(
+                session, turn, cumulative, result_text=""
+            )
+            return session
+
         turn.status = "errored"
         turn.error_reason = "model did not yield via a tool call"
         await self._manager.connections().broadcast(
@@ -431,116 +445,6 @@ class TurnDriver:
             )
         await self._manager._repo.save(session)
         return session
-
-    async def _recover_briefing_broadcast(
-        self,
-        *,
-        session: Session,
-        turn: Turn,
-        prior_result: LLMResult,
-        outcome: DispatchOutcome,
-    ) -> None:
-        """Fill in the missing situation brief on the BRIEFING turn.
-
-        Triggered when the first play turn yielded via ``set_active_roles``
-        but produced no ``broadcast`` / ``address_role`` — leaving the
-        active roles with no narrative beat. Runs a single LLM call
-        narrowed to ``broadcast`` (with ``tool_choice`` pinned), merges
-        the resulting messages into ``outcome`` so they go through the
-        normal ``_apply_play_outcome`` path, and marks the briefing as
-        recovered.
-
-        Failure modes are non-fatal: if the recovery call doesn't
-        produce a broadcast (e.g. the model emits text-only), the
-        original outcome still applies, the state still advances to
-        AWAITING_PLAYERS, and the operator can hit "AI: take next
-        beat" or proxy-respond. We log the failure for observability.
-        """
-
-        _logger.warning(
-            "briefing_broadcast_missing",
-            session_id=session.id,
-            turn_index=turn.index,
-            had_tool_uses=len([b for b in prior_result.content if b.get("type") == "tool_use"]),
-        )
-
-        registry = self._manager.registry()
-        # Reuse the same play system blocks (Block 7 plan, Block 10
-        # roster, etc.) so the recovery call has identical context to
-        # the original. Append a focused recovery note that pins the
-        # task: issue the brief, no other tools, no re-narration.
-        system_blocks = build_play_system_blocks(session, registry=registry)
-        system_blocks.append({"type": "text", "text": _BRIEFING_BROADCAST_RECOVERY_NOTE})
-
-        # Build messages: kickoff + the model's prior assistant turn +
-        # the dispatcher's tool_results + a recovery user nudge. The
-        # model SEES that it already yielded and the outcome of its
-        # tool calls — same shape as the strict-retry feedback loop.
-        messages = _play_messages(session, strict=False)
-        # ``_play_messages`` ends with the kickoff user nudge when the
-        # transcript trails on assistant; replace its trailing user
-        # turn with the recovery nudge so the model doesn't re-read
-        # "begin the exercise".
-        if messages and messages[-1]["role"] == "user":
-            messages.pop()
-        messages.append({"role": "assistant", "content": prior_result.content})
-        # tool_results + the recovery nudge in a single user turn so the
-        # message sequence stays user → assistant → user (Anthropic
-        # allows mixed tool_result + text blocks in one user message).
-        recovery_user_blocks: list[dict[str, Any]] = list(outcome.tool_results)
-        recovery_user_blocks.append({"type": "text", "text": _BRIEFING_BROADCAST_USER_NUDGE})
-        messages.append({"role": "user", "content": recovery_user_blocks})
-
-        # Narrow tools to ``broadcast`` only and pin ``tool_choice`` so
-        # the SDK guarantees a call. No other tools — recovery is
-        # narrative-only.
-        tools = [t for t in PLAY_TOOLS if t["name"] == "broadcast"]
-        tool_choice: dict[str, Any] = {"type": "tool", "name": "broadcast"}
-
-        result = await self._streamed_play_call(
-            session=session,
-            turn=turn,
-            tier="play",
-            system_blocks=system_blocks,
-            messages=messages,
-            tools=tools,
-            tool_choice=tool_choice,
-        )
-        await self._apply_cost(session.id, result)
-
-        # Dispatch the recovery tool calls into a fresh outcome, then
-        # merge the appended messages into the original outcome so
-        # ``_apply_play_outcome`` persists + broadcasts them in the
-        # correct order (timeline pin / inject_event already in
-        # ``outcome.appended_messages``, broadcast appended after).
-        recovery_uses = _tool_uses(result)
-        recovery_outcome = await self._manager.dispatcher().dispatch(
-            session=session,
-            tool_uses=recovery_uses,
-            turn_id=turn.id,
-            critical_inject_allowed_cb=lambda: critical_inject_allowed(
-                session,
-                max_per_5_turns=self._manager.settings().max_critical_injects_per_5_turns,
-            ),
-        )
-
-        if not recovery_outcome.had_player_facing_message:
-            _logger.warning(
-                "briefing_broadcast_recovery_no_op",
-                session_id=session.id,
-                turn_index=turn.index,
-            )
-            return
-
-        outcome.appended_messages.extend(recovery_outcome.appended_messages)
-        outcome.tool_results.extend(recovery_outcome.tool_results)
-        outcome.had_player_facing_message = True
-        _logger.info(
-            "briefing_broadcast_recovered",
-            session_id=session.id,
-            turn_index=turn.index,
-            recovery_messages=len(recovery_outcome.appended_messages),
-        )
 
     # ------------------------------------------------- internals
     async def _streamed_play_call(
@@ -831,11 +735,17 @@ def _play_messages(session: Session, *, strict: bool = False) -> list[dict[str, 
             msgs.append({"role": "assistant", "content": m.body})
 
     if not msgs or msgs[-1]["role"] != "user":
-        # On strict retry the trailing user turn must NOT say "begin the
-        # exercise" — that contradicts the strict-retry system note and
-        # nudges the model toward another broadcast. Use a focused nudge.
-        nudge = _STRICT_RETRY_USER_NUDGE if strict else _KICKOFF_USER_MSG
-        msgs.append({"role": "user", "content": nudge})
+        # On a recovery pass the driver pops this trailing nudge and
+        # replaces it with a directive-specific user message that
+        # carries the prior tool_results + the directive's nudge. So
+        # the kickoff text only ever lands on the *first* attempt of
+        # the BRIEFING turn (or any subsequent play turn that needs a
+        # synthetic trailing user message because the transcript ends
+        # on assistant). The ``strict`` parameter is preserved as a
+        # hook for callers that need a generic placeholder (no longer
+        # used by the driver, kept so external tests don't break).
+        _ = strict
+        msgs.append({"role": "user", "content": _KICKOFF_USER_MSG})
     return msgs
 
 
@@ -845,6 +755,41 @@ def _tool_uses(result: LLMResult) -> list[dict[str, Any]]:
 
 def _all_text(result: LLMResult) -> str:
     return "".join(b.get("text", "") for b in result.content if b.get("type") == "text")
+
+
+def _merge_outcomes(target: DispatchOutcome, src: DispatchOutcome) -> None:
+    """Fold ``src`` into ``target`` in place. Used by the validator
+    loop to maintain a cumulative outcome across recovery attempts.
+
+    Slot semantics: union (a DRIVE on attempt 1 still satisfies the
+    contract on attempt 2 even if attempt 2 only emitted YIELD).
+
+    Message / tool_result semantics: append in order so the chat
+    timeline reflects the order things actually happened.
+
+    State-singleton fields (``set_active_role_ids``, ``end_session_reason``,
+    plan fields): last-write-wins. The driver runs DRIVE before YIELD,
+    so the YIELD attempt's ``set_active_role_ids`` correctly wins.
+    """
+
+    target.tool_results.extend(src.tool_results)
+    target.appended_messages.extend(src.appended_messages)
+    target.slots |= src.slots
+    if src.set_active_role_ids is not None:
+        target.set_active_role_ids = src.set_active_role_ids
+    if src.end_session_reason is not None:
+        target.end_session_reason = src.end_session_reason
+    if src.proposed_plan is not None:
+        target.proposed_plan = src.proposed_plan
+    if src.finalized_plan is not None:
+        target.finalized_plan = src.finalized_plan
+    target.critical_inject_fired = (
+        target.critical_inject_fired or src.critical_inject_fired
+    )
+    target.had_yielding_call = target.had_yielding_call or src.had_yielding_call
+    target.had_player_facing_message = (
+        target.had_player_facing_message or src.had_player_facing_message
+    )
 
 
 def _now() -> datetime:

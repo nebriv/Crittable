@@ -224,41 +224,68 @@ SETUP_TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "propose_scenario_plan",
-        "description": "Show the creator a draft scenario plan to review/edit.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "title": {"type": "string"},
-                "executive_summary": {"type": "string"},
-                "key_objectives": {"type": "array", "items": {"type": "string"}},
-                "narrative_arc": {"type": "array"},
-                "injects": {"type": "array"},
-                "guardrails": {"type": "array", "items": {"type": "string"}},
-                "success_criteria": {"type": "array", "items": {"type": "string"}},
-                "out_of_scope": {"type": "array", "items": {"type": "string"}},
-            },
-            "required": ["title", "key_objectives"],
-        },
-    },
-    {
-        "name": "finalize_setup",
         "description": (
-            "Commit the agreed scenario plan and lock it for the session. "
-            "Transitions session to READY."
+            "Show the creator a draft scenario plan to review/edit. "
+            "narrative_arc, key_objectives, and injects are REQUIRED "
+            "and must each contain at least one entry — empty plans "
+            "are rejected because the play tier has no structure to "
+            "facilitate against. Iterate via repeated calls until "
+            "approved, then call finalize_setup."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "title": {"type": "string"},
                 "executive_summary": {"type": "string"},
-                "key_objectives": {"type": "array", "items": {"type": "string"}},
-                "narrative_arc": {"type": "array"},
-                "injects": {"type": "array"},
+                "key_objectives": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "minItems": 1,
+                },
+                "narrative_arc": {"type": "array", "minItems": 1},
+                "injects": {"type": "array", "minItems": 1},
                 "guardrails": {"type": "array", "items": {"type": "string"}},
                 "success_criteria": {"type": "array", "items": {"type": "string"}},
                 "out_of_scope": {"type": "array", "items": {"type": "string"}},
             },
-            "required": ["title", "key_objectives"],
+            "required": [
+                "title",
+                "key_objectives",
+                "narrative_arc",
+                "injects",
+            ],
+        },
+    },
+    {
+        "name": "finalize_setup",
+        "description": (
+            "Commit the agreed scenario plan and lock it for the session. "
+            "Transitions session to READY. Same array invariants as "
+            "propose_scenario_plan: narrative_arc / key_objectives / "
+            "injects MUST each contain at least one entry."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "title": {"type": "string"},
+                "executive_summary": {"type": "string"},
+                "key_objectives": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "minItems": 1,
+                },
+                "narrative_arc": {"type": "array", "minItems": 1},
+                "injects": {"type": "array", "minItems": 1},
+                "guardrails": {"type": "array", "items": {"type": "string"}},
+                "success_criteria": {"type": "array", "items": {"type": "string"}},
+                "out_of_scope": {"type": "array", "items": {"type": "string"}},
+            },
+            "required": [
+                "title",
+                "key_objectives",
+                "narrative_arc",
+                "injects",
+            ],
         },
     },
 ]

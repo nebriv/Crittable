@@ -24,6 +24,7 @@ from ..sessions.models import (
     SessionState,
     SetupNote,
 )
+from ..sessions.slots import Slot, slot_for
 
 if TYPE_CHECKING:
     from ..ws.connection_manager import ConnectionManager
@@ -49,6 +50,14 @@ class DispatchOutcome:
         # AI gave the active roles nothing to act on — and run a
         # broadcast-recovery pass before letting the state advance.
         self.had_player_facing_message: bool = False
+        # Slots that fired SUCCESSFULLY on this turn. Read by the
+        # turn validator to check the dispatch outcome against the
+        # state-aware ``TurnContract``. Populated incrementally as
+        # each ``_handle`` branch succeeds; rate-limit / unknown-id
+        # rejections never hit this set (they surface via
+        # ``tool_results[*].is_error=True`` instead). See
+        # ``app/sessions/slots.py`` for the tool→slot mapping.
+        self.slots: set[Slot] = set()
 
     def add_result(self, *, tool_use_id: str, content: str, is_error: bool = False) -> None:
         self.tool_results.append(
@@ -234,6 +243,19 @@ class ToolDispatcher:
                 critical_inject_allowed_cb=critical_inject_allowed_cb,
             )
             outcome.add_result(tool_use_id=tool_id, content=content)
+            # Successful dispatch — record the slot this tool occupies
+            # so the turn validator can inspect ``outcome.slots``. We
+            # only mark slots on the success path; rejections (rate
+            # limit, unknown role_id) are visible via ``tool_results``
+            # but do NOT count toward turn-completeness.
+            slot = slot_for(name)
+            if slot is not None:
+                outcome.slots.add(slot)
+            else:
+                # Unknown tool name = operator extension; treat as
+                # bookkeeping for slot purposes (it doesn't drive or
+                # yield).
+                outcome.slots.add(Slot.BOOKKEEPING)
         except _DispatchError as exc:
             outcome.add_result(
                 tool_use_id=tool_id,
@@ -295,7 +317,17 @@ class ToolDispatcher:
             try:
                 plan = ScenarioPlan.model_validate(_normalize_plan(args))
             except Exception as exc:
-                raise _DispatchError(f"invalid plan: {exc}") from exc
+                # ``ScenarioPlan`` field invariants (min_length=1 on
+                # narrative_arc/key_objectives/injects) raise here when
+                # the model submits an empty draft. The model sees the
+                # rejection via ``is_error=True`` on the next turn and
+                # self-corrects.
+                raise _DispatchError(
+                    f"plan rejected: {exc}. populate narrative_arc "
+                    "(>=1 beat), key_objectives (>=1 item), and injects "
+                    "(>=1 item) before calling propose_scenario_plan."
+                ) from exc
+            _validate_plan_completeness(plan)
             outcome.proposed_plan = plan
             outcome.had_yielding_call = True
             return "plan proposed; creator will review or request edits"
@@ -304,7 +336,12 @@ class ToolDispatcher:
             try:
                 plan = ScenarioPlan.model_validate(_normalize_plan(args))
             except Exception as exc:
-                raise _DispatchError(f"invalid plan: {exc}") from exc
+                raise _DispatchError(
+                    f"plan rejected: {exc}. finalize_setup requires "
+                    "narrative_arc (>=1 beat), key_objectives (>=1 "
+                    "item), and injects (>=1 item)."
+                ) from exc
+            _validate_plan_completeness(plan)
             outcome.finalized_plan = plan
             outcome.had_yielding_call = True
             return "plan finalized; session is now READY"
@@ -626,24 +663,56 @@ async def _maybe_call(cb: Any) -> Any:
     return result
 
 
+def _validate_plan_completeness(plan: ScenarioPlan) -> None:
+    """Defence-in-depth check that the plan structurally drives an
+    exercise. Pydantic ``min_length=1`` on the model fields is the
+    primary gate; this catches the case where someone bypassed the
+    model (e.g. constructed a ``ScenarioPlan`` with ``model_construct``
+    or an extension passed a malformed dict that slipped past the
+    Anthropic tool input_schema). Always called for both
+    ``propose_scenario_plan`` and ``finalize_setup``.
+    """
+
+    missing: list[str] = []
+    if not plan.narrative_arc:
+        missing.append("narrative_arc")
+    if not plan.key_objectives:
+        missing.append("key_objectives")
+    if not plan.injects:
+        missing.append("injects")
+    if missing:
+        raise _DispatchError(
+            "plan is structurally incomplete — missing/empty: "
+            + ", ".join(missing)
+            + ". every plan must define a narrative_arc (>=1 beat), "
+            "key_objectives (>=1 item), and injects (>=1 item) so "
+            "the play tier has structure to facilitate against."
+        )
+
+
 def _normalize_plan(args: dict[str, Any]) -> dict[str, Any]:
     """Best-effort coerce loose model output into ScenarioPlan shape.
 
-    Some model outputs put narrative arc beats / injects as raw dicts; the
-    pydantic models accept that natively. We fill in defaults for missing
-    optional fields.
+    Some model outputs put narrative arc beats / injects as raw dicts;
+    the pydantic models accept that natively. We fill in defaults for
+    OPTIONAL fields (executive_summary, guardrails, success_criteria,
+    out_of_scope) but deliberately do NOT default the required arrays
+    (narrative_arc, key_objectives, injects) — letting the model's
+    omission slide produced empty plans in production. The Pydantic
+    invariants on ``ScenarioPlan`` catch the omission with a clear
+    error that the dispatcher reflects back to the model on the next
+    turn.
     """
 
     plan = dict(args)
     plan.setdefault("executive_summary", "")
-    plan.setdefault("key_objectives", [])
-    plan.setdefault("narrative_arc", [])
-    plan.setdefault("injects", [])
     plan.setdefault("guardrails", [])
     plan.setdefault("success_criteria", [])
     plan.setdefault("out_of_scope", [])
-    # If beats/injects were passed as plain dicts, ScenarioBeat / ScenarioInject
-    # validate them — no extra coercion needed. This call is a no-op assertion.
+    # ``narrative_arc``, ``key_objectives``, ``injects`` are NOT
+    # defaulted here — see the docstring. Pydantic ``min_length=1`` on
+    # the model rejects empty arrays, and ``_validate_plan_completeness``
+    # is a defence-in-depth backstop.
     _ = ScenarioBeat
     _ = ScenarioInject
     return plan

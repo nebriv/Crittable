@@ -96,6 +96,14 @@ This block carries the operational rules. Highlights:
   players are clearly mid-discussion. `inject_event` /
   `inject_critical_event` / `mark_timeline_point` are FYI / pin
   tools — they do NOT satisfy this rule on their own.
+- **Stage direction is NOT a drive.** If you have just used
+  `inject_event` or `mark_timeline_point` on this turn, you have NOT
+  yet given the active roles a question to answer. Pair with
+  `broadcast` or `address_role` BEFORE `set_active_roles`. The
+  validator (see [`architecture.md`](architecture.md#turn-validator--slot-based-composition--recovery))
+  enforces this structurally and runs a recovery LLM call narrowed to
+  `broadcast` if you yield without driving — burning a retry budget
+  slot.
 - **Critical-inject chain (mandatory).** `inject_critical_event` MUST
   be followed in the same turn by a `broadcast` (or `address_role`)
   that names which role does what about the inject, then a
@@ -147,6 +155,20 @@ Per-role todo list the AI maintains across turns via
 `track_role_followup` / `resolve_role_followup`. Empty state shows a
 hint nudging the AI to start tracking; populated state echoes the
 list back so the model can pick up unanswered asks.
+
+### Block 12 — Critical-event budget (CONDITIONAL)
+
+Only appended when `session.critical_inject_rate_limit_until` is set
+(i.e. the AI's previous critical-event call was rejected by the rate
+limit). Tells the model the exact turn at which the budget refreshes
+and that further `inject_critical_event` calls in the meantime will
+be rejected — so it should narrate via `inject_event` + `broadcast`
+instead. Pre-fix the AI was observed retrying the same
+`inject_critical_event` call on three consecutive turns after the
+first attempt was rate-limited; the strict-retry feedback only
+covered the same turn, so each new turn the AI tried again blind.
+Block is omitted on healthy turns to keep the cached system block
+stable.
 
 ---
 

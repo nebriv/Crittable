@@ -127,9 +127,20 @@ class ScenarioPlan(BaseModel):
 
     title: str
     executive_summary: str = ""
-    key_objectives: list[str] = Field(default_factory=list)
-    narrative_arc: list[ScenarioBeat] = Field(default_factory=list)
-    injects: list[ScenarioInject] = Field(default_factory=list)
+    # Required arrays — every plan must define a structural backbone
+    # (objectives, narrative_arc, injects) so the play tier has
+    # something to drive against. Empty plans were the root cause of
+    # the "AI freeforms because the plan is hollow" failure mode
+    # observed in the 2026-04-29 session. Defence in depth: this
+    # Pydantic invariant + the Anthropic tool ``input_schema``
+    # ``minItems=1`` on the ``propose_scenario_plan`` /
+    # ``finalize_setup`` tools + the dispatcher's
+    # ``_validate_plan_completeness`` safety net + the REST plan-edit
+    # endpoint inheriting these invariants. No caller can plant an
+    # empty plan into a session.
+    key_objectives: list[str] = Field(..., min_length=1)
+    narrative_arc: list[ScenarioBeat] = Field(..., min_length=1)
+    injects: list[ScenarioInject] = Field(..., min_length=1)
     guardrails: list[str] = Field(default_factory=list)
     success_criteria: list[str] = Field(default_factory=list)
     out_of_scope: list[str] = Field(default_factory=list)
@@ -207,6 +218,14 @@ class Session(BaseModel):
     cost: TokenUsage = Field(default_factory=TokenUsage)
     critical_injects_window: list[int] = Field(default_factory=list)
     """Indices of recent turns that fired ``inject_critical_event``; trimmed to a 5-turn window."""
+    critical_inject_rate_limit_until: int | None = None
+    """If set, the turn index at which ``inject_critical_event`` becomes
+    callable again. Tracks the rate-limit window across turns so the
+    play system prompt can surface a "you're rate-limited until turn N"
+    nudge to the model — without it, the AI was observed retrying the
+    same critical-event call on three consecutive turns after the
+    first attempt was rejected. Cleared when the rolling window
+    drops below the cap."""
 
     aar_markdown: str | None = None
     aar_status: AARStatus = "pending"

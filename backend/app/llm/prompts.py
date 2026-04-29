@@ -81,6 +81,13 @@ _TOOL_USE_PROTOCOL = (
     "`mark_timeline_point` are FYI / pin tools; they DO NOT satisfy this "
     "rule on their own. Yielding silently *is* fine when players are "
     "clearly mid-discussion on a still-open prior ask.\n\n"
+    "**Stage direction is NOT a drive.** If you have just used "
+    "`inject_event` or `mark_timeline_point` on this turn, you have NOT "
+    "yet given the active roles a question to answer. Pair with "
+    "`broadcast` or `address_role` BEFORE `set_active_roles`. The "
+    "engine validates this structurally and will run a recovery call "
+    "to insert the missing brief — burning a retry budget — if you "
+    "yield without driving.\n\n"
     "**Critical-inject chain (mandatory).** `inject_critical_event` MUST be "
     "followed in the same turn by a `broadcast` (or `address_role`) that "
     "names which role does what about the inject, then a `set_active_roles` "
@@ -137,7 +144,22 @@ _SETUP_SYSTEM = (
     "key_objectives, narrative_arc, injects, guardrails, success_criteria, "
     "out_of_scope). Iterate freely with the creator. When they approve, call "
     "`finalize_setup` with the final plan. After `finalize_setup`, end your turn "
-    "— the play phase begins."
+    "— the play phase begins.\n\n"
+    "**Plan completeness — non-negotiable.** Your `propose_scenario_plan` "
+    "and `finalize_setup` calls MUST include:\n"
+    "  * `narrative_arc`: at least 3 beats. Each beat needs `beat` "
+    "(integer index), `label` (short name like 'Detection & triage'), "
+    "and `expected_actors` (list of role labels — use ones that match "
+    "the roster the creator described).\n"
+    "  * `key_objectives`: at least 3 concrete, measurable objectives "
+    "(e.g. 'Containment decision documented before beat 3').\n"
+    "  * `injects`: at least 1, ideally 2–3. Each inject needs "
+    "`trigger` (when it fires, e.g. 'after beat 2'), `type` ('event' "
+    "or 'critical'), and `summary` (1–2 sentences).\n"
+    "Tools with empty arrays are rejected and the call fails. The play "
+    "tier has nothing to facilitate against without this structure — "
+    "it produces a stuck, freeforming exercise. Take the time to "
+    "populate them properly even if the creator says 'just go'."
 )
 
 _AAR_SYSTEM = (
@@ -298,25 +320,48 @@ def build_play_system_blocks(
         "the inject."
     )
 
-    text = "\n\n".join(
-        [
-            "## Block 1 — Identity\n" + _IDENTITY,
-            "## Block 2 — Mission\n" + _MISSION,
-            "## Block 3 — Plan adherence\n" + _PLAN_ADHERENCE,
-            "## Block 4 — Hard boundaries\n" + _HARD_BOUNDARIES,
-            "## Block 5 — Style\n" + style,
-            "## Block 6 — Tool-use protocol\n" + _TOOL_USE_PROTOCOL,
-            "## Block 7 — Frozen scenario plan\n```json\n" + plan_json + "\n```",
-            "## Block 8 — Active extension prompts\n" + extension_block,
-            "## Block 9 — Roster-size strategy\n" + _ROSTER_STRATEGY[session.roster_size],
-            "## Block 10 — Roster (use these role_ids in tool calls)\n"
-            + "### Seated\n"
-            + seated_table
-            + unseated_block
-            + roster_rules,
-            "## Block 11 — Open per-role follow-ups\n" + _build_followup_block(session),
-        ]
-    )
+    blocks: list[str] = [
+        "## Block 1 — Identity\n" + _IDENTITY,
+        "## Block 2 — Mission\n" + _MISSION,
+        "## Block 3 — Plan adherence\n" + _PLAN_ADHERENCE,
+        "## Block 4 — Hard boundaries\n" + _HARD_BOUNDARIES,
+        "## Block 5 — Style\n" + style,
+        "## Block 6 — Tool-use protocol\n" + _TOOL_USE_PROTOCOL,
+        "## Block 7 — Frozen scenario plan\n```json\n" + plan_json + "\n```",
+        "## Block 8 — Active extension prompts\n" + extension_block,
+        "## Block 9 — Roster-size strategy\n" + _ROSTER_STRATEGY[session.roster_size],
+        "## Block 10 — Roster (use these role_ids in tool calls)\n"
+        + "### Seated\n"
+        + seated_table
+        + unseated_block
+        + roster_rules,
+        "## Block 11 — Open per-role follow-ups\n" + _build_followup_block(session),
+    ]
+    # Block 12 is *conditional* — only appended when the
+    # ``inject_critical_event`` rate limit is active. Telling the
+    # model "you're rate-limited until turn N" stops it from retrying
+    # the same critical-event call across turns (observed in the
+    # 2026-04-29 session: AI tried inject_critical_event on three
+    # consecutive turns after the first was rate-limited). Omitted on
+    # healthy turns so the cached system block stays stable.
+    if session.critical_inject_rate_limit_until is not None:
+        cur = session.current_turn.index if session.current_turn else 0
+        until = session.critical_inject_rate_limit_until
+        if until > cur:
+            blocks.append(
+                "## Block 12 — Critical-event budget\n"
+                f"You are RATE-LIMITED from `inject_critical_event` until "
+                f"turn {until} (current turn: {cur}). Your previous attempts "
+                "have been (or will be) rejected with `is_error=True` until "
+                "the budget refreshes. If a planned critical inject is due "
+                "in this window, narrate it via `inject_event` + `broadcast` "
+                "instead — players still see the escalation, just without "
+                "the red banner. Do NOT keep retrying `inject_critical_event` "
+                "in the meantime; the rejection is structural, not a model "
+                "error you can talk your way past."
+            )
+
+    text = "\n\n".join(blocks)
     return [{"type": "text", "text": text}]
 
 

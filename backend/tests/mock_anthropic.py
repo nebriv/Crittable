@@ -190,7 +190,13 @@ def setup_then_play_script(
                     "narrative_arc": [
                         {"beat": 1, "label": "Detection", "expected_actors": [role_ids[0]]},
                     ],
-                    "injects": [],
+                    "injects": [
+                        {
+                            "trigger": "after beat 1",
+                            "type": "critical",
+                            "summary": "Twitter leak",
+                        }
+                    ],
                     "guardrails": [],
                     "success_criteria": [],
                     "out_of_scope": [],

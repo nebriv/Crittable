@@ -98,33 +98,102 @@ boundaries:
 | `aar` | ENDED | `finalize_report` only | `{"type":"tool","name":"finalize_report"}` | Not allowed |
 | `guardrail` | _any_ — runs on raw participant text | _none_ | `auto` | One-word verdict |
 
-## Strict-retry + retry-feedback loop
+## Turn validator — slot-based composition + recovery
 
-When a play turn completes without a yielding tool call (no
-`set_active_roles` and no `end_session`), the engine retries with a
-narrowed tool surface and `tool_choice` pinned to `set_active_roles`.
+[`backend/app/sessions/turn_validator.py`](../backend/app/sessions/turn_validator.py)
+owns "what makes a valid turn at state X". It is a pure function: it
+inspects the post-dispatch
+[`DispatchOutcome.slots`](../backend/app/llm/dispatch.py) (computed
+from the tool-name-to-slot map in
+[`slots.py`](../backend/app/sessions/slots.py)) against a
+state-aware `TurnContract`, and emits zero-or-more
+`RecoveryDirective`s for each missing requirement. The driver loop
+runs each directive as a narrowed follow-up LLM call (tools
+allowlisted, `tool_choice` pinned, prior attempt's tool-loop spliced
+in for context) until the contract is satisfied or the shared
+recovery budget is exhausted.
 
-The retry's message context now includes the **prior attempt's
-`tool_use` blocks + the dispatcher's `tool_result` blocks** as a
-proper Anthropic tool-loop pair. Pre-fix the dispatcher's
-`is_error=True` results were recorded but the model never saw them on
-the retry — so it would try the same thing again. Now it sees:
+Two ad-hoc paths the validator replaced:
+
+- the strict-retry loop (no yield) — now expressed as
+  `strict_yield_directive()`,
+- the briefing-broadcast recovery (yield without a brief, BRIEFING
+  only) — now expressed as `drive_recovery_directive()` and applied
+  on **every** yielding play turn, not just BRIEFING.
+
+### Slot taxonomy
+
+| Slot | Tools | What it represents |
+|---|---|---|
+| `DRIVE` | `broadcast`, `address_role` | A player-facing question / addressable narrative beat |
+| `YIELD` | `set_active_roles` | Advances the turn |
+| `NARRATE` | `inject_event` | Stage-direction system note |
+| `PIN` | `mark_timeline_point` | Sidebar timeline pin (no chat bubble) |
+| `ESCALATE` | `inject_critical_event` | Headline-grade banner — must chain to DRIVE+YIELD |
+| `TERMINATE` | `end_session` | Ends the exercise; satisfies YIELD |
+| `BOOKKEEPING` | `track_role_followup` / `resolve_role_followup` / `request_artifact` / `lookup_resource` / `use_extension_tool` / extension tools | Side effects that neither drive nor yield |
+
+### Contracts (play tier)
+
+| State / mode | Required | Forbidden | Soft drive carve-out |
+|---|---|---|---|
+| BRIEFING | `DRIVE`, `YIELD` | — | No (no "mid-discussion" on first turn) |
+| AWAITING / AI_PROCESSING (normal) | `DRIVE`, `YIELD` | — | Yes (`?`-terminated open question + no new beat → warning, not violation) |
+| Interject path | `DRIVE` | `YIELD`, `TERMINATE` | No |
+
+### Recovery budget
+
+`LLM_STRICT_RETRY_MAX` is now the **per-turn shared recovery budget**
+(default 2). A turn missing both `DRIVE` and `YIELD` runs **two
+sequential** recovery LLM calls — `broadcast` first (drive), then
+`set_active_roles` (yield) — each consuming one budget slot. Setting
+`=0` disables recovery entirely; setting higher accommodates flakier
+models.
+
+### Retry-feedback loop
+
+Each recovery LLM call splices the prior attempt's `tool_use` blocks
++ the dispatcher's `tool_result` blocks into the messages array as a
+proper Anthropic tool-loop pair, then appends the directive's
+user-nudge:
 
 ```
 …earlier transcript…
 assistant: [tool_use(name="broadcast", input={...})]
-user:      [tool_result(tool_use_id=..., is_error=False, content="broadcast queued")]
-user:      [system] STRICT_RETRY_USER_NUDGE
+user:      [tool_result(tool_use_id=..., is_error=False, content="broadcast queued"),
+            text("[system] You skipped the player-facing question…")]
 ```
 
-If the prior turn's tool calls failed dispatcher validation (e.g.
-`unknown role_ids`), `is_error=True` content reads back as
+If a prior tool call failed dispatcher validation (e.g.
+`unknown role_ids`), the `is_error=True` content reads back as
 "unknown role_ids: ['IR Lead'] — pass the opaque role_id (column 1
 of the roster), not the label." The model self-corrects.
 
-The retry count is operator-tunable via `LLM_STRICT_RETRY_MAX`
-(default 1, `ge=0 le=10`). Set `=0` to disable retry entirely; set
-`=2`–`3` for flakier models.
+### Kill-switches
+
+Two operator settings revert the new behaviour for emergency
+rollouts:
+
+- `LLM_RECOVERY_DRIVE_REQUIRED=False` — drops `DRIVE` from the
+  required set, restoring "yield-only" semantics.
+- `LLM_RECOVERY_DRIVE_SOFT_ON_OPEN_QUESTION=False` — turns the
+  carve-out off so missing-DRIVE always recovers.
+
+## phase_policy vs turn_validator — different concerns
+
+[`phase_policy.py`](../backend/app/sessions/phase_policy.py)
+(authorization: "is this LLM call permitted?") and
+[`turn_validator.py`](../backend/app/sessions/turn_validator.py)
+(completeness: "did the turn produce a valid output?") are
+deliberately separate modules. They never import each other.
+
+| | `phase_policy.py` | `turn_validator.py` |
+|---|---|---|
+| Question | "Is this LLM call permitted?" | "Did the turn produce a complete output?" |
+| When | BEFORE the request leaves the process | AFTER dispatch applied tool calls |
+| Inputs | tier + state + tool list (static) | DispatchOutcome + session context |
+| Output | drop forbidden tools; pin tool_choice; raise `PhaseViolation` | `RecoveryDirective`s + warnings |
+| Catches | "play tier called `ask_setup_question`" | "play tier yielded without driving" |
 
 ## WebSocket fan-out
 

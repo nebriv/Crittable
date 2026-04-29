@@ -265,12 +265,15 @@ def test_llm_client_omits_temperature_and_top_p_when_unset(monkeypatch) -> None:
 
 
 def test_strict_retry_max_default_and_override(monkeypatch) -> None:
-    """``LLM_STRICT_RETRY_MAX`` controls how many strict-retry passes the
-    play-turn driver runs after a non-yielding first attempt. Default 1."""
+    """``LLM_STRICT_RETRY_MAX`` is the per-turn recovery budget shared
+    across all validator violations (drive + yield). Default 2 so the
+    worst-case "missing both" turn has room for one drive recovery
+    pass + one yield recovery pass without the operator having to
+    lift the cap."""
 
     monkeypatch.delenv("LLM_STRICT_RETRY_MAX", raising=False)
     s = Settings()
-    assert s.llm_strict_retry_max == 1
+    assert s.llm_strict_retry_max == 2
     monkeypatch.setenv("LLM_STRICT_RETRY_MAX", "3")
     assert Settings().llm_strict_retry_max == 3
     monkeypatch.setenv("LLM_STRICT_RETRY_MAX", "0")

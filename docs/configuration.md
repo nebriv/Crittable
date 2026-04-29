@@ -46,7 +46,9 @@ rationale for each default lives in `backend/app/config.py`
 
 | Var | Default | Effect |
 |---|---|---|
-| `LLM_STRICT_RETRY_MAX` | `1` | Number of strict retries the play-turn driver attempts when the AI fails to yield via `set_active_roles`. Lift to `2`–`3` for flakier models (e.g. local LLMs that struggle with tool-use enforcement); set to `0` to disable strict retry entirely. |
+| `LLM_STRICT_RETRY_MAX` | `2` | Per-turn recovery budget shared across all turn-validator violations (`missing_drive` + `missing_yield`). Default 2 covers the worst case (turn missing both) — drive recovery + yield recovery each consume one slot. Lift to `3+` for flakier models; set to `0` to disable recovery entirely (turns errored on first invalid response). |
+| `LLM_RECOVERY_DRIVE_REQUIRED` | `true` | When true, every yielding play turn must include a `broadcast` or `address_role`; missing-DRIVE spawns a recovery LLM call narrowed to `broadcast`. Set false to revert to the pre-validator "yield-only" rule (emergency kill-switch). |
+| `LLM_RECOVERY_DRIVE_SOFT_ON_OPEN_QUESTION` | `true` | When true, missing-DRIVE is downgraded from a violation to a warning when the most-recent un-replied player message ends in `?` AND no new beat fired this turn (i.e. players are mid-discussion on an open ask). Set false to make missing-DRIVE always recover. |
 | `MAX_SETUP_TURNS` | `4` | Safety cap on chained tool calls within a single setup turn. Lift if you want the setup model to chain `ask_setup_question` → `propose_scenario_plan` → `finalize_setup` in one cycle. |
 | `MAX_PARTICIPANT_SUBMISSION_CHARS` | `4000` | Hard cap on a player message. Submissions are *truncated* (not rejected); the engine appends a `[message truncated by server]` marker and sends a `submission_truncated` WS event (rendered as a slate info pill, not a red error) so the player knows their text was clipped. |
 

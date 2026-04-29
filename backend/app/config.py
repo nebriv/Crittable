@@ -158,8 +158,35 @@ class Settings(BaseSettings):
     # cap the worst-case token spend per stuck turn (a misconfigured
     # ``LLM_STRICT_RETRY_MAX=1000`` would otherwise burn the per-session
     # lock + tokens on a thousand strict-pin'd calls).
+    # Renamed semantics in the validator refactor: this is now the
+    # "max recovery LLM calls per turn" budget shared across all
+    # validation violations, not just strict-yield retries. With
+    # ``LLM_RECOVERY_DRIVE_REQUIRED=True`` (default) the worst case is
+    # missing-DRIVE + missing-YIELD on the same turn, which needs
+    # *two* recovery passes (drive first, yield second). Default
+    # bumped from 1 → 2 so that worst case is recoverable without
+    # the operator having to know to lift it. Set 0 to disable
+    # recovery entirely; lift to 3+ for flakier models.
     llm_strict_retry_max: int = Field(
-        default=1, alias="LLM_STRICT_RETRY_MAX", ge=0, le=10
+        default=2, alias="LLM_STRICT_RETRY_MAX", ge=0, le=10
+    )
+    # When True (default) the turn validator requires DRIVE
+    # (``broadcast`` / ``address_role``) on every yielding play turn,
+    # spawning a recovery LLM call narrowed to ``broadcast`` if missing.
+    # Set False to revert to the pre-validator "yield-only" semantics —
+    # an emergency kill-switch if the new behaviour regresses in
+    # production. Lifting this flag does NOT disable the briefing-turn
+    # drive guard or the strict-yield path; those run regardless.
+    llm_recovery_drive_required: bool = Field(
+        default=True, alias="LLM_RECOVERY_DRIVE_REQUIRED"
+    )
+    # When True (default) missing-DRIVE is downgraded from a violation
+    # to a warning when the most-recent un-replied player message ends
+    # in ``?`` AND no new beat fired this turn (i.e. players are
+    # clearly mid-discussion on an open ask). Set False to make
+    # missing-DRIVE always recover.
+    llm_recovery_drive_soft_on_open_question: bool = Field(
+        default=True, alias="LLM_RECOVERY_DRIVE_SOFT_ON_OPEN_QUESTION"
     )
     # Cap on chained tool calls within a single setup turn. The setup-tier
     # model occasionally chains ``ask_setup_question`` → ``propose_plan``

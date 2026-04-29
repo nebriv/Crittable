@@ -711,7 +711,23 @@ def test_strict_retry_recovers_when_ai_skips_yield(
             )],
             stop_reason="tool_use",
         )
-    play_attempt_2 = _Response(
+    # Under the validator refactor, ``broadcast`` (DRIVE) on attempt 1
+    # already satisfies the contract for that slot, so only YIELD
+    # recovery runs. The other parametrizations (text-only,
+    # inject_event) miss BOTH slots so DRIVE recovery fires first
+    # (broadcast), then YIELD recovery (set_active_roles). Feed
+    # both possible follow-ups; the mock script ignores requested
+    # tools and returns items in order.
+    drive_recovery_resp = _Response(
+        content=[_ContentBlock(
+            type="tool_use",
+            name="broadcast",
+            input={"message": "Recovered drive — what's your move?"},
+            id="tu_drive_recovery",
+        )],
+        stop_reason="tool_use",
+    )
+    yield_recovery_resp = _Response(
         content=[_ContentBlock(
             type="tool_use",
             name="set_active_roles",
@@ -720,7 +736,15 @@ def test_strict_retry_recovers_when_ai_skips_yield(
         )],
         stop_reason="tool_use",
     )
-    mock = MockAnthropic({"play": [play_attempt_1, play_attempt_2]})
+    if first_tool_name == "broadcast":
+        # DRIVE already satisfied on attempt 1; only YIELD recovery
+        # runs, so the mock just needs the yield response next.
+        script = [play_attempt_1, yield_recovery_resp]
+    else:
+        # DRIVE + YIELD both missing; engine runs drive recovery,
+        # then yield recovery.
+        script = [play_attempt_1, drive_recovery_resp, yield_recovery_resp]
+    mock = MockAnthropic({"play": script})
     client.app.state.llm.set_transport(mock.messages)
 
     client.post(f"/api/sessions/{sid}/setup/skip?token={cr}")
@@ -734,7 +758,14 @@ def test_strict_retry_recovers_when_ai_skips_yield(
     )
     assert snap["current_turn"]["active_role_ids"] == [seats["role_ids"][1]]
 
-    # Inspect both LLM calls.
+    # Inspect the LLM calls. Under the validator refactor, when both
+    # DRIVE and YIELD are missing on attempt 1 (e.g. ``[None-None]``
+    # text-only or ``[inject_event]`` stage-direction-only) the engine
+    # runs TWO sequential recovery passes (drive first, yield second).
+    # When only YIELD is missing (``[broadcast]`` already drives) it
+    # runs ONE recovery pass pinned to set_active_roles. Either way
+    # we end up with a call that pins ``set_active_roles`` somewhere
+    # in the sequence — find it by content rather than by position.
     play_calls = [c for c in mock.messages.calls if "play" in c.get("model", "")]
     assert len(play_calls) >= 2, f"expected ≥2 play calls; got {len(play_calls)}"
 
@@ -751,16 +782,25 @@ def test_strict_retry_recovers_when_ai_skips_yield(
         "end_session",
     }, f"first attempt should expose the full play tool list; got {first_tools}"
 
-    # Second call: pinned to ``set_active_roles`` only. UI/UX review flagged
-    # that ``tool_choice={"type":"any"}`` over {set_active_roles, end_session}
-    # could let the AI prematurely end the exercise on a recovery pass; the
-    # narrower pin guarantees a yield to players. End-of-exercise still
-    # happens via the AI's normal end_session call on a regular play turn.
-    second_call = play_calls[1]
-    assert second_call.get("tool_choice") == {"type": "tool", "name": "set_active_roles"}
-    second_tools = {t["name"] for t in second_call.get("tools", [])}
-    assert second_tools == {"set_active_roles"}, (
-        f"strict retry must narrow tools to set_active_roles only; got {second_tools}"
+    # The yield-recovery pass MUST appear somewhere after the first
+    # call: pinned to ``set_active_roles`` only, narrowed tools.
+    yield_recovery = next(
+        (
+            c
+            for c in play_calls[1:]
+            if c.get("tool_choice") == {"type": "tool", "name": "set_active_roles"}
+        ),
+        None,
+    )
+    assert yield_recovery is not None, (
+        "yield recovery (tool_choice pinned to set_active_roles) must "
+        f"fire on this turn; got tool_choices: "
+        f"{[c.get('tool_choice') for c in play_calls]}"
+    )
+    yield_tools = {t["name"] for t in yield_recovery.get("tools", [])}
+    assert yield_tools == {"set_active_roles"}, (
+        f"yield-recovery call must narrow tools to set_active_roles only; "
+        f"got {yield_tools}"
     )
 
 
@@ -970,6 +1010,371 @@ def test_briefing_does_not_recover_when_broadcast_already_present(client: TestCl
     )
 
 
+def test_drive_required_on_mid_exercise_yield(client: TestClient) -> None:
+    """Mid-exercise turn (state != BRIEFING) where the AI yields with
+    ONLY ``inject_event`` — no broadcast. The validator must spawn a
+    drive recovery LLM call and the recovered broadcast must land in
+    the chat. This is the core behaviour change from the validator
+    refactor: the briefing-only guard was extended across the whole
+    exercise."""
+
+    from tests.mock_anthropic import MockAnthropic, _ContentBlock, _Response
+
+    seats = _create_and_seat(client, role_count=2)
+    sid = seats["session_id"]
+    cr = seats["creator_token"]
+    creator_role = seats["role_ids"][0]
+    other_role = seats["role_ids"][1]
+
+    # Healthy BRIEFING turn (broadcast + yield) so we cleanly land in
+    # AWAITING_PLAYERS without triggering the briefing recovery.
+    briefing = _Response(
+        content=[
+            _ContentBlock(
+                type="tool_use",
+                name="broadcast",
+                input={"message": "Welcome — your move."},
+                id="tu_brief",
+            ),
+            _ContentBlock(
+                type="tool_use",
+                name="set_active_roles",
+                input={"role_ids": [creator_role]},
+                id="tu_yield_brief",
+            ),
+        ],
+        stop_reason="tool_use",
+    )
+    # The "bad" mid-exercise turn: inject_event + yield, no drive.
+    mid_turn_no_drive = _Response(
+        content=[
+            _ContentBlock(
+                type="tool_use",
+                name="inject_event",
+                input={"description": "Sirens at T+0:05."},
+                id="tu_inject_mid",
+            ),
+            _ContentBlock(
+                type="tool_use",
+                name="set_active_roles",
+                input={"role_ids": [other_role]},
+                id="tu_yield_mid",
+            ),
+        ],
+        stop_reason="tool_use",
+    )
+    drive_recovery = _Response(
+        content=[
+            _ContentBlock(
+                type="tool_use",
+                name="broadcast",
+                input={"message": "What's your call?"},
+                id="tu_drive_recovery_mid",
+            )
+        ],
+        stop_reason="tool_use",
+    )
+    mock = MockAnthropic({"play": [briefing, mid_turn_no_drive, drive_recovery]})
+    client.app.state.llm.set_transport(mock.messages)
+
+    client.post(f"/api/sessions/{sid}/setup/skip?token={cr}")
+    client.post(f"/api/sessions/{sid}/start?token={cr}")
+
+    # Submit creator response so the engine kicks the second AI turn.
+    creator_token = seats["role_tokens"][creator_role]
+    with client.websocket_connect(
+        f"/ws/sessions/{sid}?token={creator_token}"
+    ) as ws:
+        ws.send_json({"type": "submit_response", "content": "we triage"})
+        # drain for a moment so the manager's submit_response chain runs
+        for _ in range(8):
+            try:
+                ws.receive_json(mode="text")
+            except Exception:
+                break
+
+    snap = client.get(f"/api/sessions/{sid}?token={cr}").json()
+    broadcasts = [
+        m for m in snap["messages"] if m.get("tool_name") == "broadcast"
+    ]
+    # Both the briefing broadcast AND the mid-turn drive recovery must
+    # land in transcript. Pre-fix the mid-turn would have left players
+    # with only the inject_event system note.
+    assert len(broadcasts) >= 2, (
+        "drive recovery must add a broadcast on the mid-exercise turn; "
+        f"got broadcasts: {[b.get('body','')[:30] for b in broadcasts]}"
+    )
+
+    # The recovery LLM call should pin tool_choice to broadcast.
+    play_calls = [c for c in mock.messages.calls if "play" in c.get("model", "")]
+    assert any(
+        c.get("tool_choice") == {"type": "tool", "name": "broadcast"}
+        for c in play_calls
+    ), (
+        "expected a play call with tool_choice pinned to broadcast; "
+        f"got tool_choices: {[c.get('tool_choice') for c in play_calls]}"
+    )
+
+
+def test_drive_required_kill_switch_drops_drive_from_contract() -> None:
+    """``LLM_RECOVERY_DRIVE_REQUIRED=False`` reverts to the
+    pre-validator 'yield-only' semantics — DRIVE is no longer in the
+    required set so a yield-only turn validates as ok. Tested at the
+    contract layer; the e2e wiring is exercised in
+    ``test_compound_violation_runs_drive_then_yield_sequentially``
+    which asserts the on-by-default behaviour."""
+
+    from app.sessions.models import Session, SessionState
+    from app.sessions.slots import Slot
+    from app.sessions.turn_validator import contract_for, validate
+
+    contract_off = contract_for(
+        tier="play",
+        state=SessionState.AWAITING_PLAYERS,
+        mode="normal",
+        drive_required=False,
+    )
+    s = Session(
+        scenario_prompt="x",
+        state=SessionState.AWAITING_PLAYERS,
+    )
+    res = validate(
+        session=s,
+        cumulative_slots={Slot.YIELD},
+        contract=contract_off,
+    )
+    assert res.ok, "kill-switch must allow yield without drive"
+
+
+def test_compound_violation_runs_drive_then_yield_sequentially(client: TestClient) -> None:
+    """When a turn fires neither DRIVE nor YIELD, the engine must run
+    TWO sequential recovery calls: first narrowed to ``broadcast``,
+    then narrowed to ``set_active_roles``. The user explicitly chose
+    this over a single merged call so the recovery has a predictable
+    cost (vs the model emitting only one tool and recursing)."""
+
+    from tests.mock_anthropic import MockAnthropic, _ContentBlock, _Response
+
+    seats = _create_and_seat(client, role_count=2)
+    sid = seats["session_id"]
+    cr = seats["creator_token"]
+
+    text_only = _Response(
+        content=[_ContentBlock(type="text", text="Hmm.")],
+        stop_reason="end_turn",
+    )
+    drive_recovery = _Response(
+        content=[_ContentBlock(
+            type="tool_use",
+            name="broadcast",
+            input={"message": "What's the move?"},
+            id="tu_d",
+        )],
+        stop_reason="tool_use",
+    )
+    yield_recovery = _Response(
+        content=[_ContentBlock(
+            type="tool_use",
+            name="set_active_roles",
+            input={"role_ids": [seats["role_ids"][0]]},
+            id="tu_y",
+        )],
+        stop_reason="tool_use",
+    )
+    mock = MockAnthropic({"play": [text_only, drive_recovery, yield_recovery]})
+    client.app.state.llm.set_transport(mock.messages)
+
+    client.post(f"/api/sessions/{sid}/setup/skip?token={cr}")
+    r = client.post(f"/api/sessions/{sid}/start?token={cr}")
+    assert r.status_code == 200, r.text
+
+    play_calls = [c for c in mock.messages.calls if "play" in c.get("model", "")]
+    assert len(play_calls) == 3, (
+        f"expected 3 play calls (initial + drive + yield), got {len(play_calls)}"
+    )
+
+    # Order: drive recovery before yield recovery.
+    assert play_calls[1].get("tool_choice") == {"type": "tool", "name": "broadcast"}
+    assert play_calls[2].get("tool_choice") == {
+        "type": "tool",
+        "name": "set_active_roles",
+    }
+
+
+def test_finalize_setup_rejects_empty_arrays(client: TestClient) -> None:
+    """Defence-in-depth: ``finalize_setup`` with empty narrative_arc /
+    key_objectives / injects raises a Pydantic ``ValidationError`` at
+    the model boundary, surfaced via the dispatcher as
+    ``is_error=True`` on the next tool_result. The setup loop in
+    ``run_setup_turn`` then drives another LLM iteration; the model
+    sees the rejection and self-corrects."""
+
+    from tests.mock_anthropic import MockAnthropic, _ContentBlock, _Response
+
+    # Empty plan. The Pydantic model invariant
+    # (``min_length=1`` on the three arrays) raises on construction.
+    empty_finalize = _Response(
+        content=[_ContentBlock(
+            type="tool_use",
+            name="finalize_setup",
+            input={
+                "title": "Empty",
+                "key_objectives": [],
+                "narrative_arc": [],
+                "injects": [],
+            },
+            id="tu_finalize",
+        )],
+        stop_reason="tool_use",
+    )
+    # Non-empty follow-up so the loop can complete.
+    valid_finalize = _Response(
+        content=[_ContentBlock(
+            type="tool_use",
+            name="finalize_setup",
+            input={
+                "title": "Valid",
+                "key_objectives": ["containment"],
+                "narrative_arc": [
+                    {"beat": 1, "label": "detect", "expected_actors": ["A"]}
+                ],
+                "injects": [
+                    {"trigger": "after beat 1", "type": "event", "summary": "x"}
+                ],
+            },
+            id="tu_finalize_2",
+        )],
+        stop_reason="tool_use",
+    )
+    mock = MockAnthropic({"setup": [empty_finalize, valid_finalize]})
+    client.app.state.llm.set_transport(mock.messages)
+
+    r = client.post(
+        "/api/sessions",
+        json={
+            "scenario_prompt": "x",
+            "creator_label": "CISO",
+            "creator_display_name": "Alex",
+        },
+    )
+    assert r.status_code == 200, r.text
+    sid = r.json()["session_id"]
+    cr = r.json()["creator_token"]
+    snap = client.get(f"/api/sessions/{sid}?token={cr}").json()
+    # Either we land in READY (the second call's valid plan succeeded)
+    # or still in SETUP (loop not yet complete) — both are acceptable;
+    # what we care about is that the empty plan was REJECTED, audit-
+    # logged, and didn't end up persisted.
+    if snap.get("plan") is not None:
+        assert len(snap["plan"]["narrative_arc"]) >= 1, (
+            "persisted plan must be the non-empty one (empty was rejected)"
+        )
+        assert len(snap["plan"]["injects"]) >= 1
+        assert len(snap["plan"]["key_objectives"]) >= 1
+
+
+def test_scenario_plan_model_rejects_empty_arrays() -> None:
+    """The Pydantic ``ScenarioPlan`` itself rejects empty arrays. This
+    is the foundational invariant that downstream gates rely on — if
+    this check loosens, the whole defence-in-depth chain breaks."""
+
+    import pytest
+    from pydantic import ValidationError
+
+    from app.sessions.models import ScenarioPlan
+
+    with pytest.raises(ValidationError):
+        ScenarioPlan(title="t", key_objectives=[], narrative_arc=[], injects=[])
+    with pytest.raises(ValidationError):
+        ScenarioPlan(
+            title="t",
+            key_objectives=["a"],
+            narrative_arc=[],  # missing
+            injects=[{"trigger": "x", "summary": "y"}],
+        )
+
+
+def test_critical_inject_rate_limit_until_visible_to_model() -> None:
+    """When the rate-limit window is at cap, the play system prompt
+    must surface a ``Block 12 — Critical-event budget`` mini-block so
+    the AI knows not to retry. Pre-fix the AI was observed retrying
+    ``inject_critical_event`` on three consecutive turns after the
+    first attempt was rate-limited; the strict-retry feedback only
+    covered the same turn."""
+
+    from app.extensions.registry import FrozenRegistry
+    from app.llm.prompts import build_play_system_blocks
+    from app.sessions.models import (
+        Role,
+        ScenarioBeat,
+        ScenarioInject,
+        ScenarioPlan,
+        Session,
+        SessionState,
+        Turn,
+    )
+
+    plan = ScenarioPlan(
+        title="t",
+        key_objectives=["o"],
+        narrative_arc=[ScenarioBeat(beat=1, label="b", expected_actors=["A"])],
+        injects=[ScenarioInject(trigger="after beat 1", summary="i")],
+    )
+    s = Session(
+        scenario_prompt="x",
+        roles=[Role(id="role-a", label="A", is_creator=True)],
+        plan=plan,
+        state=SessionState.AWAITING_PLAYERS,
+        turns=[Turn(index=2, status="awaiting", active_role_ids=["role-a"])],
+        critical_injects_window=[2],
+        critical_inject_rate_limit_until=7,
+    )
+    blocks = build_play_system_blocks(
+        s, registry=FrozenRegistry(tools={}, resources={}, prompts={})
+    )
+    text = blocks[0]["text"]
+    assert "Block 12" in text, "rate-limited turn must include Block 12"
+    assert "until turn 7" in text
+
+
+def test_critical_inject_block_12_omitted_when_no_rate_limit() -> None:
+    """Healthy turns must NOT include Block 12 — the cached system
+    block stays stable when there's no rate limit active."""
+
+    from app.extensions.registry import FrozenRegistry
+    from app.llm.prompts import build_play_system_blocks
+    from app.sessions.models import (
+        Role,
+        ScenarioBeat,
+        ScenarioInject,
+        ScenarioPlan,
+        Session,
+        SessionState,
+        Turn,
+    )
+
+    plan = ScenarioPlan(
+        title="t",
+        key_objectives=["o"],
+        narrative_arc=[ScenarioBeat(beat=1, label="b", expected_actors=["A"])],
+        injects=[ScenarioInject(trigger="after beat 1", summary="i")],
+    )
+    s = Session(
+        scenario_prompt="x",
+        roles=[Role(id="role-a", label="A", is_creator=True)],
+        plan=plan,
+        state=SessionState.AWAITING_PLAYERS,
+        turns=[Turn(index=0, status="awaiting", active_role_ids=["role-a"])],
+        critical_injects_window=[],
+        critical_inject_rate_limit_until=None,
+    )
+    blocks = build_play_system_blocks(
+        s, registry=FrozenRegistry(tools={}, resources={}, prompts={})
+    )
+    text = blocks[0]["text"]
+    assert "Block 12" not in text
+
+
 def test_tool_choice_does_not_leak_to_setup_or_aar(client: TestClient) -> None:
     """Confirm the strict-retry tool_choice plumbing is scoped to play turns
     only. Setup and AAR calls must never set tool_choice."""
@@ -1023,8 +1428,10 @@ def test_tool_choice_does_not_leak_to_setup_or_aar(client: TestClient) -> None:
 def test_strict_retry_double_failure_marks_turn_errored(client: TestClient) -> None:
     """Belt-and-braces: even though ``tool_choice=any`` should make this
     practically unreachable, the engine must still mark the turn errored
-    if BOTH attempts fail to yield (e.g. a future SDK regression or a mock
-    that ignores tool_choice)."""
+    if EVERY attempt fails to yield (e.g. a future SDK regression or a
+    mock that ignores tool_choice). The validator's shared budget caps
+    total recovery LLM calls at ``LLM_STRICT_RETRY_MAX`` (default 2),
+    so we feed three non-yielding responses to exhaust it."""
 
     from tests.mock_anthropic import MockAnthropic, _ContentBlock, _Response
 
@@ -1041,7 +1448,10 @@ def test_strict_retry_double_failure_marks_turn_errored(client: TestClient) -> N
         )],
         stop_reason="tool_use",
     )
-    mock = MockAnthropic({"play": [non_yielding, non_yielding]})
+    # 3 non-yielding responses = 1 initial attempt + 2 recovery passes
+    # (the LLM_STRICT_RETRY_MAX default). Every attempt fires
+    # ``broadcast`` so DRIVE is satisfied — only YIELD never lands.
+    mock = MockAnthropic({"play": [non_yielding, non_yielding, non_yielding]})
     client.app.state.llm.set_transport(mock.messages)
 
     client.post(f"/api/sessions/{sid}/setup/skip?token={cr}")
@@ -1608,7 +2018,9 @@ def test_force_advance_recovers_from_errored_turn(client: TestClient) -> None:
         )],
         stop_reason="tool_use",
     )
-    mock = MockAnthropic({"play": [non_yielding, non_yielding]})
+    # Three non-yielding responses to exhaust the validator's recovery
+    # budget (1 initial + 2 recovery passes per the new default).
+    mock = MockAnthropic({"play": [non_yielding, non_yielding, non_yielding]})
     client.app.state.llm.set_transport(mock.messages)
 
     client.post(f"/api/sessions/{sid}/setup/skip?token={cr}")
@@ -1867,7 +2279,11 @@ def test_mark_timeline_point_does_not_yield(client: TestClient) -> None:
         )],
         stop_reason="tool_use",
     )
-    mock = MockAnthropic({"play": [pin_only, pin_only]})
+    # Three pin-only responses to exhaust the validator's recovery
+    # budget (1 initial + 2 recovery passes). Pin satisfies neither
+    # DRIVE nor YIELD so both directives fire and both burn budget
+    # without the AI ever yielding.
+    mock = MockAnthropic({"play": [pin_only, pin_only, pin_only]})
     client.app.state.llm.set_transport(mock.messages)
 
     seats = _create_and_seat(client, role_count=2)
@@ -2058,6 +2474,7 @@ def test_play_block_10_lists_seated_and_unseated_roles() -> None:
     from app.sessions.models import (
         Role,
         ScenarioBeat,
+        ScenarioInject,
         ScenarioPlan,
         Session,
         SessionState,
@@ -2081,6 +2498,7 @@ def test_play_block_10_lists_seated_and_unseated_roles() -> None:
                     expected_actors=["SOC Analyst", "IR Lead", "Legal"],
                 ),
             ],
+            injects=[ScenarioInject(trigger="after beat 1", summary="Leak posted")],
         ),
     )
     blocks = build_play_system_blocks(
@@ -2282,12 +2700,24 @@ def test_play_system_prompt_includes_open_followups() -> None:
 
     from app.extensions.registry import FrozenRegistry
     from app.llm.prompts import build_play_system_blocks
-    from app.sessions.models import Role, RoleFollowup, ScenarioPlan, Session
+    from app.sessions.models import (
+        Role,
+        RoleFollowup,
+        ScenarioBeat,
+        ScenarioInject,
+        ScenarioPlan,
+        Session,
+    )
 
     session = Session(
         scenario_prompt="x",
         roles=[Role(id="role-soc", label="SOC", is_creator=True)],
-        plan=ScenarioPlan(title="t", key_objectives=["o"]),
+        plan=ScenarioPlan(
+            title="t",
+            key_objectives=["o"],
+            narrative_arc=[ScenarioBeat(beat=1, label="b", expected_actors=["SOC"])],
+            injects=[ScenarioInject(trigger="after beat 1", summary="i")],
+        ),
     )
     registry = FrozenRegistry(tools={}, resources={}, prompts={})
 

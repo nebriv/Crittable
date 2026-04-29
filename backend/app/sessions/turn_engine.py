@@ -70,15 +70,32 @@ def assert_plan_edit_field(field: str) -> None:
 
 
 def critical_inject_allowed(session: Session, *, max_per_5_turns: int) -> bool:
-    """Enforce the critical-event rate limit (default 1 per 5 turns)."""
+    """Enforce the critical-event rate limit (default 1 per 5 turns).
+
+    Side effect: when the rolling window is at cap, write
+    ``session.critical_inject_rate_limit_until`` to the turn index at
+    which the budget refreshes. The play-tier system prompt
+    (``build_play_system_blocks``) surfaces this as a "you are
+    rate-limited until turn N" mini-block so the AI doesn't keep
+    retrying the same critical-event call across turns. When the
+    budget has refreshed, clear the field.
+    """
 
     if max_per_5_turns <= 0:
+        session.critical_inject_rate_limit_until = None
         return False
     if not session.turns:
+        session.critical_inject_rate_limit_until = None
         return True
     current_index = session.turns[-1].index
     window = [i for i in session.critical_injects_window if current_index - i < 5]
-    return len(window) < max_per_5_turns
+    allowed = len(window) < max_per_5_turns
+    if not allowed and window:
+        # Earliest in-window index expires when (idx + 5) is reached.
+        session.critical_inject_rate_limit_until = min(window) + 5
+    else:
+        session.critical_inject_rate_limit_until = None
+    return allowed
 
 
 def record_critical_inject(session: Session) -> None:
