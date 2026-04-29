@@ -35,6 +35,52 @@ _logger = get_logger("llm.client")
 _VALID_TOOL_CHOICE_TYPES = frozenset({"auto", "any", "none", "tool"})
 
 
+# Model id prefixes that reject the ``temperature`` parameter at the API
+# boundary (HTTP 400 ``temperature is deprecated for this model``).
+# Anthropic's Opus 4.x family deprecates the param; sending it produces
+# the failure mode that broke AAR generation in production. Centralising
+# the list here means a future tier change (e.g. swapping play to Opus)
+# inherits the strip automatically rather than each call site having to
+# know.
+_MODELS_REJECTING_TEMPERATURE: tuple[str, ...] = (
+    "claude-opus-4-",
+)
+# Same shape, kept separate because top_p deprecation may diverge from
+# temperature on future models. Currently empty — Opus 4.x accepts
+# top_p — but the plumbing is here so a regression is one constant
+# away from being fixed.
+_MODELS_REJECTING_TOP_P: tuple[str, ...] = ()
+
+
+def _strip_deprecated_sampling_params(
+    model: str, kwargs: dict[str, Any]
+) -> list[str]:
+    """Drop sampling params the target model rejects.
+
+    Returns the list of dropped param names so the caller can audit-log
+    the strip. Mutates ``kwargs`` in place. Called immediately before
+    ``api.create`` so the strip applies regardless of which tier or
+    code path assembled the kwargs.
+
+    The map is conservative — only documented-deprecated combos. If the
+    Anthropic SDK starts rejecting a new param, add the model prefix to
+    the relevant tuple above and the regression is a one-line fix.
+    """
+
+    dropped: list[str] = []
+    if "temperature" in kwargs and any(
+        model.startswith(p) for p in _MODELS_REJECTING_TEMPERATURE
+    ):
+        dropped.append("temperature")
+        kwargs.pop("temperature", None)
+    if "top_p" in kwargs and any(
+        model.startswith(p) for p in _MODELS_REJECTING_TOP_P
+    ):
+        dropped.append("top_p")
+        kwargs.pop("top_p", None)
+    return dropped
+
+
 def _validate_tool_choice(tool_choice: dict[str, Any] | None) -> None:
     if tool_choice is None:
         return
@@ -298,6 +344,14 @@ class LLMClient:
         started = time.monotonic()
         try:
             api = await self._messages_for_tier(tier)
+            dropped_params = _strip_deprecated_sampling_params(model, kwargs)
+            if dropped_params:
+                _logger.info(
+                    "llm_call_params_stripped",
+                    tier=tier,
+                    model=model,
+                    dropped=dropped_params,
+                )
             response = await api.create(**kwargs)
         except Exception as exc:
             _logger.warning(
@@ -399,6 +453,14 @@ class LLMClient:
         call = self._begin_call(session_id=session_id, tier=tier, model=model, stream=True)
         started = time.monotonic()
         api = await self._messages_for_tier(tier)
+        dropped_params = _strip_deprecated_sampling_params(model, kwargs)
+        if dropped_params:
+            _logger.info(
+                "llm_call_params_stripped",
+                tier=tier,
+                model=model,
+                dropped=dropped_params,
+            )
         stream = api.stream(**kwargs)
         text_buffer: list[str] = []
         # try/finally rather than try/except: ``CancelledError`` is BaseException

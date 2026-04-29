@@ -26,6 +26,10 @@ export function Play({ sessionId, token }: Props) {
     body: string;
   } | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Incrementing counter the Composer watches so it can restore the
+  // last-attempted text on a submit-rejected error rather than letting
+  // the textarea clear on optimistic-clear-then-fail.
+  const [submitErrorEpoch, setSubmitErrorEpoch] = useState(0);
   // Non-error informational toast (e.g. submission was truncated but
   // posted). Distinct from ``error`` because that surface is rendered as
   // a red banner that reads as "your action failed".
@@ -108,6 +112,16 @@ export function Play({ sessionId, token }: Props) {
         break;
       case "error":
         setError(evt.message);
+        // ``submit_response`` rejections (e.g. "role cannot submit on
+        // this turn" when a turn changes between composer-open and
+        // hitting Submit) used to silently clear the textarea — the
+        // player's typed reply was gone. Bumping ``submitErrorEpoch``
+        // tells the Composer to restore the last attempted text so
+        // they can edit / retry / paste it elsewhere.
+        if (evt.scope === "submit_response") {
+          console.warn("[play] submit rejected — restoring composer text", evt);
+          setSubmitErrorEpoch((n) => n + 1);
+        }
         break;
       default:
         break;
@@ -296,6 +310,7 @@ export function Play({ sessionId, token }: Props) {
             placeholder={placeholder}
             onSubmit={handleSubmit}
             onTypingChange={handleTypingChange}
+            submitErrorEpoch={submitErrorEpoch}
           />
           {notice ? (
             <p

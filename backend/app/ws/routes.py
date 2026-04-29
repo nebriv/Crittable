@@ -26,17 +26,86 @@ CLOSE_FORBIDDEN_ORIGIN = 4403
 CLOSE_HEARTBEAT_TIMEOUT = 4408
 
 
+# Phrase prefixes that read as a direct question even without a trailing
+# ``?``. Real-session example that previously slipped through:
+# "can we look inside of C:\\Users\\evasquez\\AppData\\Local\\Temp\\~ex_out\\" —
+# the player was clearly asking but typed it like a statement, so the
+# AI ignored them and the operator had to force-advance just to get a
+# response. Each entry is matched case-insensitively at the start of
+# the (stripped) message. Keep this list small + boring; we'd rather
+# miss a question than fire an interject on a player narrating their
+# own action.
+_QUESTION_PREFIXES: tuple[str, ...] = (
+    "can we ",
+    "can you ",
+    "could we ",
+    "could you ",
+    "should we ",
+    "should i ",
+    "do we ",
+    "do you ",
+    "does this ",
+    "does that ",
+    "is there ",
+    "is it ",
+    "are there ",
+    "are we ",
+    "what is ",
+    "what's ",
+    "whats ",
+    "what does ",
+    "what do ",
+    "what about ",
+    "what if ",
+    "where is ",
+    "where's ",
+    "wheres ",
+    "when do ",
+    "when does ",
+    "when will ",
+    "who has ",
+    "who is ",
+    "who's ",
+    "whos ",
+    "how do ",
+    "how does ",
+    "how can ",
+    "why is ",
+    "why does ",
+    "would it ",
+    "any chance ",
+    "any way ",
+    "anyone know ",
+    "anyone got ",
+)
+
+
 def _looks_like_question(content: str) -> bool:
     """Heuristic: a player message intended as a direct question to the
-    facilitator. Trailing ``?`` after stripping whitespace is the
-    primary signal. Skips very short messages so casual ``what?`` or
-    ``???`` interjections don't trigger a full LLM call.
+    facilitator.
+
+    Two signals — either suffices:
+      1. Trailing ``?`` after stripping whitespace.
+      2. A ``can we / should we / what is / how do …`` style opening,
+         even without a trailing ``?``. Real participants type
+         "can we look inside the temp dir" as often as the
+         punctuated form, and the engine was previously deaf to it.
+
+    Skips very short messages (<8 chars) on the ``?`` path so casual
+    ``what?`` / ``???`` interjections don't trigger a full LLM call.
+    The prefix path has its own length floor (>= 12 chars) for the
+    same reason: ``can we?`` is fine on the ``?`` path; ``can we`` on
+    its own is too thin to act on.
     """
 
     stripped = content.strip()
-    if len(stripped) < 8:
-        return False
-    return stripped.endswith("?")
+    if len(stripped) >= 8 and stripped.endswith("?"):
+        return True
+    if len(stripped) >= 12:
+        lowered = stripped.lower()
+        if any(lowered.startswith(p) for p in _QUESTION_PREFIXES):
+            return True
+    return False
 
 
 def register_ws_routes(app: FastAPI) -> None:

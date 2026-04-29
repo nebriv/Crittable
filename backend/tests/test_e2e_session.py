@@ -2847,6 +2847,110 @@ def test_per_tier_timeout_passed_to_anthropic(monkeypatch) -> None:
     assert captured.get("with_options_timeout") == 5.0
 
 
+def test_temperature_stripped_for_opus_4_x(monkeypatch) -> None:
+    """``claude-opus-4-7`` (and the rest of the Opus 4.x family) rejects
+    the ``temperature`` parameter at the API boundary with a 400
+    ``temperature is deprecated for this model``. Sending it broke
+    AAR generation in production.
+
+    The client now strips ``temperature`` for Opus-4.x models before
+    forwarding to Anthropic. Lock the strip at the wire so a future
+    refactor can't accidentally re-enable it.
+    """
+
+    import asyncio
+
+    from app.config import Settings
+    from app.llm.client import LLMClient
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.setenv("ANTHROPIC_MODEL_AAR", "claude-opus-4-7")
+    monkeypatch.setenv("LLM_TEMPERATURE_AAR", "0.4")
+
+    captured: dict[str, Any] = {}
+
+    class _StubMessages:
+        async def create(self, **kwargs: Any) -> Any:
+            captured["kwargs"] = dict(kwargs)
+            from tests.mock_anthropic import _ContentBlock, _Response
+
+            return _Response(content=[_ContentBlock(type="text", text="ok")])
+
+        def stream(self, **kwargs: Any) -> Any:
+            raise NotImplementedError
+
+    class _StubClient:
+        def __init__(self) -> None:
+            self.messages = _StubMessages()
+
+        def with_options(self, *, timeout: float) -> _StubClient:
+            new = _StubClient()
+            return new
+
+    s = Settings()
+    llm = LLMClient(settings=s)
+    llm._client = _StubClient()  # type: ignore[assignment]
+
+    async def _go() -> None:
+        await llm.acomplete(
+            tier="aar",
+            system_blocks=[{"type": "text", "text": "x"}],
+            messages=[{"role": "user", "content": "y"}],
+        )
+
+    asyncio.run(_go())
+    kwargs = captured["kwargs"]
+    assert "temperature" not in kwargs, (
+        "temperature must be stripped for Opus-4.x models (deprecated by "
+        f"Anthropic); kwargs sent: {sorted(kwargs)}"
+    )
+    # Sonnet keeps temperature — the strip is targeted, not blanket.
+    monkeypatch.setenv("ANTHROPIC_MODEL_AAR", "claude-sonnet-4-6")
+    s2 = Settings()
+    llm2 = LLMClient(settings=s2)
+    llm2._client = _StubClient()  # type: ignore[assignment]
+    captured.clear()
+
+    async def _go2() -> None:
+        await llm2.acomplete(
+            tier="aar",
+            system_blocks=[{"type": "text", "text": "x"}],
+            messages=[{"role": "user", "content": "y"}],
+        )
+
+    asyncio.run(_go2())
+    assert captured["kwargs"].get("temperature") == 0.4, (
+        "non-Opus-4.x models must keep the configured temperature; "
+        f"kwargs sent: {captured['kwargs']}"
+    )
+
+
+def test_question_heuristic_catches_no_questionmark_phrasing() -> None:
+    """The interject heuristic must fire on "can we look inside…" /
+    "should we isolate…" / "what is in the directory" even without a
+    trailing ``?``. Real participants type questions as statements often
+    enough that the punctuation-only rule was leaving the AI deaf to
+    direct asks.
+    """
+
+    from app.ws.routes import _looks_like_question
+
+    # Trailing ``?`` path (existing behaviour).
+    assert _looks_like_question("Is the host isolated yet?")
+    # Prefix path — these all previously slipped through.
+    assert _looks_like_question(
+        "can we look inside of C:\\Users\\evasquez\\AppData\\Local\\Temp\\~ex_out\\"
+    )
+    assert _looks_like_question("should we isolate the IT admin workstation")
+    assert _looks_like_question("what is in the triage package")
+    assert _looks_like_question("how do we tell the engineer to escalate")
+    # Negative cases — narrative statements stay non-questions.
+    assert not _looks_like_question("we isolated the host via Defender")
+    assert not _looks_like_question("forensics is complete")
+    assert not _looks_like_question("hi")  # too short for either path
+    assert not _looks_like_question("can we?")  # too short for either path
+
+
 def test_ws_submit_truncates_with_marker_and_warning(monkeypatch) -> None:
     """The WS ``submit_response`` path must (a) emit a
     ``submission_truncated`` event (NOT ``error``) so the frontend can

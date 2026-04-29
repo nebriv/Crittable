@@ -27,6 +27,14 @@ interface Props {
   impersonateOptions?: ImpersonateOption[];
   /** Label for the local participant's own seat (shown as the default). */
   selfLabel?: string;
+  /**
+   * Incrementing counter the parent flips when a submit was REJECTED
+   * (e.g. WS ``error`` event with ``scope === "submit_response"``).
+   * On bump, the composer restores the last-attempted text instead of
+   * leaving the textarea blank — so a player who hit Submit a half-
+   * second after their turn closed doesn't lose their reply.
+   */
+  submitErrorEpoch?: number;
 }
 
 export function Composer({
@@ -36,6 +44,7 @@ export function Composer({
   onTypingChange,
   impersonateOptions,
   selfLabel,
+  submitErrorEpoch,
 }: Props) {
   const [text, setText] = useState("");
   // Empty string == speak as the local participant. Anything else is a
@@ -43,11 +52,20 @@ export function Composer({
   const [asRoleId, setAsRoleId] = useState<string>("");
   const typingTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isTyping = useRef(false);
+  // Last text the user attempted to submit. Held outside React state
+  // so we can restore it without an extra render on the success path.
+  const lastAttemptedRef = useRef<string>("");
+  // Track the last epoch we've already handled so the restore-on-error
+  // effect only fires when the parent actually bumps the counter, not
+  // on initial mount.
+  const handledErrorEpochRef = useRef<number | undefined>(submitErrorEpoch);
 
   function handle(e: FormEvent) {
     e.preventDefault();
     if (!enabled || !text.trim()) return;
-    onSubmit(text.trim(), asRoleId || undefined);
+    const trimmed = text.trim();
+    lastAttemptedRef.current = trimmed;
+    onSubmit(trimmed, asRoleId || undefined);
     setText("");
     // Reset back to "speak as me" after every submit so the next message
     // doesn't accidentally post under the previous proxy role. Sticky
@@ -58,6 +76,19 @@ export function Composer({
       onTypingChange?.(false);
     }
   }
+
+  // Restore the last-attempted text when the parent signals a submit
+  // rejection. Without this, the optimistic ``setText("")`` above
+  // would silently eat the player's reply on a "role cannot submit on
+  // this turn" race.
+  useEffect(() => {
+    if (submitErrorEpoch === undefined) return;
+    if (submitErrorEpoch === handledErrorEpochRef.current) return;
+    handledErrorEpochRef.current = submitErrorEpoch;
+    if (lastAttemptedRef.current) {
+      setText(lastAttemptedRef.current);
+    }
+  }, [submitErrorEpoch]);
 
   function handleChange(value: string) {
     setText(value);
