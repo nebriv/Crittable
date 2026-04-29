@@ -31,7 +31,8 @@ _PLAN_ADHERENCE = (
     "on track and consult its injects list — fire `inject_critical_event` when a "
     "planned trigger is met. Deviate only when player choices materially demand "
     "it; when you do, briefly note the reason in your tool reasoning so the "
-    "audit log captures it."
+    "audit log captures it. Block 10 is the source of truth for who is "
+    "actually playing — see its rules for handling unseated plan roles."
 )
 
 _HARD_BOUNDARIES = """The following rules are non-negotiable:
@@ -144,6 +145,57 @@ def build_play_system_blocks(
         extension_block_lines.append(f"### {prompt.name}\n{prompt.body}")
     extension_block = "\n\n".join(extension_block_lines) if extension_block_lines else "(none)"
 
+    # Block 10 — explicit seated roster + (separately) any plan-mentioned
+    # roles that are not yet seated. The AI must only address / yield to
+    # seated roles; unseated roles can be mentioned narratively ("we could
+    # pull in General Counsel") but cannot be passed to tool calls. This
+    # supports mid-session role joins: the operator can invite a
+    # plan-mentioned role at any time and it will then appear in the seated
+    # table on the next turn.
+    seated_lines = ["| role_id | label | display_name | kind |", "|---|---|---|---|"]
+    for r in session.roles:
+        seated_lines.append(
+            f"| `{r.id}` | {r.label} | {r.display_name or '—'} | {r.kind}{' (creator)' if r.is_creator else ''} |"
+        )
+    seated_table = "\n".join(seated_lines)
+
+    seated_label_set = {r.label.strip().lower() for r in session.roles}
+    unseated: list[str] = []
+    seen_unseated: set[str] = set()
+    if session.plan:
+        for beat in session.plan.narrative_arc:
+            for actor in beat.expected_actors:
+                key = actor.strip().lower()
+                if not key or key in seated_label_set or key in seen_unseated:
+                    continue
+                seen_unseated.add(key)
+                unseated.append(actor.strip())
+    unseated_block = (
+        "\n\n### Plan-mentioned but NOT seated\n"
+        + ", ".join(f"`{u}`" for u in unseated)
+        + "\nThese roles appear in the plan's narrative_arc but no one has "
+        "joined them. Treat them as available-to-invite but NOT live: do "
+        "NOT pass them to ``set_active_roles`` / ``address_role`` / "
+        "``request_artifact``. You may mention them narratively (e.g. "
+        "\"we could pull in General Counsel if the legal exposure widens\") "
+        "so the operator knows to send a join link. The seated roster can "
+        "grow mid-session — re-read this block on every turn."
+    ) if unseated else (
+        "\n\n### Plan-mentioned but NOT seated\n(none — every plan role is "
+        "currently seated.)"
+    )
+
+    roster_rules = (
+        "\n\nWhen a tool needs ``role_id`` (or ``role_ids``) you MUST use the "
+        "opaque id from the first column of the seated roster above (e.g. "
+        "``16380a40e4f1``), NOT the label, NOT the display name. Tool calls "
+        "with labels or unseated roles will be rejected and the turn will "
+        "fail. Adapt each beat to the seated roster: if a beat expects "
+        "\"IR Lead\" and IR Lead is unseated, hand the beat to the closest "
+        "seated function or narrate the missing role's status as part of "
+        "the inject."
+    )
+
     text = "\n\n".join(
         [
             "## Block 1 — Identity\n" + _IDENTITY,
@@ -155,6 +207,11 @@ def build_play_system_blocks(
             "## Block 7 — Frozen scenario plan\n```json\n" + plan_json + "\n```",
             "## Block 8 — Active extension prompts\n" + extension_block,
             "## Block 9 — Roster-size strategy\n" + _ROSTER_STRATEGY[session.roster_size],
+            "## Block 10 — Roster (use these role_ids in tool calls)\n"
+            + "### Seated\n"
+            + seated_table
+            + unseated_block
+            + roster_rules,
         ]
     )
     return [{"type": "text", "text": text}]

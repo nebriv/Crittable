@@ -13,6 +13,8 @@ export interface SessionSnapshot {
   messages: MessageView[];
   setup_notes: SetupNoteView[] | null;
   cost: CostSnapshot | null;
+  /** "pending" | "generating" | "ready" | "failed" — surfaced for download-button gating. */
+  aar_status?: string | null;
 }
 
 export interface SetupNoteView {
@@ -36,6 +38,8 @@ export interface RoleView {
 export interface TurnView {
   index: number;
   active_role_ids: string[];
+  /** Role-ids that have already submitted on this turn. */
+  submitted_role_ids?: string[];
   status: string;
 }
 
@@ -165,6 +169,20 @@ export const api = {
     return request(
       "POST",
       `/api/sessions/${sessionId}/admin/abort-turn?token=${encodeURIComponent(creatorToken)}`,
+    );
+  },
+
+  /** Creator-only solo-test helper: submit on behalf of a specific role. */
+  async adminProxyRespond(
+    sessionId: string,
+    creatorToken: string,
+    asRoleId: string,
+    content: string,
+  ): Promise<{ ok: boolean }> {
+    return request(
+      "POST",
+      `/api/sessions/${sessionId}/admin/proxy-respond?token=${encodeURIComponent(creatorToken)}`,
+      { as_role_id: asRoleId, content },
     );
   },
 

@@ -8,6 +8,6 @@ services:
       - "8000:8000"
     environment:
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
-      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      LOG_LEVEL: ${LOG_LEVEL:-DEBUG}
       LOG_FORMAT: ${LOG_FORMAT:-json}
     restart: unless-stopped

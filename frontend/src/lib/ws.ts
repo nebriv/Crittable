@@ -83,12 +83,63 @@ export class WsClient {
       try {
         const parsed = JSON.parse(evt.data) as ServerEvent;
         // Don't log payloads that carry plan content / message bodies — those
-        // can be sensitive (frozen scenario plan is creator-only). Log type
-        // only; the network tab in devtools shows full WS frames if needed.
-        console.debug("[ws] event", { type: parsed.type });
+        // can be sensitive (frozen scenario plan is creator-only). For each
+        // event type we log a small set of safe scalar fields so a console
+        // dump tells the operator which event arrived and roughly what it
+        // means without leaking content. Full frames are visible in the
+        // browser's network tab if deeper inspection is needed.
+        const safe: Record<string, unknown> = { type: parsed.type };
+        switch (parsed.type) {
+          case "state_changed":
+            safe.state = parsed.state;
+            safe.turn_index = parsed.turn_index;
+            safe.active_role_count = parsed.active_role_ids?.length ?? 0;
+            break;
+          case "turn_changed":
+            safe.turn_index = parsed.turn_index;
+            safe.active_role_count = parsed.active_role_ids?.length ?? 0;
+            break;
+          case "message_chunk":
+            safe.turn_id = parsed.turn_id;
+            safe.chars = parsed.text?.length ?? 0;
+            break;
+          case "message_complete":
+            safe.kind = parsed.kind;
+            safe.tool_name = parsed.tool_name;
+            safe.body_chars = parsed.body?.length ?? 0;
+            break;
+          case "participant_joined":
+          case "participant_left":
+            safe.role_id = parsed.role_id;
+            break;
+          case "critical_event":
+            safe.severity = parsed.severity;
+            // headline is operator-visible by design — safe to surface.
+            safe.headline = parsed.headline;
+            break;
+          case "aar_status_changed":
+            safe.status = parsed.status;
+            break;
+          case "typing":
+            safe.role_id = parsed.role_id;
+            safe.typing = parsed.typing;
+            break;
+          case "error":
+            safe.scope = parsed.scope;
+            safe.message = parsed.message;
+            break;
+          case "guardrail_blocked":
+            safe.verdict = parsed.verdict;
+            break;
+          default:
+            break;
+        }
+        console.debug("[ws] event", safe);
         this.opts.onEvent(parsed);
-      } catch {
-        // Drop malformed frames silently.
+      } catch (err) {
+        // Surface parse failures rather than dropping silently — they're
+        // almost always a contract drift between client and server.
+        console.warn("[ws] parse failed", err);
       }
     });
 

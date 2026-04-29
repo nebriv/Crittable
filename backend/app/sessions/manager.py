@@ -527,6 +527,108 @@ class SessionManager:
         self._emit("force_advance", session, by=by_role_id)
         await self._broadcast_state(session)
 
+    async def proxy_submit_as(
+        self, *, session_id: str, by_role_id: str, as_role_id: str, content: str
+    ) -> bool:
+        """Solo-test impersonation: submit ``content`` on behalf of
+        ``as_role_id`` (creator-only at the route layer). Returns True if
+        the turn is now ready to advance.
+
+        Distinct from ``submit_response`` because the WS / route layer
+        only allows a participant to submit for *their own* role; this
+        helper is the explicit creator escape hatch for one-tester multi-
+        seat exercises.
+        """
+
+        async with await self._lock_for(session_id):
+            session = await self._repo.get(session_id)
+            if session.state != SessionState.AWAITING_PLAYERS:
+                raise IllegalTransitionError("session is not awaiting player input")
+            turn = session.current_turn
+            if turn is None:
+                raise IllegalTransitionError("no current turn")
+            if not can_submit(turn, as_role_id):
+                raise IllegalTransitionError(
+                    f"role {as_role_id} cannot submit on this turn"
+                )
+            turn.submitted_role_ids.append(as_role_id)
+            session.messages.append(
+                Message(
+                    kind=MessageKind.PLAYER,
+                    role_id=as_role_id,
+                    body=content,
+                    turn_id=turn.id,
+                )
+            )
+            ready_to_advance = all_submitted(turn)
+            await self._repo.save(session)
+        await self.connections().broadcast(
+            session_id,
+            {
+                "type": "message_complete",
+                "role_id": as_role_id,
+                "kind": "player",
+                "body": content,
+            },
+        )
+        self._emit("proxy_submit_as", session, by=by_role_id, as_role=as_role_id)
+        if ready_to_advance:
+            await self._broadcast_state(session)
+        return ready_to_advance
+
+    async def proxy_submit_pending(
+        self, *, session_id: str, by_role_id: str, content: str
+    ) -> int:
+        """Solo-test helper: submit ``content`` on behalf of every active role
+        that hasn't responded yet, except the operator's own role. Returns
+        the number of seats filled.
+
+        Creator-only at the route layer. Designed for one-person dev
+        testing where the operator can't realistically open multiple
+        browser tabs to play every seat.
+        """
+
+        filled: list[str] = []
+        async with await self._lock_for(session_id):
+            session = await self._repo.get(session_id)
+            if session.state != SessionState.AWAITING_PLAYERS:
+                raise IllegalTransitionError("session is not awaiting player input")
+            turn = session.current_turn
+            if turn is None:
+                raise IllegalTransitionError("no current turn")
+            pending = [
+                rid
+                for rid in turn.active_role_ids
+                if rid != by_role_id and rid not in turn.submitted_role_ids
+            ]
+            for rid in pending:
+                turn.submitted_role_ids.append(rid)
+                session.messages.append(
+                    Message(
+                        kind=MessageKind.PLAYER,
+                        role_id=rid,
+                        body=content,
+                        turn_id=turn.id,
+                    )
+                )
+                filled.append(rid)
+            ready_to_advance = all_submitted(turn)
+            await self._repo.save(session)
+        for rid in filled:
+            await self.connections().broadcast(
+                session_id,
+                {
+                    "type": "message_complete",
+                    "role_id": rid,
+                    "kind": "player",
+                    "body": content,
+                },
+            )
+        self._emit("proxy_submit", session, by=by_role_id, filled=filled)
+        if ready_to_advance:
+            await self._broadcast_state(session)
+        return len(filled)
+
     async def abort_current_turn(
         self, *, session_id: str, by_role_id: str, reason: str = "operator aborted"
     ) -> None:

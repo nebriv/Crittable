@@ -317,10 +317,20 @@ class ToolDispatcher:
             return "broadcast queued"
 
         if name == "address_role":
+            resolved, unresolved = _resolve_role_refs(session, [args.get("role_id")])
+            if unresolved or not resolved:
+                raise _DispatchError(
+                    f"unknown role_id: {args.get('role_id')!r} — pass the "
+                    "opaque role_id (column 1 of the roster), not the label."
+                )
+            target_id = resolved[0]
+            target = session.role_by_id(target_id)
+            label = target.label if target else target_id
+            args["role_id"] = target_id  # canonicalise so tool_args stays clean
             outcome.appended_messages.append(
                 Message(
                     kind=MessageKind.AI_TEXT,
-                    body=f"@{args.get('role_id')}: {args.get('message', '')}",
+                    body=f"@{label}: {args.get('message', '')}",
                     turn_id=turn_id,
                     tool_name=name,
                     tool_args=args,
@@ -388,21 +398,43 @@ class ToolDispatcher:
             return "critical event surfaced"
 
         if name == "set_active_roles":
-            role_ids = list(args.get("role_ids") or [])
-            unknown = [r for r in role_ids if not session.role_by_id(r)]
-            if unknown:
-                raise _DispatchError(f"unknown role_ids: {unknown}")
+            raw_ids = list(args.get("role_ids") or [])
+            role_ids, unresolved = _resolve_role_refs(session, raw_ids)
+            if not role_ids:
+                # Nothing usable. Tell the model to retry with seated ids.
+                raise _DispatchError(
+                    f"unknown role_ids: {unresolved} — only the roles in "
+                    "Block 10 exist; pass their opaque role_id (column 1)."
+                )
             outcome.set_active_role_ids = role_ids
             outcome.had_yielding_call = True
+            if unresolved:
+                # Soft-success: the turn yields to the resolved roles, but
+                # we surface a warning so the model corrects on the next
+                # turn instead of repeating the same hallucinated label.
+                return (
+                    f"yielded to {role_ids}; ignored unknown role_ids "
+                    f"{unresolved} (not in Block 10 roster)"
+                )
             return f"yielded to {role_ids}"
 
         if name == "request_artifact":
+            resolved, unresolved = _resolve_role_refs(session, [args.get("role_id")])
+            if unresolved or not resolved:
+                raise _DispatchError(
+                    f"unknown role_id: {args.get('role_id')!r} — pass the "
+                    "opaque role_id (column 1 of the roster), not the label."
+                )
+            target_id = resolved[0]
+            target = session.role_by_id(target_id)
+            label = target.label if target else target_id
+            args["role_id"] = target_id
             outcome.appended_messages.append(
                 Message(
                     kind=MessageKind.AI_TEXT,
                     body=(
                         f"[Artifact request] {args.get('artifact_type','')} from "
-                        f"{args.get('role_id','')}: {args.get('instructions','')}"
+                        f"{label}: {args.get('instructions','')}"
                     ),
                     turn_id=turn_id,
                     tool_name=name,
@@ -469,6 +501,55 @@ class ToolDispatcher:
 
 class _DispatchError(RuntimeError):
     pass
+
+
+def _resolve_role_refs(
+    session: Session, refs: list[Any]
+) -> tuple[list[str], list[str]]:
+    """Resolve a free-form list of role references to canonical role_ids.
+
+    The system prompt explicitly tells the model to pass opaque role_ids,
+    but it will occasionally hand back labels ("SOC", "IR Lead") or
+    display names anyway. Rather than reject the whole turn (which sent
+    the operator into force-advance loops), accept any unambiguous
+    label / display-name match as a fallback.
+
+    Returns ``(resolved_ids, unresolved_refs)``.
+    """
+
+    by_id = {r.id: r.id for r in session.roles}
+    by_label_lower = {r.label.lower(): r.id for r in session.roles}
+    by_display_lower = {
+        (r.display_name or "").lower(): r.id
+        for r in session.roles
+        if r.display_name
+    }
+    resolved: list[str] = []
+    unresolved: list[str] = []
+    for raw in refs:
+        if not isinstance(raw, str):
+            unresolved.append(repr(raw))
+            continue
+        ref = raw.strip()
+        if ref in by_id:
+            resolved.append(ref)
+            continue
+        lowered = ref.lower()
+        if lowered in by_label_lower:
+            resolved.append(by_label_lower[lowered])
+            continue
+        if lowered in by_display_lower:
+            resolved.append(by_display_lower[lowered])
+            continue
+        unresolved.append(ref)
+    # De-dupe while preserving order.
+    seen: set[str] = set()
+    deduped: list[str] = []
+    for rid in resolved:
+        if rid not in seen:
+            seen.add(rid)
+            deduped.append(rid)
+    return deduped, unresolved
 
 
 async def _maybe_call(cb: Any) -> Any:

@@ -67,6 +67,18 @@ Custom tools, resources, and prompts (Skills-style) are loaded at startup via en
 - All config through `pydantic-settings` env vars; never hard-code.
 - Commit style: `<area>: <imperative subject>` (e.g. `backend: add session repository`). Body explains *why*. Phase-1 bootstrap can use `chore:` / `docs:` / `ci:`.
 
+## Dependency intake (NEW deps must pass these checks)
+
+Before adding ANY new third-party dependency (npm, pip, action, container image), spend ~2 minutes on the smell test and write the answers in the PR description:
+
+1. **Last release date.** > 12 months stale = yellow flag; > 24 months = red flag — needs justification.
+2. **Maintenance signals.** Open-issue/PR ratio, recent commit cadence, named maintainers (not anonymous bus factor of 1).
+3. **Known CVEs.** Cross-check `npm audit` / `pip-audit` and the GitHub Advisory DB. A clean record at the *current* version is the bar; transitive CVEs in lockfile must be triaged too.
+4. **Replaceability.** If the package is ≤ 200 LoC of straightforward logic, prefer inlining over depending on it.
+5. **License compatibility.** MIT / BSD / Apache-2 / ISC are fine; copyleft (GPL, AGPL) is not for this project.
+
+When adding a yellow-flag dep anyway (e.g. `remark-gfm` for GFM tables in chat / AAR), open a follow-up issue tagged `dep-review` so we revisit if upstream stays quiet. Don't silently absorb the maintenance debt.
+
 ## Communication patterns: WebSocket vs AJAX/polling
 
 Pick the right transport for each interaction. Mixing them is fine; using the wrong one for a specific job is the bug.

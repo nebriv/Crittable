@@ -203,6 +203,9 @@ def register_api_routes(app: FastAPI) -> None:
                 {
                     "index": session.current_turn.index,
                     "active_role_ids": session.current_turn.active_role_ids,
+                    # Surfaced so the frontend WaitingChip can show "waiting
+                    # on N of M" without an extra round-trip to /activity.
+                    "submitted_role_ids": session.current_turn.submitted_role_ids,
                     "status": session.current_turn.status,
                 }
                 if session.current_turn
@@ -245,6 +248,10 @@ def register_api_routes(app: FastAPI) -> None:
                 else None
             ),
             "cost": session.cost.model_dump() if is_creator else None,
+            # Surfaced on the main snapshot so the creator UI can gate the
+            # sidebar Download-AAR button without hitting /export.md early
+            # and seeing a 425.
+            "aar_status": session.aar_status,
         }
 
     @router.post("/sessions/{session_id}/start")
@@ -353,6 +360,96 @@ def register_api_routes(app: FastAPI) -> None:
         except IllegalTransitionError as exc:
             raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
         return {"ok": True}
+
+    @router.post("/sessions/{session_id}/admin/proxy-respond")
+    async def admin_proxy_respond(session_id: str, request: Request) -> dict[str, Any]:
+        """God-mode-only solo-test impersonation: submit on behalf of a
+        specific role. Body: ``{"as_role_id": "...", "content": "..."}``.
+        Creator-only. Drives the next AI turn if this fills the last
+        pending seat (mirrors submit_response)."""
+
+        manager = _manager(request)
+        token = await _bind_token(request, session_id)
+        try:
+            require_creator(token)
+            try:
+                body = await request.json()
+            except Exception:
+                body = {}
+            if not isinstance(body, dict):
+                raise HTTPException(status.HTTP_400_BAD_REQUEST, "json body required")
+            as_role_id = body.get("as_role_id")
+            content = body.get("content")
+            if not isinstance(as_role_id, str) or not isinstance(content, str):
+                raise HTTPException(
+                    status.HTTP_400_BAD_REQUEST,
+                    "as_role_id and content required",
+                )
+            if as_role_id == token["role_id"]:
+                raise HTTPException(
+                    status.HTTP_400_BAD_REQUEST,
+                    "use the normal submit endpoint for your own role",
+                )
+            await manager.proxy_submit_as(
+                session_id=session_id,
+                by_role_id=token["role_id"],
+                as_role_id=as_role_id,
+                content=content[:2000],
+            )
+        except AuthorizationError as exc:
+            raise HTTPException(status.HTTP_403_FORBIDDEN, str(exc)) from exc
+        except IllegalTransitionError as exc:
+            raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
+
+        session = await manager.get_session(session_id)
+        if (
+            session.current_turn is not None
+            and session.state == SessionState.AI_PROCESSING
+        ):
+            await TurnDriver(manager=manager).run_play_turn(
+                session=session, turn=session.current_turn
+            )
+        return {"ok": True}
+
+    @router.post("/sessions/{session_id}/admin/proxy-submit-pending")
+    async def admin_proxy_submit(session_id: str, request: Request) -> dict[str, Any]:
+        """God-mode-only solo-test helper: fill in placeholder responses
+        on behalf of every active role except the operator's own. Creator-
+        only — designed so a single tester can drive a multi-player exercise
+        without juggling browser tabs."""
+
+        manager = _manager(request)
+        token = await _bind_token(request, session_id)
+        try:
+            require_creator(token)
+            content = "(skipped — solo test proxy)"
+            try:
+                body = await request.json()
+                if isinstance(body, dict) and isinstance(body.get("content"), str):
+                    content = body["content"][:500]  # cap length
+            except Exception:
+                pass
+            filled = await manager.proxy_submit_pending(
+                session_id=session_id,
+                by_role_id=token["role_id"],
+                content=content,
+            )
+        except AuthorizationError as exc:
+            raise HTTPException(status.HTTP_403_FORBIDDEN, str(exc)) from exc
+        except IllegalTransitionError as exc:
+            raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
+
+        # If the proxy filled the last pending seat, drive the next AI turn
+        # exactly the way submit_response does.
+        session = await manager.get_session(session_id)
+        if (
+            session.current_turn is not None
+            and session.state == SessionState.AI_PROCESSING
+        ):
+            await TurnDriver(manager=manager).run_play_turn(
+                session=session, turn=session.current_turn
+            )
+        return {"ok": True, "filled": filled}
 
     @router.post("/sessions/{session_id}/admin/abort-turn")
     async def admin_abort_turn(session_id: str, request: Request) -> dict[str, Any]:

@@ -1,4 +1,5 @@
 import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import { MessageView, RoleView } from "../api/client";
 import { ChatIndicator } from "./ChatIndicator";
 
@@ -32,6 +33,10 @@ function MarkdownBody({ body }: { body: string }) {
         // already escapes HTML by default, but ``skipHtml`` ensures a future
         // dependency bump or rehype-raw-style plugin can't open an XSS hole.
         skipHtml
+        // GFM = tables, strikethrough, autolinks, task lists. The AI emits
+        // tables freely (per-role scores etc.) and they were rendering as
+        // raw pipe text without this.
+        remarkPlugins={[remarkGfm]}
         components={{
           p: ({ children }) => <p className="mb-2 last:mb-0 whitespace-pre-wrap">{children}</p>,
           ul: ({ children }) => <ul className="mb-2 ml-5 list-disc">{children}</ul>,
@@ -45,9 +50,21 @@ function MarkdownBody({ body }: { body: string }) {
           h6: ({ children }) => <p className="mb-1 font-semibold">{children}</p>,
           strong: ({ children }) => <strong className="font-semibold">{children}</strong>,
           em: ({ children }) => <em className="italic">{children}</em>,
+          del: ({ children }) => <del className="text-slate-400 line-through">{children}</del>,
+          blockquote: ({ children }) => (
+            <blockquote className="mb-2 border-l-4 border-slate-700 pl-2 italic text-slate-300">
+              {children}
+            </blockquote>
+          ),
           code: ({ children }) => (
             <code className="rounded bg-slate-800 px-1 py-0.5 text-[0.85em]">{children}</code>
           ),
+          pre: ({ children }) => (
+            <pre className="mb-2 overflow-auto rounded bg-slate-950 p-2 text-[0.85em]">
+              {children}
+            </pre>
+          ),
+          hr: () => <hr className="my-2 border-slate-700" />,
           a: ({ href, children }) => (
             <a
               href={href}
@@ -57,6 +74,21 @@ function MarkdownBody({ body }: { body: string }) {
             >
               {children}
             </a>
+          ),
+          table: ({ children }) => (
+            <div className="mb-2 overflow-x-auto">
+              <table className="min-w-full border-collapse text-xs">{children}</table>
+            </div>
+          ),
+          thead: ({ children }) => <thead className="bg-slate-900/60">{children}</thead>,
+          tr: ({ children }) => <tr className="border-b border-slate-800">{children}</tr>,
+          th: ({ children }) => (
+            <th className="border border-slate-700 px-2 py-1 text-left font-semibold">
+              {children}
+            </th>
+          ),
+          td: ({ children }) => (
+            <td className="border border-slate-800 px-2 py-1 align-top">{children}</td>
           ),
         }}
       >

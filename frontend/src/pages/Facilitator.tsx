@@ -1,5 +1,6 @@
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import {
   api,
   CostSnapshot,
@@ -372,9 +373,18 @@ export function Facilitator() {
     }
   }
 
-  async function handleSubmit(text: string) {
-    if (!wsRef.current) return;
+  async function handleSubmit(text: string, asRoleId?: string) {
+    if (!state) return;
     try {
+      if (asRoleId && asRoleId !== state.creatorRoleId) {
+        // Creator impersonation — go through the REST proxy endpoint so
+        // the backend records the correct role_id (the WS submit_response
+        // is hard-pinned to the connection's own role).
+        console.info("[facilitator] proxy submit", { asRoleId });
+        await api.adminProxyRespond(state.sessionId, state.token, asRoleId, text);
+        return;
+      }
+      if (!wsRef.current) return;
       wsRef.current.send({ type: "submit_response", content: text });
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -507,7 +517,7 @@ export function Facilitator() {
   const playerCount = snapshot.roles.filter((r) => r.kind === "player").length;
 
   return (
-    <main className="flex min-h-screen flex-col">
+    <main className="flex h-screen min-h-0 flex-col overflow-hidden">
       {criticalBanner ? (
         <CriticalEventBanner
           {...criticalBanner}
@@ -524,8 +534,8 @@ export function Facilitator() {
         onToggleGodMode={() => setGodMode((g) => !g)}
         godMode={godMode}
       />
-      <div className="mx-auto grid w-full max-w-7xl flex-1 grid-cols-1 gap-4 p-4 lg:grid-cols-[280px_1fr_280px]">
-        <aside className="flex flex-col gap-4">
+      <div className="mx-auto grid min-h-0 w-full max-w-7xl flex-1 grid-cols-1 gap-4 overflow-hidden p-4 lg:grid-cols-[280px_1fr_280px]">
+        <aside className="flex min-h-0 flex-col gap-4 overflow-y-auto pr-1">
           <RolesPanel
             sessionId={state.sessionId}
             creatorToken={state.token}
@@ -560,11 +570,12 @@ export function Facilitator() {
             }
             playerCount={playerCount}
             hasFinalizedPlan={Boolean(snapshot.plan)}
+            aarStatus={snapshot.aar_status ?? null}
             busy={busy}
           />
         </aside>
 
-        <section className="flex flex-col gap-4">
+        <section className="flex min-h-0 flex-col gap-3 overflow-hidden">
           {phase === "setup" ? (
             <SetupView
               snapshot={snapshot}
@@ -597,7 +608,7 @@ export function Facilitator() {
                 <div
                   role="status"
                   aria-live="polite"
-                  className="flex flex-wrap items-center justify-between gap-2 rounded border border-amber-700/60 bg-amber-950/40 p-3 text-sm text-amber-100"
+                  className="flex shrink-0 flex-wrap items-center justify-between gap-2 rounded border border-amber-700/60 bg-amber-950/40 p-3 text-sm text-amber-100"
                 >
                   <span>
                     The AI failed to yield via a tool. Force-advance to skip
@@ -613,36 +624,83 @@ export function Facilitator() {
                   </button>
                 </div>
               ) : null}
-              <Transcript
-                messages={snapshot.messages}
-                roles={snapshot.roles}
-                streamingText={streamingText}
-                aiThinking={
-                  phase === "play" &&
-                  !streamingText &&
-                  // Don't spin the indicator if the turn errored — the
-                  // AI is no longer working; the activity panel surfaces
-                  // the error and the operator can force-advance.
-                  snapshot.current_turn?.status !== "errored" &&
-                  (snapshot.state === "AI_PROCESSING" ||
-                    snapshot.state === "BRIEFING" ||
-                    snapshot.current_turn?.status === "processing")
-                }
-                typingRoleIds={Object.keys(typing).filter(
-                  (rid) => rid !== state.creatorRoleId,
-                )}
-              />
-              {phase === "play" ? (
-                <Composer
-                  enabled={isMyTurn && !busy}
-                  placeholder={
-                    isMyTurn
-                      ? "You are an active role. Make your decision."
-                      : "Waiting for the AI / other roles."
+              <div className="min-h-0 flex-1 overflow-y-auto pr-1">
+                <Transcript
+                  messages={snapshot.messages}
+                  roles={snapshot.roles}
+                  streamingText={streamingText}
+                  aiThinking={
+                    phase === "play" &&
+                    !streamingText &&
+                    // Don't spin the indicator if the turn errored — the
+                    // AI is no longer working; the activity panel surfaces
+                    // the error and the operator can force-advance.
+                    snapshot.current_turn?.status !== "errored" &&
+                    (snapshot.state === "AI_PROCESSING" ||
+                      snapshot.state === "BRIEFING" ||
+                      snapshot.current_turn?.status === "processing")
                   }
-                  onSubmit={handleSubmit}
-                  onTypingChange={handleTypingChange}
+                  typingRoleIds={Object.keys(typing).filter(
+                    (rid) => rid !== state.creatorRoleId,
+                  )}
                 />
+              </div>
+              {phase === "play" ? (
+                <div className="shrink-0">
+                  {!isMyTurn && snapshot.current_turn?.active_role_ids?.length ? (
+                    <WaitingChip
+                      activeRoleIds={activeRoleIds}
+                      submittedRoleIds={
+                        snapshot.current_turn?.submitted_role_ids ?? []
+                      }
+                      roles={snapshot.roles}
+                    />
+                  ) : null}
+                  {(() => {
+                    // Creator-only "respond as" dropdown: list every active
+                    // role except the creator's own seat. Lets a solo
+                    // tester answer for SOC Analyst etc. without juggling
+                    // browser tabs. Empty for non-active roles or when
+                    // there's nothing to impersonate.
+                    const impersonateOptions = activeRoleIds
+                      .filter((rid) => rid !== state.creatorRoleId)
+                      .filter(
+                        (rid) =>
+                          !(snapshot.current_turn?.submitted_role_ids ?? []).includes(rid),
+                      )
+                      .map((rid) => {
+                        const r = snapshot.roles.find((x) => x.id === rid);
+                        return {
+                          id: rid,
+                          label: r ? r.label : rid,
+                        };
+                      });
+                    const selfRole = snapshot.roles.find(
+                      (r) => r.id === state.creatorRoleId,
+                    );
+                    // The composer is enabled when EITHER the creator can
+                    // speak as themselves OR they have other seats to
+                    // proxy for — solo testers need both paths.
+                    const canSelfSpeak = isMyTurn && !busy;
+                    const canProxy = impersonateOptions.length > 0 && !busy;
+                    return (
+                      <Composer
+                        enabled={canSelfSpeak || canProxy}
+                        placeholder={
+                          canSelfSpeak
+                            ? "You are an active role. Make your decision."
+                            : canProxy
+                              ? "Solo test: respond on behalf of a pending role using the dropdown."
+                              : "Waiting for the AI / other roles."
+                        }
+                        onSubmit={handleSubmit}
+                        onTypingChange={handleTypingChange}
+                        impersonateOptions={impersonateOptions}
+                        selfLabel={selfRole?.label}
+                      />
+                    );
+                  })()}
+                </div>
               ) : null}
             </>
           ) : null}
@@ -772,6 +830,45 @@ function ActiveRolesHint({
   );
 }
 
+/**
+ * Pinned above the Composer when *other* roles still owe a response. Tells
+ * the local player exactly who we're blocked on so the screen doesn't look
+ * frozen, and surfaces the count ("waiting on 1 of 3") for at-a-glance scan.
+ */
+function WaitingChip({
+  activeRoleIds,
+  submittedRoleIds,
+  roles,
+}: {
+  activeRoleIds: string[];
+  submittedRoleIds: string[];
+  roles: RoleView[];
+}) {
+  const submitted = new Set(submittedRoleIds);
+  const pending = activeRoleIds.filter((id) => !submitted.has(id));
+  if (pending.length === 0) return null;
+  const labels = pending
+    .map((id) => roles.find((r) => r.id === id)?.label ?? id)
+    .join(", ");
+  return (
+    <div
+      role="status"
+      aria-live="polite"
+      className="mb-2 flex items-center gap-2 rounded border border-amber-700/40 bg-amber-950/30 px-2 py-1 text-xs text-amber-100"
+    >
+      <span
+        aria-hidden="true"
+        className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-amber-300"
+      />
+      <span>
+        Waiting on <span className="font-semibold">{pending.length} of {activeRoleIds.length}</span>
+        {": "}
+        <span className="text-amber-200">{labels}</span>
+      </span>
+    </div>
+  );
+}
+
 
 function Controls(props: {
   phase: Phase;
@@ -782,6 +879,8 @@ function Controls(props: {
   onExport: () => void;
   playerCount: number;
   hasFinalizedPlan: boolean;
+  /** "pending" | "generating" | "ready" | "failed" — null while loading. */
+  aarStatus: string | null;
   busy: boolean;
 }) {
   const canStart =
@@ -832,14 +931,38 @@ function Controls(props: {
         </>
       ) : null}
 
-      {props.phase === "ended" ? (
-        <button
-          onClick={props.onExport}
-          className="rounded bg-emerald-600 px-2 py-1 text-sm font-semibold text-white hover:bg-emerald-500"
-        >
-          Download AAR
-        </button>
-      ) : null}
+      {props.phase === "ended" ? (() => {
+        // Don't surface a Download button until the AAR pipeline reports
+        // ``ready``. Showing it during ``pending`` / ``generating`` led to
+        // operators clicking it and getting a 425 Too Early error.
+        if (props.aarStatus === "ready") {
+          return (
+            <button
+              onClick={props.onExport}
+              className="rounded bg-emerald-600 px-2 py-1 text-sm font-semibold text-white hover:bg-emerald-500"
+            >
+              Download AAR
+            </button>
+          );
+        }
+        if (props.aarStatus === "failed") {
+          return (
+            <p className="rounded border border-red-500/60 bg-red-950/30 px-2 py-1 text-xs text-red-200">
+              AAR generation failed — check backend logs.
+            </p>
+          );
+        }
+        return (
+          <button
+            type="button"
+            disabled
+            className="cursor-not-allowed rounded bg-slate-700 px-2 py-1 text-sm font-semibold text-slate-300 opacity-70"
+            title="AAR is still generating — the EndedView panel will pop the report when it's ready."
+          >
+            AAR generating…
+          </button>
+        );
+      })() : null}
 
       <button
         onClick={props.onNewSession}
@@ -1150,6 +1273,10 @@ function AARPopup({
           <article className="text-slate-100">
             <ReactMarkdown
               skipHtml
+              // GFM = tables / strikethrough / autolinks / task lists. The
+              // AAR generator emits per-role score tables, so without this
+              // they render as raw pipe text.
+              remarkPlugins={[remarkGfm]}
               components={{
                 h1: ({ children }) => (
                   <h1 className="mb-3 mt-4 text-xl font-semibold text-emerald-100">{children}</h1>
@@ -1193,16 +1320,29 @@ function AARPopup({
                     {children}
                   </a>
                 ),
+                del: ({ children }) => (
+                  <del className="text-slate-400 line-through">{children}</del>
+                ),
                 table: ({ children }) => (
-                  <table className="mb-3 w-full border-collapse text-xs">{children}</table>
+                  <div className="mb-3 overflow-x-auto">
+                    <table className="min-w-full border-collapse text-xs">{children}</table>
+                  </div>
+                ),
+                thead: ({ children }) => (
+                  <thead className="bg-slate-900/60">{children}</thead>
+                ),
+                tr: ({ children }) => (
+                  <tr className="border-b border-slate-800">{children}</tr>
                 ),
                 th: ({ children }) => (
-                  <th className="border border-slate-700 bg-slate-900 px-2 py-1 text-left">
+                  <th className="border border-slate-700 px-2 py-1 text-left font-semibold">
                     {children}
                   </th>
                 ),
                 td: ({ children }) => (
-                  <td className="border border-slate-800 px-2 py-1">{children}</td>
+                  <td className="border border-slate-800 px-2 py-1 align-top">
+                    {children}
+                  </td>
                 ),
               }}
             >

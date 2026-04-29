@@ -1768,3 +1768,111 @@ def test_mark_timeline_point_dispatch_emits_message(client: TestClient) -> None:
     assert len(pinned) == 1
     assert pinned[0]["tool_args"]["title"] == "Containment decision"
     assert pinned[0]["body"] == "IR ordered isolation."
+
+
+def test_set_active_roles_resolves_label_fallback(client: TestClient) -> None:
+    """The AI sometimes hands back role labels ("SOC", "IR Lead") instead
+    of opaque role_ids. The dispatcher must resolve labels to ids when it
+    can, and surface unresolved refs as a warning rather than failing the
+    whole turn — that was the root cause of the operator's force-advance
+    loop."""
+
+    from tests.mock_anthropic import MockAnthropic, _ContentBlock, _Response
+
+    seats = _create_and_seat(client, role_count=2)
+    sid = seats["session_id"]
+    cr = seats["creator_token"]
+    soc_role_id = seats["role_ids"][1]
+
+    yield_with_labels = _Response(
+        content=[
+            _ContentBlock(
+                type="tool_use",
+                name="broadcast",
+                input={"message": "Brief: stand by."},
+                id="tu_b",
+            ),
+            _ContentBlock(
+                type="tool_use",
+                name="set_active_roles",
+                # Pass the LABEL ("Player_1" — assigned by _create_and_seat)
+                # plus a non-existent label ("Engineering") to verify
+                # soft-success handles both.
+                input={"role_ids": ["Player_1", "Engineering"]},
+                id="tu_set",
+            ),
+        ],
+        stop_reason="tool_use",
+    )
+    mock = MockAnthropic({"play": [yield_with_labels]})
+    client.app.state.llm.set_transport(mock.messages)
+
+    client.post(f"/api/sessions/{sid}/setup/skip?token={cr}")
+    r = client.post(f"/api/sessions/{sid}/start?token={cr}")
+    assert r.status_code == 200, r.text
+
+    snap = client.get(f"/api/sessions/{sid}?token={cr}").json()
+    # The valid label should resolve; the turn should yield (not error).
+    assert snap["state"] == "AWAITING_PLAYERS"
+    assert soc_role_id in snap["current_turn"]["active_role_ids"]
+
+
+def test_admin_proxy_respond_impersonates_role(client: TestClient) -> None:
+    """Solo-test impersonation: the creator can submit on behalf of any
+    other active role via ``POST /admin/proxy-respond``."""
+
+    import asyncio
+
+    from app.sessions.models import SessionState, Turn
+
+    seats = _create_and_seat(client, role_count=2)
+    sid = seats["session_id"]
+    cr = seats["creator_token"]
+    other_role_id = seats["role_ids"][1]
+    non_creator = seats["role_tokens"][other_role_id]
+
+    client.post(f"/api/sessions/{sid}/setup/skip?token={cr}")
+
+    async def _open_awaiting() -> None:
+        manager = client.app.state.manager
+        session = await manager.get_session(sid)
+        turn = Turn(
+            index=0,
+            active_role_ids=seats["role_ids"],
+            status="awaiting",
+        )
+        session.turns.append(turn)
+        session.state = SessionState.AWAITING_PLAYERS
+        await manager._repo.save(session)
+
+    asyncio.run(_open_awaiting())
+
+    # Non-creator must NOT be able to call proxy-respond.
+    r = client.post(
+        f"/api/sessions/{sid}/admin/proxy-respond?token={non_creator}",
+        json={"as_role_id": other_role_id, "content": "evil"},
+    )
+    assert r.status_code == 403, r.text
+
+    # Creator cannot proxy as themselves (that's the regular submit path).
+    r = client.post(
+        f"/api/sessions/{sid}/admin/proxy-respond?token={cr}",
+        json={"as_role_id": seats["creator_role_id"], "content": "self"},
+    )
+    assert r.status_code == 400, r.text
+
+    # Happy path: creator submits as the SOC analyst seat.
+    r = client.post(
+        f"/api/sessions/{sid}/admin/proxy-respond?token={cr}",
+        json={"as_role_id": other_role_id, "content": "Containing now."},
+    )
+    assert r.status_code == 200, r.text
+
+    snap = client.get(f"/api/sessions/{sid}?token={cr}").json()
+    proxied = [
+        m
+        for m in snap["messages"]
+        if m["role_id"] == other_role_id and m["body"] == "Containing now."
+    ]
+    assert len(proxied) == 1, [m for m in snap["messages"] if m["role_id"] == other_role_id]
+    assert other_role_id in (snap["current_turn"]["submitted_role_ids"] or [])
