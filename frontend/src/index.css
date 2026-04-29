@@ -1,3 +1,14 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+/*
+ * Timeline → transcript scroll target highlight. The Timeline component
+ * sets ``data-flash="1"`` on the message bubble for ~1.4s after a click;
+ * this rule pulses an amber ring without depending on imperative
+ * classList mutations that React would clobber on re-render.
+ */
+[data-flash="1"] {
+  box-shadow: 0 0 0 2px rgba(252, 211, 77, 0.7);
+  transition: box-shadow 200ms ease-out;
+}

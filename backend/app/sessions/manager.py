@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Iterable
-from datetime import UTC
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from ..auth.audit import AuditEvent, AuditLog
@@ -472,7 +472,47 @@ class SessionManager:
         async with await self._lock_for(session_id):
             session = await self._repo.get(session_id)
             turn = session.current_turn
-            if turn is None or session.state != SessionState.AWAITING_PLAYERS:
+            if turn is None:
+                raise IllegalTransitionError("nothing to force-advance")
+
+            # Recovery path: the AI errored without yielding (state still
+            # AI_PROCESSING). Skip the dead turn and open a new awaiting
+            # turn for all player roles so humans can drive the next beat.
+            if turn.status == "errored":
+                turn.status = "complete"
+                turn.ended_at = datetime.now(UTC)
+                player_role_ids = [r.id for r in session.roles if r.kind == "player"]
+                new_turn = Turn(
+                    index=len(session.turns),
+                    active_role_ids=player_role_ids,
+                    status="awaiting",
+                )
+                session.turns.append(new_turn)
+                session.state = SessionState.AWAITING_PLAYERS
+                session.messages.append(
+                    Message(
+                        kind=MessageKind.SYSTEM,
+                        body=(
+                            f"Force-advanced by {by_role_id}; AI failed to "
+                            "yield, players continue"
+                        ),
+                        turn_id=new_turn.id,
+                    )
+                )
+                await self._repo.save(session)
+                await self.connections().broadcast(
+                    session.id,
+                    {
+                        "type": "turn_changed",
+                        "turn_index": new_turn.index,
+                        "active_role_ids": new_turn.active_role_ids,
+                    },
+                )
+                self._emit("force_advance", session, by=by_role_id, recovered_from="errored")
+                await self._broadcast_state(session)
+                return
+
+            if session.state != SessionState.AWAITING_PLAYERS:
                 raise IllegalTransitionError("nothing to force-advance")
             turn.status = "processing"
             session.state = SessionState.AI_PROCESSING
@@ -485,6 +525,49 @@ class SessionManager:
             )
             await self._repo.save(session)
         self._emit("force_advance", session, by=by_role_id)
+        await self._broadcast_state(session)
+
+    async def abort_current_turn(
+        self, *, session_id: str, by_role_id: str, reason: str = "operator aborted"
+    ) -> None:
+        """God-mode escape hatch: mark the current turn errored so it stops
+        looking "live" in the UI. The operator can then force-advance (which
+        recovers from errored turns) to keep the session moving.
+
+        Does **not** kill any in-flight Anthropic stream — that would require
+        owning the request future. The stream will finish or error on its
+        own; meanwhile the session is no longer waiting on it.
+        """
+
+        async with await self._lock_for(session_id):
+            session = await self._repo.get(session_id)
+            turn = session.current_turn
+            if turn is None:
+                raise IllegalTransitionError("no current turn to abort")
+            if turn.status in ("complete", "errored"):
+                raise IllegalTransitionError(
+                    f"current turn is already {turn.status}"
+                )
+            turn.status = "errored"
+            turn.error_reason = reason
+            session.messages.append(
+                Message(
+                    kind=MessageKind.SYSTEM,
+                    body=f"Turn aborted by {by_role_id}: {reason}",
+                    turn_id=turn.id,
+                )
+            )
+            await self._repo.save(session)
+        self._emit("turn_aborted", session, by=by_role_id, reason=reason)
+        await self.connections().broadcast(
+            session_id,
+            {
+                "type": "error",
+                "scope": "turn",
+                "message": "AI turn aborted by operator. Use force-advance to continue.",
+                "turn_index": turn.index,
+            },
+        )
         await self._broadcast_state(session)
 
     async def end_session(

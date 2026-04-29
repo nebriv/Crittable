@@ -42,9 +42,21 @@ _logger = get_logger("session.turn_driver")
 
 
 _STRICT_RETRY_NOTE = (
-    "Reminder: every play turn must end with `set_active_roles` (yield) or "
-    "`end_session` (wrap). Free-form prose without a yielding tool is invalid. "
-    "Try again."
+    "STRICT RETRY: your previous attempt did not yield. The narrative beat "
+    "has already been narrated — DO NOT repeat or rephrase it. Your only "
+    "job on this turn is to call `set_active_roles` with the role_ids that "
+    "should respond next. The tool surface has been narrowed and "
+    "tool_choice forces a call to `set_active_roles`; you cannot end the "
+    "session on a strict-retry pass."
+)
+
+# Replaces the generic ``_KICKOFF_USER_MSG`` on the strict-retry pass so the
+# trailing user turn doesn't tell the model to "begin the exercise" (which
+# would conflict with the strict note's "do not re-narrate").
+_STRICT_RETRY_USER_NUDGE = (
+    "[system] Your previous tool calls did not include a yielding tool. "
+    "The narrative is already in the transcript. Call `set_active_roles` "
+    "now with the role_ids that should respond."
 )
 
 
@@ -116,11 +128,35 @@ class TurnDriver:
         strict = False
         while attempt < 2:
             attempt += 1
-            tools = PLAY_TOOLS + dispatcher_extension_specs(registry)
-            messages = _play_messages(session)
+            messages = _play_messages(session, strict=strict)
             system_blocks = build_play_system_blocks(session, registry=registry)
+            tool_choice: dict[str, Any] | None = None
+
             if strict:
-                system_blocks.append({"type": "text", "text": _STRICT_RETRY_NOTE})
+                # Sonnet has been observed running ``broadcast`` only and
+                # ignoring the "yield via a tool" instruction even when the
+                # strict-retry note is appended. To make recovery
+                # *structural* rather than relying on prompt obedience:
+                #
+                #   1. Narrow the tool list to only ``set_active_roles``.
+                #   2. Pin ``tool_choice`` to that specific tool so Anthropic
+                #      MUST emit a ``set_active_roles`` call — the model
+                #      cannot end the session on a recovery pass (which
+                #      would be a worse UX than the original stuck turn).
+                #
+                # End-of-exercise still happens via the AI's normal
+                # ``end_session`` call on a regular play turn — never as a
+                # side-effect of recovery.
+                tools = [t for t in PLAY_TOOLS if t["name"] == "set_active_roles"]
+                tool_choice = {"type": "tool", "name": "set_active_roles"}
+                system_blocks.append(
+                    {
+                        "type": "text",
+                        "text": _STRICT_RETRY_NOTE,
+                    }
+                )
+            else:
+                tools = PLAY_TOOLS + dispatcher_extension_specs(registry)
 
             result = await self._streamed_play_call(
                 session=session,
@@ -129,6 +165,7 @@ class TurnDriver:
                 system_blocks=system_blocks,
                 messages=messages,
                 tools=tools,
+                tool_choice=tool_choice,
             )
             await self._apply_cost(session.id, result)
 
@@ -174,6 +211,7 @@ class TurnDriver:
         system_blocks: list[dict[str, Any]],
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]],
+        tool_choice: dict[str, Any] | None = None,
     ) -> LLMResult:
         result_holder: dict[str, Any] = {}
         async for event in self._manager.llm().astream(
@@ -183,6 +221,7 @@ class TurnDriver:
             tools=tools,
             max_tokens=1024,
             session_id=session.id,
+            tool_choice=tool_choice,
         ):
             etype = event.get("type")
             if etype == "text_delta":
@@ -344,6 +383,12 @@ class TurnDriver:
                 },
             )
         else:
+            # No yielding tool fired AND no end_session — the turn engine
+            # stays in AI_PROCESSING. Intentional: the run_play_turn caller
+            # will either spin the strict retry (and the frontend's
+            # ``aiThinking`` predicate keeps the typing indicator lit
+            # without a flicker) or mark the turn errored if both attempts
+            # have been exhausted.
             await self._manager._repo.save(session)
 
     async def _apply_cost(self, session_id: str, result: LLMResult) -> None:
@@ -385,7 +430,7 @@ _KICKOFF_USER_MSG = (
 )
 
 
-def _play_messages(session: Session) -> list[dict[str, Any]]:
+def _play_messages(session: Session, *, strict: bool = False) -> list[dict[str, Any]]:
     """Build the Anthropic ``messages`` array for a play-tier call.
 
     Invariants enforced here:
@@ -397,6 +442,12 @@ def _play_messages(session: Session) -> list[dict[str, Any]]:
        end with an assistant turn ("does not support assistant message
        prefill"). When the cleaned transcript has no entries or trails on an
        assistant turn we append a kickoff prompt as the user message.
+
+    On the strict-retry path (``strict=True``), the trailing user message
+    becomes a strict-specific nudge instead of the kickoff. The kickoff text
+    ("Begin the exercise. Open with a brief situation broadcast and yield...")
+    actively encourages another broadcast — exactly what we're trying to
+    prevent on the retry.
     """
 
     msgs: list[dict[str, Any]] = []
@@ -425,7 +476,11 @@ def _play_messages(session: Session) -> list[dict[str, Any]]:
             msgs.append({"role": "assistant", "content": m.body})
 
     if not msgs or msgs[-1]["role"] != "user":
-        msgs.append({"role": "user", "content": _KICKOFF_USER_MSG})
+        # On strict retry the trailing user turn must NOT say "begin the
+        # exercise" — that contradicts the strict-retry system note and
+        # nudges the model toward another broadcast. Use a focused nudge.
+        nudge = _STRICT_RETRY_USER_NUDGE if strict else _KICKOFF_USER_MSG
+        msgs.append({"role": "user", "content": nudge})
     return msgs
 
 

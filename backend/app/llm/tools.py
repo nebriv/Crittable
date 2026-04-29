@@ -117,6 +117,26 @@ PLAY_TOOLS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "mark_timeline_point",
+        "description": (
+            "Pin a key beat to the right-sidebar timeline. Use sparingly — "
+            "only for moments players will want to scroll back to (a major "
+            "decision, a turning point, an artifact ask, a critical "
+            "consequence). The ``title`` is the short label shown in the "
+            "timeline; the ``note`` is a one-line context blurb. Does NOT "
+            "yield the turn — pair it with a ``broadcast`` / ``address_role`` "
+            "and a final ``set_active_roles``."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "title": {"type": "string"},
+                "note": {"type": "string"},
+            },
+            "required": ["title"],
+        },
+    },
+    {
         "name": "end_session",
         "description": "Terminate the exercise. Triggers the AAR generation pipeline.",
         "input_schema": {

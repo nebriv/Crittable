@@ -63,7 +63,10 @@ _TOOL_USE_PROTOCOL = (
     "or more roles) or `end_session` (wrap the exercise). Free-form prose without "
     "one of those tool calls is invalid output and will be retried. You may call "
     "multiple tools per turn — for example, `inject_critical_event` followed by "
-    "`set_active_roles`."
+    "`set_active_roles`. Use `mark_timeline_point` (sparingly — at most once per "
+    "few turns) to pin a beat players will want to revisit: a pivotal decision, "
+    "an attacker escalation, an artifact ask, or a turning point. The timeline "
+    "is signal-only; do NOT pin every routine update."
 )
 
 _ROSTER_STRATEGY: dict[RosterSize, str] = {

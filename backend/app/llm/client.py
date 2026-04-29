@@ -27,6 +27,27 @@ from .cost import estimate_usd
 
 _logger = get_logger("llm.client")
 
+# Allowlist of acceptable ``tool_choice`` shapes. Validates the kwarg at the
+# call boundary so a future caller (e.g. a less-trusted extension dispatch
+# path) can't pass an arbitrary forced-tool that side-effects beyond what
+# the engine intends. Currently only the strict-retry path uses
+# ``{"type": "any"}``.
+_VALID_TOOL_CHOICE_TYPES = frozenset({"auto", "any", "none", "tool"})
+
+
+def _validate_tool_choice(tool_choice: dict[str, Any] | None) -> None:
+    if tool_choice is None:
+        return
+    if not isinstance(tool_choice, dict) or "type" not in tool_choice:
+        raise ValueError(
+            f"tool_choice must be a dict with a 'type' key; got {tool_choice!r}"
+        )
+    if tool_choice["type"] not in _VALID_TOOL_CHOICE_TYPES:
+        raise ValueError(
+            f"tool_choice type must be one of {sorted(_VALID_TOOL_CHOICE_TYPES)}; "
+            f"got {tool_choice['type']!r}"
+        )
+
 
 @dataclass
 class InFlightCall:
@@ -149,9 +170,16 @@ class LLMClient:
         tools: list[dict[str, Any]] | None = None,
         max_tokens: int = 1024,
         session_id: str | None = None,
+        tool_choice: dict[str, Any] | None = None,
     ) -> LLMResult:
         """One-shot, non-streamed completion. Streaming for play turns goes via
-        :meth:`astream`."""
+        :meth:`astream`.
+
+        ``tool_choice`` maps directly to Anthropic's parameter — pass
+        ``{"type": "any"}`` to force the model to emit at least one tool
+        call (used by the strict-retry path), or omit it for the default
+        ``"auto"`` behaviour.
+        """
 
         model = self.model_for(tier)
         kwargs: dict[str, Any] = {
@@ -162,6 +190,9 @@ class LLMClient:
         }
         if tools:
             kwargs["tools"] = tools
+        _validate_tool_choice(tool_choice)
+        if tool_choice:
+            kwargs["tool_choice"] = tool_choice
 
         _logger.info(
             "llm_call_start",
@@ -170,6 +201,7 @@ class LLMClient:
             stream=False,
             tools=len(tools or []),
             messages=len(messages),
+            tool_choice=tool_choice.get("type") if tool_choice else None,
         )
         call = self._begin_call(session_id=session_id, tier=tier, model=model, stream=False)
         started = time.monotonic()
@@ -210,9 +242,14 @@ class LLMClient:
         tools: list[dict[str, Any]] | None = None,
         max_tokens: int = 1024,
         session_id: str | None = None,
+        tool_choice: dict[str, Any] | None = None,
     ) -> AsyncIterator[dict[str, Any]]:
         """Yield streamed events. The terminal event has ``type == "complete"``
-        and carries the final ``LLMResult`` under the ``result`` key."""
+        and carries the final ``LLMResult`` under the ``result`` key.
+
+        ``tool_choice`` is passed through to Anthropic. Use ``{"type":
+        "any"}`` on the strict-retry path to guarantee a tool call.
+        """
 
         model = self.model_for(tier)
         kwargs: dict[str, Any] = {
@@ -223,6 +260,9 @@ class LLMClient:
         }
         if tools:
             kwargs["tools"] = tools
+        _validate_tool_choice(tool_choice)
+        if tool_choice:
+            kwargs["tool_choice"] = tool_choice
 
         _logger.info(
             "llm_call_start",
@@ -231,6 +271,7 @@ class LLMClient:
             stream=True,
             tools=len(tools or []),
             messages=len(messages),
+            tool_choice=tool_choice.get("type") if tool_choice else None,
         )
         call = self._begin_call(session_id=session_id, tier=tier, model=model, stream=True)
         started = time.monotonic()

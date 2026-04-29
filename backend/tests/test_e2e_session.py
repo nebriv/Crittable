@@ -662,6 +662,251 @@ def test_ws_rejects_session_mismatch(client: TestClient) -> None:
     assert exc_info.value.code == 4401
 
 
+@pytest.mark.parametrize(
+    "first_tool_name, first_input",
+    [
+        ("broadcast", {"message": "Detection — alarms firing on the vendor portal."}),
+        ("inject_event", {"description": "Lateral movement detected on a finance VLAN."}),
+        # No tool at all — model returns text only with stop_reason=end_turn.
+        # This is the *original* failure mode the strict retry was written for.
+        (None, None),
+    ],
+)
+def test_strict_retry_recovers_when_ai_skips_yield(
+    client: TestClient, first_tool_name: str | None, first_input: dict | None
+) -> None:
+    """Regression: when the model emits a non-yielding tool OR no tool at
+    all on the first attempt, the strict retry MUST recover by narrowing
+    the tool list to {set_active_roles, end_session} and forcing
+    ``tool_choice={"type": "any"}``.
+
+    Pre-fix behaviour observed in production:
+      Turn 1 attempt 1: AI emits broadcast only → no yield.
+      Turn 1 attempt 2 (strict retry): AI emits broadcast again → no yield.
+      → Turn marked errored. Two near-duplicate broadcasts in transcript.
+
+    Post-fix: structural narrowing + tool_choice=any forces a yield on
+    attempt 2, regardless of what the AI did on attempt 1.
+    """
+
+    from tests.mock_anthropic import MockAnthropic, _ContentBlock, _Response
+
+    seats = _create_and_seat(client, role_count=2)
+    sid = seats["session_id"]
+    cr = seats["creator_token"]
+
+    if first_tool_name is None:
+        # AI emits text only — no tool calls.
+        play_attempt_1 = _Response(
+            content=[_ContentBlock(type="text", text="Standing by, no action this turn.")],
+            stop_reason="end_turn",
+        )
+    else:
+        play_attempt_1 = _Response(
+            content=[_ContentBlock(
+                type="tool_use",
+                name=first_tool_name,
+                input=first_input,
+                id=f"tu_{first_tool_name}_1",
+            )],
+            stop_reason="tool_use",
+        )
+    play_attempt_2 = _Response(
+        content=[_ContentBlock(
+            type="tool_use",
+            name="set_active_roles",
+            input={"role_ids": [seats["role_ids"][1]]},
+            id="tu_yield",
+        )],
+        stop_reason="tool_use",
+    )
+    mock = MockAnthropic({"play": [play_attempt_1, play_attempt_2]})
+    client.app.state.llm.set_transport(mock.messages)
+
+    client.post(f"/api/sessions/{sid}/setup/skip?token={cr}")
+    r = client.post(f"/api/sessions/{sid}/start?token={cr}")
+    assert r.status_code == 200, r.text
+
+    snap = client.get(f"/api/sessions/{sid}?token={cr}").json()
+    assert snap["current_turn"]["status"] != "errored", (
+        f"strict retry failed to recover from {first_tool_name!r}; "
+        f"turn status is {snap['current_turn']['status']!r}"
+    )
+    assert snap["current_turn"]["active_role_ids"] == [seats["role_ids"][1]]
+
+    # Inspect both LLM calls.
+    play_calls = [c for c in mock.messages.calls if "play" in c.get("model", "")]
+    assert len(play_calls) >= 2, f"expected ≥2 play calls; got {len(play_calls)}"
+
+    # First call: NO tool_choice (Anthropic default = "auto"); full tool list.
+    first_call = play_calls[0]
+    assert first_call.get("tool_choice") is None, (
+        f"first attempt must not set tool_choice; got {first_call.get('tool_choice')!r}"
+    )
+    first_tools = {t["name"] for t in first_call.get("tools", [])}
+    assert first_tools >= {
+        "broadcast",
+        "inject_event",
+        "set_active_roles",
+        "end_session",
+    }, f"first attempt should expose the full play tool list; got {first_tools}"
+
+    # Second call: pinned to ``set_active_roles`` only. UI/UX review flagged
+    # that ``tool_choice={"type":"any"}`` over {set_active_roles, end_session}
+    # could let the AI prematurely end the exercise on a recovery pass; the
+    # narrower pin guarantees a yield to players. End-of-exercise still
+    # happens via the AI's normal end_session call on a regular play turn.
+    second_call = play_calls[1]
+    assert second_call.get("tool_choice") == {"type": "tool", "name": "set_active_roles"}
+    second_tools = {t["name"] for t in second_call.get("tools", [])}
+    assert second_tools == {"set_active_roles"}, (
+        f"strict retry must narrow tools to set_active_roles only; got {second_tools}"
+    )
+
+
+def test_strict_retry_cannot_be_coerced_into_end_session(client: TestClient) -> None:
+    """UI/UX review MAJOR: with ``tool_choice={"type":"any"}`` over
+    ``{set_active_roles, end_session}``, a model that "wants out" could
+    prematurely end the exercise on a recovery pass. The fix pins
+    ``tool_choice`` to ``set_active_roles`` only, so even if the model
+    tries to call ``end_session`` the SDK rejects it. Mock here pretends
+    to call end_session on the strict retry; the second call's pinned
+    tool_choice should reflect set_active_roles only."""
+
+    from tests.mock_anthropic import MockAnthropic, _ContentBlock, _Response
+
+    seats = _create_and_seat(client, role_count=2)
+    sid = seats["session_id"]
+    cr = seats["creator_token"]
+
+    # Attempt 1: broadcast only. Attempt 2: a yielding tool from a hypothetical
+    # cooperative model — we only assert the kwargs we sent.
+    play_attempt_1 = _Response(
+        content=[_ContentBlock(
+            type="tool_use",
+            name="broadcast",
+            input={"message": "Detection."},
+            id="tu_b",
+        )],
+        stop_reason="tool_use",
+    )
+    play_attempt_2 = _Response(
+        content=[_ContentBlock(
+            type="tool_use",
+            name="set_active_roles",
+            input={"role_ids": [seats["role_ids"][1]]},
+            id="tu_yield",
+        )],
+        stop_reason="tool_use",
+    )
+    mock = MockAnthropic({"play": [play_attempt_1, play_attempt_2]})
+    client.app.state.llm.set_transport(mock.messages)
+
+    client.post(f"/api/sessions/{sid}/setup/skip?token={cr}")
+    client.post(f"/api/sessions/{sid}/start?token={cr}")
+
+    play_calls = [c for c in mock.messages.calls if "play" in c.get("model", "")]
+    assert len(play_calls) >= 2
+    pinned = play_calls[1].get("tool_choice")
+    assert pinned == {"type": "tool", "name": "set_active_roles"}, (
+        f"strict retry must pin to set_active_roles; got {pinned}"
+    )
+    # Verify end_session is NOT in the strict-retry tools list.
+    second_tools = {t["name"] for t in play_calls[1].get("tools", [])}
+    assert "end_session" not in second_tools, (
+        "strict retry must not expose end_session — would let the AI "
+        f"prematurely end the exercise. Saw tools={second_tools}"
+    )
+
+
+def test_tool_choice_does_not_leak_to_setup_or_aar(client: TestClient) -> None:
+    """Confirm the strict-retry tool_choice plumbing is scoped to play turns
+    only. Setup and AAR calls must never set tool_choice."""
+
+    from tests.mock_anthropic import MockAnthropic, _ContentBlock, _Response
+
+    seats = _create_and_seat(client, role_count=2)
+    sid = seats["session_id"]
+    cr = seats["creator_token"]
+
+    yielding = _Response(
+        content=[_ContentBlock(
+            type="tool_use",
+            name="set_active_roles",
+            input={"role_ids": [seats["role_ids"][1]]},
+            id="tu_yield",
+        )],
+        stop_reason="tool_use",
+    )
+    aar = _Response(
+        content=[_ContentBlock(
+            type="tool_use",
+            name="finalize_report",
+            input={
+                "executive_summary": "ok",
+                "narrative": "n",
+                "per_role_scores": [],
+                "overall_score": 3,
+                "overall_rationale": "ok",
+            },
+            id="tu_aar",
+        )],
+        stop_reason="tool_use",
+    )
+    mock = MockAnthropic({"play": [yielding], "aar": [aar]})
+    client.app.state.llm.set_transport(mock.messages)
+
+    client.post(f"/api/sessions/{sid}/setup/skip?token={cr}")
+    client.post(f"/api/sessions/{sid}/start?token={cr}")
+    client.post(f"/api/sessions/{sid}/end?token={cr}", json={})
+
+    for c in mock.messages.calls:
+        model = c.get("model", "")
+        if "play" not in model:
+            assert "tool_choice" not in c or c["tool_choice"] is None, (
+                f"non-play call leaked tool_choice: model={model!r}, "
+                f"tool_choice={c.get('tool_choice')!r}"
+            )
+
+
+def test_strict_retry_double_failure_marks_turn_errored(client: TestClient) -> None:
+    """Belt-and-braces: even though ``tool_choice=any`` should make this
+    practically unreachable, the engine must still mark the turn errored
+    if BOTH attempts fail to yield (e.g. a future SDK regression or a mock
+    that ignores tool_choice)."""
+
+    from tests.mock_anthropic import MockAnthropic, _ContentBlock, _Response
+
+    seats = _create_and_seat(client, role_count=2)
+    sid = seats["session_id"]
+    cr = seats["creator_token"]
+
+    non_yielding = _Response(
+        content=[_ContentBlock(
+            type="tool_use",
+            name="broadcast",
+            input={"message": "Still broadcasting."},
+            id="tu_b",
+        )],
+        stop_reason="tool_use",
+    )
+    mock = MockAnthropic({"play": [non_yielding, non_yielding]})
+    client.app.state.llm.set_transport(mock.messages)
+
+    client.post(f"/api/sessions/{sid}/setup/skip?token={cr}")
+    r = client.post(f"/api/sessions/{sid}/start?token={cr}")
+    assert r.status_code == 200, r.text
+
+    snap = client.get(f"/api/sessions/{sid}?token={cr}").json()
+    assert snap["current_turn"]["status"] == "errored"
+    # ``retried_with_strict`` must be True so the operator UI knows the
+    # engine already tried twice.
+    snap_debug = client.get(f"/api/sessions/{sid}/debug?token={cr}").json()
+    last_turn = snap_debug["turns"][-1]
+    assert last_turn["retried_with_strict"] is True
+    assert last_turn["error_reason"]
+
+
 def test_play_after_auto_greet_then_skip_does_not_400(client: TestClient) -> None:
     """Regression for production bug observed via ``docker compose up``.
 
@@ -1187,3 +1432,339 @@ def test_spa_fallback_for_nested_routes(tmp_path) -> None:
         # /ws/<unknown> must also 404.
         r = c.get("/ws/this-route-does-not-exist")
         assert r.status_code == 404
+
+
+def test_force_advance_recovers_from_errored_turn(client: TestClient) -> None:
+    """Operator must be able to force-advance an errored turn (the AI failed
+    to yield twice). Pre-fix this returned 409 because force_advance only
+    accepted ``state == AWAITING_PLAYERS``; an errored turn is in
+    AI_PROCESSING. The recovery path now opens a fresh awaiting turn for
+    the human players.
+    """
+
+    from tests.mock_anthropic import MockAnthropic, _ContentBlock, _Response
+
+    seats = _create_and_seat(client, role_count=2)
+    sid = seats["session_id"]
+    cr = seats["creator_token"]
+
+    non_yielding = _Response(
+        content=[_ContentBlock(
+            type="tool_use",
+            name="broadcast",
+            input={"message": "Still broadcasting."},
+            id="tu_b",
+        )],
+        stop_reason="tool_use",
+    )
+    mock = MockAnthropic({"play": [non_yielding, non_yielding]})
+    client.app.state.llm.set_transport(mock.messages)
+
+    client.post(f"/api/sessions/{sid}/setup/skip?token={cr}")
+    client.post(f"/api/sessions/{sid}/start?token={cr}")
+
+    snap = client.get(f"/api/sessions/{sid}?token={cr}").json()
+    assert snap["current_turn"]["status"] == "errored", "precondition: turn must be errored"
+
+    # Force-advance must now succeed (was 409 pre-fix).
+    r = client.post(f"/api/sessions/{sid}/force-advance?token={cr}")
+    assert r.status_code == 200, r.text
+
+    snap2 = client.get(f"/api/sessions/{sid}?token={cr}").json()
+    assert snap2["state"] == "AWAITING_PLAYERS"
+    assert snap2["current_turn"]["status"] == "awaiting"
+    # All player roles should be active so anyone can speak next.
+    assert set(snap2["current_turn"]["active_role_ids"]) == set(seats["role_ids"])
+
+
+def test_setup_dedupe_drops_duplicate_questions_in_same_turn(
+    client: TestClient,
+) -> None:
+    """The setup-tier model has been observed firing several
+    ``ask_setup_question`` calls in a single turn. Only the first should
+    materialise as a setup note; the rest should be rejected as duplicates."""
+
+    from tests.mock_anthropic import MockAnthropic, _ContentBlock, _Response
+
+    burst = _Response(
+        content=[
+            _ContentBlock(
+                type="tool_use",
+                name="ask_setup_question",
+                input={"topic": "scope", "question": "What's the scope?"},
+                id="tu_a",
+            ),
+            _ContentBlock(
+                type="tool_use",
+                name="ask_setup_question",
+                input={"topic": "scope", "question": "Same topic, different wording?"},
+                id="tu_b",
+            ),
+            _ContentBlock(
+                type="tool_use",
+                name="ask_setup_question",
+                input={"topic": "regulators", "question": "Which regulators apply?"},
+                id="tu_c",
+            ),
+        ],
+        stop_reason="tool_use",
+    )
+    mock = MockAnthropic({"setup": [burst]})
+    client.app.state.llm.set_transport(mock.messages)
+
+    resp = client.post(
+        "/api/sessions",
+        json={
+            "scenario_prompt": "Ransomware via vendor portal",
+            "creator_label": "CISO",
+            "creator_display_name": "Alex",
+        },
+    )
+    assert resp.status_code == 200
+    sid = resp.json()["session_id"]
+    cr = resp.json()["creator_token"]
+
+    snap = client.get(f"/api/sessions/{sid}?token={cr}").json()
+    notes = [n for n in snap["setup_notes"] or [] if n["speaker"] == "ai"]
+    # Only the first ask_setup_question should have produced a note.
+    assert len(notes) == 1, [n["topic"] for n in notes]
+    assert notes[0]["topic"] == "scope"
+
+
+def test_admin_abort_turn_marks_errored_and_recovers(client: TestClient) -> None:
+    """God-mode abort + force-advance is the operator's break-glass
+    path when an AI turn is hung."""
+
+    from tests.mock_anthropic import MockAnthropic, _ContentBlock, _Response
+
+    seats = _create_and_seat(client, role_count=2)
+    sid = seats["session_id"]
+    cr = seats["creator_token"]
+    non_creator = seats["role_tokens"][seats["role_ids"][1]]
+
+    # Set up a non-yielding play turn so we have something to abort.
+    non_yielding = _Response(
+        content=[_ContentBlock(
+            type="tool_use",
+            name="broadcast",
+            input={"message": "Just broadcasting."},
+            id="tu_b",
+        )],
+        stop_reason="tool_use",
+    )
+    mock = MockAnthropic({"play": [non_yielding, non_yielding]})
+    client.app.state.llm.set_transport(mock.messages)
+
+    client.post(f"/api/sessions/{sid}/setup/skip?token={cr}")
+    client.post(f"/api/sessions/{sid}/start?token={cr}")
+
+    # After the strict-retry double-failure the turn is already errored —
+    # abort should reject ("already errored") rather than silently
+    # double-state.
+    r = client.post(f"/api/sessions/{sid}/admin/abort-turn?token={cr}")
+    assert r.status_code == 409, r.text
+
+    # Non-creators must NOT be able to abort.
+    r = client.post(f"/api/sessions/{sid}/admin/abort-turn?token={non_creator}")
+    assert r.status_code == 403, r.text
+
+
+def test_admin_abort_turn_happy_path_then_force_advance(client: TestClient) -> None:
+    """Happy-path: a turn in ``processing`` is aborted, the SYSTEM message +
+    error_reason are written, and a follow-up force-advance recovers the
+    session into AWAITING_PLAYERS with a fresh turn for the players."""
+
+    import asyncio
+
+    from app.sessions.models import SessionState
+
+    seats = _create_and_seat(client, role_count=2)
+    sid = seats["session_id"]
+    cr = seats["creator_token"]
+
+    client.post(f"/api/sessions/{sid}/setup/skip?token={cr}")
+
+    # Reach in and put the current turn into ``processing`` (mid-AI flight)
+    # without driving a real LLM. This mimics the "AI turn is hung" state
+    # the abort button is designed to recover.
+    async def _set_processing() -> None:
+        manager = client.app.state.manager
+        session = await manager.get_session(sid)
+        # Manually open a play turn so there's something to abort.
+        from app.sessions.models import Turn
+
+        turn = Turn(
+            index=0,
+            active_role_ids=[seats["role_ids"][0]],
+            status="processing",
+        )
+        session.turns.append(turn)
+        session.state = SessionState.AI_PROCESSING
+        await manager._repo.save(session)
+
+    asyncio.run(_set_processing())
+
+    # Abort must succeed and flip the turn to errored.
+    r = client.post(f"/api/sessions/{sid}/admin/abort-turn?token={cr}")
+    assert r.status_code == 200, r.text
+
+    snap = client.get(f"/api/sessions/{sid}?token={cr}").json()
+    assert snap["current_turn"]["status"] == "errored"
+    last_sys = [m for m in snap["messages"] if m["kind"] == "system"][-1]
+    assert "Turn aborted" in last_sys["body"]
+
+    # Follow-up force-advance recovers into AWAITING_PLAYERS — that's the
+    # documented operator recovery flow.
+    r = client.post(f"/api/sessions/{sid}/force-advance?token={cr}")
+    assert r.status_code == 200, r.text
+    snap2 = client.get(f"/api/sessions/{sid}?token={cr}").json()
+    assert snap2["state"] == "AWAITING_PLAYERS"
+    assert snap2["current_turn"]["status"] == "awaiting"
+
+
+def test_setup_dedupe_rejects_repeat_of_unanswered_question(client: TestClient) -> None:
+    """Across-turn dedupe: if the AI's last question is still unanswered
+    (no creator reply yet), the next dispatch must NOT re-emit the same
+    topic. The duplicate is rejected as a tool error AND emitted as a
+    ``tool_use_rejected`` audit event so the operator can see the hint.
+
+    Tests the dispatcher directly to avoid fighting the setup loop's
+    retry-on-no-yield behaviour."""
+
+    import asyncio
+
+    from app.sessions.models import SetupNote
+
+    seats = _create_and_seat(client, role_count=2)
+    sid = seats["session_id"]
+    cr = seats["creator_token"]
+
+    audit_before = len(client.app.state.manager.audit().dump(sid))
+
+    async def _seed_then_dispatch() -> dict:
+        manager = client.app.state.manager
+        # Seed an unanswered AI question on a topic so the across-turn
+        # rule has something to detect.
+        session = await manager.get_session(sid)
+        session.setup_notes.append(
+            SetupNote(
+                speaker="ai",
+                content="What is the scope?",
+                topic="scope",
+            )
+        )
+        await manager._repo.save(session)
+
+        # Now hand the dispatcher a NEW ask_setup_question on the same
+        # topic — it must be rejected as a duplicate.
+        dispatcher = manager.dispatcher()
+        outcome = await dispatcher.dispatch(
+            session=session,
+            tool_uses=[
+                {
+                    "name": "ask_setup_question",
+                    "id": "tu_repeat",
+                    "input": {"topic": "scope", "question": "scope again?"},
+                }
+            ],
+            turn_id=None,
+            critical_inject_allowed_cb=lambda: True,
+        )
+        return {"results": outcome.tool_results}
+
+    result = asyncio.run(_seed_then_dispatch())
+
+    # The dispatcher must return a tool_result with is_error=True for the
+    # repeat — the model will see this and ideally not retry.
+    assert any(
+        r.get("tool_use_id") == "tu_repeat" and r.get("is_error")
+        for r in result["results"]
+    ), result["results"]
+
+    # The setup_notes must NOT have grown (dedupe happens before the
+    # ask_setup_question handler runs).
+    snap = client.get(f"/api/sessions/{sid}?token={cr}").json()
+    notes = [n for n in (snap["setup_notes"] or []) if n["speaker"] == "ai"]
+    assert len(notes) == 1, [n["topic"] for n in notes]
+
+    # And the audit log must record the rejection.
+    after = client.app.state.manager.audit().dump(sid)
+    new_events = after[audit_before:]
+    rejected = [e for e in new_events if e.kind == "tool_use_rejected"]
+    assert any(
+        e.payload.get("name") == "ask_setup_question"
+        and "previous unanswered" in e.payload.get("reason", "")
+        for e in rejected
+    ), [e.payload for e in rejected]
+
+
+def test_mark_timeline_point_does_not_yield(client: TestClient) -> None:
+    """``mark_timeline_point`` must not flip ``had_yielding_call``. If the
+    AI emits *only* this tool, the turn must hit the strict-retry path and
+    eventually mark errored — same as a bare ``broadcast`` would. Guards
+    against an accidental ``outcome.had_yielding_call = True`` regression
+    in the dispatch handler."""
+
+    from tests.mock_anthropic import MockAnthropic, _ContentBlock, _Response
+
+    pin_only = _Response(
+        content=[_ContentBlock(
+            type="tool_use",
+            name="mark_timeline_point",
+            input={"title": "Containment debate", "note": "still talking"},
+            id="tu_pin",
+        )],
+        stop_reason="tool_use",
+    )
+    mock = MockAnthropic({"play": [pin_only, pin_only]})
+    client.app.state.llm.set_transport(mock.messages)
+
+    seats = _create_and_seat(client, role_count=2)
+    sid = seats["session_id"]
+    cr = seats["creator_token"]
+
+    client.post(f"/api/sessions/{sid}/setup/skip?token={cr}")
+    client.post(f"/api/sessions/{sid}/start?token={cr}")
+
+    snap = client.get(f"/api/sessions/{sid}?token={cr}").json()
+    assert snap["current_turn"]["status"] == "errored"
+
+
+def test_mark_timeline_point_dispatch_emits_message(client: TestClient) -> None:
+    """``mark_timeline_point`` must surface as an AI message with the tool
+    args preserved so the frontend Timeline can extract its title."""
+
+    from tests.mock_anthropic import MockAnthropic, _ContentBlock, _Response
+
+    seats = _create_and_seat(client, role_count=2)
+    sid = seats["session_id"]
+    cr = seats["creator_token"]
+
+    pin_then_yield = _Response(
+        content=[
+            _ContentBlock(
+                type="tool_use",
+                name="mark_timeline_point",
+                input={"title": "Containment decision", "note": "IR ordered isolation."},
+                id="tu_pin",
+            ),
+            _ContentBlock(
+                type="tool_use",
+                name="set_active_roles",
+                input={"role_ids": [seats["role_ids"][1]]},
+                id="tu_set",
+            ),
+        ],
+        stop_reason="tool_use",
+    )
+    mock = MockAnthropic({"play": [pin_then_yield]})
+    client.app.state.llm.set_transport(mock.messages)
+
+    client.post(f"/api/sessions/{sid}/setup/skip?token={cr}")
+    client.post(f"/api/sessions/{sid}/start?token={cr}")
+
+    snap = client.get(f"/api/sessions/{sid}?token={cr}").json()
+    pinned = [m for m in snap["messages"] if m.get("tool_name") == "mark_timeline_point"]
+    assert len(pinned) == 1
+    assert pinned[0]["tool_args"]["title"] == "Containment decision"
+    assert pinned[0]["body"] == "IR ordered isolation."

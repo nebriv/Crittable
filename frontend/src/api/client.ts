@@ -46,6 +46,8 @@ export interface MessageView {
   kind: string;
   body: string;
   tool_name: string | null;
+  /** Raw tool input args, used by Timeline to surface titles/headlines. */
+  tool_args: Record<string, unknown> | null;
 }
 
 export interface CostSnapshot {
@@ -156,6 +158,14 @@ export const api = {
 
   async forceAdvance(sessionId: string, token: string): Promise<{ ok: boolean }> {
     return request("POST", `/api/sessions/${sessionId}/force-advance?token=${encodeURIComponent(token)}`);
+  },
+
+  /** God-mode-only: mark the current AI turn errored to recover a stuck session. */
+  async adminAbortTurn(sessionId: string, creatorToken: string): Promise<{ ok: boolean }> {
+    return request(
+      "POST",
+      `/api/sessions/${sessionId}/admin/abort-turn?token=${encodeURIComponent(creatorToken)}`,
+    );
   },
 
   async endSession(sessionId: string, token: string, reason?: string): Promise<{ ok: boolean }> {

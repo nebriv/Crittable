@@ -82,6 +82,7 @@ class ToolDispatcher:
         """Dispatch all tool_use blocks concurrently. Returns the aggregate outcome."""
 
         outcome = DispatchOutcome()
+        tool_uses = self._dedupe_setup_questions(session, tool_uses, outcome=outcome)
         coros = [
             self._dispatch_one(
                 session=session,
@@ -94,6 +95,103 @@ class ToolDispatcher:
         ]
         await asyncio.gather(*coros)
         return outcome
+
+    def _dedupe_setup_questions(
+        self,
+        session: Session,
+        tool_uses: list[dict[str, Any]],
+        *,
+        outcome: DispatchOutcome,
+    ) -> list[dict[str, Any]]:
+        """Drop duplicate ``ask_setup_question`` calls.
+
+        The setup-tier model has been observed firing several
+        ``ask_setup_question`` tool calls in a single turn (and re-asking
+        already-asked topics across turns). Both produce confusing UX.
+
+        Rules:
+          1. Within one batch, keep only the first ``ask_setup_question``
+             tool call. Later ones become tool errors so the model sees
+             the rejection in its next turn.
+          2. Across turns, reject any ``ask_setup_question`` whose
+             ``topic`` matches the *most recent* AI setup note that the
+             creator has not yet replied to (i.e. the question is still
+             open). Same goes for an exact body match.
+        """
+
+        if not tool_uses:
+            return tool_uses
+
+        last_ai_unanswered_topic: str | None = None
+        last_ai_unanswered_body: str | None = None
+        for note in reversed(session.setup_notes):
+            if note.speaker == "creator":
+                break
+            if note.speaker == "ai":
+                last_ai_unanswered_topic = note.topic
+                last_ai_unanswered_body = note.content
+
+        kept: list[dict[str, Any]] = []
+        seen_first_ask = False
+        seen_topics: set[str] = set()
+        seen_bodies: set[str] = set()
+        for tu in tool_uses:
+            if tu.get("name") != "ask_setup_question":
+                kept.append(tu)
+                continue
+            args = tu.get("input") or {}
+            topic = (args.get("topic") or "").strip().lower()
+            body = (args.get("question") or "").strip().lower()
+            duplicate_reason: str | None = None
+            if seen_first_ask:
+                duplicate_reason = "duplicate ask_setup_question in same turn"
+            elif topic and topic in seen_topics:
+                duplicate_reason = f"duplicate topic '{topic}' in same turn"
+            elif body and body in seen_bodies:
+                duplicate_reason = "duplicate question body in same turn"
+            elif (
+                last_ai_unanswered_topic
+                and topic
+                and topic == last_ai_unanswered_topic.strip().lower()
+            ):
+                duplicate_reason = (
+                    "topic matches the previous unanswered question; "
+                    "wait for the creator's reply before re-asking"
+                )
+            elif (
+                last_ai_unanswered_body
+                and body
+                and body == last_ai_unanswered_body.strip().lower()
+            ):
+                duplicate_reason = (
+                    "question body matches the previous unanswered question"
+                )
+
+            if duplicate_reason:
+                outcome.add_result(
+                    tool_use_id=tu.get("id", ""),
+                    content=duplicate_reason,
+                    is_error=True,
+                )
+                self._audit.emit(
+                    AuditEvent(
+                        kind="tool_use_rejected",
+                        session_id=session.id,
+                        turn_id=None,
+                        payload={
+                            "name": "ask_setup_question",
+                            "reason": duplicate_reason,
+                        },
+                    )
+                )
+                continue
+            seen_first_ask = True
+            if topic:
+                seen_topics.add(topic)
+            if body:
+                seen_bodies.add(body)
+            kept.append(tu)
+        return kept
 
     async def _dispatch_one(
         self,
@@ -241,6 +339,24 @@ class ToolDispatcher:
                 )
             )
             return "event injected"
+
+        if name == "mark_timeline_point":
+            # The actual title/note are stored in ``tool_args`` so the
+            # frontend Timeline can extract them. The visible message body
+            # is just the note (or the title if no note); keep this short
+            # because it shows in the chat too.
+            title = str(args.get("title", "")).strip()
+            note = str(args.get("note", "")).strip()
+            outcome.appended_messages.append(
+                Message(
+                    kind=MessageKind.AI_TEXT,
+                    body=note or title,
+                    turn_id=turn_id,
+                    tool_name=name,
+                    tool_args=args,
+                )
+            )
+            return "timeline point pinned"
 
         if name == "inject_critical_event":
             allowed = await _maybe_call(critical_inject_allowed_cb)

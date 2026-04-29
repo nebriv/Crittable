@@ -216,6 +216,13 @@ def register_api_routes(app: FastAPI) -> None:
                     "kind": m.kind.value,
                     "body": m.body,
                     "tool_name": m.tool_name,
+                    # Surfaced so the right-sidebar Timeline can extract
+                    # ``title`` for ``mark_timeline_point`` and ``headline``
+                    # for ``inject_critical_event``. Visible to all roles
+                    # because the same data is already in ``body`` (just
+                    # less structured); the visibility filter on Message
+                    # itself still applies.
+                    "tool_args": m.tool_args,
                 }
                 for m in session.visible_messages(token["role_id"])
             ],
@@ -347,6 +354,30 @@ def register_api_routes(app: FastAPI) -> None:
             raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
         return {"ok": True}
 
+    @router.post("/sessions/{session_id}/admin/abort-turn")
+    async def admin_abort_turn(session_id: str, request: Request) -> dict[str, Any]:
+        """God-mode-only: kill the current turn so the operator can recover.
+
+        Marks the active turn ``errored``; afterwards the operator typically
+        uses ``/force-advance`` (which now handles errored turns by opening
+        a fresh AWAITING_PLAYERS turn for the humans).
+        """
+
+        manager = _manager(request)
+        token = await _bind_token(request, session_id)
+        try:
+            require_creator(token)
+            await manager.abort_current_turn(
+                session_id=session_id,
+                by_role_id=token["role_id"],
+                reason="operator aborted via god mode",
+            )
+        except AuthorizationError as exc:
+            raise HTTPException(status.HTTP_403_FORBIDDEN, str(exc)) from exc
+        except IllegalTransitionError as exc:
+            raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
+        return {"ok": True}
+
     @router.post("/sessions/{session_id}/force-advance")
     async def force_advance(session_id: str, request: Request) -> dict[str, Any]:
         manager = _manager(request)
@@ -359,9 +390,15 @@ def register_api_routes(app: FastAPI) -> None:
         except IllegalTransitionError as exc:
             raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
 
-        # Drive the AI turn now that the player gate is open.
+        # Drive the AI turn now that the player gate is open. When force-
+        # advance recovers from an errored turn the manager opens a fresh
+        # AWAITING_PLAYERS turn for the humans to act first; in that case
+        # we deliberately do NOT trigger the AI here.
         session = await manager.get_session(session_id)
-        if session.current_turn is not None:
+        if (
+            session.current_turn is not None
+            and session.state == SessionState.AI_PROCESSING
+        ):
             await TurnDriver(manager=manager).run_play_turn(
                 session=session, turn=session.current_turn
             )

@@ -1,4 +1,5 @@
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import ReactMarkdown from "react-markdown";
 import {
   api,
   CostSnapshot,
@@ -27,12 +28,28 @@ interface CreatorState {
 
 const NUDGE_PROPOSE = "I think we have enough context. Please draft the scenario plan now.";
 
+/**
+ * Sample scenario prefilled when the operator toggles "Dev mode" on the
+ * intro page. Mirrors the backend's ``_default_dev_plan`` ransomware brief
+ * so the resulting plan is consistent end-to-end.
+ */
+const DEV_SCENARIO_PROMPT =
+  "Ransomware via compromised vendor portal at a mid-size regional bank. " +
+  "Finance laptops are encrypting; attribution is unclear; a vendor that was " +
+  "publicly breached two weeks ago shares a service account that was never " +
+  "rotated. The team has ~90 minutes of simulated time to contain, decide on " +
+  "regulator/comms posture, and respond to an attacker demand.";
+
 export function Facilitator() {
   const [state, setState] = useState<CreatorState | null>(null);
   const [snapshot, setSnapshot] = useState<SessionSnapshot | null>(null);
   const [scenarioPrompt, setScenarioPrompt] = useState("");
   const [creatorLabel, setCreatorLabel] = useState("CISO");
   const [creatorDisplayName, setCreatorDisplayName] = useState("");
+  // Dev-mode toggle on the intro page: prefills a known scenario + creator
+  // identity, and on submit auto-skips the AI setup dialogue so testers
+  // bypass the 5–30 s setup loop. Use only for local QA.
+  const [devMode, setDevMode] = useState(false);
   const [setupReply, setSetupReply] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -102,6 +119,11 @@ export function Facilitator() {
         creatorRoleId: created.creator_role_id,
         joinUrl: created.creator_join_url,
       });
+      if (devMode) {
+        setBusyMessage("Dev mode: skipping setup with a default plan…");
+        await api.setupSkip(created.session_id, created.creator_token);
+        console.info("[facilitator] dev mode auto-skipped setup");
+      }
       const snap = await api.getSession(created.session_id, created.creator_token);
       setSnapshot(snap);
     } catch (err) {
@@ -400,6 +422,18 @@ export function Facilitator() {
 
   // ----------------------------------------------------- render
   if (phase === "intro") {
+    const onToggleDevMode = (next: boolean) => {
+      setDevMode(next);
+      if (next) {
+        // Prefill only if the user hasn't typed anything custom.
+        if (!scenarioPrompt.trim()) {
+          setScenarioPrompt(DEV_SCENARIO_PROMPT);
+        }
+        if (!creatorDisplayName.trim()) {
+          setCreatorDisplayName("Dev Tester");
+        }
+      }
+    };
     return (
       <main className="mx-auto flex max-w-2xl flex-col gap-4 p-8">
         <h1 className="text-2xl font-semibold">New tabletop exercise</h1>
@@ -408,6 +442,21 @@ export function Facilitator() {
           structured setup before you invite players.
         </p>
         <form onSubmit={handleCreate} className="flex flex-col gap-3">
+          <div className="flex items-start gap-2 rounded border border-amber-600/60 bg-amber-950/30 p-2 text-xs text-amber-100">
+            <label className="flex items-center gap-2 font-semibold">
+              <input
+                type="checkbox"
+                checked={devMode}
+                onChange={(e) => onToggleDevMode(e.target.checked)}
+                aria-describedby="dev-mode-hint"
+              />
+              Dev mode
+            </label>
+            <span id="dev-mode-hint" className="text-[12px] text-amber-100/90">
+              Prefills a known ransomware scenario + display name and skips the
+              AI setup dialogue. Use this for local QA only.
+            </span>
+          </div>
           <label className="text-xs uppercase tracking-widest text-slate-400">Scenario prompt</label>
           <textarea
             value={scenarioPrompt}
@@ -438,7 +487,7 @@ export function Facilitator() {
             disabled={busy}
             className="self-start rounded bg-sky-600 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50"
           >
-            {busy ? "Creating…" : "Create session"}
+            {busy ? "Creating…" : devMode ? "Create session (dev fast-skip)" : "Create session"}
           </button>
         </form>
         {busyMessage ? (
@@ -923,11 +972,11 @@ function EndedView({ sessionId, token }: { sessionId: string; token: string }) {
   type AARState = "generating" | "ready" | "failed";
   const [aarState, setAarState] = useState<AARState>("generating");
   const [errMsg, setErrMsg] = useState<string | null>(null);
+  const [showPopup, setShowPopup] = useState(false);
 
   // Poll the export endpoint with HEAD-style behavior: if 425, keep
-  // polling. If 200, mark ready (and let the user click Download — fetching
-  // again returns 200 quickly because the markdown is cached on the
-  // session). If 5xx, mark failed.
+  // polling. If 200, mark ready (the popup will fetch the body on open).
+  // If 5xx, mark failed.
   useEffect(() => {
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
@@ -986,17 +1035,23 @@ function EndedView({ sessionId, token }: { sessionId: string; token: string }) {
       ) : aarState === "ready" ? (
         <>
           <p className="text-sm text-emerald-100">
-            Markdown after-action report is ready. It includes the full transcript,
+            After-action report is ready. It includes the full transcript,
             per-role scores, the frozen scenario plan, and the audit log.
           </p>
-          <a
-            href={`/api/sessions/${sessionId}/export.md?token=${encodeURIComponent(token)}`}
-            target="_blank"
-            rel="noopener"
+          <button
+            type="button"
+            onClick={() => setShowPopup(true)}
             className="self-start rounded bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-300"
           >
-            Download AAR (.md)
-          </a>
+            Show AAR report
+          </button>
+          {showPopup ? (
+            <AARPopup
+              sessionId={sessionId}
+              token={token}
+              onClose={() => setShowPopup(false)}
+            />
+          ) : null}
         </>
       ) : (
         <p className="text-sm text-red-300">
@@ -1004,6 +1059,176 @@ function EndedView({ sessionId, token }: { sessionId: string; token: string }) {
         </p>
       )}
     </div>
+  );
+}
+
+function AARPopup({
+  sessionId,
+  token,
+  onClose,
+}: {
+  sessionId: string;
+  token: string;
+  onClose: () => void;
+}) {
+  const [body, setBody] = useState<string | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const dialogRef = useRef<HTMLDialogElement>(null);
+
+  const downloadHref = `/api/sessions/${sessionId}/export.md?token=${encodeURIComponent(token)}`;
+
+  // Fetch the markdown body once when the popup mounts.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(downloadHref);
+        if (cancelled) return;
+        if (!res.ok) {
+          setErr(`HTTP ${res.status}`);
+          return;
+        }
+        const text = await res.text();
+        if (!cancelled) setBody(text);
+      } catch (e) {
+        if (!cancelled) setErr(e instanceof Error ? e.message : String(e));
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // downloadHref is derived from sessionId/token; safe to depend on them.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessionId, token]);
+
+  // Use the native <dialog> element so we get focus-trap + Esc-to-close
+  // for free, matching God Mode's pattern.
+  useEffect(() => {
+    const dlg = dialogRef.current;
+    if (!dlg) return;
+    if (!dlg.open) dlg.showModal();
+    const onCancel = () => onClose();
+    dlg.addEventListener("cancel", onCancel);
+    return () => dlg.removeEventListener("cancel", onCancel);
+  }, [onClose]);
+
+  return (
+    <dialog
+      ref={dialogRef}
+      onClose={onClose}
+      className="m-auto flex h-[90vh] w-[min(900px,95vw)] flex-col rounded-lg border border-slate-700 bg-slate-900 p-0 text-slate-100 backdrop:bg-black/60"
+      aria-labelledby="aar-popup-heading"
+    >
+      <div className="flex shrink-0 items-center justify-between gap-3 border-b border-slate-800 bg-slate-950/70 p-3">
+        <h3 id="aar-popup-heading" className="text-sm font-semibold text-emerald-200">
+          After-action report
+        </h3>
+        <div className="flex items-center gap-2">
+          <a
+            href={downloadHref}
+            rel="noopener"
+            download
+            className="rounded bg-emerald-600 px-3 py-1 text-xs font-semibold text-white hover:bg-emerald-500"
+          >
+            Download .md
+          </a>
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded border border-slate-600 px-3 py-1 text-xs text-slate-200 hover:bg-slate-800"
+          >
+            Close
+          </button>
+        </div>
+      </div>
+      <div className="min-h-0 flex-1 overflow-auto p-4 text-sm leading-relaxed">
+        {err ? (
+          <p className="text-red-300">Failed to load AAR: {err}</p>
+        ) : body == null ? (
+          <p className="text-slate-400">Loading…</p>
+        ) : (
+          <article className="text-slate-100">
+            <ReactMarkdown
+              skipHtml
+              components={{
+                h1: ({ children }) => (
+                  <h1 className="mb-3 mt-4 text-xl font-semibold text-emerald-100">{children}</h1>
+                ),
+                h2: ({ children }) => (
+                  <h2 className="mb-2 mt-4 text-lg font-semibold text-emerald-100">{children}</h2>
+                ),
+                h3: ({ children }) => (
+                  <h3 className="mb-2 mt-3 text-base font-semibold text-emerald-200">{children}</h3>
+                ),
+                h4: ({ children }) => (
+                  <h4 className="mb-1 mt-3 text-sm font-semibold text-emerald-200">{children}</h4>
+                ),
+                p: ({ children }) => <p className="mb-3 whitespace-pre-wrap">{children}</p>,
+                ul: ({ children }) => <ul className="mb-3 ml-5 list-disc space-y-1">{children}</ul>,
+                ol: ({ children }) => <ol className="mb-3 ml-5 list-decimal space-y-1">{children}</ol>,
+                li: ({ children }) => <li className="leading-relaxed">{children}</li>,
+                strong: ({ children }) => <strong className="font-semibold">{children}</strong>,
+                em: ({ children }) => <em className="italic">{children}</em>,
+                blockquote: ({ children }) => (
+                  <blockquote className="mb-3 border-l-4 border-slate-700 pl-3 italic text-slate-300">
+                    {children}
+                  </blockquote>
+                ),
+                code: ({ children }) => (
+                  <code className="rounded bg-slate-800 px-1 py-0.5 text-[0.85em]">{children}</code>
+                ),
+                pre: ({ children }) => (
+                  <pre className="mb-3 overflow-auto rounded bg-slate-950 p-2 text-[0.85em]">
+                    {children}
+                  </pre>
+                ),
+                hr: () => <hr className="my-4 border-slate-700" />,
+                a: ({ href, children }) => (
+                  <a
+                    href={href}
+                    target="_blank"
+                    rel="noreferrer noopener"
+                    className="text-sky-300 underline"
+                  >
+                    {children}
+                  </a>
+                ),
+                table: ({ children }) => (
+                  <table className="mb-3 w-full border-collapse text-xs">{children}</table>
+                ),
+                th: ({ children }) => (
+                  <th className="border border-slate-700 bg-slate-900 px-2 py-1 text-left">
+                    {children}
+                  </th>
+                ),
+                td: ({ children }) => (
+                  <td className="border border-slate-800 px-2 py-1">{children}</td>
+                ),
+              }}
+            >
+              {body}
+            </ReactMarkdown>
+          </article>
+        )}
+      </div>
+      <div className="flex shrink-0 items-center justify-end gap-2 border-t border-slate-800 bg-slate-950/70 p-3">
+        <a
+          href={downloadHref}
+          rel="noopener"
+          download
+          className="rounded bg-emerald-600 px-3 py-1 text-xs font-semibold text-white hover:bg-emerald-500"
+        >
+          Download .md
+        </a>
+        <button
+          type="button"
+          onClick={onClose}
+          className="rounded border border-slate-600 px-3 py-1 text-xs text-slate-200 hover:bg-slate-800"
+        >
+          Close
+        </button>
+      </div>
+    </dialog>
   );
 }
 

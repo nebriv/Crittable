@@ -1,3 +1,4 @@
+import ReactMarkdown from "react-markdown";
 import { MessageView, RoleView } from "../api/client";
 import { ChatIndicator } from "./ChatIndicator";
 
@@ -13,6 +14,56 @@ interface Props {
   aiThinking?: boolean;
   /** role_ids of human players currently typing (excluding the local user). */
   typingRoleIds?: string[];
+}
+
+/**
+ * Constrained markdown renderer for AI bubbles. We intentionally allow only
+ * inline emphasis + lists + links; headings are flattened (the AI tends to
+ * emit ``####`` for tiny call-outs which break visual rhythm in a chat).
+ *
+ * Rendering happens in-place in the existing bubble — no nested borders, no
+ * background tweaks. Lists get a small left indent.
+ */
+function MarkdownBody({ body }: { body: string }) {
+  return (
+    <div className="text-sm leading-relaxed">
+      <ReactMarkdown
+        // Defense in depth: AI-emitted text is untrusted. react-markdown v10
+        // already escapes HTML by default, but ``skipHtml`` ensures a future
+        // dependency bump or rehype-raw-style plugin can't open an XSS hole.
+        skipHtml
+        components={{
+          p: ({ children }) => <p className="mb-2 last:mb-0 whitespace-pre-wrap">{children}</p>,
+          ul: ({ children }) => <ul className="mb-2 ml-5 list-disc">{children}</ul>,
+          ol: ({ children }) => <ol className="mb-2 ml-5 list-decimal">{children}</ol>,
+          li: ({ children }) => <li className="mb-0.5">{children}</li>,
+          h1: ({ children }) => <p className="mb-2 font-semibold">{children}</p>,
+          h2: ({ children }) => <p className="mb-2 font-semibold">{children}</p>,
+          h3: ({ children }) => <p className="mb-1 font-semibold">{children}</p>,
+          h4: ({ children }) => <p className="mb-1 font-semibold">{children}</p>,
+          h5: ({ children }) => <p className="mb-1 font-semibold">{children}</p>,
+          h6: ({ children }) => <p className="mb-1 font-semibold">{children}</p>,
+          strong: ({ children }) => <strong className="font-semibold">{children}</strong>,
+          em: ({ children }) => <em className="italic">{children}</em>,
+          code: ({ children }) => (
+            <code className="rounded bg-slate-800 px-1 py-0.5 text-[0.85em]">{children}</code>
+          ),
+          a: ({ href, children }) => (
+            <a
+              href={href}
+              target="_blank"
+              rel="noreferrer noopener"
+              className="text-sky-300 underline"
+            >
+              {children}
+            </a>
+          ),
+        }}
+      >
+        {body}
+      </ReactMarkdown>
+    </div>
+  );
 }
 
 export function Transcript({ messages, roles, streamingText, aiThinking, typingRoleIds }: Props) {
@@ -51,17 +102,27 @@ export function Transcript({ messages, roles, streamingText, aiThinking, typingR
               : m.kind === "system"
                 ? "border-slate-700 bg-slate-900/50 text-slate-400"
                 : "border-emerald-700/40 bg-emerald-950/30";
+        // AI bubbles render markdown (the model prefers it for emphasis +
+        // lists). Everything else stays as plain text — players type prose,
+        // system notes are pre-formatted.
+        const isAi = m.kind === "ai_text" || m.kind === "critical_inject";
         return (
           <article
             key={m.id}
-            className={`rounded-md border p-3 ${colour}`}
+            id={`msg-${m.id}`}
+            className={`scroll-mt-24 rounded-md border p-3 ${colour}`}
             data-kind={m.kind}
+            data-message-id={m.id}
           >
             <header className="mb-1 flex items-center justify-between text-xs uppercase tracking-wide text-slate-400">
               <span>{actor}</span>
               <span>{new Date(m.ts).toLocaleTimeString()}</span>
             </header>
-            <p className="whitespace-pre-wrap text-sm leading-relaxed">{m.body}</p>
+            {isAi ? (
+              <MarkdownBody body={m.body} />
+            ) : (
+              <p className="whitespace-pre-wrap text-sm leading-relaxed">{m.body}</p>
+            )}
             {m.tool_name ? (
               <p className="mt-1 text-xs text-slate-400">tool: {m.tool_name}</p>
             ) : null}
@@ -76,6 +137,13 @@ export function Transcript({ messages, roles, streamingText, aiThinking, typingR
           <header className="mb-1 text-xs uppercase tracking-wide text-emerald-300">
             AI Facilitator (streaming…)
           </header>
+          {/*
+           * Render the streaming preview as plain pre-wrap so half-tokens
+           * (e.g. ``**bo``) don't visually flicker between bold and plain
+           * mid-stream. The ``message_complete`` event re-renders the final
+           * bubble through ``MarkdownBody`` so the user still sees real
+           * markdown when the message lands.
+           */}
           <p className="whitespace-pre-wrap text-sm leading-relaxed">{streamingText}</p>
         </article>
       ) : aiThinking ? (
