@@ -576,6 +576,14 @@ export function Facilitator() {
         </aside>
 
         <section className="flex flex-col gap-3 lg:min-h-0 lg:overflow-hidden">
+          {/*
+            Every phase view (setup / ready / ended / play) renders inside the
+            same scrollable region. Pre-fix the wrapping ``<div>`` only
+            existed for play/ended, so the READY phase's plan-JSON dump and
+            the SETUP chat both got clipped on desktop with no scrollbar —
+            an operator literally couldn't reach the "Approve plan" button.
+          */}
+          <div className="flex flex-col gap-3 lg:min-h-0 lg:flex-1 lg:overflow-y-auto lg:pr-1">
           {phase === "setup" ? (
             <SetupView
               snapshot={snapshot}
@@ -624,7 +632,7 @@ export function Facilitator() {
                   </button>
                 </div>
               ) : null}
-              <div className="lg:min-h-0 lg:flex-1 lg:overflow-y-auto lg:pr-1">
+              <div>
                 <Transcript
                   messages={snapshot.messages}
                   roles={snapshot.roles}
@@ -705,6 +713,7 @@ export function Facilitator() {
             </>
           ) : null}
           {error ? <p className="text-sm text-red-400">{error}</p> : null}
+          </div>
         </section>
 
         <RightSidebar
@@ -1084,10 +1093,182 @@ function PlanPreview({ plan }: { plan: ScenarioPlan }) {
       <summary className="cursor-pointer text-emerald-300">
         Proposed plan: {plan.title}
       </summary>
-      <pre className="mt-2 max-h-72 overflow-auto whitespace-pre-wrap text-slate-200">
-        {JSON.stringify(plan, null, 2)}
-      </pre>
+      <div className="mt-2">
+        <PlanView plan={plan} />
+      </div>
     </details>
+  );
+}
+
+/**
+ * Readable structured plan view with optional spoiler-hide.
+ *
+ * The plan was previously dumped as ``JSON.stringify`` which (a) clipped on
+ * narrow viewports and (b) spoiled every upcoming inject for the creator.
+ * The creator is the only one who sees the plan in any case (it's
+ * creator-only by ``visible_messages`` filtering), but as the operator
+ * they may still want to play "fresh" alongside the team.
+ *
+ * Default: title, executive_summary, key_objectives, guardrails,
+ * success_criteria, and out_of_scope are visible. ``narrative_arc`` and
+ * ``injects`` are spoiler-hidden behind a Reveal toggle whose state is
+ * persisted in localStorage so it carries across reloads.
+ */
+function PlanView({ plan }: { plan: ScenarioPlan }) {
+  const [reveal, setReveal] = useState<boolean>(() => {
+    try {
+      return window.localStorage.getItem("atf-plan-reveal") === "1";
+    } catch {
+      return false;
+    }
+  });
+  function toggleReveal() {
+    setReveal((cur) => {
+      const next = !cur;
+      try {
+        window.localStorage.setItem("atf-plan-reveal", next ? "1" : "0");
+      } catch {
+        /* localStorage may be disabled; preference is best-effort. */
+      }
+      return next;
+    });
+  }
+  return (
+    <article className="flex flex-col gap-4 text-sm text-slate-100">
+      <header>
+        <h3 className="text-lg font-semibold text-emerald-100">{plan.title}</h3>
+      </header>
+
+      {plan.executive_summary ? (
+        <section className="flex flex-col gap-1">
+          <h4 className="text-xs uppercase tracking-widest text-slate-400">
+            Executive summary
+          </h4>
+          <ReactMarkdown
+            skipHtml
+            remarkPlugins={[remarkGfm]}
+            components={{
+              p: ({ children }) => (
+                <p className="whitespace-pre-wrap leading-relaxed">{children}</p>
+              ),
+              strong: ({ children }) => <strong className="font-semibold">{children}</strong>,
+              em: ({ children }) => <em className="italic">{children}</em>,
+            }}
+          >
+            {plan.executive_summary}
+          </ReactMarkdown>
+        </section>
+      ) : null}
+
+      {plan.key_objectives.length > 0 ? (
+        <section className="flex flex-col gap-1">
+          <h4 className="text-xs uppercase tracking-widest text-slate-400">Key objectives</h4>
+          <ul className="ml-4 list-disc space-y-0.5">
+            {plan.key_objectives.map((o, i) => (
+              <li key={i}>{o}</li>
+            ))}
+          </ul>
+        </section>
+      ) : null}
+
+      {plan.guardrails.length > 0 ? (
+        <section className="flex flex-col gap-1">
+          <h4 className="text-xs uppercase tracking-widest text-slate-400">Guardrails</h4>
+          <ul className="ml-4 list-disc space-y-0.5">
+            {plan.guardrails.map((o, i) => (
+              <li key={i}>{o}</li>
+            ))}
+          </ul>
+        </section>
+      ) : null}
+
+      {plan.success_criteria.length > 0 ? (
+        <section className="flex flex-col gap-1">
+          <h4 className="text-xs uppercase tracking-widest text-slate-400">
+            Success criteria
+          </h4>
+          <ul className="ml-4 list-disc space-y-0.5">
+            {plan.success_criteria.map((o, i) => (
+              <li key={i}>{o}</li>
+            ))}
+          </ul>
+        </section>
+      ) : null}
+
+      {plan.out_of_scope.length > 0 ? (
+        <section className="flex flex-col gap-1">
+          <h4 className="text-xs uppercase tracking-widest text-slate-400">Out of scope</h4>
+          <ul className="ml-4 list-disc space-y-0.5">
+            {plan.out_of_scope.map((o, i) => (
+              <li key={i}>{o}</li>
+            ))}
+          </ul>
+        </section>
+      ) : null}
+
+      {plan.narrative_arc.length > 0 || plan.injects.length > 0 ? (
+        <section className="flex flex-col gap-2 rounded border border-amber-700/40 bg-amber-950/20 p-2">
+          <header className="flex flex-wrap items-center justify-between gap-2">
+            <h4 className="text-xs uppercase tracking-widest text-amber-200">
+              Spoilers — narrative arc &amp; injects
+            </h4>
+            <button
+              type="button"
+              onClick={toggleReveal}
+              className="rounded border border-amber-500/60 px-2 py-0.5 text-xs font-semibold text-amber-100 hover:bg-amber-900/30"
+              aria-pressed={reveal}
+            >
+              {reveal ? "Hide spoilers" : "Reveal spoilers"}
+            </button>
+          </header>
+          {!reveal ? (
+            <p className="text-xs text-amber-200/80">
+              Hidden so you can play through fresh. {plan.narrative_arc.length}{" "}
+              beat{plan.narrative_arc.length === 1 ? "" : "s"}, {plan.injects.length}{" "}
+              inject{plan.injects.length === 1 ? "" : "s"} planned.
+            </p>
+          ) : (
+            <>
+              {plan.narrative_arc.length > 0 ? (
+                <div className="flex flex-col gap-1">
+                  <p className="text-[11px] uppercase tracking-widest text-amber-200/80">
+                    Narrative arc
+                  </p>
+                  <ol className="ml-4 list-decimal space-y-1">
+                    {plan.narrative_arc.map((b) => (
+                      <li key={b.beat}>
+                        <span className="font-semibold">{b.label}</span>
+                        {b.expected_actors.length > 0 ? (
+                          <span className="ml-1 text-slate-400">
+                            — {b.expected_actors.join(", ")}
+                          </span>
+                        ) : null}
+                      </li>
+                    ))}
+                  </ol>
+                </div>
+              ) : null}
+              {plan.injects.length > 0 ? (
+                <div className="flex flex-col gap-1">
+                  <p className="text-[11px] uppercase tracking-widest text-amber-200/80">
+                    Injects
+                  </p>
+                  <ul className="ml-4 list-disc space-y-1">
+                    {plan.injects.map((inj, i) => (
+                      <li key={i}>
+                        <span className="text-slate-400">[{inj.trigger}]</span>{" "}
+                        <span className="text-slate-400">({inj.type})</span>{" "}
+                        {inj.summary}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              ) : null}
+            </>
+          )}
+        </section>
+      ) : null}
+    </article>
   );
 }
 
@@ -1378,9 +1559,9 @@ function ReadyView({ plan }: { plan: SessionSnapshot["plan"] }) {
     <div className="flex flex-col gap-3">
       <h2 className="text-lg font-semibold">Plan finalized — ready to start</h2>
       {plan ? (
-        <pre className="overflow-auto rounded border border-slate-700 bg-slate-900 p-3 text-xs">
-          {JSON.stringify(plan, null, 2)}
-        </pre>
+        <div className="rounded border border-slate-700 bg-slate-900 p-3">
+          <PlanView plan={plan} />
+        </div>
       ) : null}
       <p className="text-sm text-slate-400">Add at least 2 roles, then click "Start session".</p>
     </div>
