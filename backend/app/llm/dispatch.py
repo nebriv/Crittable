@@ -314,6 +314,7 @@ class ToolDispatcher:
             return "question recorded; awaiting creator answer"
 
         if name == "propose_scenario_plan":
+            _reject_if_xml_emission(args, tool_name="propose_scenario_plan")
             try:
                 plan = ScenarioPlan.model_validate(_normalize_plan(args))
             except Exception as exc:
@@ -333,6 +334,7 @@ class ToolDispatcher:
             return "plan proposed; creator will review or request edits"
 
         if name == "finalize_setup":
+            _reject_if_xml_emission(args, tool_name="finalize_setup")
             try:
                 plan = ScenarioPlan.model_validate(_normalize_plan(args))
             except Exception as exc:
@@ -731,6 +733,108 @@ def _validate_plan_completeness(plan: ScenarioPlan) -> None:
             "key_objectives (>=1 item), and injects (>=1 item) so "
             "the play tier has structure to facilitate against."
         )
+
+
+# Markers we treat as evidence that the model has fallen back to the
+# legacy XML function-call format inside a JSON tool input. JSON is the
+# only supported wire shape — when we see XML markup we reject hard
+# and return a tailored error so the model self-corrects on the next
+# turn instead of looping with an opaque pydantic message.
+# Lower-cased so a single ``str.lower()`` pass on the value catches
+# any casing the model emits.
+_XML_EMISSION_MARKERS: tuple[str, ...] = (
+    "<parameter ",
+    "<parameter\t",
+    "<parameter\n",
+    "</parameter>",
+    "<![cdata[",
+    "<item>",
+    "</item>",
+    "<invoke>",
+    "</invoke>",
+)
+
+
+def _has_xml_marker(value: Any) -> bool:
+    if not isinstance(value, str):
+        return False
+    lowered = value.lower()
+    return any(marker in lowered for marker in _XML_EMISSION_MARKERS)
+
+
+def _walk_for_xml_markers(value: Any, *, path: str = "") -> list[str]:
+    """Walk ``value`` recursively and return JSON-pointer-ish paths
+    of every string leaf that carries an XML emission marker.
+
+    Path syntax: top-level keys are bare (``key_objectives``); list
+    indices use bracket notation (``injects[0].summary``); nested
+    dict keys join with a dot (``narrative_arc[1].label``). Empty path
+    means the value itself is a marker-bearing string.
+
+    Examples:
+        ``_walk_for_xml_markers({"injects": [{"summary": "<item>x</item>"}]})``
+        -> ``["injects[0].summary"]``
+    """
+
+    hits: list[str] = []
+    if isinstance(value, str):
+        if _has_xml_marker(value):
+            hits.append(path or "<root>")
+        return hits
+    if isinstance(value, dict):
+        for k, v in value.items():
+            child_path = f"{path}.{k}" if path else str(k)
+            hits.extend(_walk_for_xml_markers(v, path=child_path))
+        return hits
+    if isinstance(value, list):
+        for i, v in enumerate(value):
+            child_path = f"{path}[{i}]"
+            hits.extend(_walk_for_xml_markers(v, path=child_path))
+        return hits
+    return hits
+
+
+def _reject_if_xml_emission(args: dict[str, Any], *, tool_name: str) -> None:
+    """Hard-reject tool calls whose JSON input contains XML
+    function-call markup.
+
+    Haiku-class models occasionally fall back to the legacy
+    ``<parameter name="X">…</parameter>`` / ``<item>…</item>`` /
+    ``<![CDATA[]]>`` representation inside JSON values. We don't try
+    to reshape that — the canonical wire format is JSON, period. We
+    instead surface a precise, instructive rejection so the next
+    turn carries enough context for the model to self-correct.
+
+    The detector walks the input recursively so XML inside nested
+    objects (e.g. ``injects[0].summary`` or
+    ``narrative_arc[1].label``) is caught alongside top-level
+    fields. Reported paths name the exact offending leaf so the
+    model knows where to look.
+
+    The error message is fed back as ``is_error=True`` on the
+    ``tool_result``. The strict-retry path in ``turn_driver.py`` then
+    replays it into the next call so the model sees exactly what was
+    wrong and how to fix it.
+    """
+
+    offending = _walk_for_xml_markers(args)
+    if not offending:
+        return
+    raise _DispatchError(
+        f"{tool_name} input contains XML function-call markup at "
+        f"field path(s) {offending}. The only accepted format is "
+        "JSON matching the tool's input_schema. Re-emit the call "
+        'with: "key_objectives": ["obj1", "obj2", "obj3"], '
+        '"narrative_arc": [{"beat": 1, "label": "Detection & '
+        'triage", "expected_actors": ["CISO", "IR Lead"]}, ...], '
+        '"injects": [{"trigger": "after beat 1", "type": "event", '
+        '"summary": "..."}, ...]. Do NOT use <parameter '
+        'name="...">...</parameter>, <![CDATA[...]]>, or '
+        "<item>...</item> markup anywhere in the call (including "
+        "inside nested object fields like narrative_arc[].label or "
+        "injects[].summary) — those are the legacy XML function-"
+        "call format and are not accepted here."
+    )
 
 
 def _normalize_plan(args: dict[str, Any]) -> dict[str, Any]:

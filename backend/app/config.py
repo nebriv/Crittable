@@ -25,9 +25,24 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 ModelTier = Literal["play", "setup", "aar", "guardrail"]
 
+# Per-tier default models. The setup tier was on Haiku 4.5 originally
+# (it's a one-time-per-session dialogue and Haiku is dollar-cheap), but
+# Haiku 4.5 occasionally falls back to legacy XML function-call markup
+# (``<parameter name="X">…</parameter>`` / ``<item>`` / CDATA) inside
+# JSON tool inputs — observed in the 2026-04-29 follow-up session where
+# ``propose_scenario_plan`` looped on ``tool_use_rejected`` because the
+# values were XML strings instead of JSON arrays. We don't accept XML;
+# the dispatcher now hard-rejects it (see
+# ``dispatch._reject_if_xml_emission``). To prevent the emission in the
+# first place, the setup tier defaults to Sonnet 4.6 — same model as
+# ``play``, no XML-fallback quirk. Operators who need to dial back to
+# Haiku for cost reasons can still set ``ANTHROPIC_MODEL_SETUP=claude-
+# haiku-4-5``; the rejection layer + 12k token budget + JSON-only prompt
+# instruction will catch the resulting XML emissions, but the failure
+# mode is no longer the default.
 _TIER_DEFAULTS: dict[ModelTier, str] = {
     "play": "claude-sonnet-4-6",
-    "setup": "claude-haiku-4-5",
+    "setup": "claude-sonnet-4-6",
     "aar": "claude-opus-4-7",
     "guardrail": "claude-haiku-4-5",
 }
@@ -46,7 +61,20 @@ _MAX_TOKENS_DEFAULTS: dict[ModelTier, int] = {
     # plan calls were the cause of the "AI didn't propose a plan yet"
     # loop observed on 2026-04-29 — every retry hit ``stop_reason:
     # max_tokens`` and the partial JSON failed validation.
-    "setup": 4096,
+    #
+    # 4096 was still too tight for verbose plans on rich scenarios:
+    # in a follow-up session the model emitted JSON for half the
+    # fields, hit ``stop_reason=max_tokens``, and on retry switched to
+    # the more-compact legacy ``<parameter name="…">…</parameter>``
+    # XML format to "save space". Per-PR-#64 policy that XML is
+    # rejected outright (see
+    # ``llm/dispatch.py::_reject_if_xml_emission``), so the only
+    # supported way through is to give the model enough output budget
+    # to fit a full JSON plan in one call. 12288 is ~3x typical plan
+    # size; cheap on Sonnet 4.6 (the new setup default) and still
+    # affordable if an operator overrides back to Haiku. Operators on
+    # a tight budget can dial it back via ``LLM_MAX_TOKENS_SETUP``.
+    "setup": 12288,
     "aar": 4096,
     "guardrail": 12,
 }

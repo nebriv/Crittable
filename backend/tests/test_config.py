@@ -44,6 +44,10 @@ def test_model_tier_default(monkeypatch) -> None:
         monkeypatch.delenv(key, raising=False)
     s = Settings()
     assert s.model_for("play") == "claude-sonnet-4-6"
+    # Setup defaults to Sonnet (same as play) — Haiku occasionally
+    # falls back to legacy XML tool-call markup which the dispatcher
+    # hard-rejects, so we use a model that doesn't have that quirk.
+    assert s.model_for("setup") == "claude-sonnet-4-6"
     assert s.model_for("aar") == "claude-opus-4-7"
     assert s.model_for("guardrail") == "claude-haiku-4-5"
 
@@ -98,7 +102,12 @@ def test_max_tokens_for_uses_tier_defaults(monkeypatch) -> None:
         monkeypatch.delenv(key, raising=False)
     s = Settings()
     assert s.max_tokens_for("play") == 1024
-    assert s.max_tokens_for("setup") == 4096
+    # Setup tier needs comfortable headroom: tight budgets cause Haiku
+    # to truncate the plan body and fall back to legacy XML tool-call
+    # format mid-output, which the dispatcher then hard-rejects (see
+    # ``backend/app/llm/dispatch.py::_reject_if_xml_emission``). The
+    # 12288 default is sized so a full JSON plan fits in one call.
+    assert s.max_tokens_for("setup") == 12288
     assert s.max_tokens_for("aar") == 4096
     assert s.max_tokens_for("guardrail") == 12
 
@@ -110,7 +119,7 @@ def test_max_tokens_env_override_wins(monkeypatch) -> None:
     assert s.max_tokens_for("play") == 2048
     assert s.max_tokens_for("guardrail") == 16
     # Untouched tiers keep their defaults.
-    assert s.max_tokens_for("setup") == 4096
+    assert s.max_tokens_for("setup") == 12288
     assert s.max_tokens_for("aar") == 4096
 
 

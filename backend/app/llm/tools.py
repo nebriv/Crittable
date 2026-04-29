@@ -7,6 +7,21 @@ Three groups:
 
 The dispatcher (`dispatch.py`) is state-aware and rejects tools that don't
 match the current state.
+
+Tool-call format
+----------------
+Every tool here uses the modern Anthropic **JSON tool use** format —
+the model emits a ``tool_use`` block whose ``input`` is a JSON object
+matching the declared ``input_schema``. The legacy
+``<parameter name="X">…</parameter>`` / ``<item>…</item>`` /
+``<![CDATA[]]>`` XML function-call format is **not** accepted: the
+dispatcher hard-rejects calls that contain those markers via
+``dispatch._reject_if_xml_emission``, returning a precise instructive
+error so the model self-corrects on the next turn. There is no XML
+recovery path. New tools must follow the JSON convention. See
+`docs/prompts.md` § "Tool-call format: JSON only" for the rationale
+and the three-layer enforcement (token headroom, prompt instruction,
+dispatcher rejection).
 """
 
 from __future__ import annotations
@@ -278,7 +293,9 @@ SETUP_TOOLS: list[dict[str, Any]] = [
             "and must each contain at least one entry — empty plans "
             "are rejected because the play tier has no structure to "
             "facilitate against. Iterate via repeated calls until "
-            "approved, then call finalize_setup."
+            "approved, then call finalize_setup. Emit ``input`` as a "
+            "JSON object matching this input_schema; legacy XML "
+            "function-call markup is not accepted."
         ),
         "input_schema": {
             "type": "object",
@@ -318,7 +335,8 @@ SETUP_TOOLS: list[dict[str, Any]] = [
             "Commit the agreed scenario plan and lock it for the session. "
             "Transitions session to READY. Same array invariants as "
             "propose_scenario_plan: narrative_arc / key_objectives / "
-            "injects MUST each contain at least one entry."
+            "injects MUST each contain at least one entry. Emit ``input`` "
+            "as a JSON object matching this input_schema."
         ),
         "input_schema": {
             "type": "object",
