@@ -82,10 +82,15 @@ class SessionGC:
         self._task.cancel()
         try:
             await self._task
-        except (asyncio.CancelledError, Exception):
-            # The reaper swallows its own errors; cancellation is expected.
+        except asyncio.CancelledError:
+            # Cancellation is the expected shutdown signal; not an error.
             pass
+        except Exception as exc:
+            # Real shutdown error — log it so a wedged shutdown shows up in
+            # the audit / container logs instead of being silently swallowed.
+            _logger.exception("session_gc_stop_failed", error=str(exc))
         self._task = None
+        _logger.info("session_gc_stopped")
 
     async def _run(self) -> None:
         try:
