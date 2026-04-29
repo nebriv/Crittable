@@ -43,6 +43,12 @@ class DispatchOutcome:
         self.finalized_plan: ScenarioPlan | None = None
         self.critical_inject_fired: bool = False
         self.had_yielding_call: bool = False
+        # Set to True when ``broadcast`` or ``address_role`` fired
+        # successfully on this turn. The play-turn driver uses this on
+        # the BRIEFING turn to detect "yielded without a brief" — the
+        # AI gave the active roles nothing to act on — and run a
+        # broadcast-recovery pass before letting the state advance.
+        self.had_player_facing_message: bool = False
 
     def add_result(self, *, tool_use_id: str, content: str, is_error: bool = False) -> None:
         self.tool_results.append(
@@ -314,6 +320,7 @@ class ToolDispatcher:
                     tool_args=args,
                 )
             )
+            outcome.had_player_facing_message = True
             return "broadcast queued"
 
         if name == "address_role":
@@ -336,6 +343,7 @@ class ToolDispatcher:
                     tool_args=args,
                 )
             )
+            outcome.had_player_facing_message = True
             return "address queued"
 
         if name == "inject_event":

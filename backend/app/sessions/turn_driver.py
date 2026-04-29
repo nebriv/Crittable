@@ -63,6 +63,26 @@ _STRICT_RETRY_USER_NUDGE = (
     "now with the role_ids that should respond."
 )
 
+# Used on the BRIEFING-broadcast recovery pass: the model already yielded
+# but never produced a player-facing message (no ``broadcast`` /
+# ``address_role``), leaving the active roles staring at a screen with a
+# timeline pin and an inject_event but no actual situation brief. The
+# recovery pass narrows the tool surface to ``broadcast`` and forces a
+# call so the players get the kickoff narrative they need.
+_BRIEFING_BROADCAST_RECOVERY_NOTE = (
+    "RECOVERY: this is the first turn of the exercise. You yielded to the "
+    "active roles via `set_active_roles` but did not issue a situation "
+    "broadcast — the players have no narrative beat to respond to. "
+    "Issue the situation brief now via `broadcast` (≤200 words). Address "
+    "the active roles by label + display name. Do NOT call any other "
+    "tool. Do NOT re-narrate timeline pins or system events."
+)
+_BRIEFING_BROADCAST_USER_NUDGE = (
+    "[system] You already yielded on this turn but skipped the situation "
+    "brief. Issue the brief now via `broadcast` so the active roles know "
+    "what just happened and what to do."
+)
+
 
 class TurnDriver:
     def __init__(self, *, manager: SessionManager) -> None:
@@ -177,6 +197,11 @@ class TurnDriver:
         # were recorded but never fed back to the model.
         prior_assistant_blocks: list[dict[str, Any]] | None = None
         prior_tool_results: list[dict[str, Any]] | None = None
+        # Cumulative across all attempts on this turn — a broadcast
+        # produced on a non-yielding attempt 1 still counts as "the
+        # players got their narrative beat" once attempt 2's strict
+        # retry yields.
+        turn_had_player_facing_message = False
         while attempt < max_attempts:
             attempt += 1
             messages = _play_messages(session, strict=strict)
@@ -246,6 +271,39 @@ class TurnDriver:
                     max_per_5_turns=self._manager.settings().max_critical_injects_per_5_turns,
                 ),
             )
+
+            if outcome.had_player_facing_message:
+                turn_had_player_facing_message = True
+
+            # Briefing-broadcast guard. The first play turn (state ==
+            # BRIEFING) MUST end with the AI handing the active roles a
+            # narrative beat to respond to — otherwise players see a
+            # "your turn" indicator with no situation brief and stall.
+            # Sonnet has been observed firing only ``mark_timeline_point``
+            # + ``inject_event`` + ``set_active_roles`` and skipping the
+            # ``broadcast`` entirely; the strict-retry path doesn't
+            # catch it because the yield itself is fine. This guard
+            # detects the missing brief, runs a recovery LLM call
+            # narrowed to ``broadcast``, and merges the brief into the
+            # outcome BEFORE state advances to AWAITING_PLAYERS.
+            #
+            # Uses the *cumulative* flag (across all attempts on this
+            # turn) so a broadcast on attempt 1 still counts even if
+            # the strict-retry attempt 2 only emits ``set_active_roles``.
+            if (
+                session.state == SessionState.BRIEFING
+                and outcome.had_yielding_call
+                and not turn_had_player_facing_message
+            ):
+                await self._recover_briefing_broadcast(
+                    session=session,
+                    turn=turn,
+                    prior_result=result,
+                    outcome=outcome,
+                )
+                if outcome.had_player_facing_message:
+                    turn_had_player_facing_message = True
+
             await self._apply_play_outcome(session, turn, outcome, result_text=_all_text(result))
 
             if outcome.had_yielding_call:
@@ -373,6 +431,116 @@ class TurnDriver:
             )
         await self._manager._repo.save(session)
         return session
+
+    async def _recover_briefing_broadcast(
+        self,
+        *,
+        session: Session,
+        turn: Turn,
+        prior_result: LLMResult,
+        outcome: DispatchOutcome,
+    ) -> None:
+        """Fill in the missing situation brief on the BRIEFING turn.
+
+        Triggered when the first play turn yielded via ``set_active_roles``
+        but produced no ``broadcast`` / ``address_role`` — leaving the
+        active roles with no narrative beat. Runs a single LLM call
+        narrowed to ``broadcast`` (with ``tool_choice`` pinned), merges
+        the resulting messages into ``outcome`` so they go through the
+        normal ``_apply_play_outcome`` path, and marks the briefing as
+        recovered.
+
+        Failure modes are non-fatal: if the recovery call doesn't
+        produce a broadcast (e.g. the model emits text-only), the
+        original outcome still applies, the state still advances to
+        AWAITING_PLAYERS, and the operator can hit "AI: take next
+        beat" or proxy-respond. We log the failure for observability.
+        """
+
+        _logger.warning(
+            "briefing_broadcast_missing",
+            session_id=session.id,
+            turn_index=turn.index,
+            had_tool_uses=len([b for b in prior_result.content if b.get("type") == "tool_use"]),
+        )
+
+        registry = self._manager.registry()
+        # Reuse the same play system blocks (Block 7 plan, Block 10
+        # roster, etc.) so the recovery call has identical context to
+        # the original. Append a focused recovery note that pins the
+        # task: issue the brief, no other tools, no re-narration.
+        system_blocks = build_play_system_blocks(session, registry=registry)
+        system_blocks.append({"type": "text", "text": _BRIEFING_BROADCAST_RECOVERY_NOTE})
+
+        # Build messages: kickoff + the model's prior assistant turn +
+        # the dispatcher's tool_results + a recovery user nudge. The
+        # model SEES that it already yielded and the outcome of its
+        # tool calls — same shape as the strict-retry feedback loop.
+        messages = _play_messages(session, strict=False)
+        # ``_play_messages`` ends with the kickoff user nudge when the
+        # transcript trails on assistant; replace its trailing user
+        # turn with the recovery nudge so the model doesn't re-read
+        # "begin the exercise".
+        if messages and messages[-1]["role"] == "user":
+            messages.pop()
+        messages.append({"role": "assistant", "content": prior_result.content})
+        # tool_results + the recovery nudge in a single user turn so the
+        # message sequence stays user → assistant → user (Anthropic
+        # allows mixed tool_result + text blocks in one user message).
+        recovery_user_blocks: list[dict[str, Any]] = list(outcome.tool_results)
+        recovery_user_blocks.append({"type": "text", "text": _BRIEFING_BROADCAST_USER_NUDGE})
+        messages.append({"role": "user", "content": recovery_user_blocks})
+
+        # Narrow tools to ``broadcast`` only and pin ``tool_choice`` so
+        # the SDK guarantees a call. No other tools — recovery is
+        # narrative-only.
+        tools = [t for t in PLAY_TOOLS if t["name"] == "broadcast"]
+        tool_choice: dict[str, Any] = {"type": "tool", "name": "broadcast"}
+
+        result = await self._streamed_play_call(
+            session=session,
+            turn=turn,
+            tier="play",
+            system_blocks=system_blocks,
+            messages=messages,
+            tools=tools,
+            tool_choice=tool_choice,
+        )
+        await self._apply_cost(session.id, result)
+
+        # Dispatch the recovery tool calls into a fresh outcome, then
+        # merge the appended messages into the original outcome so
+        # ``_apply_play_outcome`` persists + broadcasts them in the
+        # correct order (timeline pin / inject_event already in
+        # ``outcome.appended_messages``, broadcast appended after).
+        recovery_uses = _tool_uses(result)
+        recovery_outcome = await self._manager.dispatcher().dispatch(
+            session=session,
+            tool_uses=recovery_uses,
+            turn_id=turn.id,
+            critical_inject_allowed_cb=lambda: critical_inject_allowed(
+                session,
+                max_per_5_turns=self._manager.settings().max_critical_injects_per_5_turns,
+            ),
+        )
+
+        if not recovery_outcome.had_player_facing_message:
+            _logger.warning(
+                "briefing_broadcast_recovery_no_op",
+                session_id=session.id,
+                turn_index=turn.index,
+            )
+            return
+
+        outcome.appended_messages.extend(recovery_outcome.appended_messages)
+        outcome.tool_results.extend(recovery_outcome.tool_results)
+        outcome.had_player_facing_message = True
+        _logger.info(
+            "briefing_broadcast_recovered",
+            session_id=session.id,
+            turn_index=turn.index,
+            recovery_messages=len(recovery_outcome.appended_messages),
+        )
 
     # ------------------------------------------------- internals
     async def _streamed_play_call(
@@ -608,8 +776,12 @@ _SETUP_TOOL_NAMES = frozenset(
 )
 
 _KICKOFF_USER_MSG = (
-    "Begin the exercise. Open with a brief situation broadcast and yield to "
-    "the appropriate roles."
+    "Begin the exercise. Your FIRST tool call MUST be `broadcast` with the "
+    "situation brief — what just happened, what the active roles need to "
+    "do, ≤200 words. THEN call `set_active_roles` to yield to those roles. "
+    "Do NOT use only `mark_timeline_point` + `inject_event` — those are "
+    "FYI tools and leave players with nothing to respond to. The brief is "
+    "mandatory on this turn."
 )
 
 

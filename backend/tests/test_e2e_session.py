@@ -819,6 +819,157 @@ def test_strict_retry_cannot_be_coerced_into_end_session(client: TestClient) -> 
     )
 
 
+def test_briefing_recovers_when_ai_skips_broadcast(client: TestClient) -> None:
+    """Regression: on the BRIEFING turn the AI must give the active roles
+    a narrative beat to respond to. Sonnet has been observed firing
+    only ``mark_timeline_point`` + ``inject_event`` + ``set_active_roles``
+    and skipping ``broadcast`` entirely — players land in AWAITING_PLAYERS
+    with a timeline pin and a system note but no actual situation brief.
+
+    The engine detects this (state was BRIEFING, yield happened, but no
+    ``broadcast`` / ``address_role`` fired) and runs a recovery LLM
+    call narrowed to ``broadcast`` with ``tool_choice`` pinned. The
+    recovered broadcast must land in the chat before the
+    ``state_changed`` to AWAITING_PLAYERS.
+    """
+
+    from tests.mock_anthropic import MockAnthropic, _ContentBlock, _Response
+
+    seats = _create_and_seat(client, role_count=2)
+    sid = seats["session_id"]
+    cr = seats["creator_token"]
+
+    # First call: timeline pin + inject_event + yield, NO broadcast.
+    play_attempt_1 = _Response(
+        content=[
+            _ContentBlock(
+                type="tool_use",
+                name="mark_timeline_point",
+                input={"title": "Exercise Start — Beat 1", "note": "EDR fired."},
+                id="tu_pin_1",
+            ),
+            _ContentBlock(
+                type="tool_use",
+                name="inject_event",
+                input={"description": "Exercise clock starts. 03:14 Wednesday."},
+                id="tu_inject_1",
+            ),
+            _ContentBlock(
+                type="tool_use",
+                name="set_active_roles",
+                input={"role_ids": [seats["role_ids"][0], seats["role_ids"][1]]},
+                id="tu_yield_1",
+            ),
+        ],
+        stop_reason="tool_use",
+    )
+    # Recovery call: broadcast the situation brief.
+    play_recovery = _Response(
+        content=[
+            _ContentBlock(
+                type="tool_use",
+                name="broadcast",
+                input={
+                    "message": (
+                        "CISO / Alex, Player_1 — your EDR just fired ransomware "
+                        "signatures on finance laptops at 03:14. File shares are "
+                        "serving .lockbit-suffixed files. What's your first move?"
+                    )
+                },
+                id="tu_brief_recovery",
+            )
+        ],
+        stop_reason="tool_use",
+    )
+    mock = MockAnthropic({"play": [play_attempt_1, play_recovery]})
+    client.app.state.llm.set_transport(mock.messages)
+
+    client.post(f"/api/sessions/{sid}/setup/skip?token={cr}")
+    r = client.post(f"/api/sessions/{sid}/start?token={cr}")
+    assert r.status_code == 200, r.text
+
+    snap = client.get(f"/api/sessions/{sid}?token={cr}").json()
+    # State advanced to AWAITING_PLAYERS — the original yield still took.
+    assert snap["state"] == "AWAITING_PLAYERS"
+    assert snap["current_turn"]["active_role_ids"] == [
+        seats["role_ids"][0],
+        seats["role_ids"][1],
+    ]
+
+    # The transcript now includes the recovered broadcast: an AI_TEXT
+    # message with tool_name=broadcast, mentioning the active roles.
+    broadcasts = [
+        m for m in snap["messages"] if m.get("tool_name") == "broadcast"
+    ]
+    assert broadcasts, (
+        "briefing-broadcast recovery failed: no broadcast in transcript. "
+        f"messages: {[(m.get('kind'), m.get('tool_name')) for m in snap['messages']]}"
+    )
+    assert "EDR" in broadcasts[0]["body"], (
+        "recovered broadcast should carry the situation brief; "
+        f"got {broadcasts[0]['body']!r}"
+    )
+
+    # Inspect the LLM calls: the recovery call must narrow tools to
+    # ``broadcast`` only and pin ``tool_choice`` to it.
+    play_calls = [c for c in mock.messages.calls if "play" in c.get("model", "")]
+    assert len(play_calls) >= 2, (
+        f"expected ≥2 play calls (initial + recovery); got {len(play_calls)}"
+    )
+    recovery_call = play_calls[1]
+    recovery_tools = {t["name"] for t in recovery_call.get("tools", [])}
+    assert recovery_tools == {"broadcast"}, (
+        f"recovery call must narrow tools to broadcast only; got {recovery_tools}"
+    )
+    assert recovery_call.get("tool_choice") == {"type": "tool", "name": "broadcast"}, (
+        "recovery call must pin tool_choice to broadcast; "
+        f"got {recovery_call.get('tool_choice')!r}"
+    )
+
+
+def test_briefing_does_not_recover_when_broadcast_already_present(client: TestClient) -> None:
+    """Inverse of the recovery test: when the AI's first turn already
+    includes a ``broadcast``, the engine must NOT run a second LLM call.
+    Otherwise we'd burn a recovery call (and tokens) on every healthy
+    briefing turn.
+    """
+
+    from tests.mock_anthropic import MockAnthropic, _ContentBlock, _Response
+
+    seats = _create_and_seat(client, role_count=2)
+    sid = seats["session_id"]
+    cr = seats["creator_token"]
+
+    play_ok = _Response(
+        content=[
+            _ContentBlock(
+                type="tool_use",
+                name="broadcast",
+                input={"message": "Brief delivered. What's your move?"},
+                id="tu_brief_ok",
+            ),
+            _ContentBlock(
+                type="tool_use",
+                name="set_active_roles",
+                input={"role_ids": [seats["role_ids"][1]]},
+                id="tu_yield_ok",
+            ),
+        ],
+        stop_reason="tool_use",
+    )
+    mock = MockAnthropic({"play": [play_ok]})
+    client.app.state.llm.set_transport(mock.messages)
+
+    client.post(f"/api/sessions/{sid}/setup/skip?token={cr}")
+    r = client.post(f"/api/sessions/{sid}/start?token={cr}")
+    assert r.status_code == 200, r.text
+
+    play_calls = [c for c in mock.messages.calls if "play" in c.get("model", "")]
+    assert len(play_calls) == 1, (
+        f"healthy briefing must use exactly 1 play call; got {len(play_calls)}"
+    )
+
+
 def test_tool_choice_does_not_leak_to_setup_or_aar(client: TestClient) -> None:
     """Confirm the strict-retry tool_choice plumbing is scoped to play turns
     only. Setup and AAR calls must never set tool_choice."""
