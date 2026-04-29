@@ -170,13 +170,27 @@ export function Play({ sessionId, token }: Props) {
   }
 
   const activeRoleIds = snapshot.current_turn?.active_role_ids ?? [];
-  const isMyTurn = selfRoleId !== null && activeRoleIds.includes(selfRoleId);
+  const submittedRoleIds = snapshot.current_turn?.submitted_role_ids ?? [];
+  const iAmActive = selfRoleId !== null && activeRoleIds.includes(selfRoleId);
+  const iHaveSubmitted = selfRoleId !== null && submittedRoleIds.includes(selfRoleId);
+  // "My turn" = the engine is waiting on me right now. Pre-fix this only
+  // checked the active set, so after a player submitted the green
+  // "Your turn" banner stayed pinned at the top until the AI replied —
+  // making it look like the submission hadn't gone through.
+  const isMyTurn = iAmActive && !iHaveSubmitted;
   const myRole = snapshot.roles.find((r) => r.id === selfRoleId);
+  const otherPending = activeRoleIds
+    .filter((id) => id !== selfRoleId && !submittedRoleIds.includes(id))
+    .map((id) => snapshot.roles.find((r) => r.id === id)?.label ?? id);
   const placeholder = isMyTurn
     ? "It's your turn — make your decision."
-    : `Waiting for ${activeRoleIds
-        .map((id) => snapshot.roles.find((r) => r.id === id)?.label ?? id)
-        .join(", ") || "the AI"}.`;
+    : iHaveSubmitted && otherPending.length > 0
+      ? `Submitted. Waiting on ${otherPending.join(", ")}.`
+      : iHaveSubmitted
+        ? "Submitted. Waiting on the AI to respond."
+        : otherPending.length > 0
+          ? `Waiting for ${otherPending.join(", ")}.`
+          : "Waiting for the AI.";
 
   return (
     <main className="flex min-h-screen flex-col">
@@ -215,6 +229,22 @@ export function Play({ sessionId, token }: Props) {
           className="sticky top-0 z-10 bg-emerald-700 px-4 py-2 text-center text-sm font-semibold text-white shadow-lg"
         >
           Your turn — {myRole?.label} ({displayName})
+        </div>
+      ) : iHaveSubmitted ? (
+        // Replace the "Your turn" banner with positive confirmation that
+        // the submission landed, plus *who* we're now waiting on. Without
+        // this the player sees their message in the chat but the
+        // composer + banner state both look identical to "still my turn",
+        // which the operator-as-tester just hit.
+        <div
+          role="status"
+          aria-live="polite"
+          className="sticky top-0 z-10 bg-slate-800 px-4 py-2 text-center text-xs text-slate-200 shadow"
+        >
+          Submitted as {myRole?.label} ({displayName}).{" "}
+          {otherPending.length > 0
+            ? `Waiting on ${otherPending.join(", ")}.`
+            : "Waiting for the AI to respond."}
         </div>
       ) : null}
       <div className="mx-auto grid w-full max-w-7xl flex-1 grid-cols-1 gap-4 p-4 lg:grid-cols-[220px_1fr_280px]">
