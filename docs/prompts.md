@@ -42,22 +42,29 @@ What this means in practice:
   ``<example>`` of a `propose_scenario_plan` body so the model has
   the shape to mimic.
 
-### Three-layer enforcement
+### Four-layer enforcement
 
-We empirically observed Haiku falling back to the legacy XML
+We empirically observed Haiku 4.5 falling back to the legacy XML
 representation when the per-tier ``max_tokens`` budget was too tight
 for a full plan body — the JSON gets truncated mid-output and the
-model "saves space" by switching format. We do not paper over that
-with a recovery layer; we eliminate the conditions that produce it
-and hard-reject any call that still tries XML.
+model "saves space" by switching format. Sonnet 4.6 does not exhibit
+this drift. We do not paper over the failure with a recovery layer;
+we eliminate the conditions that produce it and hard-reject any call
+that still tries XML.
 
-1. **Headroom.** `LLM_MAX_TOKENS_SETUP` defaults to `12288` — enough
-   for a full plan in JSON without truncation.
+1. **Model.** `ANTHROPIC_MODEL_SETUP` defaults to `claude-sonnet-4-6`
+   (same as the play tier). The setup tier was originally on
+   `claude-haiku-4-5` for cost, but Haiku produced the XML-fallback
+   loop. Sonnet does not. Operators who want the cheaper tier can
+   still override to Haiku — the remaining three layers will catch
+   the failure, it just won't be the default.
+2. **Headroom.** `LLM_MAX_TOKENS_SETUP` defaults to `12288` — enough
+   for a full plan in JSON without truncation regardless of model.
    [`docs/configuration.md`](configuration.md) covers tuning.
-2. **Instruction.** The setup prompt and the
+3. **Instruction.** The setup prompt and the
    `propose_scenario_plan` / `finalize_setup` tool descriptions both
    require JSON in plain language and show a positive example.
-3. **Hard reject with a useful error.**
+4. **Hard reject with a useful error.**
    `_reject_if_xml_emission` in
    [`dispatch.py`](../backend/app/llm/dispatch.py) detects markup
    tokens (`<parameter`, `</parameter>`, `<![CDATA[`, `<item>`,
@@ -70,9 +77,10 @@ and hard-reject any call that still tries XML.
 
 If you see `tool_use_rejected` events with `<parameter` /
 `<item>` substrings in `input_value`, the model is still emitting
-XML despite the prompt. The fix is to investigate why (often: a new
-field type the schema doesn't constrain enough, a model swap to a
-weaker tier) — *not* to add an XML parser.
+XML despite the first three layers. The fix is to investigate why
+(often: a downstream operator-pinned a weaker model, or a new field
+type the schema doesn't constrain enough) — *not* to add an XML
+parser.
 
 ---
 

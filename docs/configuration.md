@@ -15,7 +15,7 @@ If `ANTHROPIC_MODEL` is set, it is the fallback for any unset tier.
 | Var | Default | Used for |
 |---|---|---|
 | `ANTHROPIC_MODEL_PLAY` | `claude-sonnet-4-6` | Per-turn facilitation |
-| `ANTHROPIC_MODEL_SETUP` | `claude-haiku-4-5` | Setup dialogue with the creator |
+| `ANTHROPIC_MODEL_SETUP` | `claude-sonnet-4-6` | Setup dialogue with the creator. Was `claude-haiku-4-5` originally; switched to Sonnet because Haiku occasionally fell back to legacy XML function-call markup inside JSON tool inputs (the dispatcher now hard-rejects that — see [`docs/prompts.md`](prompts.md#tool-call-format-json-only)). Operators can still set `ANTHROPIC_MODEL_SETUP=claude-haiku-4-5` to dial back if cost is a concern; the rejection layer, 12k token budget, and JSON-only prompt instruction catch the resulting failures, they're just no longer the default. |
 | `ANTHROPIC_MODEL_AAR` | `claude-opus-4-7` | Final after-action report generation |
 | `ANTHROPIC_MODEL_GUARDRAIL` | `claude-haiku-4-5` | Optional input-side classifier |
 | `ANTHROPIC_MAX_RETRIES` | `4` | SDK retry budget on 429/5xx |

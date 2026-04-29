@@ -44,6 +44,10 @@ def test_model_tier_default(monkeypatch) -> None:
         monkeypatch.delenv(key, raising=False)
     s = Settings()
     assert s.model_for("play") == "claude-sonnet-4-6"
+    # Setup defaults to Sonnet (same as play) — Haiku occasionally
+    # falls back to legacy XML tool-call markup which the dispatcher
+    # hard-rejects, so we use a model that doesn't have that quirk.
+    assert s.model_for("setup") == "claude-sonnet-4-6"
     assert s.model_for("aar") == "claude-opus-4-7"
     assert s.model_for("guardrail") == "claude-haiku-4-5"
 
