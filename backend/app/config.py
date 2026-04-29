@@ -38,7 +38,15 @@ _TIER_DEFAULTS: dict[ModelTier, str] = {
 # ``docs/configuration.md``.
 _MAX_TOKENS_DEFAULTS: dict[ModelTier, int] = {
     "play": 1024,
-    "setup": 1024,
+    # ``setup`` needs more headroom than ``play`` because a full plan
+    # tool call (title, executive_summary, ≥3 objectives, ≥3 narrative
+    # beats with nested ``expected_actors`` arrays, 2–3 injects with
+    # trigger/type/summary, plus guardrails / success_criteria /
+    # out_of_scope) routinely runs past 1024 output tokens. Truncated
+    # plan calls were the cause of the "AI didn't propose a plan yet"
+    # loop observed on 2026-04-29 — every retry hit ``stop_reason:
+    # max_tokens`` and the partial JSON failed validation.
+    "setup": 4096,
     "aar": 4096,
     "guardrail": 12,
 }

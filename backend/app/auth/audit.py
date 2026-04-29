@@ -72,6 +72,32 @@ class AuditLog:
 
         return list(self._buffers.get(session_id, ()))
 
+    def recent_diagnostics(
+        self,
+        session_id: str,
+        *,
+        kinds: tuple[str, ...] = ("tool_use_rejected", "llm_truncated"),
+        limit: int = 5,
+    ) -> list[AuditEvent]:
+        """Most-recent operator-facing failure events, newest first.
+
+        Used by ``/activity`` and ``/setup/reply`` to surface
+        backend-side trouble (rejected tool calls, truncated LLM
+        outputs) to the creator instead of leaving them buried in
+        container stdout. Non-destructive read.
+        """
+
+        buf = self._buffers.get(session_id)
+        if not buf:
+            return []
+        out: list[AuditEvent] = []
+        for evt in reversed(buf):
+            if evt.kind in kinds:
+                out.append(evt)
+                if len(out) >= limit:
+                    break
+        return out
+
     def drop(self, session_id: str) -> None:
         """Forget a session's audit trail (used after export retention)."""
 

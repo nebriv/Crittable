@@ -32,7 +32,7 @@ rationale for each default lives in `backend/app/config.py`
 | Var | Default | Effect |
 |---|---|---|
 | `LLM_MAX_TOKENS_PLAY` | `1024` | Per-turn cap during play. Bump to ~2048 if Sonnet is truncating beats. |
-| `LLM_MAX_TOKENS_SETUP` | `1024` | Per-turn cap during setup. |
+| `LLM_MAX_TOKENS_SETUP` | `4096` | Per-turn cap during setup. Sized to fit a full `propose_scenario_plan` tool call (≥3 nested beats, 2–3 injects, plus optional arrays); raise further if the model still truncates. |
 | `LLM_MAX_TOKENS_AAR` | `4096` | Cap on the AAR report tokens. |
 | `LLM_MAX_TOKENS_GUARDRAIL` | `12` | Cap on the guardrail classifier (one-word verdict). |
 | `LLM_TEMPERATURE_PLAY` | _SDK default_ | Higher = more narrative variance. |

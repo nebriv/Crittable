@@ -87,6 +87,27 @@ export interface ScenarioPlan {
   out_of_scope: string[];
 }
 
+export interface BackendDiagnostic {
+  /** ``tool_use_rejected`` or ``llm_truncated``. */
+  kind: string;
+  /** Tool name that was rejected, when applicable. */
+  name?: string | null;
+  /** LLM tier (``setup`` / ``play`` / ``aar`` / ``guardrail``). */
+  tier?: string | null;
+  /** Human-readable validator / dispatcher message. */
+  reason?: string | null;
+  /** Operator hint (e.g. "raise LLM_MAX_TOKENS_SETUP"). */
+  hint?: string | null;
+}
+
+export interface SetupReplyResult {
+  ok: boolean;
+  /** True iff the AI's tool call set a draft scenario plan. */
+  plan_proposed?: boolean;
+  /** Backend-side rejections / truncations that occurred during this reply. */
+  diagnostics?: BackendDiagnostic[];
+}
+
 /**
  * Strip query-string secrets ({@code token=...}) from a path before logging.
  * Tokens are bearer credentials — leaking them via console is a real bug.
@@ -151,8 +172,16 @@ export const api = {
     return request("GET", `/api/sessions/${sessionId}?token=${encodeURIComponent(token)}`);
   },
 
-  async setupReply(sessionId: string, token: string, content: string): Promise<{ ok: boolean }> {
-    return request("POST", `/api/sessions/${sessionId}/setup/reply?token=${encodeURIComponent(token)}`, { content });
+  async setupReply(
+    sessionId: string,
+    token: string,
+    content: string,
+  ): Promise<SetupReplyResult> {
+    return request(
+      "POST",
+      `/api/sessions/${sessionId}/setup/reply?token=${encodeURIComponent(token)}`,
+      { content },
+    );
   },
 
   async setupFinalize(
