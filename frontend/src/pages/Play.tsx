@@ -81,7 +81,11 @@ export function Play({ sessionId, token }: Props) {
         setCriticalBanner({ severity: evt.severity, headline: evt.headline, body: evt.body });
         break;
       case "guardrail_blocked":
-        setError(evt.message);
+        // Server now only emits this for ``prompt_injection`` (off_topic
+        // is treated as on-topic). Surface verdict + message so the
+        // player understands why their text didn't post.
+        console.warn("[play] guardrail blocked", evt.verdict, evt.message);
+        setError(`Blocked (${evt.verdict}): ${evt.message}`);
         break;
       case "typing":
         setTyping((prev) => {

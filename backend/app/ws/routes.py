@@ -222,16 +222,23 @@ async def _client_pump(
                         {"type": "error", "scope": "submit_response", "message": "empty"}
                     )
                     continue
-                # Optional input-side guardrail
+                # Optional input-side guardrail. Only ``prompt_injection``
+                # blocks (see ``llm/guardrail.py``); everything else flows
+                # through. Pre-fix this also blocked ``off_topic``, which
+                # silently dropped legitimate casual / in-character replies
+                # like "i'm not even on slack" and made the chat look frozen
+                # to the participant.
                 verdict = await manager.guardrail().classify(message=content)
-                if verdict in ("off_topic", "prompt_injection"):
+                if verdict == "prompt_injection":
                     await websocket.send_json(
                         {
                             "type": "guardrail_blocked",
                             "verdict": verdict,
                             "message": (
-                                "Let's keep the focus on the exercise. "
-                                "Try a response that addresses the current beat."
+                                "Your message looked like a prompt-injection "
+                                "attempt and was blocked. If that was a real "
+                                "in-character reply, rephrase without "
+                                "instructing the AI directly."
                             ),
                         }
                     )

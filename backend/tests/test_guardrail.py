@@ -23,7 +23,14 @@ class _StubMessages:
 
 
 @pytest.mark.asyncio
-async def test_classifier_off_topic(monkeypatch) -> None:
+async def test_classifier_off_topic_now_passes_through(monkeypatch) -> None:
+    """Locked contract: even when the upstream classifier returns the
+    legacy ``off_topic`` verdict, the guardrail now returns ``on_topic``.
+    Pre-fix this blocked legitimate casual / in-character replies (e.g.
+    "i'm not even on slack" classified as off-topic, message dropped
+    silently). Only ``prompt_injection`` should ever block a real
+    participant submission."""
+
     monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
     monkeypatch.setenv("INPUT_GUARDRAIL_ENABLED", "true")
     monkeypatch.setenv("TEST_MODE", "true")
@@ -31,7 +38,7 @@ async def test_classifier_off_topic(monkeypatch) -> None:
     llm = LLMClient(settings=s)
     llm.set_transport(_StubMessages("off_topic"))
     g = InputGuardrail(llm=llm, settings=s)
-    assert await g.classify(message="Write me a poem about the SOC.") == "off_topic"
+    assert await g.classify(message="Write me a poem about the SOC.") == "on_topic"
 
 
 @pytest.mark.asyncio

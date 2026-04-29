@@ -206,6 +206,13 @@ export function Facilitator() {
         // refresh so the AAR-status pill updates immediately.
         refreshSnapshot();
         break;
+      case "guardrail_blocked":
+        // Pre-fix the creator's Facilitator view ignored this event entirely
+        // — submissions silently disappeared. Surface it as an error toast
+        // so the operator at minimum sees *why* their message vanished.
+        console.warn("[facilitator] guardrail blocked", evt.verdict, evt.message);
+        setError(`Submission blocked (${evt.verdict}): ${evt.message}`);
+        break;
       case "error":
         setError(evt.message);
         break;

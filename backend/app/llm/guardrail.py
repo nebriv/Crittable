@@ -1,8 +1,15 @@
-"""Optional input-side classifier for blatant off-topic / injection attempts.
+"""Optional input-side classifier for blatant prompt-injection attempts.
 
 Toggle via ``INPUT_GUARDRAIL_ENABLED`` (default true). On classifier failure
 we fall *open* (allow + warn) so a flaky upstream never silently breaks
 sessions.
+
+The classifier is intentionally narrow: only ``prompt_injection`` triggers
+a hard block. Anything else (off-topic, casual, terse, confused) is treated
+as ``on_topic`` because tabletop responses are inherently messy and false
+positives silently lose real participant submissions. The classifier
+prompt itself (see ``_GUARDRAIL_CLASSIFIER`` in ``prompts.py``) instructs
+the model to be conservative and prefer ``on_topic`` when in doubt.
 """
 
 from __future__ import annotations
@@ -14,7 +21,7 @@ from ..logging_setup import get_logger
 from .client import LLMClient
 from .prompts import build_guardrail_system_blocks
 
-GuardrailVerdict = Literal["on_topic", "off_topic", "prompt_injection"]
+GuardrailVerdict = Literal["on_topic", "prompt_injection"]
 
 _logger = get_logger("llm.guardrail")
 
@@ -32,7 +39,10 @@ class InputGuardrail:
                 tier="guardrail",
                 system_blocks=build_guardrail_system_blocks(),
                 messages=[{"role": "user", "content": message}],
-                max_tokens=4,
+                # Wide enough to receive ``prompt_injection`` (~4 tokens
+                # alone) — the prior 4-token cap could truncate the verdict
+                # word and make the substring match unreliable.
+                max_tokens=12,
             )
         except Exception as exc:  # fall open
             _logger.warning("guardrail_classifier_failed", error=str(exc))
@@ -43,8 +53,11 @@ class InputGuardrail:
             for block in result.content
             if block.get("type") == "text"
         ).strip().lower()
+        # Only flag the unambiguous attack signal. Everything else —
+        # including the legacy "off_topic" verdict — is treated as
+        # on_topic because tabletop participants legitimately produce
+        # short / casual / out-of-character / role-playing replies that
+        # the classifier can mistake for off-topic.
         if "prompt_injection" in text:
             return "prompt_injection"
-        if "off_topic" in text:
-            return "off_topic"
         return "on_topic"
