@@ -28,6 +28,7 @@ from .llm.dispatch import ToolDispatcher
 from .llm.guardrail import InputGuardrail
 from .logging_setup import RequestContextMiddleware, configure_logging, get_logger
 from .rate_limit import RateLimitMiddleware
+from .sessions.gc import SessionGC
 from .sessions.manager import SessionManager
 from .sessions.repository import InMemoryRepository
 from .ws import register_ws_routes
@@ -81,6 +82,13 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         authn=authn,
     )
 
+    session_gc = SessionGC(
+        settings=settings,
+        repository=repository,
+        audit=audit,
+    )
+    await session_gc.start()
+
     app.state.settings = settings
     app.state.authn = authn
     app.state.audit = audit
@@ -89,6 +97,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.manager = manager
     app.state.registry = registry
     app.state.llm = llm
+    app.state.session_gc = session_gc
 
     from .config import ModelTier
 
@@ -106,6 +115,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     try:
         yield
     finally:
+        await session_gc.stop()
         await manager.shutdown()
         await connections.shutdown()
         await llm.aclose()

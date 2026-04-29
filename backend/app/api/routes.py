@@ -703,7 +703,25 @@ def register_api_routes(app: FastAPI) -> None:
         in flight (``aar_status`` in {pending, generating}) this endpoint
         returns 425 with a ``Retry-After`` header so the client can poll. On
         ``ready``, returns 200 with the markdown body. On ``failed``, 500.
+
+        Once the GC reaper has evicted the session (state was ENDED and the
+        retention window expired) we return **410 Gone** instead of 404 so
+        a polling client can stop retrying with a definitive signal that
+        the AAR is no longer recoverable.
         """
+
+        # Tombstone check runs before token binding so an evicted session id
+        # never falls through to the generic SessionNotFoundError → 404 path.
+        # Token validation isn't possible after eviction (the role data is
+        # gone), but signalling 410 reveals only what a participant who
+        # already had the link could observe by polling normally.
+        gc = getattr(request.app.state, "session_gc", None)
+        if gc is not None and gc.is_evicted(session_id):
+            return PlainTextResponse(
+                content="session export retention window expired",
+                status_code=status.HTTP_410_GONE,
+                headers={"X-AAR-Status": "evicted"},
+            )
 
         manager = _manager(request)
         token = await _bind_token(request, session_id)
