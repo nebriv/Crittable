@@ -331,9 +331,35 @@ def register_api_routes(app: FastAPI) -> None:
         session = await manager.get_session(session_id)
         if session.state != SessionState.SETUP:
             return {"ok": True, "state": session.state.value}
+        # Snapshot the audit "high-water mark" before the LLM call so
+        # we can return *only* the diagnostics emitted by THIS reply
+        # (older ones from previous replies stay invisible to this
+        # response — they're still in /activity).
+        before = len(manager.audit().dump(session_id))
         await driver.run_setup_turn(session=session)
-        await manager.get_session(session_id)
-        return {"ok": True}
+        after = await manager.get_session(session_id)
+        # Disambiguate the "AI didn't propose a plan" failure mode for
+        # the frontend. Previously the frontend could only tell that
+        # ``after.plan`` was None and showed a generic "try again"
+        # message. Now it can render the specific reason (validation
+        # error / max_tokens truncation / etc.).
+        new_audit = manager.audit().dump(session_id)[before:]
+        diagnostics = [
+            {
+                "kind": evt.kind,
+                "name": evt.payload.get("name"),
+                "tier": evt.payload.get("tier"),
+                "reason": evt.payload.get("reason"),
+                "hint": evt.payload.get("hint"),
+            }
+            for evt in new_audit
+            if evt.kind in {"tool_use_rejected", "llm_truncated"}
+        ]
+        return {
+            "ok": True,
+            "plan_proposed": after.plan is not None,
+            "diagnostics": diagnostics,
+        }
 
     @router.post("/sessions/{session_id}/setup/skip")
     async def setup_skip(session_id: str, request: Request) -> dict[str, Any]:
@@ -836,6 +862,21 @@ def register_api_routes(app: FastAPI) -> None:
             "turn_count": len(session.turns),
             "message_count": len(session.messages),
             "setup_note_count": len(session.setup_notes),
+            # Backend-side trouble surfaced to the creator UI so the
+            # activity panel can show "model rejected the plan tool 3x"
+            # or "setup tier hit max_tokens" without requiring an SSH
+            # into the container. Newest-first, capped to 5.
+            "recent_diagnostics": [
+                {
+                    "kind": evt.kind,
+                    "ts": evt.ts.isoformat(),
+                    "name": evt.payload.get("name"),
+                    "tier": evt.payload.get("tier"),
+                    "reason": evt.payload.get("reason"),
+                    "hint": evt.payload.get("hint"),
+                }
+                for evt in manager.audit().recent_diagnostics(session_id)
+            ],
         }
 
     @router.get("/sessions/{session_id}/debug")

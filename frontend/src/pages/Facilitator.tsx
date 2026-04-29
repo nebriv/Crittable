@@ -432,7 +432,7 @@ export function Facilitator() {
     setBusy(true);
     setBusyMessage("Asking the AI to draft the plan…");
     try {
-      await api.setupReply(state.sessionId, state.token, NUDGE_PROPOSE);
+      const reply = await api.setupReply(state.sessionId, state.token, NUDGE_PROPOSE);
       const snap = await api.getSession(state.sessionId, state.token);
       setSnapshot(snap);
       if (snap.plan) {
@@ -441,9 +441,26 @@ export function Facilitator() {
         const after = await api.getSession(state.sessionId, state.token);
         setSnapshot(after);
       } else {
-        setError(
-          "The AI didn't propose a plan yet. Try once more, or share a bit more context first.",
-        );
+        // Disambiguate the failure mode using server-side diagnostics
+        // so the operator knows whether to raise max_tokens, share more
+        // context, or report a model regression. Without this every
+        // failure looked identical in the UI.
+        const diags = reply.diagnostics ?? [];
+        const truncated = diags.find((d) => d.kind === "llm_truncated");
+        const rejected = diags.find((d) => d.kind === "tool_use_rejected");
+        let message: string;
+        if (truncated) {
+          message =
+            `The AI's plan call was truncated (${truncated.tier ?? "setup"} tier hit max_tokens). ` +
+            (truncated.hint ?? "Raise LLM_MAX_TOKENS_SETUP and retry.");
+        } else if (rejected) {
+          const tool = rejected.name ?? "tool";
+          message = `The AI tried to call ${tool} but the engine rejected it: ${rejected.reason ?? "see backend logs"}`;
+        } else {
+          message =
+            "The AI didn't propose a plan yet. Try once more, or share a bit more context first.";
+        }
+        setError(message);
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));

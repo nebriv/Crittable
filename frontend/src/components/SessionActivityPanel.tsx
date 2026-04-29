@@ -1,6 +1,15 @@
 import { useEffect, useRef, useState } from "react";
 import { RoleView, api } from "../api/client";
 
+interface ActivityDiagnostic {
+  kind: string;
+  ts: string;
+  name?: string | null;
+  tier?: string | null;
+  reason?: string | null;
+  hint?: string | null;
+}
+
 interface ActivitySnapshot {
   state: string;
   turn: {
@@ -18,6 +27,7 @@ interface ActivitySnapshot {
   turn_count: number;
   message_count: number;
   setup_note_count: number;
+  recent_diagnostics?: ActivityDiagnostic[];
 }
 
 interface Props {
@@ -230,6 +240,36 @@ export function SessionActivityPanel({
           <p className="text-[10px] text-slate-500">
             {data.turn_count} turns · {data.message_count} msgs · {data.setup_note_count} setup notes
           </p>
+
+          {data.recent_diagnostics && data.recent_diagnostics.length > 0 ? (
+            <details className="rounded border border-amber-700/40 bg-amber-950/20 p-1.5 text-xs">
+              <summary className="cursor-pointer text-amber-200">
+                Recent backend diagnostics ({data.recent_diagnostics.length})
+              </summary>
+              <ul className="mt-1 flex flex-col gap-1">
+                {data.recent_diagnostics.map((diag, idx) => (
+                  <li
+                    key={`${diag.ts}-${idx}`}
+                    className="rounded bg-slate-950 px-2 py-1 text-[11px] text-slate-200"
+                  >
+                    <span className="font-semibold text-amber-200">{diag.kind}</span>
+                    {diag.tier ? (
+                      <span className="ml-1 text-slate-400">[{diag.tier}]</span>
+                    ) : null}
+                    {diag.name ? (
+                      <span className="ml-1 text-slate-300">{diag.name}</span>
+                    ) : null}
+                    {diag.reason ? (
+                      <p className="text-slate-300">{diag.reason}</p>
+                    ) : null}
+                    {diag.hint ? (
+                      <p className="text-emerald-300">→ {diag.hint}</p>
+                    ) : null}
+                  </li>
+                ))}
+              </ul>
+            </details>
+          ) : null}
         </>
       )}
 

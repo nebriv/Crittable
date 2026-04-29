@@ -26,6 +26,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any
 
+from ..auth.audit import AuditEvent
 from ..extensions.registry import FrozenRegistry
 from ..llm.client import LLMResult
 from ..llm.dispatch import DispatchOutcome
@@ -59,6 +60,51 @@ _logger = get_logger("session.turn_driver")
 class TurnDriver:
     def __init__(self, *, manager: SessionManager) -> None:
         self._manager = manager
+
+    def _check_truncation(
+        self,
+        *,
+        session_id: str,
+        tier: str,
+        result: LLMResult,
+        turn_id: str | None = None,
+    ) -> None:
+        """Emit an audit event when an LLM call hit ``max_tokens``.
+
+        ``stop_reason == "max_tokens"`` always means the per-tier
+        budget is too small for the call the prompt is asking for —
+        the model is truncated mid-output. That used to surface only
+        in container stdout; now it lives in the audit ring buffer so
+        the creator's activity panel and ``/setup/reply`` can show it
+        without an SSH session.
+        """
+
+        if result.stop_reason != "max_tokens":
+            return
+        _logger.warning(
+            "llm_truncated",
+            session_id=session_id,
+            tier=tier,
+            model=result.model,
+            output_tokens=result.usage.get("output_tokens"),
+        )
+        self._manager.audit().emit(
+            AuditEvent(
+                kind="llm_truncated",
+                session_id=session_id,
+                turn_id=turn_id,
+                payload={
+                    "tier": tier,
+                    "model": result.model,
+                    "output_tokens": result.usage.get("output_tokens"),
+                    "hint": (
+                        "raise LLM_MAX_TOKENS_"
+                        + tier.upper()
+                        + " — current call hit the per-tier ceiling"
+                    ),
+                },
+            )
+        )
 
     async def run_setup_turn(self, *, session: Session) -> Session:
         """Drive one setup-tier turn. May loop internally if Claude chains tools."""
@@ -99,6 +145,7 @@ class TurnDriver:
                 session_id=session.id,
             )
             await self._apply_cost(session.id, result)
+            self._check_truncation(session_id=session.id, tier="setup", result=result)
 
             tool_uses = _tool_uses(result)
             if not tool_uses:
@@ -262,6 +309,9 @@ class TurnDriver:
                 tool_choice=tool_choice,
             )
             await self._apply_cost(session.id, result)
+            self._check_truncation(
+                session_id=session.id, tier="play", result=result, turn_id=turn.id
+            )
 
             tool_uses = _tool_uses(result)
             outcome = await dispatcher.dispatch(
