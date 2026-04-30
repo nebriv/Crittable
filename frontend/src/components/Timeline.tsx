@@ -9,19 +9,43 @@ interface Props {
 interface TimelineEntry {
   id: string;
   ts: string;
-  tag: "Critical" | "Pinned" | "Lifecycle";
+  tag: "Critical" | "Pinned" | "Beat" | "Decision" | "Data brief" | "Lifecycle";
   title: string;
   body: string;
   tone: string;
 }
 
+// Lower bound for ``share_data`` body length (in chars, post-label) to be
+// pin-worthy. Short data shares (a single line of telemetry) would clutter
+// the rail; only substantial dumps — log tables, IOC lists — get pinned.
+const SHARE_DATA_MIN_CHARS = 300;
+
+// Beat detector: matches the AI naming a phase / beat / stage in a broadcast.
+// Examples it should catch:
+//   "**BEAT 2 — Scope Assessment**"
+//   "Beat 3: Stakeholder Briefing"
+//   "Phase 1 — Detection & Triage"
+//   "Stage 2 (Containment)"
+// Captures the keyword + the integer index. Case-insensitive. Title is
+// reconstructed from the line that contains the match so it includes the
+// human-readable label the AI wrote inline.
+const BEAT_RE = /\b(beat|phase|stage)\s+(\d{1,2})\b/i;
+
 /**
  * Right-sidebar overview/timeline. Highlights *only* the key beats of the
- * exercise — not a firehose of every AI broadcast. Three categories:
+ * exercise — not a firehose of every AI broadcast. Six categories:
  *
  *  - **Critical** — ``critical_inject`` messages (urgent injects).
- *  - **Pinned**   — ``mark_timeline_point`` calls, the AI's explicit "this
- *                   moment matters" signal.
+ *  - **Beat**     — first broadcast that mentions ``Beat N`` / ``Phase
+ *                   N`` / ``Stage N`` (auto-detected; one entry per
+ *                   index). The most important pin type for AAR review.
+ *  - **Pinned**   — legacy ``mark_timeline_point`` calls (kept for
+ *                   sessions created before the 2026-04-30 redesign;
+ *                   the tool is no longer in the play palette).
+ *  - **Decision** — ``pose_choice`` calls — explicit decision points
+ *                   the team will want to scroll back to.
+ *  - **Data brief** — substantial ``share_data`` calls — telemetry,
+ *                   IOC dumps, log tables players will want to re-read.
  *  - **Lifecycle** — session start / end / force-advance system notes.
  *
  * Routine ``broadcast`` / ``inject_event`` / ``request_artifact`` calls
@@ -37,6 +61,11 @@ export function Timeline({ messages, roles: _roles }: Props) {
   void _roles;
 
   const items: TimelineEntry[] = [];
+  // Track the highest beat / phase / stage index we've already pinned, so
+  // the rail gets ONE entry per phase boundary — not every time the AI
+  // mentions "beat 2" downstream. Beat 1 is included (the first
+  // briefing broadcast usually says "BEAT 1 — Detection & Triage").
+  let highestBeatPinned = 0;
   for (const m of messages) {
     if (m.kind === "critical_inject") {
       const headline = (m.tool_args?.headline as string | undefined)?.trim();
@@ -51,6 +80,9 @@ export function Timeline({ messages, roles: _roles }: Props) {
       continue;
     }
     if (m.tool_name === "mark_timeline_point") {
+      // Legacy: tool removed from PLAY_TOOLS in the 2026-04-30 redesign
+      // (see docs/tool-design.md), but transcripts from older sessions
+      // still contain entries — keep rendering them.
       const title = (m.tool_args?.title as string | undefined)?.trim();
       items.push({
         id: m.id,
@@ -59,6 +91,70 @@ export function Timeline({ messages, roles: _roles }: Props) {
         title: title || "Pinned moment",
         body: m.body,
         tone: "border-violet-600/50 bg-violet-950/30",
+      });
+      continue;
+    }
+    if (m.tool_name === "pose_choice") {
+      // Decision points — the AI surfaced a multi-choice fork. Always
+      // pin: a tactical decision is exactly the kind of moment players
+      // will want to scroll back to during the AAR.
+      const question = (m.tool_args?.question as string | undefined)?.trim();
+      const role = _roles.find((r) => r.id === (m.tool_args?.role_id as string | undefined));
+      const roleLabel = role ? `${role.label} — ` : "";
+      items.push({
+        id: m.id,
+        ts: new Date(m.ts).toLocaleTimeString(),
+        tag: "Decision",
+        title: roleLabel + (question || "Decision point"),
+        body: m.body,
+        tone: "border-amber-500/50 bg-amber-950/30",
+      });
+      continue;
+    }
+    // Beat / phase / stage transitions — pinned ONCE per index. Detected
+    // from broadcasts (the AI's voice) and from address_role messages,
+    // since the AI often opens a beat with "Beat 2 — CISO, your call ...".
+    // Critical injects are handled above and may also contain a beat
+    // mention; that's fine, a critical inject overrides for that moment
+    // and the next broadcast in a new beat still gets a Beat pin.
+    if (m.tool_name === "broadcast" || m.tool_name === "address_role") {
+      const match = BEAT_RE.exec(m.body || "");
+      if (match) {
+        const idx = parseInt(match[2], 10);
+        if (idx > highestBeatPinned) {
+          highestBeatPinned = idx;
+          // Reconstruct a friendly title from the line containing the
+          // match (so we keep "BEAT 2 — Scope Assessment" verbatim if
+          // the AI wrote it that way). Strip common decorations.
+          const line = (m.body || "")
+            .split(/\r?\n/)
+            .find((ln) => BEAT_RE.test(ln))
+            ?.replace(/^[\s>#*•-]+|[\s>#*•-]+$/g, "")
+            .replace(/\*\*/g, "")
+            .trim();
+          items.push({
+            id: m.id,
+            ts: new Date(m.ts).toLocaleTimeString(),
+            tag: "Beat",
+            title: line || `${match[1][0].toUpperCase()}${match[1].slice(1).toLowerCase()} ${idx}`,
+            body: m.body,
+            tone: "border-emerald-600/50 bg-emerald-950/30",
+          });
+          continue;
+        }
+      }
+    }
+    if (m.tool_name === "share_data") {
+      // Substantial data dumps only — short shares would clutter the rail.
+      if ((m.body?.length ?? 0) < SHARE_DATA_MIN_CHARS) continue;
+      const label = (m.tool_args?.label as string | undefined)?.trim();
+      items.push({
+        id: m.id,
+        ts: new Date(m.ts).toLocaleTimeString(),
+        tag: "Data brief",
+        title: label || "Data shared",
+        body: m.body,
+        tone: "border-sky-600/50 bg-sky-950/30",
       });
       continue;
     }
@@ -115,7 +211,8 @@ export function Timeline({ messages, roles: _roles }: Props) {
       </h3>
       {items.length === 0 ? (
         <p className="text-xs text-slate-400">
-          Key beats will appear here as the AI pins them.
+          Key beats will appear here automatically — critical injects, decision
+          points, major data shares, and session lifecycle.
         </p>
       ) : (
         <ol className="flex flex-col gap-2 overflow-y-auto pr-1">
