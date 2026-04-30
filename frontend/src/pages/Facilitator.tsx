@@ -21,7 +21,7 @@ import { SetupChat } from "../components/SetupChat";
 import { Transcript } from "../components/Transcript";
 import { ServerEvent, WsClient } from "../lib/ws";
 
-type Phase = "intro" | "setup" | "ready" | "play" | "ended";
+export type Phase = "intro" | "setup" | "ready" | "play" | "ended";
 
 interface CreatorState {
   sessionId: string;
@@ -105,6 +105,16 @@ export function Facilitator() {
   });
   const [creatorLabel, setCreatorLabel] = useState("CISO");
   const [creatorDisplayName, setCreatorDisplayName] = useState("");
+  // Issue #61: roles to invite, declared *before* the session is created
+  // so the operator doesn't have to add seats one-by-one in the lobby.
+  // These are auto-created via ``api.addRole`` immediately after the
+  // session is created. Operators can still add/remove roles dynamically
+  // from the Roles panel during setup or play.
+  const SETUP_ROLE_DEFAULTS = ["IR Lead", "Legal", "Comms"] as const;
+  const [setupRoles, setSetupRoles] = useState<string[]>([
+    ...SETUP_ROLE_DEFAULTS,
+  ]);
+  const [setupRoleDraft, setSetupRoleDraft] = useState("");
   // Dev-mode toggle on the intro page: prefills a known scenario + creator
   // identity, and on submit auto-skips the AI setup dialogue so testers
   // bypass the 5–30 s setup loop. Use only for local QA.
@@ -124,10 +134,10 @@ export function Facilitator() {
   const [cost, setCost] = useState<CostSnapshot | null>(null);
   const [godMode, setGodMode] = useState(false);
   // Page-level state for the AAR popup so a single "View AAR" button in
-  // the sidebar Controls is the only surface that opens it. Pre-fix the
-  // sidebar had a "Download AAR" that bypassed the popup AND the chat
-  // area had a duplicate "Show AAR report" button — two competing CTAs
-  // for the same task.
+  // the top SessionActionBar is the only surface that opens it. Pre-fix
+  // the sidebar had a "Download AAR" that bypassed the popup AND the
+  // chat area had a duplicate "Show AAR report" button — two competing
+  // CTAs for the same task.
   const [showAarPopup, setShowAarPopup] = useState(false);
   // role_id -> last typing-true timestamp (ms). Filtered to "currently typing"
   // by the consuming components which check freshness < 4s.
@@ -138,13 +148,20 @@ export function Facilitator() {
   // before kicking off the exercise.
   const [presence, setPresence] = useState<Set<string>>(() => new Set());
   // Real-time AI-thinking tracking — same shape as Play.tsx. ``aiCalls``
-  // collects in-flight LLM ``call_id``s from ``ai_thinking`` boundary
+  // maps in-flight LLM ``call_id`` → tier (``setup`` / ``play`` / ``aar``
+  // / ``guardrail`` / ``interject``) from ``ai_thinking`` boundary
   // events; ``aiStatus`` carries the labelled phase/attempt/recovery
   // breadcrumb the turn-driver emits at known points. Together they let
   // the operator distinguish "thinking" from "stuck" during the
   // strict-retry loop and see interject / setup / AAR work that doesn't
-  // change ``session.state`` (issue #63).
-  const [aiCalls, setAiCalls] = useState<Set<string>>(() => new Set());
+  // change ``session.state`` (issue #63). The tier is what powers the
+  // top-bar ``LLM: <tier>`` chip (round 4 of issue #62) — the operator
+  // wanted to see *which* tier is currently active, not just that
+  // *something* is in flight, so they can spot e.g. guardrail spikes
+  // separately from play-tier turns.
+  const [aiCalls, setAiCalls] = useState<Map<string, string>>(
+    () => new Map(),
+  );
   const [aiStatus, setAiStatus] = useState<{
     phase: "play" | "interject" | "setup" | "briefing" | "aar";
     attempt?: number;
@@ -161,6 +178,16 @@ export function Facilitator() {
   // local state with the canonical server list to avoid drift if a
   // WebSocket frame was missed during reconnect.
   const [decisionLog, setDecisionLog] = useState<DecisionLogEntry[]>([]);
+  // Issue #62 round 3 — per-bar telemetry. ``lastEventAt`` is bumped on
+  // every incoming WS frame so the top bar can render "Last: Xs ago",
+  // which fills the diagnostic gap between the binary ``ws: open`` pill
+  // (the socket is up) and "is anything actually flowing?". A frozen
+  // counter is a strong signal the backend went quiet even when TCP is
+  // still healthy. ``connectionCount`` is server-pushed via the existing
+  // ``presence`` / ``presence_snapshot`` events and tells the creator
+  // how many tabs are currently watching the session.
+  const [lastEventAt, setLastEventAt] = useState<number | null>(null);
+  const [connectionCount, setConnectionCount] = useState<number | null>(null);
   const wsRef = useRef<WsClient | null>(null);
   const forceAdvanceTimerRef = useRef<number | null>(null);
   useEffect(() => {
@@ -243,6 +270,46 @@ export function Facilitator() {
         creatorRoleId: created.creator_role_id,
         joinUrl: created.creator_join_url,
       });
+      // Issue #61: auto-create any pre-declared invitee roles before the
+      // operator lands on the lobby. De-duped against the creator's own
+      // label so an operator who left the suggestions list intact and
+      // *also* picked one of those labels for themselves doesn't get a
+      // duplicate seat. Dev mode skips this — it has its own SOC Analyst
+      // helper seat below.
+      if (!devMode) {
+        const creatorLabelTrim = creatorLabel.trim().toLowerCase();
+        const seen = new Set<string>([creatorLabelTrim]);
+        const labelsToAdd = setupRoles
+          .map((s) => s.trim())
+          .filter((s) => s.length > 0)
+          .filter((label) => {
+            const k = label.toLowerCase();
+            if (seen.has(k)) return false;
+            seen.add(k);
+            return true;
+          });
+        for (const label of labelsToAdd) {
+          setBusyMessage(`Adding role "${label}"…`);
+          try {
+            await api.addRole(created.session_id, created.creator_token, {
+              label,
+              kind: "player",
+            });
+          } catch (roleErr) {
+            console.warn("[facilitator] failed to add role", label, roleErr);
+            setError(
+              `Created the session but failed to add role "${label}": ` +
+                (roleErr instanceof Error ? roleErr.message : String(roleErr)) +
+                ". You can add it manually from the Roles panel.",
+            );
+          }
+        }
+        if (labelsToAdd.length > 0) {
+          console.info("[facilitator] pre-created roles", {
+            count: labelsToAdd.length,
+          });
+        }
+      }
       if (devMode) {
         // ``start_session`` requires ≥ 2 player roles. Dev mode auto-
         // adds a SOC Analyst seat so the operator can solo-test via the
@@ -288,6 +355,12 @@ export function Facilitator() {
   }, [state?.sessionId, state?.token]);
 
   function handleEvent(evt: ServerEvent) {
+    // Top-bar "Last: Xs ago" — bump on every frame regardless of type.
+    // We *don't* try to filter to "interesting" events here because the
+    // signal we're surfacing is "is the connection delivering anything?";
+    // typing pings, heartbeats and presence updates are all valid
+    // liveness evidence.
+    setLastEventAt(Date.now());
     switch (evt.type) {
       case "message_chunk":
         setStreamingText((t) => t + evt.text);
@@ -306,7 +379,7 @@ export function Facilitator() {
         // when the engine actually moves to a non-busy state.
         if (evt.state !== "AI_PROCESSING" && evt.state !== "BRIEFING") {
           setAiStatus(null);
-          setAiCalls(new Set());
+          setAiCalls(new Map());
         }
         break;
       case "turn_changed":
@@ -318,10 +391,14 @@ export function Facilitator() {
       case "ai_thinking":
         // Reference-counted concurrent calls (guardrail + interject can
         // overlap). Add/remove by call_id so the indicator only clears
-        // when ALL calls have ended.
+        // when ALL calls have ended. Tier is retained so the top-bar
+        // ``LLM: <tier>`` chip can show *what* is in flight, not just
+        // *that* something is — a guardrail call layered on top of a
+        // play turn shows as ``LLM: guardrail+play`` rather than the
+        // operator having to guess from the transcript.
         setAiCalls((prev) => {
-          const next = new Set(prev);
-          if (evt.active) next.add(evt.call_id);
+          const next = new Map(prev);
+          if (evt.active) next.set(evt.call_id, evt.tier);
           else next.delete(evt.call_id);
           return next;
         });
@@ -369,9 +446,15 @@ export function Facilitator() {
           else next.delete(evt.role_id);
           return next;
         });
+        if (typeof evt.connection_count === "number") {
+          setConnectionCount(evt.connection_count);
+        }
         break;
       case "presence_snapshot":
         setPresence(new Set(evt.role_ids));
+        if (typeof evt.connection_count === "number") {
+          setConnectionCount(evt.connection_count);
+        }
         break;
       case "typing":
         setTyping((prev) => {
@@ -614,6 +697,8 @@ export function Facilitator() {
     setDecisionLog([]);
     setPresence(new Set());
     setCost(null);
+    setLastEventAt(null);
+    setConnectionCount(null);
     setSetupReply("");
     setError(null);
   }
@@ -821,6 +906,132 @@ export function Facilitator() {
               className="rounded border border-slate-700 bg-slate-900 p-2 text-sm"
             />
           </div>
+          {(() => {
+            // Helpers shared between the Add-role button and the Enter
+            // shortcut. Extracted so the trim/dedup logic lives in one
+            // place — duplicating it across the two handlers was flagged
+            // as a regression footgun in code review.
+            const addRoleLabel = (next: string) => {
+              const trimmed = next.trim();
+              if (!trimmed) return;
+              if (
+                setupRoles.some((r) => r.toLowerCase() === trimmed.toLowerCase())
+              ) {
+                setSetupRoleDraft("");
+                return;
+              }
+              setSetupRoles((cur) => [...cur, trimmed]);
+              setSetupRoleDraft("");
+            };
+            // Surface the silent dedupe-against-creator-label case: if the
+            // operator picks "IR Lead" as their own role label and leaves
+            // it in the suggestions, it'll be filtered out at create
+            // time. Tell them up front rather than letting the seat go
+            // missing without explanation.
+            const creatorLabelLower = creatorLabel.trim().toLowerCase();
+            const dedupeWithCreator = creatorLabelLower
+              ? setupRoles.find((r) => r.toLowerCase() === creatorLabelLower)
+              : undefined;
+            const defaultsMatch =
+              setupRoles.length === SETUP_ROLE_DEFAULTS.length &&
+              SETUP_ROLE_DEFAULTS.every((d, i) => setupRoles[i] === d);
+            return (
+              <fieldset className="flex flex-col gap-2 rounded border border-slate-700 bg-slate-900 p-3">
+                <legend className="px-1 text-xs uppercase tracking-widest text-slate-400">
+                  Roles to invite
+                </legend>
+                <p className="text-[11px] text-slate-400">
+                  Add the seats other participants will fill. Each role
+                  gets its own join link in the lobby — you'll copy and
+                  share the link yourself. You can also add or remove
+                  roles later from the Roles panel.
+                </p>
+                {setupRoles.length > 0 ? (
+                  <ul className="flex flex-wrap gap-1.5">
+                    {setupRoles.map((label, idx) => (
+                      <li
+                        key={`${label}-${idx}`}
+                        className="inline-flex items-center gap-1 rounded border border-slate-600 bg-slate-950 py-0.5 pl-2 pr-0.5 text-xs text-slate-200"
+                      >
+                        <span>{label}</span>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setSetupRoles((cur) =>
+                              cur.filter((_, i) => i !== idx),
+                            )
+                          }
+                          aria-label={`Remove ${label}`}
+                          className="rounded px-1.5 py-0.5 text-slate-400 hover:bg-slate-800 hover:text-red-300 focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-300"
+                          title={`Remove ${label}`}
+                        >
+                          <span aria-hidden="true">×</span>
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                ) : (
+                  <p className="text-[11px] italic text-slate-500">
+                    No invitee roles yet. You'll need at least 1 invitee
+                    (you + 1 = 2 player seats) before the exercise can
+                    start.
+                  </p>
+                )}
+                {dedupeWithCreator ? (
+                  <p
+                    role="status"
+                    className="text-[11px] text-amber-300"
+                  >
+                    You're playing "{dedupeWithCreator}", so it won't be
+                    auto-added as a separate invitee.
+                  </p>
+                ) : null}
+                <div className="flex flex-wrap gap-2">
+                  <input
+                    value={setupRoleDraft}
+                    onChange={(e) => setSetupRoleDraft(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        e.preventDefault();
+                        addRoleLabel(setupRoleDraft);
+                      }
+                    }}
+                    placeholder="e.g. IR Lead — press Enter to add another"
+                    aria-label="New role label"
+                    className="flex-1 rounded border border-slate-700 bg-slate-950 p-2 text-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-300"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => addRoleLabel(setupRoleDraft)}
+                    disabled={!setupRoleDraft.trim()}
+                    className="rounded border border-slate-600 px-3 py-2 text-xs text-slate-200 hover:bg-slate-800 focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-300 disabled:opacity-50"
+                  >
+                    Add role
+                  </button>
+                </div>
+                <div className="flex flex-wrap gap-3 text-[11px] text-slate-400">
+                  {setupRoles.length > 0 ? (
+                    <button
+                      type="button"
+                      onClick={() => setSetupRoles([])}
+                      className="text-slate-400 underline hover:text-slate-200 focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-300"
+                    >
+                      Clear all
+                    </button>
+                  ) : null}
+                  {!defaultsMatch ? (
+                    <button
+                      type="button"
+                      onClick={() => setSetupRoles([...SETUP_ROLE_DEFAULTS])}
+                      className="text-slate-400 underline hover:text-slate-200 focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-300"
+                    >
+                      Reset to defaults
+                    </button>
+                  ) : null}
+                </div>
+              </fieldset>
+            );
+          })()}
           <button
             type="submit"
             disabled={busy}
@@ -854,14 +1065,38 @@ export function Facilitator() {
           onAcknowledge={() => setCriticalBanner(null)}
         />
       ) : null}
-      <StatusBar
+      {/* Issue #62 (round 2): consolidated top bar — debug telemetry +
+          phase CTA + meta actions on a single row. See ``TopBar`` for
+          layout rationale. */}
+      <TopBar
         phase={phase}
         backendState={snapshot.state}
         wsStatus={wsStatus}
-        busy={busy}
-        busyMessage={busyMessage}
-        onToggleGodMode={() => setGodMode((g) => !g)}
         godMode={godMode}
+        onToggleGodMode={() => setGodMode((g) => !g)}
+        onStart={handleStart}
+        onForceAdvance={handleForceAdvance}
+        onEnd={handleEnd}
+        onNewSession={handleNewSession}
+        onViewAar={() => setShowAarPopup(true)}
+        playerCount={playerCount}
+        hasFinalizedPlan={Boolean(snapshot.plan)}
+        aarStatus={snapshot.aar_status ?? null}
+        busy={busy}
+        turnIndex={snapshot.current_turn?.index ?? null}
+        rationaleCount={decisionLog.length}
+        connectionCount={connectionCount}
+        lastEventAt={lastEventAt}
+        cost={cost ?? snapshot.cost}
+        messageCount={snapshot.messages.length}
+        activeTiers={(() => {
+          // De-dupe tiers across overlapping calls and sort for a stable
+          // chip label. Empty set → idle. The chip itself decides how to
+          // render the empty case; we pass an empty array.
+          const seen = new Set<string>();
+          for (const tier of aiCalls.values()) seen.add(tier);
+          return Array.from(seen).sort();
+        })()}
       />
       <div className="mx-auto grid w-full max-w-7xl flex-1 grid-cols-1 gap-4 p-4 lg:min-h-0 lg:grid-cols-[280px_1fr_280px] lg:overflow-hidden">
         <aside className="flex flex-col gap-4 lg:min-h-0 lg:overflow-y-auto lg:pr-1">
@@ -889,19 +1124,6 @@ export function Facilitator() {
             busy={busy || forceAdvanceCooldown}
           />
           <DecisionLogPanel entries={decisionLog} />
-          <CostMeter cost={cost ?? snapshot.cost} />
-          <Controls
-            phase={phase}
-            onStart={handleStart}
-            onForceAdvance={handleForceAdvance}
-            onEnd={handleEnd}
-            onNewSession={handleNewSession}
-            onViewAar={() => setShowAarPopup(true)}
-            playerCount={playerCount}
-            hasFinalizedPlan={Boolean(snapshot.plan)}
-            aarStatus={snapshot.aar_status ?? null}
-            busy={busy}
-          />
         </aside>
 
         <section className="flex min-w-0 flex-col gap-3 lg:min-h-0 lg:overflow-hidden">
@@ -936,6 +1158,7 @@ export function Facilitator() {
               onSkipSetup={handleSkipSetup}
               onPickOption={(opt) => callSetup(opt, "Sending your selection to the AI…")}
               busy={busy}
+              busyMessage={busyMessage}
             />
           ) : null}
           {phase === "ready" ? (
@@ -1033,6 +1256,10 @@ export function Facilitator() {
             // transcript length. ``shrink-0`` here is what keeps Submit
             // reachable on a 30-message exercise.
             <div className="shrink-0">
+              {/* Operator-action busy chip — moved out of the top bar so
+                  the "is the AI thinking or stuck?" signal sits where
+                  the operator's eye already is during a turn. */}
+              <BusyChip busy={busy} message={busyMessage} />
               {!isMyTurn && snapshot.current_turn?.active_role_ids?.length ? (
                 <WaitingChip
                   activeRoleIds={activeRoleIds}
@@ -1131,73 +1358,333 @@ export function Facilitator() {
   );
 }
 
-function StatusBar({
-  phase,
-  backendState,
-  wsStatus,
-  busy,
-  busyMessage,
-  onToggleGodMode,
-  godMode,
-}: {
+/**
+ * Issue #62 (round 2): single consolidated top bar that combines the
+ * pre-merge ``StatusBar`` (debug pills + God Mode) with the
+ * ``SessionActionBar`` (phase CTA / supporting buttons / "Start a new
+ * session"). Two stacked bars wasted vertical space and read as
+ * redundant; one bar with the CTA on the left and debug telemetry on the
+ * right keeps every datum we surface today while halving the chrome
+ * height. Mobile lets the bar wrap naturally — content rolls onto
+ * additional rows but still sits at the top of the viewport.
+ *
+ * Layout:
+ *   [title] [phase CTA] [supporting buttons] [helper text]
+ *                          ml-auto →
+ *   [state pill] [ws pill] [build SHA] [God Mode] [Start a new session]
+ *
+ * The "AI is thinking…" / generic-busy chip lives next to the Composer
+ * (see ``BusyChip`` below) per the operator's instruction to keep the
+ * stuck-vs-thinking signal at the bottom of the transcript where their
+ * eye already is during a turn.
+ */
+export function TopBar(props: {
   phase: Phase;
   backendState: string;
   wsStatus: "connecting" | "open" | "closed" | "error";
-  busy: boolean;
-  onToggleGodMode: () => void;
   godMode: boolean;
-  busyMessage: string | null;
+  onToggleGodMode: () => void;
+  // Session-action props (was SessionActionBar):
+  onStart: () => void;
+  onForceAdvance: () => void;
+  onEnd: () => void;
+  onNewSession: () => void;
+  /** Opens the single AAR popup (which contains the actual Download button). */
+  onViewAar: () => void;
+  playerCount: number;
+  hasFinalizedPlan: boolean;
+  /** "pending" | "generating" | "ready" | "failed" — null while loading. */
+  aarStatus: string | null;
+  busy: boolean;
+  // Round 3 telemetry — see ``Facilitator`` state for source-of-truth
+  // notes. Each prop is optional / nullable so the bar still renders
+  // before the first WS frame / snapshot fetch lands.
+  /** ``snapshot.current_turn?.index`` — null when no turn is active. */
+  turnIndex: number | null;
+  /** ``decisionLog.length`` — count of AI rationale entries logged. */
+  rationaleCount: number;
+  /** Server-pushed total open WS tabs on this session, or null if unknown. */
+  connectionCount: number | null;
+  /** ``Date.now()`` of the last received WS frame; null until first frame. */
+  lastEventAt: number | null;
+  /** Latest cost snapshot — drives the click-to-expand chip. */
+  cost: CostSnapshot | null;
+  /** ``snapshot.messages.length`` — raw message-count debug telemetry. */
+  messageCount: number;
+  /** Sorted, de-duped LLM tiers currently in flight (e.g. ``["play"]``,
+   *  ``["guardrail", "play"]``). Empty array = idle. Source: every
+   *  ``ai_thinking`` event carries a ``tier``; ``Facilitator`` retains
+   *  the mapping per ``call_id``. */
+  activeTiers: string[];
 }) {
   const wsColour =
-    wsStatus === "open"
+    props.wsStatus === "open"
       ? "text-emerald-300"
-      : wsStatus === "connecting"
+      : props.wsStatus === "connecting"
         ? "text-amber-300"
         : "text-red-300";
+  const canStart =
+    (props.phase === "ready" || props.phase === "setup") &&
+    props.hasFinalizedPlan &&
+    props.playerCount >= 2;
+  // ``Last: Xs ago`` chip — re-render once a second so the displayed
+  // delta stays fresh without bumping component state from outside. We
+  // tick a meaningless integer; React diffs the rendered string. The
+  // 1 s cadence matches the resolution of the data we have (Date.now()
+  // is millisecond-precise but a sub-second indicator would just look
+  // jittery).
+  //
+  // Depend on the *boolean* presence of a timestamp rather than its
+  // value: ``lastEventAt`` is bumped on every WS frame (including
+  // typing pings + heartbeats), so a value-dep would tear down and
+  // re-create the timer hundreds of times a minute under load. The
+  // boolean only flips once (null → number on first frame), so the
+  // interval is created exactly once per session. The timer reads the
+  // latest timestamp from ``props`` on each tick via ``lastEventLabel``
+  // below, which closes over ``props`` afresh on every render.
+  const hasLastEvent = props.lastEventAt !== null;
+  const [, _setTick] = useState(0);
+  useEffect(() => {
+    if (!hasLastEvent) return;
+    const id = setInterval(() => _setTick((n) => n + 1), 1000);
+    return () => clearInterval(id);
+  }, [hasLastEvent]);
+  const lastEventLabel = props.lastEventAt === null
+    ? "—"
+    : (() => {
+        const ms = Math.max(0, Date.now() - props.lastEventAt);
+        if (ms < 1000) return "<1s ago";
+        const s = Math.floor(ms / 1000);
+        if (s < 60) return `${s}s ago`;
+        const m = Math.floor(s / 60);
+        if (m < 60) return `${m}m ago`;
+        return `${Math.floor(m / 60)}h ago`;
+      })();
+
   return (
-    <header className="border-b border-slate-800 bg-slate-900/70 px-4 py-2 text-xs">
-      <div className="mx-auto flex max-w-7xl flex-wrap items-center gap-4">
+    <header
+      role="banner"
+      className="border-b border-slate-800 bg-slate-900/70 px-4 py-2 text-xs"
+    >
+      <div className="mx-auto flex w-full max-w-7xl flex-wrap items-center gap-2">
+        {/* Left cluster: title + phase-conditional primary actions. The
+            CTA sits early in the row so an LTR reader's eye lands on the
+            verb before the debug pills. */}
         <span className="font-semibold uppercase tracking-widest text-slate-400">
           Facilitator
         </span>
-        <span className="rounded bg-slate-800 px-2 py-0.5 text-slate-200">
-          state: {backendState} · phase: {phase}
-        </span>
-        <span className={wsColour}>● ws: {wsStatus}</span>
-        {/* Build identification — surfaced so a creator filing a bug
-            report can tell us which version they're on without opening
-            DevTools. Vite injects ``__ATF_GIT_SHA__`` at build time. */}
-        <span
-          className="rounded bg-slate-800 px-2 py-0.5 font-mono text-[10px] text-slate-400"
-          title={`Build: ${__ATF_GIT_SHA__} · ${__ATF_BUILD_TS__}`}
-        >
-          v {__ATF_GIT_SHA__}
-        </span>
-        {busy ? (
-          <span
-            role="status"
-            aria-live="polite"
-            className="inline-flex items-center gap-2 rounded bg-sky-900/40 px-2 py-0.5 text-sky-200"
-          >
-            <Spinner /> {busyMessage ?? "Working…"}
-          </span>
+
+        {props.phase === "ready" || props.phase === "setup" ? (
+          <>
+            <button
+              type="button"
+              onClick={props.onStart}
+              disabled={!canStart || props.busy}
+              className="rounded bg-emerald-600 px-3 py-1 text-sm font-semibold text-white hover:bg-emerald-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-emerald-300 disabled:cursor-not-allowed disabled:opacity-50"
+              title={
+                !props.hasFinalizedPlan
+                  ? "Finalize the plan first"
+                  : props.playerCount < 2
+                    ? "Add at least 2 player roles"
+                    : ""
+              }
+            >
+              Start session
+            </button>
+            <span className="text-slate-400">
+              Players: {props.playerCount} (need ≥ 2 to start)
+            </span>
+          </>
         ) : null}
-        <button
-          type="button"
-          onClick={onToggleGodMode}
-          aria-pressed={godMode}
-          className={
-            "ml-auto rounded border px-2 py-0.5 font-semibold focus-visible:outline focus-visible:outline-2 focus-visible:outline-purple-300 " +
-            (godMode
-              ? "border-purple-500 bg-purple-700/40 text-purple-100"
-              : "border-purple-700/40 text-purple-300 hover:bg-purple-900/30")
-          }
-          title="Toggle full debug overlay (audit log, system prompt, etc). Creator-only."
-        >
-          {godMode ? "● God Mode" : "○ God Mode"}
-        </button>
+
+        {props.phase === "play" ? (
+          <>
+            <button
+              type="button"
+              onClick={props.onForceAdvance}
+              disabled={props.busy}
+              className="rounded border border-emerald-500 bg-emerald-900/30 px-3 py-1 text-sm font-semibold text-emerald-100 hover:bg-emerald-700/40 focus-visible:outline focus-visible:outline-2 focus-visible:outline-emerald-300 disabled:opacity-50"
+              title="Hand the turn to the AI now. Use when conversation has stalled OR when one player is unresponsive."
+            >
+              AI: take next beat
+            </button>
+            <button
+              type="button"
+              onClick={props.onEnd}
+              disabled={props.busy}
+              className="rounded border border-red-500 px-3 py-1 text-sm font-semibold text-red-300 hover:bg-red-900/30 focus-visible:outline focus-visible:outline-2 focus-visible:outline-red-300 disabled:opacity-50"
+            >
+              End session
+            </button>
+          </>
+        ) : null}
+
+        {props.phase === "ended"
+          ? (() => {
+              if (props.aarStatus === "ready") {
+                return (
+                  <button
+                    type="button"
+                    onClick={props.onViewAar}
+                    className="rounded bg-emerald-600 px-3 py-1 text-sm font-semibold text-white hover:bg-emerald-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-emerald-300"
+                  >
+                    View AAR
+                  </button>
+                );
+              }
+              if (props.aarStatus === "failed") {
+                return (
+                  <span
+                    role="status"
+                    className="inline-flex items-center gap-1 rounded border border-red-500/60 bg-red-950/30 px-2 py-0.5 text-red-200"
+                  >
+                    AAR failed — see Retry in main panel.
+                  </span>
+                );
+              }
+              return (
+                <span
+                  role="status"
+                  aria-live="polite"
+                  className="inline-flex items-center gap-1.5 rounded bg-slate-800/80 px-2 py-0.5 text-slate-300"
+                >
+                  <span
+                    aria-hidden="true"
+                    className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-400"
+                  />
+                  AAR generating… (~30 s)
+                </span>
+              );
+            })()
+          : null}
+
+        {/* Right cluster: debug telemetry + meta actions. Wrapped in its
+            own container so ``ml-auto`` reliably pushes the whole group
+            to the row's end (and stays grouped when the row wraps on
+            mobile). Per operator request, every debug datum currently
+            shown is preserved — only the layout changed. */}
+        <div className="ml-auto flex flex-wrap items-center gap-2">
+          {/* Turn / message / rationale / tabs / last-event chips. All
+              read straight off existing snapshot + WS state; no extra
+              round-trip. Useful for "what's happening?" diagnostics
+              while the app is under active development. */}
+          <span
+            className="rounded bg-slate-800 px-2 py-0.5 text-slate-200"
+            title="Current turn index from snapshot.current_turn.index"
+          >
+            T#{props.turnIndex ?? "—"}
+          </span>
+          <span
+            className="rounded bg-slate-800 px-2 py-0.5 text-slate-200"
+            title="Total messages on the session (snapshot.messages.length)"
+          >
+            {props.messageCount} msgs
+          </span>
+          <span
+            className="rounded bg-slate-800 px-2 py-0.5 text-slate-200"
+            title="AI rationale entries logged via record_decision_rationale"
+          >
+            Rationale: {props.rationaleCount}
+          </span>
+          <span
+            className="rounded bg-slate-800 px-2 py-0.5 text-slate-200"
+            title="Total open WebSocket tabs watching this session (server-reported)"
+          >
+            Tabs: {props.connectionCount ?? "—"}
+          </span>
+          <span
+            className="rounded bg-slate-800 px-2 py-0.5 text-slate-300"
+            title="Time since the last WebSocket frame arrived. Stalls here mean the connection is silent even if ws: open."
+          >
+            Last: {lastEventLabel}
+          </span>
+          {/* LLM tier chip (#9). When idle the chip stays present (just
+              de-emphasised) so the bar layout doesn't reflow on every
+              call boundary; when active it goes amber + bold so the
+              operator's eye picks it up while glancing across the bar. */}
+          {props.activeTiers.length > 0 ? (
+            <span
+              className="rounded bg-amber-900/40 px-2 py-0.5 font-semibold text-amber-200"
+              role="status"
+              aria-live="polite"
+              title={`Active LLM call(s) — tier${props.activeTiers.length === 1 ? "" : "s"}: ${props.activeTiers.join(", ")}.`}
+            >
+              LLM: {props.activeTiers.join("+")}
+            </span>
+          ) : (
+            <span
+              className="rounded bg-slate-800 px-2 py-0.5 text-slate-500"
+              title="No LLM call currently in flight."
+            >
+              LLM: idle
+            </span>
+          )}
+          {/* Cost: click-to-expand chip. The summary shows the dollar
+              amount; the disclosure body shows the token breakdown
+              (mirrors the old sidebar CostMeter, but inline). Native
+              <details> gives focus management + Esc-to-collapse for
+              free; the popup positions absolutely so it overlays the
+              page chrome below the bar without pushing layout. */}
+          <CostChip cost={props.cost} />
+          <span className={wsColour}>● ws: {props.wsStatus}</span>
+          <span className="rounded bg-slate-800 px-2 py-0.5 text-slate-200">
+            state: {props.backendState} · phase: {props.phase}
+          </span>
+          {/* Build identification — surfaced so a creator filing a bug
+              report can tell us which version they're on without opening
+              DevTools. Vite injects ``__ATF_GIT_SHA__`` at build time. */}
+          <span
+            className="rounded bg-slate-800 px-2 py-0.5 font-mono text-[10px] text-slate-400"
+            title={`Build: ${__ATF_GIT_SHA__} · ${__ATF_BUILD_TS__}`}
+          >
+            v {__ATF_GIT_SHA__}
+          </span>
+          <button
+            type="button"
+            onClick={props.onToggleGodMode}
+            aria-pressed={props.godMode}
+            className={
+              "rounded border px-2 py-0.5 font-semibold focus-visible:outline focus-visible:outline-2 focus-visible:outline-purple-300 " +
+              (props.godMode
+                ? "border-purple-500 bg-purple-700/40 text-purple-100"
+                : "border-purple-700/40 text-purple-300 hover:bg-purple-900/30")
+            }
+            title="Toggle full debug overlay (audit log, system prompt, etc). Creator-only."
+          >
+            {props.godMode ? "● God Mode" : "○ God Mode"}
+          </button>
+          <button
+            type="button"
+            onClick={props.onNewSession}
+            disabled={props.busy}
+            className="rounded border border-slate-600 px-2 py-0.5 text-slate-300 hover:bg-slate-800 focus-visible:outline focus-visible:outline-2 focus-visible:outline-slate-300 disabled:opacity-50"
+            title="End the current session (if any) and return to the new-session form."
+          >
+            Start a new session
+          </button>
+        </div>
       </div>
     </header>
+  );
+}
+
+/**
+ * Operator-action busy chip. Pre-merge this lived in the top bar; the
+ * operator preferred it pinned near the transcript bottom (where their
+ * eye is during a turn) so it reads as a "is the AI stuck or thinking?"
+ * signal rather than disappearing into the chrome at the top of the
+ * page. Renders nothing when no operation is in flight.
+ */
+function BusyChip({ busy, message }: { busy: boolean; message: string | null }) {
+  if (!busy) return null;
+  return (
+    <span
+      role="status"
+      aria-live="polite"
+      className="mb-1 inline-flex shrink-0 items-center gap-2 self-start rounded bg-sky-900/40 px-2 py-1 text-xs text-sky-200"
+    >
+      <Spinner /> {message ?? "Working…"}
+    </span>
   );
 }
 
@@ -1210,23 +1697,73 @@ function Spinner() {
   );
 }
 
-function CostMeter({ cost }: { cost: CostSnapshot | null }) {
-  if (!cost) return null;
-  return (
-    <div className="rounded border border-slate-700 bg-slate-900 p-2 text-xs text-slate-300">
-      <p className="uppercase tracking-widest text-slate-500">Cost (creator only)</p>
-      <p>
-        in {cost.input_tokens.toLocaleString()} · out {cost.output_tokens.toLocaleString()} · cache_r{" "}
-        {cost.cache_read_tokens.toLocaleString()}
-      </p>
-      <p className="font-semibold text-emerald-300">≈ ${cost.estimated_usd.toFixed(4)}</p>
-      <p
-        className="mt-0.5 text-[10px] leading-tight text-slate-500"
-        title="Anthropic API spend, attributed to the operator's ANTHROPIC_API_KEY. Not billed to participants."
+/**
+ * Top-bar cost chip with a click-to-expand disclosure (Anthropic
+ * plan-usage popup style). Replaces the old ``CostMeter`` sidebar card —
+ * the dollar number now lives in the always-visible debug strip and
+ * clicking it reveals the token breakdown that previously took up a
+ * fixed sidebar slot. Native ``<details>`` gives keyboard + screen
+ * reader behavior for free; ``open`` is internal to the element.
+ */
+function CostChip({ cost }: { cost: CostSnapshot | null }) {
+  if (!cost) {
+    // Render a placeholder chip so the bar's column count is stable
+    // before the first ``cost_updated`` arrives. The "Cost: $—" form
+    // also tells the creator the channel exists but is empty rather
+    // than missing.
+    return (
+      <span
+        className="rounded bg-slate-800 px-2 py-0.5 text-slate-400"
+        title="No cost data yet — first LLM call will populate this."
       >
-        Charged to the operator's Anthropic key. Cumulative for this session.
-      </p>
-    </div>
+        Cost: $—
+      </span>
+    );
+  }
+  return (
+    <details className="relative">
+      <summary
+        className="cursor-pointer list-none rounded bg-slate-800 px-2 py-0.5 font-semibold text-emerald-300 hover:bg-slate-700/60 focus-visible:outline focus-visible:outline-2 focus-visible:outline-emerald-300"
+        title="Cumulative Anthropic API spend for this session. Click to expand the token breakdown."
+      >
+        Cost: ${cost.estimated_usd.toFixed(4)}
+      </summary>
+      {/* Absolutely-positioned popover so the disclosure body doesn't
+          push siblings around when toggled. ``z-20`` keeps it above the
+          page grid; matching the bar's right-side anchor lets it expand
+          left without leaving the viewport. */}
+      <div className="absolute right-0 top-full z-20 mt-1 w-72 rounded border border-slate-700 bg-slate-900 p-3 text-xs text-slate-200 shadow-lg">
+        <p className="mb-1 uppercase tracking-widest text-slate-400">
+          Cost — token breakdown
+        </p>
+        <dl className="grid grid-cols-2 gap-x-3 gap-y-1">
+          <dt className="text-slate-400">Input</dt>
+          <dd className="text-right text-slate-100">
+            {cost.input_tokens.toLocaleString()}
+          </dd>
+          <dt className="text-slate-400">Output</dt>
+          <dd className="text-right text-slate-100">
+            {cost.output_tokens.toLocaleString()}
+          </dd>
+          <dt className="text-slate-400">Cache read</dt>
+          <dd className="text-right text-slate-100">
+            {cost.cache_read_tokens.toLocaleString()}
+          </dd>
+          <dt className="text-slate-400">Cache create</dt>
+          <dd className="text-right text-slate-100">
+            {cost.cache_creation_tokens.toLocaleString()}
+          </dd>
+          <dt className="font-semibold text-emerald-300">Estimated</dt>
+          <dd className="text-right font-semibold text-emerald-300">
+            ${cost.estimated_usd.toFixed(4)}
+          </dd>
+        </dl>
+        <p className="mt-2 text-[10px] leading-tight text-slate-500">
+          Charged to the operator's Anthropic key. Cumulative for this
+          session.
+        </p>
+      </div>
+    </details>
   );
 }
 
@@ -1339,136 +1876,14 @@ function WaitingChip({
 }
 
 
-function Controls(props: {
-  phase: Phase;
-  onStart: () => void;
-  onForceAdvance: () => void;
-  onEnd: () => void;
-  onNewSession: () => void;
-  /** Opens the single AAR popup (which contains the actual Download button). */
-  onViewAar: () => void;
-  playerCount: number;
-  hasFinalizedPlan: boolean;
-  /** "pending" | "generating" | "ready" | "failed" — null while loading. */
-  aarStatus: string | null;
-  busy: boolean;
-}) {
-  const canStart =
-    (props.phase === "ready" || props.phase === "setup") &&
-    props.hasFinalizedPlan &&
-    props.playerCount >= 2;
-
-  return (
-    <div className="flex min-w-0 flex-col gap-2 rounded border border-slate-700 bg-slate-900 p-3 text-sm">
-      {props.phase === "ready" || props.phase === "setup" ? (
-        <>
-          <p className="text-xs text-slate-400">
-            Players: {props.playerCount} (need ≥ 2 to start)
-          </p>
-          <button
-            onClick={props.onStart}
-            disabled={!canStart || props.busy}
-            className="rounded bg-emerald-600 px-2 py-1 text-sm font-semibold text-white hover:bg-emerald-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-emerald-300 disabled:cursor-not-allowed disabled:opacity-50"
-            title={
-              !props.hasFinalizedPlan
-                ? "Finalize the plan first"
-                : props.playerCount < 2
-                  ? "Add at least 2 player roles"
-                  : ""
-            }
-          >
-            Start session
-          </button>
-        </>
-      ) : null}
-
-      {props.phase === "play" ? (
-        <>
-          {/*
-            Single force-advance button. The User-Agent review flagged
-            two stacked buttons that landed on the same handler as
-            "reads like an unfinished refactor" — fair. We now ship one
-            primary action with a clarifying tooltip + a one-line
-            inline hint that covers both intents (nudge AI / skip
-            missing voices).
-          */}
-          <button
-            onClick={props.onForceAdvance}
-            disabled={props.busy}
-            className="rounded border border-emerald-500 bg-emerald-900/30 px-2 py-1 text-sm font-semibold text-emerald-100 hover:bg-emerald-700/40 disabled:opacity-50"
-            title="Hand the turn to the AI now. Use when conversation has stalled OR when one player is unresponsive."
-          >
-            AI: take next beat
-          </button>
-          <p className="text-[10px] leading-tight text-slate-500">
-            Marks the current player turn complete (skipping any missing
-            voices) and lets the AI run the next beat.
-          </p>
-          <button
-            onClick={props.onEnd}
-            disabled={props.busy}
-            className="rounded border border-red-500 px-2 py-1 text-sm font-semibold text-red-300 hover:bg-red-900/30 disabled:opacity-50"
-          >
-            End session
-          </button>
-        </>
-      ) : null}
-
-      {props.phase === "ended" ? (() => {
-        // Single AAR entry point. The popup contains the actual Download
-        // button; this CTA only opens the viewer. Pre-fix there were two
-        // competing buttons (sidebar "Download AAR" that bypassed the
-        // popup, plus an in-chat "Show AAR report").
-        if (props.aarStatus === "ready") {
-          return (
-            <button
-              onClick={props.onViewAar}
-              className="rounded bg-emerald-600 px-2 py-1 text-sm font-semibold text-white hover:bg-emerald-500"
-            >
-              View AAR
-            </button>
-          );
-        }
-        if (props.aarStatus === "failed") {
-          return (
-            <div
-              role="status"
-              className="flex flex-col gap-1 rounded border border-red-500/60 bg-red-950/30 px-2 py-1 text-xs text-red-200"
-            >
-              <span>AAR generation failed.</span>
-              <span className="text-[11px] text-red-200/80">
-                Use Retry in the main panel, or end + restart the session.
-              </span>
-            </div>
-          );
-        }
-        return (
-          <span
-            role="status"
-            aria-live="polite"
-            className="inline-flex items-center gap-1.5 rounded bg-slate-800/80 px-2 py-1 text-xs text-slate-300"
-          >
-            <span
-              aria-hidden="true"
-              className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-400"
-            />
-            AAR generating… (~30 s)
-          </span>
-        );
-      })() : null}
-
-      <button
-        onClick={props.onNewSession}
-        disabled={props.busy}
-        className="mt-1 rounded border border-slate-600 px-2 py-1 text-xs text-slate-300 hover:bg-slate-800 disabled:opacity-50"
-        title="End the current session (if any) and return to the new-session form."
-      >
-        Start a new session
-      </button>
-    </div>
-  );
-}
-
+/**
+ * Issue #62: horizontal action bar pinned just below the StatusBar so the
+ * primary phase-appropriate CTA (Start / Force-advance / End / View AAR /
+ * New session) is always reachable on narrow viewports. Pre-fix the same
+ * controls lived at the bottom of the left sidebar — on a 493×943
+ * viewport the Start button was below the fold, requiring a scroll past
+ * the entire role roster + activity panel to reach it.
+ */
 function SetupView({
   snapshot,
   setupReply,
@@ -1479,6 +1894,7 @@ function SetupView({
   onSkipSetup,
   onPickOption,
   busy,
+  busyMessage,
 }: {
   snapshot: SessionSnapshot;
   setupReply: string;
@@ -1489,6 +1905,7 @@ function SetupView({
   onSkipSetup: () => void;
   onPickOption: (option: string) => void;
   busy: boolean;
+  busyMessage: string | null;
 }) {
   const hasPlan = Boolean(snapshot.plan);
   const notes = snapshot.setup_notes ?? [];
@@ -1514,6 +1931,12 @@ function SetupView({
       ) : null}
 
       <SetupChat notes={notes} busy={busy} onPickOption={onPickOption} />
+
+      {/* Operator-action busy chip — pinned with the reply form so the
+          "is the AI thinking?" signal stays where the operator's eye is.
+          See the play-phase BusyChip above the Composer for the same
+          pattern. */}
+      <BusyChip busy={busy} message={busyMessage} />
 
       <form onSubmit={onSubmit} className="flex flex-col gap-2">
         <textarea
