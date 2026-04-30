@@ -5,6 +5,7 @@ import { CriticalEventBanner } from "../components/CriticalEventBanner";
 import { RightSidebar } from "../components/RightSidebar";
 import { RoleRoster } from "../components/RoleRoster";
 import { Transcript } from "../components/Transcript";
+import { useStickyScroll } from "../lib/useStickyScroll";
 import { ServerEvent, WsClient } from "../lib/ws";
 
 interface Props {
@@ -81,7 +82,6 @@ export function Play({ sessionId, token }: Props) {
   // double/triple click (issue #63).
   const [forceAdvanceCooldown, setForceAdvanceCooldown] = useState(false);
   const wsRef = useRef<WsClient | null>(null);
-  const scrollRegionRef = useRef<HTMLDivElement | null>(null);
   const forceAdvanceTimerRef = useRef<number | null>(null);
 
   // Determine self by inspecting snapshot.roles and matching the role with the
@@ -265,18 +265,17 @@ export function Play({ sessionId, token }: Props) {
   }
 
   // Auto-scroll the chat region to the bottom when new messages or
-  // streaming chunks arrive. If the player has scrolled up to re-read
-  // an earlier beat (>120px from bottom) we leave their position alone
-  // so the chat doesn't yank under them mid-read.
+  // streaming chunks arrive. ``useStickyScroll`` pins to the bottom on
+  // the player's initial mount (so a participant joining mid-exercise
+  // lands on the latest beat instead of the top of a long transcript —
+  // issue #79) and on incoming content while they're within 120px of
+  // the bottom. If they've scrolled up to re-read, their position is
+  // left alone. A local submit force-pins so they always see their own
+  // message commit.
   const messageCount = snapshot?.messages.length ?? 0;
-  useEffect(() => {
-    const el = scrollRegionRef.current;
-    if (!el) return;
-    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
-    if (distanceFromBottom < 120) {
-      el.scrollTop = el.scrollHeight;
-    }
-  }, [messageCount, streamingActive]);
+  const { scrollRef: scrollRegionRef, forceScrollToBottom } = useStickyScroll(
+    [messageCount, streamingActive],
+  );
 
   // Clean up the force-advance cooldown timer on unmount so a tab
   // close mid-cooldown doesn't fire setState on an unmounted component.
@@ -317,6 +316,10 @@ export function Play({ sessionId, token }: Props) {
 
   function handleSubmit(text: string) {
     setError(null);
+    // Pin the chat to the bottom on the next render so the player sees
+    // their own message commit, even if they happened to be reading
+    // earlier content. Mirrors what every chat client does on send.
+    forceScrollToBottom();
     try {
       wsRef.current?.send({ type: "submit_response", content: text });
     } catch (err) {
@@ -344,6 +347,11 @@ export function Play({ sessionId, token }: Props) {
       setForceAdvanceCooldown(false);
       forceAdvanceTimerRef.current = null;
     }, 3000);
+    // Pin the chat to the bottom so the participant sees the AI's next
+    // beat land. Mirrors Facilitator.tsx's force-advance behavior so
+    // the "consistent for the creator and the user" half of issue #79
+    // covers force-advance, not just submit.
+    forceScrollToBottom();
     try {
       wsRef.current?.send({ type: "request_force_advance" });
     } catch (err) {

@@ -19,6 +19,7 @@ import { RolesPanel } from "../components/RolesPanel";
 import { SessionActivityPanel } from "../components/SessionActivityPanel";
 import { SetupChat } from "../components/SetupChat";
 import { Transcript } from "../components/Transcript";
+import { useStickyScroll } from "../lib/useStickyScroll";
 import { ServerEvent, WsClient } from "../lib/ws";
 
 export type Phase = "intro" | "setup" | "ready" | "play" | "ended";
@@ -207,17 +208,14 @@ export function Facilitator() {
       }
     };
   }, []);
-  // Wraps the chat scroll region so we can auto-pin the latest message to
-  // the bottom on each new arrival. Without this the user's view stays
-  // fixed where they were last reading and they don't realise a new AI
-  // beat just landed.
-  const scrollRegionRef = useRef<HTMLDivElement | null>(null);
-  // Force-scroll latch: bumped whenever the local user takes an action
-  // (submit, proxy submit, force-advance) so the next render pins the
-  // chat to the bottom regardless of where they were scrolled. The
-  // slack-based "only if near bottom" rule below still applies for
-  // *incoming* messages from other roles.
-  const [forceScrollNonce, setForceScrollNonce] = useState(0);
+  // Wraps the chat scroll region so we can auto-pin the latest message
+  // to the bottom on each new arrival. The hook also force-pins on the
+  // initial mount (so refreshing mid-exercise lands on the latest
+  // beat — issue #79) and exposes ``forceScrollToBottom()`` for local
+  // user actions (submit / proxy / force-advance) that should always
+  // jump to the bottom regardless of scroll slack. The slack-based
+  // "only if near bottom" rule still applies for incoming messages
+  // from other roles.
 
   const phase: Phase = useMemo(() => {
     if (!snapshot) return "intro";
@@ -538,25 +536,20 @@ export function Facilitator() {
     return () => clearInterval(id);
   }, []);
 
-  // Auto-scroll the chat region to the bottom when the message count or
-  // streaming buffer grows. For incoming messages we keep the operator's
-  // scroll position if they've scrolled up to re-read an earlier beat
-  // (120px slack). For local-user actions (submit / proxy / force-
-  // advance) ``forceScrollNonce`` is bumped so we ALWAYS pin to the
-  // bottom — they just took an action and want to see the result.
+  // Auto-scroll the chat region to the bottom when the message count
+  // or streaming buffer grows. The hook handles three cases: initial
+  // mount with content (pin unconditionally so a refreshed tab lands
+  // on the latest beat), incoming content with the operator near the
+  // bottom (follow the chat down), and local-action force-scroll
+  // (``forceScrollToBottom()`` below — submit / proxy / force-advance
+  // always pin regardless of slack so the operator sees their action
+  // commit). Pre-fix the local-action latch was a stick: once any
+  // submit fired, the slack check was bypassed forever and the
+  // operator could no longer scroll up to re-read older beats.
   const messageCount = snapshot?.messages.length ?? 0;
-  useEffect(() => {
-    const el = scrollRegionRef.current;
-    if (!el) return;
-    if (forceScrollNonce > 0) {
-      el.scrollTop = el.scrollHeight;
-      return;
-    }
-    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
-    if (distanceFromBottom < 120) {
-      el.scrollTop = el.scrollHeight;
-    }
-  }, [messageCount, streamingActive, forceScrollNonce]);
+  const { scrollRef: scrollRegionRef, forceScrollToBottom } = useStickyScroll(
+    [messageCount, streamingActive],
+  );
 
   async function refreshSnapshot() {
     if (!state) return;
@@ -745,7 +738,7 @@ export function Facilitator() {
     if (!state) return;
     // Force scroll-to-bottom on the next render so the user sees their
     // own message commit. Mirrors what every chat client does on send.
-    setForceScrollNonce((n) => n + 1);
+    forceScrollToBottom();
     try {
       if (asRoleId && asRoleId !== state.creatorRoleId) {
         // Creator impersonation — go through the REST proxy endpoint so
@@ -789,7 +782,7 @@ export function Facilitator() {
     }, 3000);
     setBusy(true);
     setBusyMessage("Force-advancing turn — AI is drafting the next beat…");
-    setForceScrollNonce((n) => n + 1);
+    forceScrollToBottom();
     try {
       await api.forceAdvance(state.sessionId, state.token);
       await refreshSnapshot();
