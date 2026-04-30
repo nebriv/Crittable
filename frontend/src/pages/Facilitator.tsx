@@ -547,8 +547,18 @@ export function Facilitator() {
   // submit fired, the slack check was bypassed forever and the
   // operator could no longer scroll up to re-read older beats.
   const messageCount = snapshot?.messages.length ?? 0;
-  const { scrollRef: scrollRegionRef, forceScrollToBottom } = useStickyScroll(
+  // ``streamingActive`` is a pin trigger (the streamed AI bubble grows
+  // and a pinned operator should follow it down) but NOT an unread
+  // trigger — the chip should only appear when an actual new message
+  // lands, not when the typing indicator flips on / off. Pass a
+  // narrowed unread-deps tuple to gate that.
+  const {
+    scrollRef: scrollRegionRef,
+    forceScrollToBottom,
+    hasUnreadBelow,
+  } = useStickyScroll(
     [messageCount, streamingActive],
+    [messageCount],
   );
 
   async function refreshSnapshot() {
@@ -1259,11 +1269,47 @@ export function Facilitator() {
                 typingRoleIds={Object.keys(typing).filter(
                   (rid) => rid !== state.creatorRoleId,
                 )}
+                // Pair the latest-AI amber ring with the participant
+                // path. ``isMyTurn`` here is the creator-as-active-role
+                // version (line ~1072: ``activeRoleIds.includes(state.creatorRoleId)``).
+                // Pre-fix the prop was simply not passed on the creator
+                // surface, so the ring never appeared even when the
+                // creator was on the active set — an asymmetry the user
+                // flagged as a regression on the same screen as the
+                // scroll bug.
+                highlightLastAi={isMyTurn}
               />
             </>
           ) : null}
           {error ? <p className="text-sm text-red-400">{error}</p> : null}
           </div>
+          {/* "New messages below" chip — appears when content arrives
+              while the operator has scrolled up to re-read. Clicking
+              it re-pins to the bottom. Mirrors the standard chat-app
+              pattern (Slack / Discord) so an unpinned operator knows
+              there's content below without being yanked off whatever
+              they were reading. See the Play.tsx counterpart for the
+              colour-choice rationale: solid sky to stay distinct from
+              the amber awaiting-response banner that often sits
+              directly below. */}
+          {phase === "play" && hasUnreadBelow ? (
+            // Live-region semantics on the wrapper, not the button —
+            // see Play.tsx counterpart for the ARIA APG rationale.
+            <div
+              className="pointer-events-none flex shrink-0 justify-center"
+              role="status"
+              aria-live="polite"
+              aria-atomic="true"
+            >
+              <button
+                type="button"
+                onClick={forceScrollToBottom}
+                className="pointer-events-auto -mt-12 mb-1 rounded-full border border-sky-300 bg-sky-500 px-4 py-1.5 text-xs font-semibold text-white animate-chip-pulse hover:bg-sky-400 motion-reduce:animate-none motion-reduce:shadow-lg motion-reduce:ring-2 motion-reduce:ring-sky-500/30"
+              >
+                New messages below ↓
+              </button>
+            </div>
+          ) : null}
           {phase === "play" ? (
             // Composer + WaitingChip live OUTSIDE the scroll region so they
             // stay pinned at the bottom of the section regardless of
