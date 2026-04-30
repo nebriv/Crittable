@@ -29,7 +29,18 @@ export function Play({ sessionId, token }: Props) {
     () => window.localStorage.getItem(`${DISPLAY_NAME_KEY}:${sessionId}`),
   );
   const [snapshot, setSnapshot] = useState<SessionSnapshot | null>(null);
-  const [streamingText, setStreamingText] = useState("");
+  // Live AI message-text streaming was producing visible mid-flight
+  // revisions: chunks accumulated and rendered in a green "streaming…"
+  // bubble, then on ``message_complete`` the bubble was replaced with
+  // the final persisted markdown — which sometimes diverges from the
+  // raw delta concatenation (different whitespace, tool wrappers, the
+  // model emitting two short messages instead of one). Players read
+  // that as the AI changing its mind. We now ignore chunk content
+  // entirely and only show a typing indicator until the final message
+  // lands. ``streamingActive`` tracks whether *some* chunks are still
+  // arriving, so the indicator stays "Typing…" (vs. "Thinking…") at
+  // that point — a small UX cue that the LLM is actively writing.
+  const [streamingActive, setStreamingActive] = useState(false);
   const [criticalBanner, setCriticalBanner] = useState<{
     severity: string;
     headline: string;
@@ -107,10 +118,13 @@ export function Play({ sessionId, token }: Props) {
   function handleEvent(evt: ServerEvent) {
     switch (evt.type) {
       case "message_chunk":
-        setStreamingText((t) => t + evt.text);
+        // Ignore chunk content; we only render the final message after
+        // ``message_complete``. Flip the streaming flag so the typing
+        // indicator can read "Typing…" while chunks are flowing.
+        if (!streamingActive) setStreamingActive(true);
         break;
       case "message_complete":
-        setStreamingText("");
+        setStreamingActive(false);
         refreshSnapshot();
         break;
       case "state_changed":
@@ -237,7 +251,7 @@ export function Play({ sessionId, token }: Props) {
     if (distanceFromBottom < 120) {
       el.scrollTop = el.scrollHeight;
     }
-  }, [messageCount, streamingText]);
+  }, [messageCount, streamingActive]);
 
   // Clean up the force-advance cooldown timer on unmount so a tab
   // close mid-cooldown doesn't fire setState on an unmounted component.
@@ -339,12 +353,11 @@ export function Play({ sessionId, token }: Props) {
   // driver path that forgets to round-trip through the LLM client.
   const stateBasedAiThinking =
     snapshot.state !== "ENDED" &&
-    !streamingText &&
     snapshot.current_turn?.status !== "errored" &&
     (snapshot.state === "AI_PROCESSING" ||
       snapshot.state === "BRIEFING" ||
       snapshot.current_turn?.status === "processing");
-  const showAiThinking = aiCalls.size > 0 || stateBasedAiThinking;
+  const showAiThinking = aiCalls.size > 0 || streamingActive || stateBasedAiThinking;
   // Compose a human-readable label from the most recent ``ai_status``
   // event. Falls back to "AI thinking…" when the engine hasn't told us
   // anything more specific. Participant-facing copy: we deliberately
@@ -500,13 +513,31 @@ export function Play({ sessionId, token }: Props) {
             <Transcript
               messages={snapshot.messages}
               roles={snapshot.roles}
-              streamingText={streamingText}
               aiThinking={showAiThinking}
-              aiStatusLabel={aiStatusLabel}
+              aiStatusLabel={
+                aiStatusLabel ?? (streamingActive ? "Typing…" : undefined)
+              }
               typingRoleIds={Object.keys(typing).filter((rid) => rid !== selfRoleId)}
+              highlightLastAi={isMyTurn}
             />
           </div>
           <div className="flex shrink-0 flex-col gap-2">
+            {/* Sticky pending-response chip immediately above the composer.
+                When the AI addresses one role specifically (e.g. "Ben —
+                what's your call?"), the OTHER roles in active_role_ids
+                can't tell from their composer placeholder alone that
+                they're being waited on too. This chip + the latest-AI
+                message highlight (above) make the wait state hard to
+                miss without scrolling back to the top banner. */}
+            {snapshot.state !== "ENDED" && isMyTurn ? (
+              <div
+                role="status"
+                aria-live="assertive"
+                className="rounded border border-amber-500/70 bg-amber-500/10 px-3 py-1.5 text-center text-xs font-semibold text-amber-200"
+              >
+                ⚠ Awaiting your response — {myRole?.label ?? "you"}
+              </div>
+            ) : null}
             <Composer
               enabled={isMyTurn && snapshot.state !== "ENDED"}
               placeholder={placeholder}

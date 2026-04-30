@@ -125,7 +125,16 @@ export function Facilitator() {
   const [busyMessage, setBusyMessage] = useState<string | null>(null);
   const [wsStatus, setWsStatus] = useState<"connecting" | "open" | "closed" | "error">("connecting");
 
-  const [streamingText, setStreamingText] = useState("");
+  // Live AI text streaming was producing visible mid-flight rewrites:
+  // the green "streaming…" bubble showed concatenated chunks, then the
+  // final ``message_complete`` body sometimes diverged (model writes a
+  // short rationale + a separate broadcast; chunk text is the rationale,
+  // final body is the broadcast). The creator read that as the AI
+  // silently rewriting itself. We now ignore chunk content and only
+  // show a "Typing…" indicator until the final message lands.
+  // ``streamingActive`` tracks whether some chunks are arriving so the
+  // indicator label can read "Typing…" vs. "Thinking…".
+  const [streamingActive, setStreamingActive] = useState(false);
   const [criticalBanner, setCriticalBanner] = useState<{
     severity: string;
     headline: string;
@@ -363,10 +372,15 @@ export function Facilitator() {
     setLastEventAt(Date.now());
     switch (evt.type) {
       case "message_chunk":
-        setStreamingText((t) => t + evt.text);
+        // Ignore chunk content; the typing indicator is enough.
+        // ``message_complete`` will refresh the snapshot and paint the
+        // final body via the same MarkdownBody path everything else
+        // uses, so what the creator sees in the chat matches what's
+        // persisted (and what players see).
+        if (!streamingActive) setStreamingActive(true);
         break;
       case "message_complete":
-        setStreamingText("");
+        setStreamingActive(false);
         refreshSnapshot();
         break;
       case "state_changed":
@@ -533,7 +547,7 @@ export function Facilitator() {
     if (distanceFromBottom < 120) {
       el.scrollTop = el.scrollHeight;
     }
-  }, [messageCount, streamingText, forceScrollNonce]);
+  }, [messageCount, streamingActive, forceScrollNonce]);
 
   async function refreshSnapshot() {
     if (!state) return;
@@ -692,7 +706,7 @@ export function Facilitator() {
     wsRef.current = null;
     setState(null);
     setSnapshot(null);
-    setStreamingText("");
+    setStreamingActive(false);
     setCriticalBanner(null);
     setDecisionLog([]);
     setPresence(new Set());
@@ -1202,16 +1216,14 @@ export function Facilitator() {
               <Transcript
                 messages={snapshot.messages}
                 roles={snapshot.roles}
-                streamingText={streamingText}
                 aiThinking={
-                  // Authoritative: any LLM call boundary in flight for
-                  // this session lights the indicator (issue #63 — without
-                  // this, interject / guardrail / setup / AAR work was
-                  // invisible to the operator). State-based predicate
-                  // remains as a reconnect-time safety net.
-                  !streamingText &&
+                  // Authoritative: any LLM call boundary in flight, or
+                  // an active stream, lights the typing indicator. The
+                  // state-based predicate is the reconnect-time safety
+                  // net (``ai_thinking`` events are non-replayed).
                   snapshot.current_turn?.status !== "errored" &&
                   (aiCalls.size > 0 ||
+                    streamingActive ||
                     (phase === "play" &&
                       (snapshot.state === "AI_PROCESSING" ||
                         snapshot.state === "BRIEFING" ||

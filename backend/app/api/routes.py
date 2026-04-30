@@ -792,7 +792,14 @@ def register_api_routes(app: FastAPI) -> None:
         )
 
         filename_slug = (session.plan.title if session.plan else "exercise")
-        filename_slug = "-".join(filename_slug.lower().split())[:40] or "exercise"
+        # HTTP headers are latin-1 only; em-dashes and other non-ASCII chars
+        # in the plan title (e.g. "Operation Frozen Ledger — AMNH") cause a
+        # 500 in starlette's header encoding step. Drop anything that isn't
+        # ascii-alphanumeric, collapse whitespace+separators to a single dash.
+        import re
+
+        ascii_slug = re.sub(r"[^a-z0-9]+", "-", filename_slug.lower()).strip("-")
+        filename_slug = ascii_slug[:40] or "exercise"
         return PlainTextResponse(
             content=body,
             media_type="text/markdown",
