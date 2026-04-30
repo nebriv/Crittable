@@ -273,9 +273,11 @@ export function Play({ sessionId, token }: Props) {
   // left alone. A local submit force-pins so they always see their own
   // message commit.
   const messageCount = snapshot?.messages.length ?? 0;
-  const { scrollRef: scrollRegionRef, forceScrollToBottom } = useStickyScroll(
-    [messageCount, streamingActive],
-  );
+  const {
+    scrollRef: scrollRegionRef,
+    forceScrollToBottom,
+    hasUnreadBelow,
+  } = useStickyScroll([messageCount, streamingActive]);
 
   // Clean up the force-advance cooldown timer on unmount so a tab
   // close mid-cooldown doesn't fire setState on an unmounted component.
@@ -685,6 +687,24 @@ export function Play({ sessionId, token }: Props) {
               highlightLastAi={isMyTurn}
             />
           </div>
+          {/* "New messages below" chip — appears when a message arrives
+              while the user has scrolled up to re-read. Clicking it
+              re-pins to the bottom. Mirrors the standard chat-app
+              pattern (Slack / Discord) so an unpinned user knows
+              there's content below without being yanked off whatever
+              they were reading. */}
+          {hasUnreadBelow ? (
+            <div className="pointer-events-none flex shrink-0 justify-center">
+              <button
+                type="button"
+                onClick={forceScrollToBottom}
+                className="pointer-events-auto -mt-12 mb-1 rounded-full border border-amber-500/70 bg-slate-900/95 px-4 py-1.5 text-xs font-semibold text-amber-200 shadow-lg backdrop-blur hover:bg-slate-800"
+                aria-live="polite"
+              >
+                New messages below ↓
+              </button>
+            </div>
+          ) : null}
           <div className="flex shrink-0 flex-col gap-2">
             {/* Sticky pending-response chip immediately above the composer.
                 When the AI addresses one role specifically (e.g. "Ben —

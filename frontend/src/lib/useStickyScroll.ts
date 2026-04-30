@@ -57,6 +57,15 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react
  *    advance) so the user sees their own action commit even if they'd
  *    been reading older content.
  *
+ * 6. **Unread indicator.** When ``deps`` change while the user is
+ *    unpinned, ``hasUnreadBelow`` flips to true so the caller can
+ *    surface a "New messages below ↓" chip. Clears when the user
+ *    scrolls back to the bottom (re-pin) or calls
+ *    ``forceScrollToBottom``. The flag is intentionally a boolean
+ *    (not a count) — callers that want a count can derive it from
+ *    their own state by tracking the message count delta between
+ *    "first unread arrived" and "now".
+ *
  * ## Why a callback ref
  *
  * A regular ``useRef`` would race in the Play.tsx flow: the snapshot
@@ -77,6 +86,11 @@ const PINNED_TOLERANCE = 4;
 export interface UseStickyScrollResult<T extends HTMLElement = HTMLDivElement> {
   scrollRef: (el: T | null) => void;
   forceScrollToBottom: () => void;
+  /** True when content arrived (a dep changed) while the user was
+   *  unpinned. Caller surfaces this as a "New messages below" chip
+   *  whose onClick calls ``forceScrollToBottom``. Clears when the
+   *  user scrolls back to the bottom or force-scrolls. */
+  hasUnreadBelow: boolean;
 }
 
 export function useStickyScroll<T extends HTMLElement = HTMLDivElement>(
@@ -98,6 +112,17 @@ export function useStickyScroll<T extends HTMLElement = HTMLDivElement>(
   // changed since the previous render. (This is the JoinIntro → chat
   // transition race in Play.tsx.)
   const [refVersion, setRefVersion] = useState(0);
+  // Unread-content flag for the chip surface. Mirrored in ``unreadRef``
+  // so non-render code paths (the scroll handler, force-scroll) can
+  // read the current value without going through a state setter.
+  const [hasUnreadBelow, setHasUnreadBelow] = useState(false);
+  const unreadRef = useRef(false);
+  const setUnread = useCallback((next: boolean) => {
+    if (unreadRef.current !== next) {
+      unreadRef.current = next;
+      setHasUnreadBelow(next);
+    }
+  }, []);
 
   const isAtBottom = useCallback((el: T) => {
     return el.scrollHeight - el.scrollTop - el.clientHeight <= PINNED_TOLERANCE;
@@ -140,6 +165,11 @@ export function useStickyScroll<T extends HTMLElement = HTMLDivElement>(
                 clientHeight: el.clientHeight,
               },
             );
+            // Re-pinning means the user has caught up to the bottom;
+            // clear the unread chip.
+            if (nowPinned) {
+              setUnread(false);
+            }
           }
         };
         el.addEventListener("scroll", onScroll, { passive: true });
@@ -175,7 +205,7 @@ export function useStickyScroll<T extends HTMLElement = HTMLDivElement>(
         setRefVersion((v) => v + 1);
       }
     },
-    [isAtBottom, pinToBottom],
+    [isAtBottom, pinToBottom, setUnread],
   );
 
   // Detach on unmount.
@@ -190,11 +220,12 @@ export function useStickyScroll<T extends HTMLElement = HTMLDivElement>(
 
   const forceScrollToBottom = useCallback(() => {
     pinnedRef.current = true;
+    setUnread(false);
     const el = elRef.current;
     if (el) {
       pinToBottom(el, "force");
     }
-  }, [pinToBottom]);
+  }, [pinToBottom, setUnread]);
 
   // Pin to bottom on dep change if pinned. The dep-driven path covers
   // "new message arrived" (messageCount changed) and "streaming flag
@@ -205,7 +236,12 @@ export function useStickyScroll<T extends HTMLElement = HTMLDivElement>(
     const el = elRef.current;
     if (!el) return;
     if (!pinnedRef.current) {
-      console.debug("[scroll] leave-alone (unpinned)", {
+      // New content arrived while the user was scrolled up. Flag
+      // unread so the caller's chip appears. The chip's onClick will
+      // call ``forceScrollToBottom`` which re-pins and clears the
+      // flag.
+      setUnread(true);
+      console.debug("[scroll] leave-alone (unpinned, marking unread)", {
         scrollHeight: el.scrollHeight,
         scrollTop: el.scrollTop,
         clientHeight: el.clientHeight,
@@ -219,5 +255,5 @@ export function useStickyScroll<T extends HTMLElement = HTMLDivElement>(
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [...deps, refVersion]);
 
-  return { scrollRef, forceScrollToBottom };
+  return { scrollRef, forceScrollToBottom, hasUnreadBelow };
 }

@@ -547,9 +547,11 @@ export function Facilitator() {
   // submit fired, the slack check was bypassed forever and the
   // operator could no longer scroll up to re-read older beats.
   const messageCount = snapshot?.messages.length ?? 0;
-  const { scrollRef: scrollRegionRef, forceScrollToBottom } = useStickyScroll(
-    [messageCount, streamingActive],
-  );
+  const {
+    scrollRef: scrollRegionRef,
+    forceScrollToBottom,
+    hasUnreadBelow,
+  } = useStickyScroll([messageCount, streamingActive]);
 
   async function refreshSnapshot() {
     if (!state) return;
@@ -1273,6 +1275,24 @@ export function Facilitator() {
           ) : null}
           {error ? <p className="text-sm text-red-400">{error}</p> : null}
           </div>
+          {/* "New messages below" chip — appears when content arrives
+              while the operator has scrolled up to re-read. Clicking
+              it re-pins to the bottom. Mirrors the standard chat-app
+              pattern (Slack / Discord) so an unpinned operator knows
+              there's content below without being yanked off whatever
+              they were reading. */}
+          {phase === "play" && hasUnreadBelow ? (
+            <div className="pointer-events-none flex shrink-0 justify-center">
+              <button
+                type="button"
+                onClick={forceScrollToBottom}
+                className="pointer-events-auto -mt-12 mb-1 rounded-full border border-amber-500/70 bg-slate-900/95 px-4 py-1.5 text-xs font-semibold text-amber-200 shadow-lg backdrop-blur hover:bg-slate-800"
+                aria-live="polite"
+              >
+                New messages below ↓
+              </button>
+            </div>
+          ) : null}
           {phase === "play" ? (
             // Composer + WaitingChip live OUTSIDE the scroll region so they
             // stay pinned at the bottom of the section regardless of

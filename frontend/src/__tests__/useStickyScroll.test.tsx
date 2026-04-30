@@ -123,6 +123,9 @@ interface HarnessProps {
    *  unmounted by phase / session changes. */
   mountElement?: boolean;
   bindForceScroll?: (fn: () => void) => void;
+  /** Optional sink the test can read after each render to assert on
+   *  the hook's ``hasUnreadBelow`` flag without rendering chip JSX. */
+  bindHasUnread?: (value: boolean) => void;
 }
 
 /**
@@ -138,6 +141,7 @@ function Harness({
   clientHeight,
   mountElement = true,
   bindForceScroll,
+  bindHasUnread,
 }: HarnessProps) {
   const elRef = useRef<HTMLDivElement | null>(null);
 
@@ -146,14 +150,16 @@ function Harness({
     setGeometry(elRef.current, { scrollHeight, clientHeight });
   });
 
-  const { scrollRef, forceScrollToBottom } = useStickyScroll<HTMLDivElement>([
-    messageCount,
-    streamingActive,
-  ]);
+  const { scrollRef, forceScrollToBottom, hasUnreadBelow } =
+    useStickyScroll<HTMLDivElement>([messageCount, streamingActive]);
 
   useLayoutEffect(() => {
     bindForceScroll?.(forceScrollToBottom);
   }, [bindForceScroll, forceScrollToBottom]);
+
+  useLayoutEffect(() => {
+    bindHasUnread?.(hasUnreadBelow);
+  }, [bindHasUnread, hasUnreadBelow]);
 
   // ``scrollRef`` is memoized inside the hook (useCallback). The
   // combined callback below stays stable too. Stability matters: an
@@ -422,6 +428,159 @@ describe("useStickyScroll", () => {
     );
     // pinnedRef stayed true → pin to new bottom (clamped).
     expect(el.scrollTop).toBe(1600);
+  });
+
+  it("flags hasUnreadBelow when content arrives while unpinned", () => {
+    // The "New messages below ↓" chip surface. While the user is
+    // scrolled up, any dep change (new message landed, streaming
+    // flag flipped) flips ``hasUnreadBelow`` to true so the caller
+    // can render the chip.
+    let unread = false;
+    const { getByTestId, rerender } = render(
+      <Harness
+        messageCount={20}
+        scrollHeight={2000}
+        clientHeight={400}
+        bindHasUnread={(v) => {
+          unread = v;
+        }}
+      />,
+    );
+    const el = getByTestId("scroll-region");
+    // Pinned on initial mount → no unread.
+    expect(unread).toBe(false);
+
+    // User scrolls up.
+    setGeometry(el, { scrollTop: 500 });
+    fireEvent.scroll(el);
+    // Scroll alone shouldn't flag unread — no new content yet.
+    expect(unread).toBe(false);
+
+    // New content arrives while unpinned → unread.
+    rerender(
+      <Harness
+        messageCount={21}
+        scrollHeight={2200}
+        clientHeight={400}
+        bindHasUnread={(v) => {
+          unread = v;
+        }}
+      />,
+    );
+    expect(unread).toBe(true);
+  });
+
+  it("clears hasUnreadBelow when the user scrolls back to the bottom", () => {
+    let unread = false;
+    const { getByTestId, rerender } = render(
+      <Harness
+        messageCount={20}
+        scrollHeight={2000}
+        clientHeight={400}
+        bindHasUnread={(v) => {
+          unread = v;
+        }}
+      />,
+    );
+    const el = getByTestId("scroll-region");
+
+    // Scroll up + new content lands → unread flag on.
+    setGeometry(el, { scrollTop: 500 });
+    fireEvent.scroll(el);
+    rerender(
+      <Harness
+        messageCount={21}
+        scrollHeight={2200}
+        clientHeight={400}
+        bindHasUnread={(v) => {
+          unread = v;
+        }}
+      />,
+    );
+    expect(unread).toBe(true);
+
+    // User scrolls back to the bottom (within tolerance).
+    setGeometry(el, { scrollTop: 1800 });
+    fireEvent.scroll(el);
+    expect(unread).toBe(false);
+  });
+
+  it("clears hasUnreadBelow when forceScrollToBottom is called", () => {
+    // Production scenario: the user clicks the "New messages below ↓"
+    // chip, which calls ``forceScrollToBottom``. The chip must
+    // disappear immediately rather than waiting for the next render
+    // cycle.
+    let unread = false;
+    let force: (() => void) | null = null;
+    const { getByTestId, rerender } = render(
+      <Harness
+        messageCount={20}
+        scrollHeight={2000}
+        clientHeight={400}
+        bindForceScroll={(fn) => {
+          force = fn;
+        }}
+        bindHasUnread={(v) => {
+          unread = v;
+        }}
+      />,
+    );
+    const el = getByTestId("scroll-region");
+
+    // Scroll up + new content lands.
+    setGeometry(el, { scrollTop: 500 });
+    fireEvent.scroll(el);
+    rerender(
+      <Harness
+        messageCount={21}
+        scrollHeight={2200}
+        clientHeight={400}
+        bindForceScroll={(fn) => {
+          force = fn;
+        }}
+        bindHasUnread={(v) => {
+          unread = v;
+        }}
+      />,
+    );
+    expect(unread).toBe(true);
+
+    // Click the chip.
+    act(() => {
+      force?.();
+    });
+    expect(unread).toBe(false);
+  });
+
+  it("does not flag hasUnreadBelow when content arrives while pinned", () => {
+    // A pinned user is already at the bottom — content arriving
+    // pins them to the new bottom. No unread chip should appear in
+    // that case.
+    let unread = false;
+    const { rerender } = render(
+      <Harness
+        messageCount={20}
+        scrollHeight={2000}
+        clientHeight={400}
+        bindHasUnread={(v) => {
+          unread = v;
+        }}
+      />,
+    );
+    expect(unread).toBe(false);
+
+    rerender(
+      <Harness
+        messageCount={21}
+        scrollHeight={2200}
+        clientHeight={400}
+        bindHasUnread={(v) => {
+          unread = v;
+        }}
+      />,
+    );
+    // Still pinned → no unread.
+    expect(unread).toBe(false);
   });
 
   it("follows new content when only the streaming flag flips", () => {
