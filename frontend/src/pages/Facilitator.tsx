@@ -1327,8 +1327,6 @@ export function Facilitator() {
                     snapshot.current_turn?.submitted_role_ids ?? []
                   }
                   roles={snapshot.roles}
-                  sessionId={state.sessionId}
-                  creatorToken={state.token}
                 />
               ) : null}
               {(() => {
@@ -1863,91 +1861,53 @@ function ActiveRolesHint({
 }
 
 /**
- * Pinned above the Composer when *other* roles still owe a response. Tells
- * the local player exactly who we're blocked on so the screen doesn't look
- * frozen, and surfaces the count ("waiting on 1 of 3") for at-a-glance scan.
+ * Pinned above the Composer when *other* roles still owe a response. Names
+ * the actor we're blocked on so the screen doesn't look frozen, with a
+ * smaller ``(N of M)`` tail for at-a-glance count.
+ *
+ * Issue #88: previously rendered amber-on-amber (read as "warning") and
+ * exposed a per-role "Copy invite" button that duplicated the Copy link
+ * affordance already in the Roles panel. The tone is now neutral slate
+ * matching the rest of the awaiting-state banners; copy/issuing links is
+ * handled exclusively by the Roles panel.
  */
-function WaitingChip({
+export function WaitingChip({
   activeRoleIds,
   submittedRoleIds,
   roles,
-  sessionId,
-  creatorToken,
 }: {
   activeRoleIds: string[];
   submittedRoleIds: string[];
   roles: RoleView[];
-  /** When provided, the chip exposes a "Copy invite link" button per
-   *  pending role so the operator can re-share a join link without
-   *  scrolling up to the Roles panel. Tokens are fetched on-demand via
-   *  ``api.reissueRole`` so they're never embedded in the snapshot. */
-  sessionId?: string;
-  creatorToken?: string;
 }) {
-  const [copiedRoleId, setCopiedRoleId] = useState<string | null>(null);
-  const [copyErr, setCopyErr] = useState<string | null>(null);
   const submitted = new Set(submittedRoleIds);
   const pending = activeRoleIds.filter((id) => !submitted.has(id));
   if (pending.length === 0) return null;
-  const pendingRoles = pending.map(
-    (id) => roles.find((r) => r.id === id) ?? { id, label: id, display_name: null },
-  );
-  const canResend = Boolean(sessionId && creatorToken);
-
-  async function copyInvite(roleId: string) {
-    if (!sessionId || !creatorToken) return;
-    setCopyErr(null);
-    try {
-      const r = await api.reissueRole(sessionId, creatorToken, roleId);
-      await navigator.clipboard.writeText(r.join_url);
-      setCopiedRoleId(roleId);
-      setTimeout(() => {
-        setCopiedRoleId((cur) => (cur === roleId ? null : cur));
-      }, 2000);
-    } catch (err) {
-      setCopyErr(err instanceof Error ? err.message : String(err));
-    }
+  const labels = pending.map((id) => {
+    const r = roles.find((x) => x.id === id);
+    if (!r) return id;
+    return r.display_name ? `${r.label} (${r.display_name})` : r.label;
+  });
+  let phrase: string;
+  if (labels.length === 1) {
+    phrase = `Waiting on ${labels[0]} to respond.`;
+  } else if (labels.length === 2) {
+    phrase = `Waiting on ${labels[0]} and ${labels[1]}.`;
+  } else {
+    const head = labels.slice(0, 2).join(", ");
+    phrase = `Waiting on ${head} and ${labels.length - 2} more.`;
   }
 
   return (
     <div
       role="status"
       aria-live="polite"
-      className="mb-2 flex flex-col gap-1 rounded border border-amber-700/40 bg-amber-950/30 px-2 py-1 text-xs text-amber-100"
+      className="mb-2 flex items-center gap-2 rounded bg-slate-800 px-2 py-1 text-xs text-slate-200"
     >
-      <span className="flex items-center gap-2">
-        <span
-          aria-hidden="true"
-          className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-amber-300"
-        />
-        <span>
-          Waiting on{" "}
-          <span className="font-semibold">{pending.length} of {activeRoleIds.length}</span>
-        </span>
+      <span>{phrase}</span>
+      <span className="text-slate-400">
+        ({pending.length} of {activeRoleIds.length})
       </span>
-      <ul className="flex flex-wrap items-center gap-1">
-        {pendingRoles.map((r) => (
-          <li
-            key={r.id}
-            className="inline-flex items-center gap-1 rounded bg-amber-950/60 px-1.5 py-0.5"
-          >
-            <span className="text-amber-200">{r.label}</span>
-            {canResend ? (
-              <button
-                type="button"
-                onClick={() => copyInvite(r.id)}
-                className="rounded border border-amber-500/50 px-1 py-0 text-[10px] text-amber-100 hover:bg-amber-900/40"
-                title={`Reissue and copy ${r.label}'s join link.`}
-              >
-                {copiedRoleId === r.id ? "Copied!" : "Copy invite"}
-              </button>
-            ) : null}
-          </li>
-        ))}
-      </ul>
-      {copyErr ? (
-        <p className="text-[10px] text-red-300">copy failed: {copyErr}</p>
-      ) : null}
     </div>
   );
 }
