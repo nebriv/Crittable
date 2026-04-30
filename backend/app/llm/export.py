@@ -285,18 +285,52 @@ def _render_markdown(
     return "\n".join(lines)
 
 
-def _render_bullets(items: list[str]) -> list[str]:
+def _render_bullets(items: Any) -> list[str]:
     """Render a list of report items as markdown bullets.
 
     A single-line item becomes ``- {item}``. A multi-line item keeps its
     first line on the bullet and indents continuation lines by two spaces
     so CommonMark / GFM treat them as a continuation of the same list
     item instead of breaking out into a sibling paragraph.
+
+    The input is **defensively coerced**. The AAR ``finalize_report``
+    tool schema declares each list field as ``array of string``, but the
+    model occasionally emits a lone string (when there's only one item)
+    or a non-string scalar (e.g. ``null``, an int) inside the array. The
+    AAR pipeline is operator-critical — a TypeError here would surface
+    to the user as a 500 on the export endpoint and block the entire
+    download. Coerce defensively, log when we had to.
     """
 
+    if items is None:
+        return []
+    # A lone string instead of a list — wrap it.
+    if isinstance(items, str):
+        items = [items]
+    # Anything that isn't iterable at this point means schema drift —
+    # log and bail out with an empty list rather than propagating a
+    # TypeError from the for-loop.
+    try:
+        iterator = iter(items)
+    except TypeError:
+        _logger.warning(
+            "aar_render_bullets_unexpected_type",
+            value_type=type(items).__name__,
+            value_preview=str(items)[:120],
+        )
+        return []
+
     out: list[str] = []
-    for raw in items:
-        cleaned = (raw or "").strip()
+    for raw in iterator:
+        if raw is None:
+            continue
+        # Coerce non-strings (numbers, bools) into their str repr; the
+        # alternative is a hard crash in ``.strip()``. The AAR will read
+        # slightly oddly with a bare number as a bullet, but at least it
+        # ships.
+        if not isinstance(raw, str):
+            raw = str(raw)
+        cleaned = raw.strip()
         if not cleaned:
             continue
         first, *rest = cleaned.split("\n")
@@ -315,16 +349,28 @@ def _render_bullets(items: list[str]) -> list[str]:
     return out
 
 
-def _flatten_table_cell(text: str) -> str:
+def _flatten_table_cell(text: Any) -> str:
     """Make ``text`` safe to drop into a GFM table cell.
 
     GFM tables use unescaped ``|`` as a column separator and treat raw
     newlines as a row terminator. Rationales coming back from the model
     occasionally contain either, which silently corrupts the score table.
     Fold whitespace and escape pipes.
+
+    The input is **defensively coerced** (per Copilot review on PR #85):
+    although the ``finalize_report`` tool schema declares ``rationale``
+    as a string, the model occasionally emits ``null`` or a non-string
+    scalar. ``(text or "–").split()`` raises on those — the AAR is
+    operator-critical so we can't afford a hard crash here. Coerce to
+    ``str(text)`` for non-None / non-string inputs and keep the
+    "–" placeholder for the empty/None case.
     """
 
-    flat = " ".join((text or "–").split())
+    if text is None or text == "":
+        return "–"
+    if not isinstance(text, str):
+        text = str(text)
+    flat = " ".join(text.split()) or "–"
     return flat.replace("|", "\\|")
 
 

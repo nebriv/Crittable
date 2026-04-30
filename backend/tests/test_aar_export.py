@@ -236,6 +236,56 @@ def test_render_bullets_drops_blank_continuation_lines() -> None:
     assert out == ["- first", "  second"]
 
 
+def test_render_bullets_coerces_non_string_items() -> None:
+    """Per Copilot review on PR #85: the AAR tool input is forwarded
+    raw, so the model can emit non-strings (``null``, numbers, bools)
+    inside what's declared as ``array of string``. The renderer must
+    coerce instead of crashing — the AAR pipeline is operator-critical.
+    """
+
+    out = _render_bullets(["string item", 42, None, True, "tail item"])
+    # ``None`` is dropped (whitespace-only-equivalent); the others are
+    # coerced via ``str()`` into bullets.
+    assert out == ["- string item", "- 42", "- True", "- tail item"]
+
+
+def test_render_bullets_handles_lone_string() -> None:
+    """The model occasionally emits a lone string for a single-item
+    array. Wrap it as a single-bullet list rather than iterating
+    characters."""
+
+    out = _render_bullets("the only item")
+    assert out == ["- the only item"]
+
+
+def test_render_bullets_handles_none_and_non_iterable(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """``None`` returns empty. A non-iterable scalar (e.g. an int from
+    severe schema drift) logs a warning and returns empty rather than
+    propagating a ``TypeError``."""
+
+    assert _render_bullets(None) == []
+    capsys.readouterr()  # discard
+    assert _render_bullets(7) == []
+    log_blob = capsys.readouterr().out
+    assert "aar_render_bullets_unexpected_type" in log_blob
+
+
+def test_flatten_table_cell_coerces_non_string() -> None:
+    """Per Copilot review on PR #85: a non-string rationale (``null``,
+    a number) used to crash ``(text or "–").split()``. Coerce."""
+
+    assert _flatten_table_cell(None) == "–"
+    assert _flatten_table_cell("") == "–"
+    assert _flatten_table_cell(0) == "0"
+    assert _flatten_table_cell(4.5) == "4.5"
+    # Whitespace-only after coercion → fall back to "–".
+    assert _flatten_table_cell("   ") == "–"
+    # Pipe in coerced value still gets escaped.
+    assert _flatten_table_cell("a | b") == "a \\| b"
+
+
 # ---------------------------------------------------------------- _flatten_table_cell
 
 
@@ -248,7 +298,7 @@ def test_flatten_table_cell_handles_pipes_and_newlines() -> None:
 
 def test_flatten_table_cell_falls_back_for_empty() -> None:
     assert _flatten_table_cell("") == "–"
-    assert _flatten_table_cell(None) == "–"  # type: ignore[arg-type]
+    assert _flatten_table_cell(None) == "–"
 
 
 # ---------------------------------------------------------------- _format_transcript_entry
