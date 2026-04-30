@@ -439,32 +439,40 @@ class SessionManager:
             # by the new ``ai_thinking`` / ``ai_status`` indicators (the
             # participant retyped because they had no feedback) but the
             # belt-and-braces guard prevents a stray double-Enter from
-            # producing two visible bubbles. Compare against the most
-            # recent message — same role, identical (whitespace-stripped)
-            # body, and within the dedupe window.
+            # producing two visible bubbles.
+            #
+            # Scan backwards for the most recent ``PLAYER`` message from
+            # this same role within the dedupe window. We can't just
+            # check ``messages[-1]`` because an interject path can splice
+            # an AI reply (``run_interject`` appends ``broadcast`` /
+            # ``address_role`` outputs) between the two participant
+            # submits — and a SYSTEM banner can land in the same gap.
+            # The window itself bounds the scan, so the cost is at worst
+            # O(messages_in_last_30s).
             stripped_new = content.strip()
             window_seconds = self._settings.duplicate_submission_window_seconds
-            if window_seconds > 0 and session.messages:
-                last = session.messages[-1]
-                if (
-                    last.kind == MessageKind.PLAYER
-                    and last.role_id == role_id
-                    and last.body.strip() == stripped_new
-                    and (datetime.now(UTC) - last.ts).total_seconds() < window_seconds
-                ):
-                    self._emit(
-                        "dedupe_dropped_submission",
-                        session,
-                        role_id=role_id,
-                        content_preview=content[:120],
-                        elapsed_seconds=int(
-                            (datetime.now(UTC) - last.ts).total_seconds()
-                        ),
-                    )
-                    raise IllegalTransitionError(
-                        "You just sent the same message — wait a moment "
-                        "or change something to send again."
-                    )
+            if window_seconds > 0:
+                now = datetime.now(UTC)
+                for prior in reversed(session.messages):
+                    if (now - prior.ts).total_seconds() >= window_seconds:
+                        break
+                    if prior.kind != MessageKind.PLAYER or prior.role_id != role_id:
+                        continue
+                    if prior.body.strip() == stripped_new:
+                        self._emit(
+                            "dedupe_dropped_submission",
+                            session,
+                            role_id=role_id,
+                            content_preview=content[:120],
+                            elapsed_seconds=int((now - prior.ts).total_seconds()),
+                        )
+                        raise IllegalTransitionError(
+                            "You just sent the same message — wait a moment "
+                            "or change something to send again."
+                        )
+                    # Found the most recent same-role player message and it
+                    # didn't match — stop scanning.
+                    break
             turn.submitted_role_ids.append(role_id)
             session.messages.append(
                 Message(
@@ -508,18 +516,27 @@ class SessionManager:
         # later) is exactly that race. Non-play tiers (guardrail,
         # setup, AAR) are NOT blocked: an operator must always be able
         # to recover from a hung non-play call.
-        in_flight = self._llm.in_flight_for(session_id)
-        if any(c.tier == "play" for c in in_flight):
-            _logger.info(
-                "force_advance_rejected_in_flight",
-                session_id=session_id,
-                by_role_id=by_role_id,
-                in_flight_tiers=[c.tier for c in in_flight],
-            )
-            raise IllegalTransitionError(
-                "AI is still processing — wait a few seconds before forcing advance"
-            )
+        #
+        # The check runs *inside* the per-session lock so it's
+        # synchronized with state transitions. A play-tier call can only
+        # be started by code that holds the lock at some point (the WS
+        # / REST handlers acquire it via ``submit_response`` or earlier
+        # ``force_advance`` invocations before kicking ``run_play_turn``);
+        # checking outside the lock would let one of those start a
+        # second call between our check and the state mutation,
+        # producing the very race we're guarding against.
         async with await self._lock_for(session_id):
+            in_flight = self._llm.in_flight_for(session_id)
+            if any(c.tier == "play" for c in in_flight):
+                _logger.info(
+                    "force_advance_rejected_in_flight",
+                    session_id=session_id,
+                    by_role_id=by_role_id,
+                    in_flight_tiers=[c.tier for c in in_flight],
+                )
+                raise IllegalTransitionError(
+                    "AI is still processing — wait a few seconds before forcing advance"
+                )
             session = await self._repo.get(session_id)
             turn = session.current_turn
             if turn is None:
