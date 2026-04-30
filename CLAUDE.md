@@ -65,6 +65,10 @@ Custom tools, resources, and prompts (Skills-style) are loaded at startup via en
 
 ## Engine-side phase policy (read before touching any LLM call site)
 
+> **Pair this section with [`docs/turn-lifecycle.md`](docs/turn-lifecycle.md)** — the load-bearing reference for the play-turn engine. Flowcharts of every gate, slot, contract, validator branch, and recovery directive, plus a full write-up of the 2026-04-30 silent-yield regression. Read both before touching `app/sessions/turn_validator.py`, `app/sessions/turn_driver.py`, `app/sessions/slots.py`, or `app/llm/dispatch.py`.
+>
+> **Adding or rewording a tool:** read [`docs/tool-design.md`](docs/tool-design.md) first. The five trap patterns there are the difference between a tool the model picks correctly and one it ignores or over-applies. Run `pytest backend/tests/live/ -v` against `ANTHROPIC_API_KEY` after any change to `app/llm/tools.py`, Block 6 of `app/llm/prompts.py`, or the recovery directives.
+
 [`backend/app/sessions/phase_policy.py`](backend/app/sessions/phase_policy.py) is the **single source of truth** for "what is the LLM allowed to do in tier X at session state Y?" Do not duplicate these rules elsewhere. Three enforcement points consume it:
 
 1. **`turn_driver.py`** — every `run_*_turn` calls `assert_state(tier, session.state)` at entry. A `PhaseViolation` here means the calling code is wrong, not the LLM.
@@ -72,6 +76,23 @@ Custom tools, resources, and prompts (Skills-style) are loaded at startup via en
 3. **`llm/dispatch.py`** — rejects forbidden tool calls at runtime and returns `is_error=True` in the `tool_result`. The strict-retry path in `turn_driver.py` feeds those `tool_result` blocks back to the model so it self-corrects rather than retrying blind. **Never silently drop a tool call** — the model will get stuck repeating it.
 
 Adding a new tier or tool: update `phase_policy.POLICIES`, add `ALLOWED_*_TOOL_NAMES` to the relevant frozenset, and run `pytest backend/tests/test_phase_policy.py`. Adding a new tool to an existing tier: add it to that tier's `_<TIER>_TOOL_NAMES` constant.
+
+## Prompt ↔ tool consistency (don't tell the model about tools that don't exist)
+
+`backend/tests/test_prompt_tool_consistency.py` is a **mandatory regression net** for the class of bug where a model-facing string mentions a tool that isn't in the tier's palette. The 2026-04-30 redesign removed three tools from `PLAY_TOOLS` but missed cleaning up eight separate model-facing references to them in prompt blocks, recovery directives, kickoff messages, and tool descriptions. The model can't *call* a tool that's absent from the API request, but seeing the name in the prompt confuses it, wastes tokens, and misroutes its attention. The test catches this by reconstructing every model-facing string per tier, regex-extracting backticked snake_case names, and asserting each one is either a current tool in the tier's palette or a known non-tool concept.
+
+**Removal protocol** (every tool removal must do all four):
+
+1. Drop the tool from `PLAY_TOOLS` / `SETUP_TOOLS` / `AAR_TOOL` in `app/llm/tools.py`.
+2. Add the name to `HISTORICAL_REMOVED_PLAY_TOOLS` (or the tier-equivalent set) in `backend/tests/test_prompt_tool_consistency.py`. **Do not skip this** — it's how future regressions get caught.
+3. Search the codebase for the name in backticks: `grep -rn '`<name>`' backend/app frontend/src` — every hit in a model-facing string is a bug. Hits in code comments, removal-explanation docstrings, and `BUILTIN_TOOL_NAMES` (extension shadowing prevention) are intentional.
+4. Run `pytest backend/tests/test_prompt_tool_consistency.py` — must pass. Then run `pytest backend/tests/live/` against `ANTHROPIC_API_KEY` to confirm no model-routing regression.
+
+**Addition protocol**:
+
+1. Add the tool to the tier's array.
+2. The consistency test pulls names directly from those arrays — no test edit needed for additions.
+3. If the tool's input schema introduces a new field name that appears in prompt copy (e.g. `share_data`'s `label` field), add the field name to `_NON_TOOL_ALLOWLIST` in the test file.
 
 ## Coding conventions
 

@@ -109,6 +109,16 @@ boundaries are enforced in code:
   tools / resources / prompts (operator-trusted, sandboxed Jinja).
 - [`docs/prompts.md`](docs/prompts.md) — system-prompt blocks,
   guardrails, tool-use protocol, AAR rubric.
+- [`docs/turn-lifecycle.md`](docs/turn-lifecycle.md) — **load-bearing
+  reference for the play-turn engine.** Full decision tree of slots,
+  contracts, validator, recovery cascade, and the 2026-04-30 silent-
+  yield regression. Read before touching `app/sessions/turn_*` or
+  `app/llm/dispatch.py`.
+- [`docs/tool-design.md`](docs/tool-design.md) — **tool authoring
+  guidelines.** Five trap patterns we hit, an authoring checklist, the
+  current play-tier palette, and the live tool-routing pytest suite
+  used as the regression net. Read before adding, renaming, or
+  rewording any tool in `app/llm/tools.py`.
 - [`CLAUDE.md`](CLAUDE.md) — guidance for Claude Code sessions on this
   repo (six-agent review protocol, logging rules, dependency intake).
 

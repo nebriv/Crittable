@@ -61,9 +61,13 @@ PLAY_TOOLS: list[dict[str, Any]] = [
     {
         "name": "address_role",
         "description": (
-            "Direct a message at a single role (still visible to all roles). "
-            "Does NOT yield the turn — pair with `set_active_roles` to "
-            "actually hand over."
+            "PLAYER-FACING MESSAGE FROM YOU directed at one role (visible to "
+            "all). Renders as your AI bubble in the chat — this is YOUR "
+            "VOICE speaking to the role. USE THIS WHEN: a player asked you "
+            "a direct question and you want to reply just to them; you "
+            "want to brief, prompt, or push one specific role; you're "
+            "redirecting one role without sidetracking the others. "
+            "Does NOT yield the turn — pair with `set_active_roles`."
         ),
         "input_schema": {
             "type": "object",
@@ -77,8 +81,16 @@ PLAY_TOOLS: list[dict[str, Any]] = [
     {
         "name": "broadcast",
         "description": (
-            "Send a message visible to all roles. Does NOT yield the turn "
-            "— pair with `set_active_roles`."
+            "PLAYER-FACING MESSAGE FROM YOU to all roles. Renders as your "
+            "AI bubble in the chat — this is YOUR VOICE speaking to the "
+            "team. USE THIS WHEN: answering a player's question (always — "
+            "even if directed at one specific person, broadcast keeps "
+            "everyone in sync); narrating the next beat; briefing a "
+            "decision; reporting telemetry / logs / findings the team "
+            "asked about; redirecting an off-topic message; reacting to "
+            "a player's call (\"good — proceed with...\"). This is the "
+            "DEFAULT player-facing tool. Does NOT yield the turn — "
+            "pair with `set_active_roles`."
         ),
         "input_schema": {
             "type": "object",
@@ -86,18 +98,102 @@ PLAY_TOOLS: list[dict[str, Any]] = [
             "required": ["message"],
         },
     },
+    # Note: ``inject_event`` was removed from the standard play palette
+    # in the 2026-04-30 redesign for the same reason as
+    # ``mark_timeline_point`` — the model was using it as a "do
+    # something easy and stop" attractor, picking it to narrate
+    # ambient state and never producing a player-facing reply. The
+    # legitimate use cases (time advances, third-party actions) can
+    # all be done via ``broadcast`` with a stylized markdown prefix
+    # (``*[T+5min — Defender auto-isolated FIN-04]*``). This keeps
+    # every AI message in one consistent rendering channel and
+    # eliminates the silent-yield class of bug. The dispatcher handler
+    # is retained as defensive dead code so that if an extension or
+    # legacy mock script emits the tool, it still routes correctly.
     {
-        "name": "inject_event",
+        "name": "pose_choice",
         "description": (
-            "Narrate a *routine* development that doesn't deserve a banner. "
-            "Renders as a SYSTEM-kind chat note — quieter than `broadcast`. "
-            "Use for status confirmations, time advances, technical "
-            "details. Does NOT yield."
+            "PLAYER-FACING MULTIPLE-CHOICE DECISION PROMPT — use when "
+            "you want a role to pick from a SHORT (2–5 item) list of "
+            "concrete options. Renders as your AI bubble in the chat, "
+            "with the question in bold and each option labeled "
+            "**A**, **B**, **C**, … on its own line. The role can "
+            "respond with the letter, the option text, or a free-form "
+            "answer (no clickable buttons yet — see issue #71). USE "
+            "THIS WHEN: the decision is binary or small-cardinality "
+            "and you want to make the trade-off explicit (e.g. "
+            "\"isolate now / monitor 15 min / escalate to legal "
+            "first\"); the team is dithering and structured options "
+            "would unstick them; you're surfacing a known doctrine "
+            "fork (e.g. NIST containment vs eradication-first). "
+            "DO NOT use `pose_choice`: "
+            "(a) for open-ended questions (\"what would you do?\") — "
+            "that's `broadcast`; "
+            "(b) when the role hasn't been briefed on the situation "
+            "yet — pair `broadcast`/`share_data` first, then pose; "
+            "(c) for more than 5 options — too many is decision "
+            "paralysis; "
+            "(d) as a substitute for a player-facing message after a "
+            "data dump — pair with `set_active_roles` to actually "
+            "yield. "
+            "``role_id`` is the role being asked. ``question`` is one "
+            "short sentence (≤140 chars) framing the decision. "
+            "``options`` is a list of 2–5 short option strings (each "
+            "≤120 chars). Does NOT yield — pair with "
+            "`set_active_roles`."
         ),
         "input_schema": {
             "type": "object",
-            "properties": {"description": {"type": "string"}},
-            "required": ["description"],
+            "properties": {
+                "role_id": {"type": "string"},
+                "question": {"type": "string"},
+                "options": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "minItems": 2,
+                    "maxItems": 5,
+                },
+            },
+            "required": ["role_id", "question", "options"],
+        },
+    },
+    {
+        "name": "share_data",
+        "description": (
+            "PLAYER-FACING SYNTHETIC DATA DUMP — only when a role has "
+            "EXPLICITLY ASKED for data: telemetry, logs, IOCs, alert "
+            "lists, packet captures, threat-intel records, host "
+            "inventories — any structured fictional data the team would "
+            "screenshot or copy. Renders as your AI bubble with the "
+            "data clearly labelled and monospace-friendly. "
+            "TRIGGER PHRASES (must be in a recent player message): "
+            "\"what do we see in <tool>?\", \"pull the <X> logs\", "
+            "\"give me the indicators\", \"show me the alerts\", "
+            "\"what does <SIEM/EDR/IDS> show?\". "
+            "DO NOT use `share_data`: "
+            "(a) when no role asked for data — use `broadcast` to brief "
+            "or react instead; "
+            "(b) to volunteer telemetry on top of a player's tactical "
+            "decision — they didn't ask, don't dump it on them; "
+            "(c) for prose narration with a few stats inline — that's "
+            "`broadcast` with markdown; "
+            "(d) for the situation brief at the top of a beat — that's "
+            "`broadcast`. "
+            "Provide ``data`` as well-formatted markdown (code fences "
+            "for log lines, bullet lists for IOCs, tables for host "
+            "inventories — whatever matches the data shape). ``label`` "
+            "is a short header (e.g. \"Defender telemetry — 03:14 "
+            "UTC\"). Does NOT yield — pair with `set_active_roles` "
+            "(and optionally a `broadcast` / `address_role` framing "
+            "the next decision)."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "label": {"type": "string"},
+                "data": {"type": "string"},
+            },
+            "required": ["label", "data"],
         },
     },
     {
@@ -108,9 +204,12 @@ PLAY_TOOLS: list[dict[str, Any]] = [
             "red banner above the chat that requires acknowledgement. "
             "MUST be followed in the SAME turn by a `broadcast` (or "
             "`address_role`) naming who acts on it, then a "
-            "`set_active_roles` yielding to those roles. Routine "
-            "developments use `inject_event`. Rate-limited (default 1 "
-            "per 5 turns)."
+            "`set_active_roles` yielding to those roles. Use ONLY for "
+            "headline-grade escalations — routine developments and "
+            "background events stay inside a regular `broadcast` "
+            "(stylize the urgency in prose if needed). NEVER use this "
+            "to answer a player question — that's `broadcast` / "
+            "`address_role`. Rate-limited (default 1 per 5 turns)."
         ),
         "input_schema": {
             "type": "object",
@@ -129,9 +228,12 @@ PLAY_TOOLS: list[dict[str, Any]] = [
     {
         "name": "set_active_roles",
         "description": (
-            "Yield the turn to one or more roles. Engine waits for all named "
-            "submissions before advancing (or a force-advance from any "
-            "participant)."
+            "Yield the turn to one or more roles. Engine waits for all "
+            "named submissions before advancing (or a force-advance from "
+            "any participant). MUST be the LAST tool call of the turn "
+            "and MUST be paired with a `broadcast` or `address_role` in "
+            "the same response (the player-facing message that tells the "
+            "named roles what to do)."
         ),
         "input_schema": {
             "type": "object",
@@ -145,7 +247,10 @@ PLAY_TOOLS: list[dict[str, Any]] = [
         "name": "request_artifact",
         "description": (
             "Ask a role for a structured deliverable (IR plan, comms draft, "
-            "regulator notification). The role responds in their next turn."
+            "regulator notification). The role responds in their next turn. "
+            "This is the ASK; you still need to deliver the player-facing "
+            "framing of the ask via `broadcast` or `address_role` in the "
+            "same turn (and yield to that role via `set_active_roles`)."
         ),
         "input_schema": {
             "type": "object",
@@ -214,45 +319,15 @@ PLAY_TOOLS: list[dict[str, Any]] = [
             "required": ["followup_id", "status"],
         },
     },
-    {
-        "name": "mark_timeline_point",
-        "description": (
-            "Pin a key beat to the right-sidebar timeline. Use sparingly — "
-            "only for moments players will want to scroll back to (a major "
-            "decision, a turning point, an artifact ask, a critical "
-            "consequence). The ``title`` is the short label shown in the "
-            "timeline; the ``note`` is a one-line context blurb. Does NOT "
-            "yield the turn — pair it with a ``broadcast`` / ``address_role`` "
-            "and a final ``set_active_roles``."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "title": {"type": "string"},
-                "note": {"type": "string"},
-            },
-            "required": ["title"],
-        },
-    },
-    {
-        "name": "record_decision_rationale",
-        "description": (
-            "One-sentence creator-only debug note (≤300 chars). "
-            "Format: `<plan-beat>: <one-clause why>`. NOT a place to "
-            "think out loud — keep your reasoning in your own thoughts. "
-            "NOT a player-facing message. Does NOT yield. Players never "
-            "see this. Skip on strict-retry attempts (the prior turn's "
-            "rationale still stands) and on INTERJECT MODE. Truncated "
-            "at 600 chars."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "rationale": {"type": "string"},
-            },
-            "required": ["rationale"],
-        },
-    },
+    # Note: ``mark_timeline_point`` was removed from the standard play
+    # palette in the 2026-04-30 redesign. The model treated it as a
+    # cheap "do something quick and stop" attractor — picking it alone
+    # leaves players with no chat message, the AI appears to ignore
+    # them. The creator-only decision log (harvested from text content
+    # blocks) covers the "pin the moment" need for retrospectives. If
+    # we want a player-visible timeline pin in the future, it should
+    # be a side-effect of a critical inject or an end-of-beat
+    # broadcast, not a standalone tool.
     {
         "name": "end_session",
         "description": "Terminate the exercise. Triggers the AAR generation pipeline.",

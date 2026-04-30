@@ -406,6 +406,46 @@ class TurnDriver:
                     ),
                 )
 
+                # Harvest the model's natural text content as the
+                # creator-only decision rationale. Replaces the legacy
+                # ``record_decision_rationale`` tool: when the model
+                # emits a text block alongside its tool_use blocks
+                # (its "thinking"), capture it for the creator log
+                # without exposing it to players. Skipped on recovery
+                # passes — the directive's intent is already known and
+                # the prior turn's rationale still stands. Idempotent
+                # per turn (one entry max).
+                if not recovery and not any(
+                    e.turn_id == turn.id for e in session.decision_log
+                ):
+                    rationale_text = _trim_rationale(_all_text(result))
+                    if rationale_text:
+                        from .models import DecisionLogEntry
+
+                        entry = DecisionLogEntry(
+                            turn_index=turn.index,
+                            turn_id=turn.id,
+                            rationale=rationale_text,
+                        )
+                        session.decision_log.append(entry)
+                        if session.creator_role_id:
+                            try:
+                                await self._manager.connections().send_to_role(
+                                    session.id,
+                                    session.creator_role_id,
+                                    {
+                                        "type": "decision_logged",
+                                        "entry": entry.model_dump(mode="json"),
+                                    },
+                                )
+                            except Exception as exc:
+                                _logger.warning(
+                                    "decision_log_broadcast_failed",
+                                    session_id=session.id,
+                                    turn_id=turn.id,
+                                    error=str(exc),
+                                )
+
                 # Merge into the cumulative outcome — this is what the
                 # validator inspects.
                 _merge_outcomes(cumulative, outcome)
@@ -491,8 +531,8 @@ class TurnDriver:
 
         Triggered when a player asks the facilitator a direct question
         mid-turn (heuristic: trailing ``?``). The AI is restricted to
-        ``broadcast`` / ``address_role`` / ``mark_timeline_point``, with
-        ``tool_choice={"type":"any"}`` forcing at least one call.
+        ``broadcast`` / ``address_role`` / ``share_data`` / ``pose_choice``,
+        with ``tool_choice={"type":"any"}`` forcing at least one call.
         ``set_active_roles`` and ``end_session`` are deliberately
         excluded — the asking player's submission still counts toward
         the active turn and the other roles continue to owe their own
@@ -555,7 +595,16 @@ class TurnDriver:
             # / ``end_session`` are the two yielding/terminal calls; excluding
             # them guarantees the interject can't accidentally advance the
             # turn or end the session.
-            allowed = {"broadcast", "address_role", "mark_timeline_point"}
+            # Player-facing replies. Includes ``share_data`` for "show
+            # me the logs" / "give me the IOCs" interjects, and
+            # ``pose_choice`` for "should I A or B?" interjects where
+            # a structured option list helps.
+            allowed = {
+                "broadcast",
+                "address_role",
+                "share_data",
+                "pose_choice",
+            }
             tools = [t for t in PLAY_TOOLS if t["name"] in allowed]
             tool_choice: dict[str, Any] = {"type": "any"}
 
@@ -837,9 +886,26 @@ _KICKOFF_USER_MSG = (
     "Begin the exercise. Your FIRST tool call MUST be `broadcast` with the "
     "situation brief — what just happened, what the active roles need to "
     "do, ≤200 words. THEN call `set_active_roles` to yield to those roles. "
-    "Do NOT use only `mark_timeline_point` + `inject_event` — those are "
-    "FYI tools and leave players with nothing to respond to. The brief is "
-    "mandatory on this turn."
+    "Do NOT call only bookkeeping tools (`track_role_followup`, "
+    "`request_artifact`, etc.) — those produce no chat bubble and leave "
+    "players with nothing to respond to. The brief is mandatory on this "
+    "turn."
+)
+
+# Per-turn reminder appended after the player batch on EVERY normal play
+# turn. Without this the model often picks one tool (e.g. `share_data`)
+# and stops, never yielding. The reminder lands as the last user-message
+# block before the model's response and counters the "first tool wins,
+# stop" attractor. Anthropic merges consecutive same-role user blocks,
+# so this concatenates with the player message label without producing a
+# malformed message sequence.
+_TURN_REMINDER = (
+    "[system] Your turn. Emit your tool calls in ONE response: a player-"
+    "facing tool (`broadcast`, `address_role`, or `share_data`) AND "
+    "`set_active_roles` (or `end_session`). A short text block with "
+    "your reasoning is fine; the engine harvests it as the creator-only "
+    "rationale. Stopping after a single tool call is a bug — players "
+    "see no message and the turn never advances."
 )
 
 
@@ -888,6 +954,17 @@ def _play_messages(session: Session, *, strict: bool = False) -> list[dict[str, 
         elif m.kind == MessageKind.CRITICAL_INJECT:
             msgs.append({"role": "assistant", "content": m.body})
 
+    # Per-turn reminder block — counters the "first tool wins, stop"
+    # attractor we observed against the live model. Appended on every
+    # normal turn (skipped when ``strict=True`` because the recovery
+    # pass replaces this trailing block with its own directive nudge
+    # anyway). Anthropic merges consecutive same-role user blocks at
+    # the wire level, so two user-blocks in a row is fine — we keep
+    # them as separate dict entries here only because the recovery
+    # path expects to pop the last user block and re-insert its own.
+    if not strict and msgs and msgs[-1]["role"] == "user":
+        msgs.append({"role": "user", "content": _TURN_REMINDER})
+
     if not msgs or msgs[-1]["role"] != "user":
         # On a recovery pass the driver pops this trailing nudge and
         # replaces it with a directive-specific user message that
@@ -909,6 +986,18 @@ def _tool_uses(result: LLMResult) -> list[dict[str, Any]]:
 
 def _all_text(result: LLMResult) -> str:
     return "".join(b.get("text", "") for b in result.content if b.get("type") == "text")
+
+
+# Cap so a runaway model can't explode the snapshot payload or AAR.
+# Mirrors the cap from the legacy ``record_decision_rationale`` tool.
+_RATIONALE_MAX_CHARS = 600
+
+
+def _trim_rationale(text: str) -> str:
+    text = text.strip()
+    if len(text) <= _RATIONALE_MAX_CHARS:
+        return text
+    return text[: _RATIONALE_MAX_CHARS - 1] + "…"
 
 
 def _merge_outcomes(target: DispatchOutcome, src: DispatchOutcome) -> None:

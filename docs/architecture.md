@@ -4,6 +4,11 @@
 > living, diagram-rich version of that plan and is updated as design
 > evolves. If they ever conflict, `PLAN.md` wins until this doc is
 > updated to match.
+>
+> **For the play-turn engine specifically** (slots, contracts,
+> validator, recovery cascade, and the 2026-04-30 silent-yield
+> regression) read [`turn-lifecycle.md`](turn-lifecycle.md) — full
+> decision tree with flowcharts.
 
 ## High-level shape
 

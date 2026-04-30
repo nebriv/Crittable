@@ -35,6 +35,9 @@ include = ["app*"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+markers = [
+    "live: hits the real Anthropic API; cost ~$0.01/test; auto-skipped unless ANTHROPIC_API_KEY is set",
+]
 
 [tool.ruff]
 line-length = 100

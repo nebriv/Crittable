@@ -397,6 +397,73 @@ class ToolDispatcher:
             )
             return "event injected"
 
+        if name == "pose_choice":
+            # Multi-choice tactical decision prompt. Renders as the
+            # facilitator's AI message with options A / B / C / … so
+            # the role knows what they're choosing between. Free-form
+            # text replies are still accepted; clickable quick-reply
+            # buttons are tracked as a follow-up product feature
+            # (issue #71).
+            ref = args.get("role_id")
+            resolved, unresolved = _resolve_role_refs(session, [ref])
+            if unresolved or not resolved:
+                raise _DispatchError(
+                    f"unknown role_id: {ref!r} — pass an opaque role_id "
+                    "from Block 10."
+                )
+            target_id = resolved[0]
+            target = session.role_by_id(target_id)
+            label = target.label if target else target_id
+            args["role_id"] = target_id  # canonicalise
+            question = str(args.get("question", "")).strip()
+            options = list(args.get("options", []) or [])
+            if not options or len(options) < 2 or len(options) > 5:
+                raise _DispatchError(
+                    "pose_choice requires 2–5 options; "
+                    f"got {len(options)}."
+                )
+            letters = ["A", "B", "C", "D", "E"]
+            option_lines = "\n".join(
+                f"**{letters[i]}.** {opt}" for i, opt in enumerate(options)
+            )
+            body = f"**{label}** — {question}\n\n{option_lines}"
+            outcome.appended_messages.append(
+                Message(
+                    kind=MessageKind.AI_TEXT,
+                    body=body,
+                    turn_id=turn_id,
+                    tool_name=name,
+                    tool_args=args,
+                )
+            )
+            outcome.had_player_facing_message = True
+            return "choice posed"
+
+        if name == "share_data":
+            # Player-facing data dump (logs / IOCs / telemetry / alert
+            # lists). Renders as an AI message so it's clearly the
+            # facilitator's voice, with the raw markdown body produced
+            # by the model. Distinct from `broadcast` so the frontend
+            # can render the data block with monospace / copy-button
+            # affordances and so the timeline can show "data shared".
+            label = str(args.get("label", "")).strip()
+            data = str(args.get("data", ""))
+            if label:
+                body = f"**{label}**\n\n{data}"
+            else:
+                body = data
+            outcome.appended_messages.append(
+                Message(
+                    kind=MessageKind.AI_TEXT,
+                    body=body,
+                    turn_id=turn_id,
+                    tool_name=name,
+                    tool_args=args,
+                )
+            )
+            outcome.had_player_facing_message = True
+            return "data shared"
+
         if name == "track_role_followup":
             ref = args.get("role_id")
             resolved, unresolved = _resolve_role_refs(session, [ref])
@@ -448,48 +515,15 @@ class ToolDispatcher:
             fu_target.resolved_at = datetime.now(UTC)
             return f"followup {status}"
 
-        if name == "record_decision_rationale":
-            from ..sessions.models import DecisionLogEntry
-
-            rationale = str(args.get("rationale", "")).strip()
-            if not rationale:
-                raise _DispatchError("rationale is required")
-            # Once-per-turn invariant. The prompt says "one per normal
-            # turn"; this is the structural backstop so a drifting model
-            # can't spam the creator log with retried thoughts mid-turn.
-            if turn_id and any(
-                e.turn_id == turn_id for e in session.decision_log
-            ):
-                raise _DispatchError(
-                    "rationale already recorded for this turn; one per "
-                    "normal play turn (skip on strict retries)"
-                )
-            # Hard cap so a runaway model can't explode the snapshot
-            # payload or AAR. The prompt asks for one sentence; this is
-            # belt-and-braces. Trim to 597 chars + ellipsis so the total
-            # stays ≤600 (matches the prompt's stated bound).
-            if len(rationale) > 600:
-                rationale = rationale[:597] + "…"
-            entry = DecisionLogEntry(
-                turn_index=(
-                    session.current_turn.index if session.current_turn else None
-                ),
-                turn_id=turn_id,
-                rationale=rationale,
-            )
-            session.decision_log.append(entry)
-            # Stream to the creator only — player roles never see the
-            # AI's debug rationale.
-            if session.creator_role_id:
-                await self._connections.send_to_role(
-                    session.id,
-                    session.creator_role_id,
-                    {
-                        "type": "decision_logged",
-                        "entry": entry.model_dump(mode="json"),
-                    },
-                )
-            return "rationale recorded"
+        # Note: ``record_decision_rationale`` was removed as a tool in
+        # the 2026-04-30 tool-palette redesign. The model was using it
+        # as a "thinking-first" entry point and stopping before
+        # producing player-facing output. The decision log is now
+        # populated automatically from the model's natural text content
+        # blocks alongside its tool_use blocks (see
+        # ``turn_driver._harvest_rationale_from_text``). Less schema
+        # ceremony, no failure mode where calling ``rationale`` alone
+        # short-circuits the turn.
 
         if name == "mark_timeline_point":
             # The actual title/note are stored in ``tool_args`` so the

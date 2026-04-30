@@ -118,6 +118,26 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         },
     )
 
+    # Operability: the legacy soft-drive carve-out kill-switch is
+    # default-off because its predicate (``player_msg ends in `?` ``)
+    # matches the case where the AI MUST answer, not the case where
+    # silent yields are appropriate. If an operator has flipped it on
+    # for emergency rollback, surface a startup warning so future
+    # incident responders see it in the boot log instead of having to
+    # spelunk per-turn ``turn_validation`` warnings.
+    if settings.llm_recovery_drive_soft_on_open_question:
+        logger.warning(
+            "legacy_carve_out_enabled",
+            flag="LLM_RECOVERY_DRIVE_SOFT_ON_OPEN_QUESTION",
+            value=True,
+            note=(
+                "Legacy soft-drive carve-out is ON. The AI may silently "
+                "yield when a player asks a direct question. Disable in "
+                "production unless you've also added direction "
+                "classification."
+            ),
+        )
+
     try:
         yield
     finally:
