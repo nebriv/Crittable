@@ -36,8 +36,10 @@ from ..llm.prompts import (
 )
 from ..llm.tools import PLAY_TOOLS, SETUP_TOOLS
 from ..logging_setup import get_logger
+from .active_roles import narrow_active_roles
 from .manager import SessionManager
 from .models import (
+    DecisionLogEntry,
     Message,
     MessageKind,
     Session,
@@ -802,12 +804,105 @@ class TurnDriver:
             return
 
         if outcome.set_active_role_ids is not None:
+            # Server-side audience-vs-yield safety net. The play-tier
+            # model habitually yields wider than its actual audience
+            # (broadcasts "Ben — your call?" and yields to [Ben, Eng]
+            # even though Eng wasn't asked anything), which stalls the
+            # turn until force-advance. The narrower drops role_ids
+            # whose canonical name isn't addressed in the same-turn
+            # player-facing text. See ``active_roles.py`` for the
+            # heuristic + edge-case coverage in
+            # ``tests/test_active_roles_narrowing.py``.
+            narrow_result = narrow_active_roles(
+                roles=session.roles,
+                appended_messages=outcome.appended_messages,
+                ai_set=list(outcome.set_active_role_ids),
+            )
+            final_active_role_ids = narrow_result.kept
+            if narrow_result.narrowed:
+                # Build human-readable label list for the audit + decision
+                # log so the creator can see what the engine did. We
+                # intentionally use ``label`` here (not display_name)
+                # because the AI Decision Log surface is operator-
+                # focused.
+                role_by_id = {r.id: r for r in session.roles}
+                dropped_labels = [
+                    role_by_id[rid].label
+                    for rid in narrow_result.dropped
+                    if rid in role_by_id
+                ]
+                kept_labels = [
+                    role_by_id[rid].label
+                    for rid in narrow_result.kept
+                    if rid in role_by_id
+                ]
+                _logger.info(
+                    "active_roles_narrowed",
+                    session_id=session.id,
+                    turn_id=turn.id,
+                    turn_index=turn.index,
+                    ai_set=list(outcome.set_active_role_ids),
+                    kept=narrow_result.kept,
+                    dropped=narrow_result.dropped,
+                    dropped_labels=dropped_labels,
+                    # The full set of roles the matcher considered
+                    # addressed — including any the AI didn't yield
+                    # to. Surfaces the "AI under-yielded" failure
+                    # mode (addressed Ben in text but yield was
+                    # [Eng]) as a diagnostic without requiring a
+                    # re-run.
+                    addressed_role_ids=sorted(narrow_result.addressed_role_ids),
+                    reason=narrow_result.reason,
+                )
+                # Surface to the creator-only decision log so the
+                # operator can see the engine's reasoning. Players
+                # never see this — exposing engine internals to them
+                # is confusing. The structlog line above is the
+                # canonical audit record.
+                rationale = (
+                    f"Narrowed active roles: kept {kept_labels}, "
+                    f"dropped {dropped_labels} — not addressed in this "
+                    f"turn's message."
+                )
+                entry = DecisionLogEntry(
+                    turn_index=turn.index,
+                    turn_id=turn.id,
+                    rationale=rationale,
+                )
+                session.decision_log.append(entry)
+                if session.creator_role_id:
+                    try:
+                        await self._manager.connections().send_to_role(
+                            session.id,
+                            session.creator_role_id,
+                            {
+                                "type": "decision_logged",
+                                "entry": entry.model_dump(mode="json"),
+                            },
+                        )
+                    except Exception as exc:
+                        # Correlation context: turn_id + entry_id let the
+                        # operator find the persisted decision_log entry
+                        # (it was already appended to session.decision_log
+                        # before we attempted the broadcast) so they can
+                        # tell the creator what the engine decided even
+                        # though the WS event didn't reach them. The
+                        # session repo save is the durable record; this
+                        # log is the breadcrumb that ties the failure to
+                        # a specific row.
+                        _logger.warning(
+                            "narrow_decision_log_broadcast_failed",
+                            session_id=session.id,
+                            turn_id=turn.id,
+                            entry_id=entry.id,
+                            error=str(exc),
+                        )
             turn.status = "complete"
             turn.ended_at = _now()
             new_index = len(session.turns)
             new_turn = Turn(
                 index=new_index,
-                active_role_ids=outcome.set_active_role_ids,
+                active_role_ids=final_active_role_ids,
                 status="awaiting",
             )
             session.turns.append(new_turn)

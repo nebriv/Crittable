@@ -172,6 +172,23 @@ export const api = {
     return request("GET", `/api/sessions/${sessionId}?token=${encodeURIComponent(token)}`);
   },
 
+  /** Token-bound; the role being renamed is encoded in the token's
+   *  ``role_id`` claim — the caller cannot rename someone else.
+   *  Used by the player join-intro flow so the entered display name
+   *  propagates from the local browser to every participant's
+   *  snapshot. */
+  async setSelfDisplayName(
+    sessionId: string,
+    token: string,
+    displayName: string,
+  ): Promise<{ role_id: string; label: string; display_name: string }> {
+    return request(
+      "POST",
+      `/api/sessions/${sessionId}/roles/me/display_name?token=${encodeURIComponent(token)}`,
+      { display_name: displayName },
+    );
+  },
+
   async setupReply(
     sessionId: string,
     token: string,

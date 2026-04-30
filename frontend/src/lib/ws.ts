@@ -10,6 +10,12 @@ export type ServerEvent =
   | { type: "tool_invocation"; tool: string; args: Record<string, unknown> }
   | { type: "participant_joined"; role_id: string; label: string; display_name: string | null; kind: string }
   | { type: "participant_left"; role_id: string }
+  // Player-initiated rename via the join-intro flow (or any future
+  // self-rename surface). Snapshot reflects the new ``display_name``
+  // server-side; clients can refresh on receipt to update headers /
+  // banners that include the name. ``record=True`` so a late joiner
+  // sees the latest name without an explicit refetch.
+  | { type: "participant_renamed"; role_id: string; display_name: string }
   | { type: "critical_event"; severity: string; headline: string; body: string }
   | { type: "cost_updated"; cost: Record<string, number>; max_turns: number }
   | { type: "guardrail_blocked"; verdict: string; message: string }
@@ -164,6 +170,7 @@ export class WsClient {
             break;
           case "participant_joined":
           case "participant_left":
+          case "participant_renamed":
             safe.role_id = parsed.role_id;
             break;
           case "critical_event":

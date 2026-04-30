@@ -271,6 +271,67 @@ class SessionManager:
         )
         return token
 
+    async def set_role_display_name(
+        self,
+        *,
+        session_id: str,
+        role_id: str,
+        display_name: str,
+    ) -> Role:
+        """Update one role's ``display_name``.
+
+        Used by the player-join flow: the join intro asks the player
+        for their name (e.g. "Bridget") and POSTs it here so other
+        participants see ``Cybersecurity Engineer · Bridget`` in the
+        transcript instead of the bare label. The endpoint is bound by
+        the role's token — only the role themselves (or a creator
+        impersonating via a creator token, but the route guards that)
+        should hit this path.
+
+        Emits a ``participant_renamed`` WS event so connected clients
+        refresh their snapshot without polling. The previous behaviour
+        (display_name lived in localStorage only) had to be removed
+        because no event signalled the rename to peer clients.
+        """
+
+        # Strip C0/C1 control characters (NUL, BEL, newline, vertical
+        # tab, etc.) before persisting. ``Field(max_length=64)`` lets a
+        # malicious player submit something like
+        # ``"Bridget\nFAKE: state_changed"`` — the inner ``\n`` would
+        # split a structlog audit line into two and confuse log parsers
+        # / SIEM regexes (this branch is the first player-callable
+        # mutation route, so the rule lands here). The frontend's React
+        # render path is XSS-safe; this is defence-in-depth at the
+        # storage boundary.
+        import re
+
+        sanitised = re.sub(r"[\x00-\x1f\x7f]+", "", display_name)
+        cleaned = sanitised.strip()
+        if not cleaned:
+            raise IllegalTransitionError("display_name must not be blank")
+        async with await self._lock_for(session_id):
+            session = await self._repo.get(session_id)
+            role = session.role_by_id(role_id)
+            if role is None:
+                raise IllegalTransitionError(f"role not found: {role_id}")
+            role.display_name = cleaned
+            await self._repo.save(session)
+        self._emit(
+            "role_display_name_set",
+            session,
+            role_id=role_id,
+            display_name=cleaned,
+        )
+        await self._connections.broadcast(
+            session.id,
+            {
+                "type": "participant_renamed",
+                "role_id": role_id,
+                "display_name": cleaned,
+            },
+        )
+        return role
+
     async def remove_role(
         self, *, session_id: str, role_id: str, by_role_id: str
     ) -> None:

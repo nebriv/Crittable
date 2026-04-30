@@ -53,23 +53,75 @@ describe("Transcript", () => {
     expect(screen.queryByText(/AI Facilitator/i)).not.toBeInTheDocument();
   });
 
-  it("does NOT render the indicator while streamingText is non-empty", () => {
-    // Streaming text takes precedence — the bubble renders the partial
-    // response, so a separate "thinking" indicator would be redundant.
+  it("ignores streamingText content (no partial rendering)", () => {
+    // Pre-fix the green "AI Facilitator (streaming…)" bubble rendered
+    // the concatenated chunk deltas live, then the final
+    // ``message_complete`` body sometimes diverged (rationale chunked
+    // but a separate broadcast got committed). Players read that as
+    // the AI rewriting itself mid-flight. We now ignore chunk content
+    // entirely; only ``aiThinking`` lights the typing indicator.
     render(
       <Transcript
         messages={[]}
         roles={ROLES}
         aiThinking
-        aiStatusLabel="Recovery pass 2/3"
+        aiStatusLabel="Typing…"
         streamingText="The AI has started replying…"
       />,
     );
+    // Partial chunk text must NOT appear in the rendered output.
     expect(
-      screen.queryByText(/AI Facilitator — Recovery/i),
+      screen.queryByText(/The AI has started replying/i),
     ).not.toBeInTheDocument();
+    // The typing indicator IS rendered with the supplied label.
     expect(
-      screen.getByText(/The AI has started replying/i),
+      screen.getByText(/AI Facilitator — Typing/i),
     ).toBeInTheDocument();
+  });
+
+  it("rings the latest AI bubble when highlightLastAi is true", () => {
+    // The amber focus ring is the visual partner to the
+    // "Awaiting your response" chip on the player page. A non-
+    // addressed-but-still-active role can spot which message they
+    // need to react to without scrolling back to the top banner.
+    const messages = [
+      {
+        id: "m1",
+        ts: new Date().toISOString(),
+        role_id: null,
+        kind: "ai_text",
+        body: "Old AI bubble — no ring on this one.",
+        tool_name: "broadcast",
+        tool_args: null,
+      },
+      {
+        id: "m2",
+        ts: new Date().toISOString(),
+        role_id: "r1",
+        kind: "player",
+        body: "Player reply",
+        tool_name: null,
+        tool_args: null,
+      },
+      {
+        id: "m3",
+        ts: new Date().toISOString(),
+        role_id: null,
+        kind: "ai_text",
+        body: "Latest AI bubble — should have the amber ring.",
+        tool_name: "broadcast",
+        tool_args: null,
+      },
+    ];
+    const { container } = render(
+      <Transcript messages={messages} roles={ROLES} highlightLastAi />,
+    );
+    const m1 = container.querySelector("#msg-m1");
+    const m3 = container.querySelector("#msg-m3");
+    expect(m1).not.toBeNull();
+    expect(m3).not.toBeNull();
+    // Tailwind ring class names — m3 has them, m1 doesn't.
+    expect(m1?.className).not.toContain("ring-amber");
+    expect(m3?.className).toContain("ring-amber");
   });
 });

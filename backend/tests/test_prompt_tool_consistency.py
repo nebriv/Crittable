@@ -117,6 +117,7 @@ _NON_TOOL_ALLOWLIST = frozenset(
         "message",
         "data",
         "label",
+        "display_name",
         "options",
         "question",
         "headline",

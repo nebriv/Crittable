@@ -402,6 +402,14 @@ export function Facilitator() {
       case "plan_edited":
         refreshSnapshot();
         break;
+      case "participant_renamed":
+        // Player set their display_name via the join intro. Refresh so
+        // the updated name appears in transcript headers + roster.
+        // Logged separately from the lump-in case above per CLAUDE.md
+        // "Log state transitions in pages" rule.
+        console.info("[facilitator] participant renamed", evt);
+        refreshSnapshot();
+        break;
       case "ai_thinking":
         // Reference-counted concurrent calls (guardrail + interject can
         // overlap). Add/remove by call_id so the indicator only clears
