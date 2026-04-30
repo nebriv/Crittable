@@ -598,16 +598,12 @@ class TurnDriver:
             # Player-facing replies. Includes ``share_data`` for "show
             # me the logs" / "give me the IOCs" interjects, and
             # ``pose_choice`` for "should I A or B?" interjects where
-            # a structured option list helps. ``mark_timeline_point``
-            # is still allowed (kept in BUILTIN as defensive dead code
-            # — never appears in palettes anywhere) so an extension or
-            # legacy script that emits it still routes correctly.
+            # a structured option list helps.
             allowed = {
                 "broadcast",
                 "address_role",
                 "share_data",
                 "pose_choice",
-                "mark_timeline_point",
             }
             tools = [t for t in PLAY_TOOLS if t["name"] in allowed]
             tool_choice: dict[str, Any] = {"type": "any"}
