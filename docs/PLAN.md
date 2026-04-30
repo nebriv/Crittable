@@ -294,13 +294,19 @@ All via env, documented in `docs/configuration.md`. Names:
 
 ### End-of-session export
 
-Triggered by `end_session` (AI-initiated or participant-initiated). The export pipeline (`llm/export.py`) runs **one final Claude call** with the full transcript and audit log to produce a single markdown document containing:
+Triggered by `end_session` (AI-initiated or participant-initiated). The export pipeline (`llm/export.py`) runs **one final Claude call** with the full transcript and audit log to produce a single markdown document. The renderer pins this section order so the analytic content surfaces first and the long-tail dialogue lives in the appendix (issue #83):
 
 1. **Header** — scenario brief, roster, start/end timestamps.
-2. **Full transcript** — chronological, role+display-name tagged, AI turns clearly delineated.
-3. **After-action report** — narrative summary, key decisions, what went well, gaps, recommendations.
-4. **Per-role scores** — 1–5 across `decision_quality`, `communication`, `speed`, with one-sentence rationale each.
-5. **Overall session score** — single 1–5 with rationale.
+2. **Executive summary** — 2–4 sentences with the headline outcome.
+3. **After-action narrative** — chronological prose anchored to beats and pivotal decisions, with verbatim quotes.
+4. **What went well / Gaps / Recommendations** — bulleted; bullets carry their own markdown (sub-bullets, bold) and the renderer indents continuation lines so multi-line items stay attached to the parent bullet.
+5. **Per-role scores** — 1–5 across `decision_quality`, `communication`, `speed`, with one-sentence rationale each. Pipes / newlines in the rationale are escaped/folded so the GFM table doesn't break.
+6. **Overall session score** — single 1–5 with rationale.
+7. **Appendix A — Setup conversation.**
+8. **Appendix B — Frozen scenario plan** (JSON).
+9. **Appendix C — Audit log** (JSONL).
+10. **Appendix D — Full transcript** — chronological, role+display-name tagged, AI turns clearly delineated. Each entry renders as `**ts** — **Role** _[tool]_` header + blockquoted body so multi-line markdown the AI emitted (lists, code fences in `share_data`, bold) survives.
+11. **Appendix E — AI decision rationale log** — *creator-only*, wrapped in `<!-- BEGIN_CREATOR_ONLY --> … <!-- END_CREATOR_ONLY -->` sentinel comments. The export route strips this section for non-creator downloads.
 
 Returned via `GET /api/sessions/{id}/export.md` (Content-Disposition: attachment) and also offered as a "Download report" button in the UI when state = `ENDED`. Session memory is GC'd after the export is fetched (or after a configurable retention window, `EXPORT_RETENTION_MIN`, default 60).
 
