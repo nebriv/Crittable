@@ -57,14 +57,20 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react
  *    advance) so the user sees their own action commit even if they'd
  *    been reading older content.
  *
- * 6. **Unread indicator.** When ``deps`` change while the user is
- *    unpinned, ``hasUnreadBelow`` flips to true so the caller can
+ * 6. **Unread indicator.** When ``unreadDeps`` change while the user
+ *    is unpinned, ``hasUnreadBelow`` flips to true so the caller can
  *    surface a "New messages below ↓" chip. Clears when the user
- *    scrolls back to the bottom (re-pin) or calls
- *    ``forceScrollToBottom``. The flag is intentionally a boolean
- *    (not a count) — callers that want a count can derive it from
- *    their own state by tracking the message count delta between
- *    "first unread arrived" and "now".
+ *    scrolls back to the bottom (re-pin), calls
+ *    ``forceScrollToBottom``, or the scroll element is re-attached.
+ *    The flag is intentionally a boolean (not a count) — callers that
+ *    want a count can derive it from their own state.
+ *
+ *    ``unreadDeps`` is a separate parameter from ``pinDeps`` so a
+ *    "streaming flag flipped" signal — which is a perfectly good
+ *    pin trigger (extends the AI bubble while the message is being
+ *    written) — doesn't falsely raise the unread chip. Production
+ *    callers pass ``[messageCount, streamingActive]`` for pinning
+ *    and ``[messageCount]`` for unread.
  *
  * ## Why a callback ref
  *
@@ -94,7 +100,15 @@ export interface UseStickyScrollResult<T extends HTMLElement = HTMLDivElement> {
 }
 
 export function useStickyScroll<T extends HTMLElement = HTMLDivElement>(
-  deps: ReadonlyArray<unknown>,
+  pinDeps: ReadonlyArray<unknown>,
+  /** Subset of ``pinDeps`` (or any other set of values) that should
+   *  flip ``hasUnreadBelow`` when they change while the user is
+   *  unpinned. Defaults to ``pinDeps`` for backwards compat, but
+   *  callers should usually narrow this to "real new content"
+   *  signals — e.g. ``messageCount`` only — so transient flags like
+   *  ``streamingActive`` don't falsely raise the chip when they
+   *  flip on / off without a new message landing. */
+  unreadDeps: ReadonlyArray<unknown> = pinDeps,
 ): UseStickyScrollResult<T> {
   const elRef = useRef<T | null>(null);
   // ``pinnedRef`` is the authoritative answer to "should we follow new
@@ -152,6 +166,13 @@ export function useStickyScroll<T extends HTMLElement = HTMLDivElement>(
         // up before any content arrives, the scroll handler will flip
         // pinnedRef to false.
         pinnedRef.current = true;
+        // Clear any unread flag carried over from the previous element.
+        // Without this, remounting the scroll region within the same
+        // hook instance (Facilitator's ``handleNewSession`` flow:
+        // intro → new session) would inherit a stale "New messages
+        // below" chip on a brand-new transcript that's already at
+        // the bottom.
+        setUnread(false);
 
         const onScroll = () => {
           const nowPinned = isAtBottom(el);
@@ -227,21 +248,16 @@ export function useStickyScroll<T extends HTMLElement = HTMLDivElement>(
     }
   }, [pinToBottom, setUnread]);
 
-  // Pin to bottom on dep change if pinned. The dep-driven path covers
-  // "new message arrived" (messageCount changed) and "streaming flag
-  // toggled" (streamingActive changed). The ResizeObserver path above
-  // covers layout shifts; together they handle every scenario the
-  // post-hoc distance math used to miss.
+  // Pin to bottom on pinDeps change if pinned. The dep-driven path
+  // covers "new message arrived" (messageCount changed) and
+  // "streaming flag toggled" (streamingActive changed). The
+  // ResizeObserver path above covers layout shifts; together they
+  // handle every scenario the post-hoc distance math used to miss.
   useLayoutEffect(() => {
     const el = elRef.current;
     if (!el) return;
     if (!pinnedRef.current) {
-      // New content arrived while the user was scrolled up. Flag
-      // unread so the caller's chip appears. The chip's onClick will
-      // call ``forceScrollToBottom`` which re-pins and clears the
-      // flag.
-      setUnread(true);
-      console.debug("[scroll] leave-alone (unpinned, marking unread)", {
+      console.debug("[scroll] leave-alone (unpinned)", {
         scrollHeight: el.scrollHeight,
         scrollTop: el.scrollTop,
         clientHeight: el.clientHeight,
@@ -253,7 +269,21 @@ export function useStickyScroll<T extends HTMLElement = HTMLDivElement>(
     // signals "content changed" (message count, streaming flag, etc.).
     // The eslint rule can't statically verify that.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [...deps, refVersion]);
+  }, [...pinDeps, refVersion]);
+
+  // Mark unread on unreadDeps change if unpinned. Split from the
+  // pin layout effect above so transient pin signals (e.g. the
+  // streaming flag flipping at the start / end of an AI message) don't
+  // falsely raise the chip when no new content has actually landed.
+  // Runs as a regular effect (post-paint) — the unread state doesn't
+  // need to land before paint, and using ``useEffect`` avoids
+  // contributing to the same commit phase as the pin path.
+  useEffect(() => {
+    if (pinnedRef.current) return;
+    setUnread(true);
+    console.debug("[scroll] marked unread (unpinned + new content)");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, unreadDeps);
 
   return { scrollRef, forceScrollToBottom, hasUnreadBelow };
 }

@@ -8,11 +8,14 @@ const config: Config = {
       keyframes: {
         // Soft outward sky ring that fades — used by the
         // "New messages below ↓" chip in Play.tsx / Facilitator.tsx
-        // to draw the eye without thrashing. The starting / ending
-        // frame includes the static drop shadow so a motion-reduced
-        // user (``motion-reduce:animate-none``) still gets a chip
-        // with depth — the animation only touches the outer ripple
-        // ring layer.
+        // to draw the eye without thrashing. While the animation is
+        // running, every keyframe combines the outer ripple with a
+        // drop shadow so the chip keeps depth across the cycle.
+        // Under ``motion-reduce:animate-none``, this keyframe doesn't
+        // apply at all, so reduced-motion depth comes from the
+        // ``motion-reduce:shadow-lg motion-reduce:ring-2
+        // motion-reduce:ring-sky-500/30`` utility classes baked into
+        // the chip element itself, not from this keyframe.
         "chip-pulse": {
           "0%, 100%": {
             boxShadow:

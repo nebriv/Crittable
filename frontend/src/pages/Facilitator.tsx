@@ -547,11 +547,19 @@ export function Facilitator() {
   // submit fired, the slack check was bypassed forever and the
   // operator could no longer scroll up to re-read older beats.
   const messageCount = snapshot?.messages.length ?? 0;
+  // ``streamingActive`` is a pin trigger (the streamed AI bubble grows
+  // and a pinned operator should follow it down) but NOT an unread
+  // trigger — the chip should only appear when an actual new message
+  // lands, not when the typing indicator flips on / off. Pass a
+  // narrowed unread-deps tuple to gate that.
   const {
     scrollRef: scrollRegionRef,
     forceScrollToBottom,
     hasUnreadBelow,
-  } = useStickyScroll([messageCount, streamingActive]);
+  } = useStickyScroll(
+    [messageCount, streamingActive],
+    [messageCount],
+  );
 
   async function refreshSnapshot() {
     if (!state) return;
@@ -1285,12 +1293,18 @@ export function Facilitator() {
               the amber awaiting-response banner that often sits
               directly below. */}
           {phase === "play" && hasUnreadBelow ? (
-            <div className="pointer-events-none flex shrink-0 justify-center">
+            // Live-region semantics on the wrapper, not the button —
+            // see Play.tsx counterpart for the ARIA APG rationale.
+            <div
+              className="pointer-events-none flex shrink-0 justify-center"
+              role="status"
+              aria-live="polite"
+              aria-atomic="true"
+            >
               <button
                 type="button"
                 onClick={forceScrollToBottom}
                 className="pointer-events-auto -mt-12 mb-1 rounded-full border border-sky-300 bg-sky-500 px-4 py-1.5 text-xs font-semibold text-white animate-chip-pulse hover:bg-sky-400 motion-reduce:animate-none motion-reduce:shadow-lg motion-reduce:ring-2 motion-reduce:ring-sky-500/30"
-                aria-live="polite"
               >
                 New messages below ↓
               </button>

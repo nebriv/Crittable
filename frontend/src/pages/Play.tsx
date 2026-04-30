@@ -273,11 +273,19 @@ export function Play({ sessionId, token }: Props) {
   // left alone. A local submit force-pins so they always see their own
   // message commit.
   const messageCount = snapshot?.messages.length ?? 0;
+  // ``streamingActive`` is a pin trigger (we want the AI's streamed
+  // bubble to follow the user's pinned position as it grows) but NOT
+  // an unread trigger — the chip should only appear when an actual
+  // new message has landed, not when the typing indicator flips on /
+  // off. Pass a narrowed unread-deps tuple to gate that.
   const {
     scrollRef: scrollRegionRef,
     forceScrollToBottom,
     hasUnreadBelow,
-  } = useStickyScroll([messageCount, streamingActive]);
+  } = useStickyScroll(
+    [messageCount, streamingActive],
+    [messageCount],
+  );
 
   // Clean up the force-advance cooldown timer on unmount so a tab
   // close mid-cooldown doesn't fire setState on an unmounted component.
@@ -701,12 +709,22 @@ export function Play({ sessionId, token }: Props) {
               is solid sky-500 which reads as distinct from the
               translucent player-bubble border). */}
           {hasUnreadBelow ? (
-            <div className="pointer-events-none flex shrink-0 justify-center">
+            // Live-region semantics live on the wrapper, not the
+            // button. Per ARIA APG: live regions should be applied to
+            // a non-interactive container so screen readers announce
+            // the surfaced text without misinterpreting the
+            // interactive control as the announcement target. The
+            // button stays a plain button.
+            <div
+              className="pointer-events-none flex shrink-0 justify-center"
+              role="status"
+              aria-live="polite"
+              aria-atomic="true"
+            >
               <button
                 type="button"
                 onClick={forceScrollToBottom}
                 className="pointer-events-auto -mt-12 mb-1 rounded-full border border-sky-300 bg-sky-500 px-4 py-1.5 text-xs font-semibold text-white animate-chip-pulse hover:bg-sky-400 motion-reduce:animate-none motion-reduce:shadow-lg motion-reduce:ring-2 motion-reduce:ring-sky-500/30"
-                aria-live="polite"
               >
                 New messages below ↓
               </button>

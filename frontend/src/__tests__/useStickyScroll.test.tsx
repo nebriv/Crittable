@@ -126,6 +126,11 @@ interface HarnessProps {
   /** Optional sink the test can read after each render to assert on
    *  the hook's ``hasUnreadBelow`` flag without rendering chip JSX. */
   bindHasUnread?: (value: boolean) => void;
+  /** When set, the harness passes ``[messageCount]`` as the unread-deps
+   *  argument to ``useStickyScroll``. Mirrors the production callers
+   *  (Play / Facilitator) which want the streaming flag to drive the
+   *  pin path but NOT the unread chip. */
+  narrowUnreadDeps?: boolean;
 }
 
 /**
@@ -142,6 +147,7 @@ function Harness({
   mountElement = true,
   bindForceScroll,
   bindHasUnread,
+  narrowUnreadDeps = false,
 }: HarnessProps) {
   const elRef = useRef<HTMLDivElement | null>(null);
 
@@ -151,7 +157,10 @@ function Harness({
   });
 
   const { scrollRef, forceScrollToBottom, hasUnreadBelow } =
-    useStickyScroll<HTMLDivElement>([messageCount, streamingActive]);
+    useStickyScroll<HTMLDivElement>(
+      [messageCount, streamingActive],
+      narrowUnreadDeps ? [messageCount] : undefined,
+    );
 
   useLayoutEffect(() => {
     bindForceScroll?.(forceScrollToBottom);
@@ -580,6 +589,127 @@ describe("useStickyScroll", () => {
       />,
     );
     // Still pinned → no unread.
+    expect(unread).toBe(false);
+  });
+
+  it("does NOT mark unread when only the streaming flag flips while unpinned (narrowUnreadDeps)", () => {
+    // Production callers pass the streaming flag in the pin-deps but
+    // NOT the unread-deps tuple — a streaming flip should follow the
+    // pinned user's chat (extending the AI bubble) without falsely
+    // raising the "New messages below" chip on an unpinned user when
+    // no actual new message has landed.
+    let unread = false;
+    const { getByTestId, rerender } = render(
+      <Harness
+        messageCount={20}
+        scrollHeight={2000}
+        clientHeight={400}
+        narrowUnreadDeps
+        bindHasUnread={(v) => {
+          unread = v;
+        }}
+      />,
+    );
+    const el = getByTestId("scroll-region");
+    expect(unread).toBe(false);
+
+    // User scrolls up.
+    setGeometry(el, { scrollTop: 500 });
+    fireEvent.scroll(el);
+
+    // Streaming flag flips on (chunk arrived) — same messageCount,
+    // streamingActive flips. With narrowUnreadDeps the unread effect
+    // sees no relevant change and stays clear.
+    rerender(
+      <Harness
+        messageCount={20}
+        scrollHeight={2400}
+        clientHeight={400}
+        streamingActive={true}
+        narrowUnreadDeps
+        bindHasUnread={(v) => {
+          unread = v;
+        }}
+      />,
+    );
+    expect(unread).toBe(false);
+
+    // Now an actual new message lands. messageCount changes, so the
+    // unread effect fires and flags unread.
+    rerender(
+      <Harness
+        messageCount={21}
+        scrollHeight={2600}
+        clientHeight={400}
+        streamingActive={false}
+        narrowUnreadDeps
+        bindHasUnread={(v) => {
+          unread = v;
+        }}
+      />,
+    );
+    expect(unread).toBe(true);
+  });
+
+  it("clears hasUnreadBelow when the scroll element re-attaches", () => {
+    // Production scenario: Facilitator's ``handleNewSession()``
+    // unmounts the scroll region (intro screen) and a new session
+    // remounts a fresh one within the same hook instance. The new
+    // element starts pinned — a stale "New messages below" chip
+    // carried over from the previous session would be misleading.
+    let unread = false;
+    const { getByTestId, rerender } = render(
+      <Harness
+        messageCount={20}
+        scrollHeight={2000}
+        clientHeight={400}
+        bindHasUnread={(v) => {
+          unread = v;
+        }}
+      />,
+    );
+    const el = getByTestId("scroll-region");
+
+    // Scroll up + new content lands → unread flag on.
+    setGeometry(el, { scrollTop: 500 });
+    fireEvent.scroll(el);
+    rerender(
+      <Harness
+        messageCount={21}
+        scrollHeight={2200}
+        clientHeight={400}
+        bindHasUnread={(v) => {
+          unread = v;
+        }}
+      />,
+    );
+    expect(unread).toBe(true);
+
+    // Unmount the scroll region.
+    rerender(
+      <Harness
+        messageCount={21}
+        scrollHeight={2200}
+        clientHeight={400}
+        mountElement={false}
+        bindHasUnread={(v) => {
+          unread = v;
+        }}
+      />,
+    );
+
+    // Re-mount with a fresh element + fresh content — the new element
+    // starts pinned and the unread flag should be cleared.
+    rerender(
+      <Harness
+        messageCount={30}
+        scrollHeight={3000}
+        clientHeight={400}
+        bindHasUnread={(v) => {
+          unread = v;
+        }}
+      />,
+    );
     expect(unread).toBe(false);
   });
 
