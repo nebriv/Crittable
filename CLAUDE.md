@@ -104,7 +104,11 @@ What does **not** work:
 ```
 Closes #52, #53, #54   ← only #52 auto-closes
 Lands #11 #12 #13      ← bare references, none auto-close
+Closes #63? — No, …    ← still matches; the `?` and the negation don't unparse the keyword
+Does not close #63     ← still matches; "close #63" is enough
 ```
+
+**Never write a closing keyword adjacent to an issue number you don't actually want to close, including in negations or rhetorical questions.** PR #64 closed #63 because the body said "Closes #63? — No, …" — GitHub's parser saw the keyword and the issue number and acted on it; the surrounding "? — No" was invisible to it. If you need to *reference* an issue without closing it, never put a closing keyword anywhere near the number. Phrase it: `tracked separately as #63 (closing keywords intentionally omitted)`, or just `see issue #63`.
 
 A cross-repo close needs the full `owner/repo#N` form (`Closes nebriv/ai-tabletop-facilitator#52`). Auto-close only fires when the PR merges into the **default branch** (`main`); merging into a feature branch never closes anything via these keywords.
 
