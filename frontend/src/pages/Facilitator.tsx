@@ -1280,13 +1280,16 @@ export function Facilitator() {
               it re-pins to the bottom. Mirrors the standard chat-app
               pattern (Slack / Discord) so an unpinned operator knows
               there's content below without being yanked off whatever
-              they were reading. */}
+              they were reading. See the Play.tsx counterpart for the
+              colour-choice rationale: solid sky to stay distinct from
+              the amber awaiting-response banner that often sits
+              directly below. */}
           {phase === "play" && hasUnreadBelow ? (
             <div className="pointer-events-none flex shrink-0 justify-center">
               <button
                 type="button"
                 onClick={forceScrollToBottom}
-                className="pointer-events-auto -mt-12 mb-1 rounded-full border border-amber-500/70 bg-slate-900/95 px-4 py-1.5 text-xs font-semibold text-amber-200 shadow-lg backdrop-blur hover:bg-slate-800"
+                className="pointer-events-auto -mt-12 mb-1 rounded-full border border-sky-300 bg-sky-500 px-4 py-1.5 text-xs font-semibold text-white shadow-lg ring-2 ring-sky-500/30 hover:bg-sky-400"
                 aria-live="polite"
               >
                 New messages below ↓
