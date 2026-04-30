@@ -387,31 +387,38 @@ def _most_recent_unreplied_player_question(session: Session) -> str | None:
     """Return the most-recent un-replied player message body if it
     ends in ``?``, else ``None``.
 
-    "Un-replied" means no AI ``broadcast`` / ``address_role`` has
-    landed since the player message. Used (a) for the legacy carve-
-    out gate (kill-switch default-off) and (b) for grounding the
-    drive-recovery user nudge so the model knows which question to
-    answer.
+    "Un-replied" means no AI ``broadcast`` / ``address_role`` /
+    ``share_data`` / ``pose_choice`` (any DRIVE-slot tool) has landed
+    since the player message — which would have answered them.
+
+    Why this still exists after the carve-out was killed: the result
+    is the **grounding payload** for the drive-recovery directive.
+    When the AI fails to answer on attempt 1, ``validate()`` calls
+    this and passes the body into ``drive_recovery_directive(
+    pending_player_question=...)``. That embeds the player's exact
+    words verbatim in the recovery user-nudge so the model knows
+    which question to answer. Without this lookup the recovery
+    broadcast would default to a generic "what's the move?" and
+    leave the original question untouched.
+
+    Symmetrically: the interject path in ``turn_driver.run_interject``
+    handles the mid-turn ``?`` case (player asked while other roles
+    are still owed responses). The two paths together cover every
+    way a player can ask a direct question.
     """
 
     for msg in reversed(session.messages):
         if msg.kind == MessageKind.AI_TEXT and msg.tool_name in {
             "broadcast",
             "address_role",
+            "share_data",
+            "pose_choice",
         }:
             return None
         if msg.kind == MessageKind.PLAYER:
             stripped = (msg.body or "").strip()
             return stripped if stripped.endswith("?") else None
     return None
-
-
-def _open_player_question(session: Session) -> bool:
-    """Boolean wrapper kept for the legacy carve-out path. New code
-    should prefer :func:`_most_recent_unreplied_player_question`
-    which returns the message body for grounding the recovery."""
-
-    return _most_recent_unreplied_player_question(session) is not None
 
 
 def _new_beat_fired(slots: set[Slot]) -> bool:
