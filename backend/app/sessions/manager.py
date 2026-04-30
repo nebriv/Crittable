@@ -890,6 +890,16 @@ class SessionManager:
     ) -> Session:
         async with await self._lock_for(session_id):
             session = await self._repo.get(session_id)
+            # Creator-only gate (issue #81). The AI-tool end path bypasses
+            # this method (see turn_driver.py around the
+            # ``end_session_reason`` branch), so this guard only constrains
+            # creator/participant-initiated ends. Both REST
+            # (POST /sessions/{id}/end) and WS (request_end_session) call
+            # sites already catch IllegalTransitionError and surface it.
+            if session.creator_role_id != by_role_id:
+                raise IllegalTransitionError(
+                    "only the creator can end the session"
+                )
             if session.state == SessionState.ENDED:
                 return session  # idempotent
             assert_transition(session.state, SessionState.ENDED)

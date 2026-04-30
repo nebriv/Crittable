@@ -477,8 +477,14 @@ def test_force_advance_from_any_participant(client: TestClient) -> None:
     assert r.status_code == 200, r.text
 
 
-def test_end_session_from_any_participant(client: TestClient) -> None:
-    """Acceptance gate: any seated participant can end the session."""
+def test_end_session_creator_only(client: TestClient) -> None:
+    """Issue #81: only the creator can end the session.
+
+    Pre-fix any seated participant could call /end and tear the
+    exercise down for everyone. The creator-only gate now lives in
+    ``manager.end_session``; both REST and WS call sites surface
+    the rejection.
+    """
 
     seats = _create_and_seat(client, role_count=2)
     _install_mock_and_drive(
@@ -491,7 +497,17 @@ def test_end_session_from_any_participant(client: TestClient) -> None:
     client.post(f"/api/sessions/{sid}/setup/skip?token={cr}")
     client.post(f"/api/sessions/{sid}/start?token={cr}")
 
+    # Non-creator end is rejected with 409 (IllegalTransitionError).
     r = client.post(f"/api/sessions/{sid}/end?token={other}", json={})
+    assert r.status_code == 409, r.text
+    assert "creator" in r.text.lower()
+
+    # Session state is unchanged (still PLAY/AWAITING_PLAYERS).
+    snap = client.get(f"/api/sessions/{sid}?token={cr}").json()
+    assert snap["state"] != "ENDED"
+
+    # Creator end succeeds.
+    r = client.post(f"/api/sessions/{sid}/end?token={cr}", json={})
     assert r.status_code == 200, r.text
     snap = client.get(f"/api/sessions/{sid}?token={cr}").json()
     assert snap["state"] == "ENDED"
