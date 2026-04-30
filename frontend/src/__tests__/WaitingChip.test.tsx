@@ -101,4 +101,31 @@ describe("WaitingChip — issue #88 (slate tone, no Copy invite, actor-led copy)
     expect(screen.getByText(/Waiting on Comms to respond\./)).toBeInTheDocument();
     expect(screen.queryByText(/\(\)/)).toBeNull();
   });
+
+  it("multi-pending mix: prints display_name where present, label-only otherwise, no empty parens", () => {
+    render(
+      <WaitingChip
+        activeRoleIds={["r-soc", "r-comms"]}
+        submittedRoleIds={[]}
+        roles={ROSTER}
+      />,
+    );
+    expect(
+      screen.getByText(/Waiting on SOC Analyst \(Bridget\) and Comms\./),
+    ).toBeInTheDocument();
+    // No "Comms ()" empty-parens artefact.
+    expect(screen.queryByText(/Comms \(\)/)).toBeNull();
+  });
+
+  it("exposes role=status with aria-live=polite (assistive tech contract)", () => {
+    render(
+      <WaitingChip
+        activeRoleIds={["r-soc"]}
+        submittedRoleIds={[]}
+        roles={ROSTER}
+      />,
+    );
+    const status = screen.getByRole("status");
+    expect(status.getAttribute("aria-live")).toBe("polite");
+  });
 });

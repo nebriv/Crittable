@@ -897,6 +897,15 @@ class SessionManager:
             # (POST /sessions/{id}/end) and WS (request_end_session) call
             # sites already catch IllegalTransitionError and surface it.
             if session.creator_role_id != by_role_id:
+                # Log before raising — a misbehaving client repeatedly
+                # hitting /end is a security-relevant signal and the
+                # exception path alone leaves no operator-visible trail.
+                _logger.warning(
+                    "end_session_rejected",
+                    session_id=session_id,
+                    by_role_id=by_role_id,
+                    creator_role_id=session.creator_role_id,
+                )
                 raise IllegalTransitionError(
                     "only the creator can end the session"
                 )

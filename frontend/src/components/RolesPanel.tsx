@@ -44,20 +44,46 @@ export function RolesPanel({
   const [copiedRoleIds, setCopiedRoleIds] = useState<ReadonlySet<string>>(
     () => new Set(),
   );
+  // Inline confirmation hint shown beneath the form (success, e.g.
+  // "Link for SOC Analyst copied"). Lives at the bottom of the panel
+  // so a creator with eyes on the form / Slack still sees confirmation
+  // even if they missed the in-button "Copied!" flash.
   const [hint, setHint] = useState<string | null>(null);
+  // Inline error hint (clipboard denied, etc.) — kept in-panel rather
+  // than bubbling through onError so the message lives next to the
+  // button the user just clicked. Server-side failures still bubble
+  // via onError so the page-level error banner surfaces them.
+  const [errorHint, setErrorHint] = useState<string | null>(null);
+  // Live-region announcement (sr-only). The in-button "Copied!" flash
+  // is now a *visual* affordance: the button keeps the static
+  // accessible name "Copy link" so screen readers don't double-
+  // announce when the label flips for two seconds.
+  const [announcement, setAnnouncement] = useState("");
   const origin = window.location.origin;
 
   function flash(message: string) {
     setHint(message);
-    setTimeout(() => setHint(null), 2500);
+    setErrorHint(null);
+    setTimeout(() => {
+      setHint((cur) => (cur === message ? null : cur));
+    }, 2500);
   }
 
-  function markCopied(roleId: string) {
+  function flashError(message: string) {
+    setErrorHint(message);
+    setHint(null);
+    setTimeout(() => {
+      setErrorHint((cur) => (cur === message ? null : cur));
+    }, 4000);
+  }
+
+  function markCopied(roleId: string, label: string) {
     setCopiedRoleIds((prev) => {
       const next = new Set(prev);
       next.add(roleId);
       return next;
     });
+    setAnnouncement(`Join link for ${label} copied to clipboard.`);
     setTimeout(() => {
       setCopiedRoleIds((prev) => {
         if (!prev.has(roleId)) return prev;
@@ -87,9 +113,12 @@ export function RolesPanel({
       const ok = await writeUrl(url);
       setNewRole("");
       if (ok) {
-        markCopied(r.role_id);
+        markCopied(r.role_id, r.label);
+        flash(`Added "${r.label}" — join link copied.`);
       } else {
-        onError("Could not copy link to clipboard. Use Kick & reissue to retry.");
+        flashError(
+          `Added "${r.label}", but copying the link failed. Use the new "Copy link" button on the row.`,
+        );
       }
       onRoleAdded();
     } catch (err) {
@@ -97,15 +126,18 @@ export function RolesPanel({
     }
   }
 
-  async function copyExistingLink(roleId: string) {
+  async function copyExistingLink(roleId: string, label: string) {
     try {
       const r = await api.reissueRole(sessionId, creatorToken, roleId);
       const url = `${origin}/play/${sessionId}/${encodeURIComponent(r.token)}`;
       const ok = await writeUrl(url);
       if (ok) {
-        markCopied(roleId);
+        markCopied(roleId, label);
+        flash(`Join link for ${label} copied.`);
       } else {
-        onError("Could not copy link to clipboard.");
+        flashError(
+          "Could not copy link to clipboard. Check browser permissions.",
+        );
       }
     } catch (err) {
       onError(err instanceof Error ? err.message : String(err));
@@ -125,9 +157,12 @@ export function RolesPanel({
       const url = `${origin}/play/${sessionId}/${encodeURIComponent(r.token)}`;
       const ok = await writeUrl(url);
       if (ok) {
-        markCopied(roleId);
+        markCopied(roleId, label);
+        flash(`Kicked. New join link for ${label} copied — share with the replacement.`);
       } else {
-        onError("Kicked, but copying the new link failed. Use Copy link to retry.");
+        flashError(
+          `Kicked ${label}, but copying the new link failed. Click "Copy link" on the row to retry.`,
+        );
       }
       onRoleChanged();
     } catch (err) {
@@ -223,17 +258,23 @@ export function RolesPanel({
                 <div className="flex flex-wrap gap-1">
                   <button
                     type="button"
-                    onClick={() => copyExistingLink(r.id)}
+                    onClick={() => copyExistingLink(r.id, r.label)}
                     disabled={busy}
+                    aria-label="Copy join link"
                     className={
-                      "rounded border px-2 py-0.5 text-xs disabled:opacity-50 " +
+                      "rounded border px-2 py-0.5 text-xs focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-400 disabled:opacity-50 " +
                       (copiedRoleIds.has(r.id)
                         ? "border-emerald-500 bg-emerald-900/40 text-emerald-100"
                         : "border-slate-700 text-slate-200 hover:bg-slate-800")
                     }
                     title="Re-mint and copy the join link without invalidating any existing tabs."
                   >
-                    <span aria-live="polite">
+                    {/* Visual flash only — accessible name stays
+                        "Copy join link" via aria-label so screen
+                        readers don't double-announce when the label
+                        flips for 2s. The audible confirmation comes
+                        from the panel-level live region below. */}
+                    <span aria-hidden="true">
                       {copiedRoleIds.has(r.id) ? "Copied!" : "Copy link"}
                     </span>
                   </button>
@@ -241,7 +282,7 @@ export function RolesPanel({
                     type="button"
                     onClick={() => kick(r.id, r.label)}
                     disabled={busy}
-                    className="rounded border border-amber-600 px-2 py-0.5 text-xs text-amber-300 hover:bg-amber-900/30 disabled:opacity-50"
+                    className="rounded border border-amber-600 px-2 py-0.5 text-xs text-amber-300 hover:bg-amber-900/30 focus-visible:outline focus-visible:outline-2 focus-visible:outline-amber-300 disabled:opacity-50"
                     title="Disconnect anyone using the current link and issue a new link."
                   >
                     Kick &amp; reissue
@@ -250,7 +291,7 @@ export function RolesPanel({
                     type="button"
                     onClick={() => remove(r.id, r.label)}
                     disabled={busy}
-                    className="rounded border border-red-600 px-2 py-0.5 text-xs text-red-300 hover:bg-red-900/30 disabled:opacity-50"
+                    className="rounded border border-red-600 px-2 py-0.5 text-xs text-red-300 hover:bg-red-900/30 focus-visible:outline focus-visible:outline-2 focus-visible:outline-red-300 disabled:opacity-50"
                     title="Remove this role from the session."
                   >
                     Remove
@@ -274,13 +315,29 @@ export function RolesPanel({
         <button
           type="submit"
           disabled={busy || !newRole.trim()}
-          className="rounded bg-sky-600 px-2 py-1 text-xs font-semibold text-white hover:bg-sky-500 disabled:opacity-50"
+          className="rounded bg-sky-600 px-2 py-1 text-xs font-semibold text-white hover:bg-sky-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-300 disabled:opacity-50"
         >
           Add role
         </button>
       </form>
 
-      {hint ? <p className="text-xs text-emerald-300">{hint}</p> : null}
+      {hint ? (
+        <p className="text-xs text-emerald-300" data-testid="roles-panel-hint">
+          {hint}
+        </p>
+      ) : null}
+      {errorHint ? (
+        <p className="text-xs text-red-300" data-testid="roles-panel-error">
+          {errorHint}
+        </p>
+      ) : null}
+      {/* Visually-hidden live region for assistive tech. The in-button
+          "Copied!" flash is purely visual; accessible-name double-
+          announce was the bug — this is the single source of audible
+          confirmation. */}
+      <span className="sr-only" role="status" aria-live="polite">
+        {announcement}
+      </span>
     </div>
   );
 }

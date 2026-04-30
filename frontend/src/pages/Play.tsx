@@ -402,7 +402,12 @@ export function Play({ sessionId, token }: Props) {
     // role; this guard is just early UX. Left intact (rather than
     // inlined into the JSX onClick) so a future "request that the
     // creator end" flow can re-wire the same handler.
-    wsRef.current?.send({ type: "request_end_session", reason: "ended by creator" });
+    try {
+      wsRef.current?.send({ type: "request_end_session", reason: "ended by creator" });
+    } catch (err) {
+      console.warn("[play] end-session send failed", err);
+      setError(err instanceof Error ? err.message : String(err));
+    }
   }
 
   const myRoleFromSnapshot = snapshot?.roles.find((r) => r.id === selfRoleId);

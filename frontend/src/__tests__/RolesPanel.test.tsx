@@ -35,7 +35,7 @@ describe("RolesPanel — issue #82 (no on-screen tokens)", () => {
     vi.restoreAllMocks();
   });
 
-  it("Copy link writes to clipboard and never renders the URL", async () => {
+  it("Copy link writes to clipboard, never renders the URL, and reverts after the flash window", async () => {
     const reissue = vi
       .spyOn(api, "reissueRole")
       .mockResolvedValue({
@@ -55,25 +55,41 @@ describe("RolesPanel — issue #82 (no on-screen tokens)", () => {
       />,
     );
 
-    const button = screen.getByRole("button", { name: /Copy link/i });
+    // Accessible name stays "Copy join link" so screen readers don't
+    // double-announce. Visual label flips Copy link → Copied!.
+    const button = screen.getByRole("button", { name: /Copy join link/i });
     fireEvent.click(button);
 
     await waitFor(() => expect(reissue).toHaveBeenCalled());
     await waitFor(() => expect(writeText).toHaveBeenCalled());
 
-    // The clipboard write got a URL containing the token — that's expected.
     expect(writeText).toHaveBeenCalledWith(
       expect.stringContaining("secret-token-do-not-show"),
     );
 
-    // Button label transitions to "Copied!"
-    await waitFor(() =>
-      expect(screen.getByRole("button", { name: /Copied!/ })).toBeInTheDocument(),
+    // Token must NEVER appear in the rendered DOM.
+    expect(screen.queryByText(/secret-token-do-not-show/)).toBeNull();
+
+    // Visual badge transitions to Copied!.
+    await waitFor(() => expect(button.textContent).toMatch(/Copied!/));
+
+    // Bottom-of-panel success toast confirms for users with eyes
+    // elsewhere.
+    expect(screen.getByTestId("roles-panel-hint").textContent).toMatch(
+      /Join link for SOC Analyst copied/,
     );
 
-    // The token must NEVER appear in the rendered DOM.
-    expect(screen.queryByText(/secret-token-do-not-show/)).toBeNull();
-  });
+    // sr-only live region carries the audible confirmation.
+    expect(
+      screen.getByRole("status").textContent,
+    ).toMatch(/Join link for SOC Analyst copied/);
+
+    // After ~2s the visual badge reverts.
+    await waitFor(
+      () => expect(button.textContent).toMatch(/Copy link/),
+      { timeout: 3000 },
+    );
+  }, 5000);
 
   it("Add role does not render the new role's URL on screen", async () => {
     const onRoleAdded = vi.fn();
@@ -115,9 +131,61 @@ describe("RolesPanel — issue #82 (no on-screen tokens)", () => {
     expect(
       (screen.getByPlaceholderText(/IR Lead/i) as HTMLInputElement).value,
     ).toBe("");
+    // Bottom-of-panel toast confirms the add+copy succeeded so a creator
+    // looking at the form (not the new role row) still gets feedback.
+    await waitFor(() =>
+      expect(screen.getByTestId("roles-panel-hint").textContent).toMatch(
+        /Added "Legal" — join link copied/,
+      ),
+    );
   });
 
-  it("Copy link surfaces an error when clipboard write fails", async () => {
+  it("Kick & reissue copies the new link, surfaces a hint, never renders the URL", async () => {
+    const onRoleChanged = vi.fn();
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+    const revoke = vi.spyOn(api, "revokeRole").mockResolvedValue({
+      token: "fresh-kick-token",
+      join_url: `https://example.test/play/${SESSION_ID}/fresh-kick-token`,
+    });
+
+    render(
+      <RolesPanel
+        sessionId={SESSION_ID}
+        creatorToken={CREATOR_TOKEN}
+        roles={baseRoles}
+        busy={false}
+        onRoleAdded={vi.fn()}
+        onRoleChanged={onRoleChanged}
+        onError={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(
+      screen.getByRole("button", { name: /Kick & reissue/i }),
+    );
+    expect(confirmSpy).toHaveBeenCalled();
+
+    await waitFor(() => expect(revoke).toHaveBeenCalled());
+    await waitFor(() => expect(writeText).toHaveBeenCalled());
+    await waitFor(() => expect(onRoleChanged).toHaveBeenCalled());
+
+    expect(writeText).toHaveBeenCalledWith(
+      expect.stringContaining("fresh-kick-token"),
+    );
+
+    // Token must not appear in the DOM.
+    expect(screen.queryByText(/fresh-kick-token/)).toBeNull();
+
+    // Confirmation hint at the bottom of the panel — recovery surface
+    // if the in-button flash was missed.
+    await waitFor(() =>
+      expect(screen.getByTestId("roles-panel-hint").textContent).toMatch(
+        /Kicked\. New join link for SOC Analyst copied/,
+      ),
+    );
+  });
+
+  it("Copy link surfaces an inline error when clipboard write fails (not bubbled to onError)", async () => {
     vi.spyOn(api, "reissueRole").mockResolvedValue({
       token: "secret-token-do-not-show",
       join_url: `https://example.test/play/${SESSION_ID}/secret-token-do-not-show`,
@@ -137,14 +205,25 @@ describe("RolesPanel — issue #82 (no on-screen tokens)", () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: /Copy link/i }));
+    fireEvent.click(
+      screen.getByRole("button", { name: /Copy join link/i }),
+    );
 
-    await waitFor(() => expect(onError).toHaveBeenCalled());
-    expect(onError.mock.calls[0][0]).toMatch(/clipboard/i);
+    // Inline error hint shows up next to the button — not bubbled
+    // through onError, so the error doesn't render far away in the
+    // page-level banner.
+    await waitFor(() =>
+      expect(screen.getByTestId("roles-panel-error").textContent).toMatch(
+        /Could not copy link/i,
+      ),
+    );
+    expect(onError).not.toHaveBeenCalled();
     expect(screen.queryByText(/secret-token-do-not-show/)).toBeNull();
-    // Button stays as "Copy link" (no false success).
+
+    // Button stays as Copy link (no false success badge).
     expect(
-      screen.getByRole("button", { name: /Copy link/i }),
-    ).toBeInTheDocument();
+      (screen.getByRole("button", { name: /Copy join link/i }) as HTMLElement)
+        .textContent,
+    ).toMatch(/Copy link/);
   });
 });
