@@ -60,6 +60,12 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     repository = InMemoryRepository(max_sessions=settings.max_sessions)
     connections = ConnectionManager()
     llm = LLMClient(settings=settings)
+    # Wire the connection manager into the LLM client so every LLM call
+    # boundary (begin / end) fans out an ``ai_thinking`` WS event. Without
+    # this, the participant + creator UIs only saw the indicator when
+    # ``session.state == AI_PROCESSING``, which left interject / guardrail /
+    # setup-tier / AAR-generation work invisible (issue #63).
+    llm.set_connections(connections)
     guardrail = InputGuardrail(llm=llm, settings=settings)
 
     tool_dispatcher = ToolDispatcher(

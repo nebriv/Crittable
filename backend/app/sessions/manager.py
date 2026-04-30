@@ -434,6 +434,37 @@ class SessionManager:
                 raise IllegalTransitionError("no current turn")
             if not can_submit(turn, role_id):
                 raise IllegalTransitionError("role cannot submit on this turn")
+            # Backstop the duplicate-submission path. The 15-second-apart
+            # duplicate visible in the issue #63 screenshot is dissolved
+            # by the new ``ai_thinking`` / ``ai_status`` indicators (the
+            # participant retyped because they had no feedback) but the
+            # belt-and-braces guard prevents a stray double-Enter from
+            # producing two visible bubbles. Compare against the most
+            # recent message — same role, identical (whitespace-stripped)
+            # body, and within the dedupe window.
+            stripped_new = content.strip()
+            window_seconds = self._settings.duplicate_submission_window_seconds
+            if window_seconds > 0 and session.messages:
+                last = session.messages[-1]
+                if (
+                    last.kind == MessageKind.PLAYER
+                    and last.role_id == role_id
+                    and last.body.strip() == stripped_new
+                    and (datetime.now(UTC) - last.ts).total_seconds() < window_seconds
+                ):
+                    self._emit(
+                        "dedupe_dropped_submission",
+                        session,
+                        role_id=role_id,
+                        content_preview=content[:120],
+                        elapsed_seconds=int(
+                            (datetime.now(UTC) - last.ts).total_seconds()
+                        ),
+                    )
+                    raise IllegalTransitionError(
+                        "You just sent the same message — wait a moment "
+                        "or change something to send again."
+                    )
             turn.submitted_role_ids.append(role_id)
             session.messages.append(
                 Message(
@@ -469,6 +500,25 @@ class SessionManager:
         return ready_to_advance
 
     async def force_advance(self, *, session_id: str, by_role_id: str) -> None:
+        # Refuse force-advance while a play-tier LLM call is mid-stream.
+        # Without this guard, every operator click spawned a fresh
+        # ``run_play_turn`` that raced the still-streaming original —
+        # the screenshot timeline in issue #63 (three "Force-advanced"
+        # SYSTEM banners followed by the AI's actual reply seconds
+        # later) is exactly that race. Non-play tiers (guardrail,
+        # setup, AAR) are NOT blocked: an operator must always be able
+        # to recover from a hung non-play call.
+        in_flight = self._llm.in_flight_for(session_id)
+        if any(c.tier == "play" for c in in_flight):
+            _logger.info(
+                "force_advance_rejected_in_flight",
+                session_id=session_id,
+                by_role_id=by_role_id,
+                in_flight_tiers=[c.tier for c in in_flight],
+            )
+            raise IllegalTransitionError(
+                "AI is still processing — wait a few seconds before forcing advance"
+            )
         async with await self._lock_for(session_id):
             session = await self._repo.get(session_id)
             turn = session.current_turn
@@ -740,6 +790,12 @@ class SessionManager:
         await self._connections.broadcast(
             session_id, {"type": "aar_status_changed", "status": "generating"}
         )
+        # Labelled AI-status breadcrumb so the operator's UI shows
+        # "AI — Drafting the after-action report" during the 30 s+
+        # generation. Without this the UI only had ``aar_status_changed``
+        # WS events, which connected clients see but reload-the-tab
+        # users miss until their snapshot polls. Issue #63 audit gap #7.
+        await self._broadcast_ai_status(session_id, phase="aar")
         _logger.info("aar_generation_start", session_id=session_id)
 
         try:
@@ -762,6 +818,7 @@ class SessionManager:
             await self._connections.broadcast(
                 session_id, {"type": "aar_status_changed", "status": "failed"}
             )
+            await self._broadcast_ai_status(session_id, phase=None)
             return
 
         async with await self._lock_for(session_id):
@@ -776,9 +833,42 @@ class SessionManager:
         await self._connections.broadcast(
             session_id, {"type": "aar_status_changed", "status": "ready"}
         )
+        await self._broadcast_ai_status(session_id, phase=None)
         _logger.info(
             "aar_generation_complete", session_id=session_id, length=len(markdown)
         )
+
+    async def _broadcast_ai_status(
+        self, session_id: str, *, phase: str | None
+    ) -> None:
+        """Manager-side helper for emitting the labelled ``ai_status``
+        breadcrumb. Symmetric with ``TurnDriver._emit_ai_status`` —
+        both broadcast to ``record=False`` so the events don't clog
+        the replay buffer. Wrapped because a misbehaving WS handler
+        must not abort the AAR pipeline.
+        """
+
+        try:
+            await self._connections.broadcast(
+                session_id,
+                {
+                    "type": "ai_status",
+                    "phase": phase,
+                    "attempt": None,
+                    "budget": None,
+                    "recovery": None,
+                    "turn_index": None,
+                    "for_role_id": None,
+                },
+                record=False,
+            )
+        except Exception as exc:
+            _logger.warning(
+                "ai_status_broadcast_failed",
+                session_id=session_id,
+                phase=phase,
+                error=str(exc),
+            )
 
     # ---------------------------------------------------- messaging helpers
     async def append_ai_message(

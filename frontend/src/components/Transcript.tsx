@@ -9,11 +9,23 @@ interface Props {
   roles: RoleView[];
   streamingText?: string;
   /**
-   * True when the backend is in AI_PROCESSING (or equivalent) but no streaming
-   * chunks have arrived yet. Renders an inline "AI is thinking…" bubble so a
-   * scrolled participant doesn't have to look at the StatusBar.
+   * True when the backend is doing AI work (any tier — play, interject,
+   * setup, briefing, AAR, guardrail) but no streaming chunks have arrived
+   * yet. Renders an inline "AI is thinking…" bubble so a scrolled
+   * participant doesn't have to look at the StatusBar. Driven primarily
+   * by ``ai_thinking`` WS events from the LLM-call boundary, with a
+   * ``state``-based fallback for reconnect.
    */
   aiThinking?: boolean;
+  /**
+   * Optional human-readable label appended to the thinking indicator,
+   * e.g. ``"Recovery pass 2/3 (missing yield)"`` or
+   * ``"Replying to SOC Analyst"``. Lets the operator distinguish
+   * "thinking" from "stuck" during the play-tier strict-retry loop and
+   * surfaces what the AI is doing during otherwise opaque side-channel
+   * paths like ``run_interject``.
+   */
+  aiStatusLabel?: string;
   /** role_ids of human players currently typing (excluding the local user). */
   typingRoleIds?: string[];
 }
@@ -99,7 +111,14 @@ function MarkdownBody({ body }: { body: string }) {
   );
 }
 
-export function Transcript({ messages, roles, streamingText, aiThinking, typingRoleIds }: Props) {
+export function Transcript({
+  messages,
+  roles,
+  streamingText,
+  aiThinking,
+  aiStatusLabel,
+  typingRoleIds,
+}: Props) {
   const roleById = new Map(roles.map((r) => [r.id, r]));
   const typing = (typingRoleIds ?? []).flatMap((id) => {
     const r = roleById.get(id);
@@ -180,7 +199,14 @@ export function Transcript({ messages, roles, streamingText, aiThinking, typingR
           <p className="whitespace-pre-wrap text-sm leading-relaxed">{streamingText}</p>
         </article>
       ) : aiThinking ? (
-        <ChatIndicator label="AI Facilitator is typing…" tone="ai" />
+        <ChatIndicator
+          label={
+            aiStatusLabel
+              ? `AI Facilitator — ${aiStatusLabel}`
+              : "AI Facilitator is typing…"
+          }
+          tone="ai"
+        />
       ) : null}
       {typingLabel ? <ChatIndicator label={typingLabel} tone="player" /> : null}
     </div>

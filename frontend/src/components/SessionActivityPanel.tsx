@@ -183,7 +183,8 @@ export function SessionActivityPanel({
                   type="button"
                   onClick={onForceAdvance}
                   disabled={busy}
-                  className="self-start rounded border border-amber-500 px-2 py-0.5 text-xs font-semibold text-amber-200 hover:bg-amber-900/30 disabled:opacity-50"
+                  aria-disabled={busy}
+                  className="self-start rounded border border-amber-500 px-2 py-0.5 text-xs font-semibold text-amber-200 hover:bg-amber-900/30 disabled:cursor-not-allowed disabled:opacity-50"
                   title="Skip the stuck AI turn and let the engine advance."
                 >
                   Force-advance turn

@@ -854,6 +854,7 @@ def register_api_routes(app: FastAPI) -> None:
                     "model": call.model,
                     "stream": call.stream,
                     "elapsed_ms": int((now - call.started_at) * 1000),
+                    "call_id": call.call_id,
                 }
                 for call in in_flight
             ],
@@ -961,6 +962,7 @@ def register_api_routes(app: FastAPI) -> None:
                     "model": call.model,
                     "stream": call.stream,
                     "elapsed_ms": int((now - call.started_at) * 1000),
+                    "call_id": call.call_id,
                 }
                 for call in in_flight
             ],

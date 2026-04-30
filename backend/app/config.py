@@ -248,6 +248,14 @@ class Settings(BaseSettings):
     export_retention_min: int = Field(default=60, alias="EXPORT_RETENTION_MIN", ge=1)
     ws_heartbeat_s: int = Field(default=20, alias="WS_HEARTBEAT_S", ge=1)
     input_guardrail_enabled: bool = Field(default=True, alias="INPUT_GUARDRAIL_ENABLED")
+    # Reject a participant's submission as a duplicate if it matches the
+    # role's previous message body (whitespace-stripped) within this many
+    # seconds. Backstop for the no-feedback retype loop in issue #63 once
+    # the new ``ai_thinking`` indicator dissolves the underlying confusion.
+    # Set to 0 to disable.
+    duplicate_submission_window_seconds: int = Field(
+        default=30, alias="DUPLICATE_SUBMISSION_WINDOW_SECONDS", ge=0
+    )
 
     # ---- Logging -------------------------------------------------------
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = Field(

@@ -418,7 +418,7 @@ async def _client_pump(
                     turn = session.current_turn
                     if turn is not None:
                         await TurnDriver(manager=manager).run_interject(
-                            session=session, turn=turn
+                            session=session, turn=turn, for_role_id=role_id
                         )
             elif event_type == "request_force_advance":
                 try:

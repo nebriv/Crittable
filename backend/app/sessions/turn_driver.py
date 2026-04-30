@@ -61,6 +61,49 @@ class TurnDriver:
     def __init__(self, *, manager: SessionManager) -> None:
         self._manager = manager
 
+    async def _emit_ai_status(
+        self,
+        session_id: str,
+        *,
+        phase: str | None,
+        attempt: int | None = None,
+        budget: int | None = None,
+        recovery: str | None = None,
+        turn_index: int | None = None,
+        for_role_id: str | None = None,
+    ) -> None:
+        """Broadcast a labelled "what is the AI doing?" breadcrumb.
+
+        ``ai_thinking`` (emitted from the LLM-call boundary) answers
+        "is anything running"; ``ai_status`` (this method) answers
+        "what should the human see?". Failure to emit must NOT break
+        the turn — wrap and log.
+
+        ``record=False`` because the breadcrumb is stale on reconnect.
+        """
+
+        try:
+            await self._manager.connections().broadcast(
+                session_id,
+                {
+                    "type": "ai_status",
+                    "phase": phase,
+                    "attempt": attempt,
+                    "budget": budget,
+                    "recovery": recovery,
+                    "turn_index": turn_index,
+                    "for_role_id": for_role_id,
+                },
+                record=False,
+            )
+        except Exception as exc:
+            _logger.warning(
+                "ai_status_broadcast_failed",
+                session_id=session_id,
+                phase=phase,
+                error=str(exc),
+            )
+
     def _check_truncation(
         self,
         *,
@@ -124,62 +167,71 @@ class TurnDriver:
             note_count=len(session.setup_notes),
             has_plan=session.plan is not None,
         )
+        # Light up the labelled indicator so the creator sees "AI —
+        # Designing the scenario" while the setup tier is at work.
+        # The ``finally`` clause clears it on every return path; the
+        # ``ai_thinking`` events from the LLM-call boundary handle the
+        # binary "is something running" signal.
+        await self._emit_ai_status(session.id, phase="setup")
 
-        # Safety cap on chained setup tool calls — operator-tunable via
-        # ``MAX_SETUP_TURNS``. Lifting it lets a model that wants to
-        # ``ask_setup_question`` → ``propose_scenario_plan`` → ``finalize_setup``
-        # in one cycle do so without a premature break.
-        for _ in range(self._manager.settings().max_setup_turns):
-            messages = _setup_messages(session)
-            result = await llm.acomplete(
-                tier="setup",
-                system_blocks=build_setup_system_blocks(session),
-                messages=messages,
-                # Pin ``tool_choice`` to "any" so the model MUST emit a
-                # setup tool call. Eliminates the bare-text leak path
-                # entirely — the only way the setup tier can produce
-                # text without a tool is if the SDK contract is
-                # violated, in which case we discard below.
-                tool_choice=tool_choice_for("setup"),
-                tools=SETUP_TOOLS,
-                # Per-tier default from settings.max_tokens_for(tier) — call passes None.
-                session_id=session.id,
-            )
-            await self._apply_cost(session.id, result)
-            self._check_truncation(session_id=session.id, tier="setup", result=result)
+        try:
+            # Safety cap on chained setup tool calls — operator-tunable via
+            # ``MAX_SETUP_TURNS``. Lifting it lets a model that wants to
+            # ``ask_setup_question`` → ``propose_scenario_plan`` →
+            # ``finalize_setup`` in one cycle do so without a premature break.
+            for _ in range(self._manager.settings().max_setup_turns):
+                messages = _setup_messages(session)
+                result = await llm.acomplete(
+                    tier="setup",
+                    system_blocks=build_setup_system_blocks(session),
+                    messages=messages,
+                    # Pin ``tool_choice`` to "any" so the model MUST emit a
+                    # setup tool call. Eliminates the bare-text leak path
+                    # entirely — the only way the setup tier can produce
+                    # text without a tool is if the SDK contract is
+                    # violated, in which case we discard below.
+                    tool_choice=tool_choice_for("setup"),
+                    tools=SETUP_TOOLS,
+                    # Per-tier default from settings.max_tokens_for(tier) — call passes None.
+                    session_id=session.id,
+                )
+                await self._apply_cost(session.id, result)
+                self._check_truncation(session_id=session.id, tier="setup", result=result)
 
-            tool_uses = _tool_uses(result)
-            if not tool_uses:
-                # Bare text from the setup tier should be impossible:
-                # ``tool_choice={"type":"any"}`` forces a tool call.
-                # If we land here anyway (SDK contract violation, mock
-                # in tests, or a future refactor that drops the pin),
-                # discard the text rather than persist it — the
-                # transcript belongs to the play tier and we don't
-                # want setup-style assistant prose leaking into the
-                # play history. Log loudly so the regression is
-                # visible.
-                text = _all_text(result)
-                if text:
-                    _logger.warning(
-                        "setup_tier_bare_text_discarded",
-                        session_id=session.id,
-                        chars=len(text),
-                    )
-                return session
+                tool_uses = _tool_uses(result)
+                if not tool_uses:
+                    # Bare text from the setup tier should be impossible:
+                    # ``tool_choice={"type":"any"}`` forces a tool call.
+                    # If we land here anyway (SDK contract violation, mock
+                    # in tests, or a future refactor that drops the pin),
+                    # discard the text rather than persist it — the
+                    # transcript belongs to the play tier and we don't
+                    # want setup-style assistant prose leaking into the
+                    # play history. Log loudly so the regression is
+                    # visible.
+                    text = _all_text(result)
+                    if text:
+                        _logger.warning(
+                            "setup_tier_bare_text_discarded",
+                            session_id=session.id,
+                            chars=len(text),
+                        )
+                    return session
 
-            outcome = await dispatcher.dispatch(
-                session=session,
-                tool_uses=tool_uses,
-                turn_id=None,
-                critical_inject_allowed_cb=lambda: True,
-            )
-            await self._apply_setup_outcome(session, outcome)
-            # All three setup tools (ask_setup_question / propose / finalize)
-            # set ``had_yielding_call`` — that's our single yield signal.
-            if outcome.had_yielding_call:
-                return session
-        return session
+                outcome = await dispatcher.dispatch(
+                    session=session,
+                    tool_uses=tool_uses,
+                    turn_id=None,
+                    critical_inject_allowed_cb=lambda: True,
+                )
+                await self._apply_setup_outcome(session, outcome)
+                # All three setup tools (ask_setup_question / propose / finalize)
+                # set ``had_yielding_call`` — that's our single yield signal.
+                if outcome.had_yielding_call:
+                    return session
+            return session
+        finally:
+            await self._emit_ai_status(session.id, phase=None)
 
     async def run_play_turn(self, *, session: Session, turn: Turn) -> Session:
         """Drive one play-tier turn end-to-end via the turn validator.
@@ -231,6 +283,13 @@ class TurnDriver:
         budget = 1 + settings.llm_strict_retry_max
         attempt = 0
 
+        # Phase label for the labelled "what is the AI doing?" indicator.
+        # When state is BRIEFING we expose ``phase=briefing`` so the UI
+        # can render "Briefing the team" instead of a generic play
+        # status; otherwise it's a normal play turn. Cleared on every
+        # return path via ``finally``.
+        status_phase = "briefing" if session.state == SessionState.BRIEFING else "play"
+
         # Cumulative outcome across attempts. Holds the merged slot
         # set + appended messages + tool_results so the validator sees
         # everything that fired this turn, not just the latest attempt.
@@ -250,6 +309,23 @@ class TurnDriver:
         while attempt < budget:
             attempt += 1
             recovery = active_directive is not None
+            # Labelled status: surface attempt N/M and the recovery kind
+            # so the operator can tell "AI is on attempt 2/3 because
+            # the first response missed a yield" from "AI is stuck"
+            # (issue #63 — the strict-retry loop was previously
+            # invisible to clients).
+            # Only the directive ``kind`` (e.g. ``"missing_yield"``) goes
+            # on the wire — NEVER the full ``user_nudge`` / ``system_addendum``
+            # text. Those carry plan-derived structure that's creator-only;
+            # broadcasting them would leak via the WS to participants.
+            await self._emit_ai_status(
+                session.id,
+                phase=status_phase,
+                attempt=attempt,
+                budget=budget,
+                recovery=active_directive.kind if active_directive else None,
+                turn_index=turn.index,
+            )
 
             # Build messages. On a recovery pass replace the trailing
             # kickoff/strict nudge with the directive's user_nudge,
@@ -356,6 +432,7 @@ class TurnDriver:
                     cumulative,
                     result_text=_all_text(result),
                 )
+                await self._emit_ai_status(session.id, phase=None)
                 return session
 
             # Not ok — pick the highest-priority directive and run
@@ -386,6 +463,7 @@ class TurnDriver:
             await self._apply_play_outcome(
                 session, turn, cumulative, result_text=""
             )
+            await self._emit_ai_status(session.id, phase=None)
             return session
 
         turn.status = "errored"
@@ -399,9 +477,12 @@ class TurnDriver:
                 "turn_index": turn.index,
             },
         )
+        await self._emit_ai_status(session.id, phase=None)
         return session
 
-    async def run_interject(self, *, session: Session, turn: Turn) -> Session:
+    async def run_interject(
+        self, *, session: Session, turn: Turn, for_role_id: str | None = None
+    ) -> Session:
         """Side-channel AI response that does NOT advance the turn.
 
         Triggered when a player asks the facilitator a direct question
@@ -444,6 +525,18 @@ class TurnDriver:
             "interject_start",
             session_id=session.id,
             turn_index=turn.index,
+            for_role_id=for_role_id,
+        )
+        # Light up the labelled "Replying to {role}" status so the asking
+        # participant + everyone else knows the AI received the question
+        # and is composing an answer (issue #63 — without this the entire
+        # interject path was invisible because it doesn't change
+        # ``session.state``). Cleared in the finally below.
+        await self._emit_ai_status(
+            session.id,
+            phase="interject",
+            turn_index=turn.index,
+            for_role_id=for_role_id,
         )
 
         messages = _play_messages(session, strict=False)
@@ -495,6 +588,7 @@ class TurnDriver:
                 },
             )
         await self._manager._repo.save(session)
+        await self._emit_ai_status(session.id, phase=None)
         return session
 
     # ------------------------------------------------- internals
