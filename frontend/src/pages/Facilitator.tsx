@@ -21,7 +21,7 @@ import { SetupChat } from "../components/SetupChat";
 import { Transcript } from "../components/Transcript";
 import { ServerEvent, WsClient } from "../lib/ws";
 
-type Phase = "intro" | "setup" | "ready" | "play" | "ended";
+export type Phase = "intro" | "setup" | "ready" | "play" | "ended";
 
 interface CreatorState {
   sessionId: string;
@@ -105,6 +105,16 @@ export function Facilitator() {
   });
   const [creatorLabel, setCreatorLabel] = useState("CISO");
   const [creatorDisplayName, setCreatorDisplayName] = useState("");
+  // Issue #61: roles to invite, declared *before* the session is created
+  // so the operator doesn't have to add seats one-by-one in the lobby.
+  // These are auto-created via ``api.addRole`` immediately after the
+  // session is created. Operators can still add/remove roles dynamically
+  // from the Roles panel during setup or play.
+  const SETUP_ROLE_DEFAULTS = ["IR Lead", "Legal", "Comms"] as const;
+  const [setupRoles, setSetupRoles] = useState<string[]>([
+    ...SETUP_ROLE_DEFAULTS,
+  ]);
+  const [setupRoleDraft, setSetupRoleDraft] = useState("");
   // Dev-mode toggle on the intro page: prefills a known scenario + creator
   // identity, and on submit auto-skips the AI setup dialogue so testers
   // bypass the 5–30 s setup loop. Use only for local QA.
@@ -124,10 +134,10 @@ export function Facilitator() {
   const [cost, setCost] = useState<CostSnapshot | null>(null);
   const [godMode, setGodMode] = useState(false);
   // Page-level state for the AAR popup so a single "View AAR" button in
-  // the sidebar Controls is the only surface that opens it. Pre-fix the
-  // sidebar had a "Download AAR" that bypassed the popup AND the chat
-  // area had a duplicate "Show AAR report" button — two competing CTAs
-  // for the same task.
+  // the top SessionActionBar is the only surface that opens it. Pre-fix
+  // the sidebar had a "Download AAR" that bypassed the popup AND the
+  // chat area had a duplicate "Show AAR report" button — two competing
+  // CTAs for the same task.
   const [showAarPopup, setShowAarPopup] = useState(false);
   // role_id -> last typing-true timestamp (ms). Filtered to "currently typing"
   // by the consuming components which check freshness < 4s.
@@ -243,6 +253,46 @@ export function Facilitator() {
         creatorRoleId: created.creator_role_id,
         joinUrl: created.creator_join_url,
       });
+      // Issue #61: auto-create any pre-declared invitee roles before the
+      // operator lands on the lobby. De-duped against the creator's own
+      // label so an operator who left the suggestions list intact and
+      // *also* picked one of those labels for themselves doesn't get a
+      // duplicate seat. Dev mode skips this — it has its own SOC Analyst
+      // helper seat below.
+      if (!devMode) {
+        const creatorLabelTrim = creatorLabel.trim().toLowerCase();
+        const seen = new Set<string>([creatorLabelTrim]);
+        const labelsToAdd = setupRoles
+          .map((s) => s.trim())
+          .filter((s) => s.length > 0)
+          .filter((label) => {
+            const k = label.toLowerCase();
+            if (seen.has(k)) return false;
+            seen.add(k);
+            return true;
+          });
+        for (const label of labelsToAdd) {
+          setBusyMessage(`Adding role "${label}"…`);
+          try {
+            await api.addRole(created.session_id, created.creator_token, {
+              label,
+              kind: "player",
+            });
+          } catch (roleErr) {
+            console.warn("[facilitator] failed to add role", label, roleErr);
+            setError(
+              `Created the session but failed to add role "${label}": ` +
+                (roleErr instanceof Error ? roleErr.message : String(roleErr)) +
+                ". You can add it manually from the Roles panel.",
+            );
+          }
+        }
+        if (labelsToAdd.length > 0) {
+          console.info("[facilitator] pre-created roles", {
+            count: labelsToAdd.length,
+          });
+        }
+      }
       if (devMode) {
         // ``start_session`` requires ≥ 2 player roles. Dev mode auto-
         // adds a SOC Analyst seat so the operator can solo-test via the
@@ -821,6 +871,132 @@ export function Facilitator() {
               className="rounded border border-slate-700 bg-slate-900 p-2 text-sm"
             />
           </div>
+          {(() => {
+            // Helpers shared between the Add-role button and the Enter
+            // shortcut. Extracted so the trim/dedup logic lives in one
+            // place — duplicating it across the two handlers was flagged
+            // as a regression footgun in code review.
+            const addRoleLabel = (next: string) => {
+              const trimmed = next.trim();
+              if (!trimmed) return;
+              if (
+                setupRoles.some((r) => r.toLowerCase() === trimmed.toLowerCase())
+              ) {
+                setSetupRoleDraft("");
+                return;
+              }
+              setSetupRoles((cur) => [...cur, trimmed]);
+              setSetupRoleDraft("");
+            };
+            // Surface the silent dedupe-against-creator-label case: if the
+            // operator picks "IR Lead" as their own role label and leaves
+            // it in the suggestions, it'll be filtered out at create
+            // time. Tell them up front rather than letting the seat go
+            // missing without explanation.
+            const creatorLabelLower = creatorLabel.trim().toLowerCase();
+            const dedupeWithCreator = creatorLabelLower
+              ? setupRoles.find((r) => r.toLowerCase() === creatorLabelLower)
+              : undefined;
+            const defaultsMatch =
+              setupRoles.length === SETUP_ROLE_DEFAULTS.length &&
+              SETUP_ROLE_DEFAULTS.every((d, i) => setupRoles[i] === d);
+            return (
+              <fieldset className="flex flex-col gap-2 rounded border border-slate-700 bg-slate-900 p-3">
+                <legend className="px-1 text-xs uppercase tracking-widest text-slate-400">
+                  Roles to invite
+                </legend>
+                <p className="text-[11px] text-slate-400">
+                  Add the seats other participants will fill. Each role
+                  gets its own join link in the lobby — you'll copy and
+                  share the link yourself. You can also add or remove
+                  roles later from the Roles panel.
+                </p>
+                {setupRoles.length > 0 ? (
+                  <ul className="flex flex-wrap gap-1.5">
+                    {setupRoles.map((label, idx) => (
+                      <li
+                        key={`${label}-${idx}`}
+                        className="inline-flex items-center gap-1 rounded border border-slate-600 bg-slate-950 py-0.5 pl-2 pr-0.5 text-xs text-slate-200"
+                      >
+                        <span>{label}</span>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setSetupRoles((cur) =>
+                              cur.filter((_, i) => i !== idx),
+                            )
+                          }
+                          aria-label={`Remove ${label}`}
+                          className="rounded px-1.5 py-0.5 text-slate-400 hover:bg-slate-800 hover:text-red-300 focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-300"
+                          title={`Remove ${label}`}
+                        >
+                          <span aria-hidden="true">×</span>
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                ) : (
+                  <p className="text-[11px] italic text-slate-500">
+                    No invitee roles yet. You'll need at least 1 invitee
+                    (you + 1 = 2 player seats) before the exercise can
+                    start.
+                  </p>
+                )}
+                {dedupeWithCreator ? (
+                  <p
+                    role="status"
+                    className="text-[11px] text-amber-300"
+                  >
+                    You're playing "{dedupeWithCreator}", so it won't be
+                    auto-added as a separate invitee.
+                  </p>
+                ) : null}
+                <div className="flex flex-wrap gap-2">
+                  <input
+                    value={setupRoleDraft}
+                    onChange={(e) => setSetupRoleDraft(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        e.preventDefault();
+                        addRoleLabel(setupRoleDraft);
+                      }
+                    }}
+                    placeholder="e.g. IR Lead — press Enter to add another"
+                    aria-label="New role label"
+                    className="flex-1 rounded border border-slate-700 bg-slate-950 p-2 text-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-300"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => addRoleLabel(setupRoleDraft)}
+                    disabled={!setupRoleDraft.trim()}
+                    className="rounded border border-slate-600 px-3 py-2 text-xs text-slate-200 hover:bg-slate-800 focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-300 disabled:opacity-50"
+                  >
+                    Add role
+                  </button>
+                </div>
+                <div className="flex flex-wrap gap-3 text-[11px] text-slate-400">
+                  {setupRoles.length > 0 ? (
+                    <button
+                      type="button"
+                      onClick={() => setSetupRoles([])}
+                      className="text-slate-400 underline hover:text-slate-200 focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-300"
+                    >
+                      Clear all
+                    </button>
+                  ) : null}
+                  {!defaultsMatch ? (
+                    <button
+                      type="button"
+                      onClick={() => setSetupRoles([...SETUP_ROLE_DEFAULTS])}
+                      className="text-slate-400 underline hover:text-slate-200 focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-300"
+                    >
+                      Reset to defaults
+                    </button>
+                  ) : null}
+                </div>
+              </fieldset>
+            );
+          })()}
           <button
             type="submit"
             disabled={busy}
@@ -863,6 +1039,22 @@ export function Facilitator() {
         onToggleGodMode={() => setGodMode((g) => !g)}
         godMode={godMode}
       />
+      {/* Issue #62: pin the session controls (Start / Force-advance / End /
+          View AAR / New session) to a horizontal bar at the very top of
+          the layout so the primary CTA is always reachable on narrow
+          viewports without scrolling past the role roster. */}
+      <SessionActionBar
+        phase={phase}
+        onStart={handleStart}
+        onForceAdvance={handleForceAdvance}
+        onEnd={handleEnd}
+        onNewSession={handleNewSession}
+        onViewAar={() => setShowAarPopup(true)}
+        playerCount={playerCount}
+        hasFinalizedPlan={Boolean(snapshot.plan)}
+        aarStatus={snapshot.aar_status ?? null}
+        busy={busy}
+      />
       <div className="mx-auto grid w-full max-w-7xl flex-1 grid-cols-1 gap-4 p-4 lg:min-h-0 lg:grid-cols-[280px_1fr_280px] lg:overflow-hidden">
         <aside className="flex flex-col gap-4 lg:min-h-0 lg:overflow-y-auto lg:pr-1">
           <RolesPanel
@@ -890,18 +1082,6 @@ export function Facilitator() {
           />
           <DecisionLogPanel entries={decisionLog} />
           <CostMeter cost={cost ?? snapshot.cost} />
-          <Controls
-            phase={phase}
-            onStart={handleStart}
-            onForceAdvance={handleForceAdvance}
-            onEnd={handleEnd}
-            onNewSession={handleNewSession}
-            onViewAar={() => setShowAarPopup(true)}
-            playerCount={playerCount}
-            hasFinalizedPlan={Boolean(snapshot.plan)}
-            aarStatus={snapshot.aar_status ?? null}
-            busy={busy}
-          />
         </aside>
 
         <section className="flex min-w-0 flex-col gap-3 lg:min-h-0 lg:overflow-hidden">
@@ -1339,7 +1519,15 @@ function WaitingChip({
 }
 
 
-function Controls(props: {
+/**
+ * Issue #62: horizontal action bar pinned just below the StatusBar so the
+ * primary phase-appropriate CTA (Start / Force-advance / End / View AAR /
+ * New session) is always reachable on narrow viewports. Pre-fix the same
+ * controls lived at the bottom of the left sidebar — on a 493×943
+ * viewport the Start button was below the fold, requiring a scroll past
+ * the entire role roster + activity panel to reach it.
+ */
+export function SessionActionBar(props: {
   phase: Phase;
   onStart: () => void;
   onForceAdvance: () => void;
@@ -1359,112 +1547,101 @@ function Controls(props: {
     props.playerCount >= 2;
 
   return (
-    <div className="flex min-w-0 flex-col gap-2 rounded border border-slate-700 bg-slate-900 p-3 text-sm">
-      {props.phase === "ready" || props.phase === "setup" ? (
-        <>
-          <p className="text-xs text-slate-400">
-            Players: {props.playerCount} (need ≥ 2 to start)
-          </p>
-          <button
-            onClick={props.onStart}
-            disabled={!canStart || props.busy}
-            className="rounded bg-emerald-600 px-2 py-1 text-sm font-semibold text-white hover:bg-emerald-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-emerald-300 disabled:cursor-not-allowed disabled:opacity-50"
-            title={
-              !props.hasFinalizedPlan
-                ? "Finalize the plan first"
-                : props.playerCount < 2
-                  ? "Add at least 2 player roles"
-                  : ""
-            }
-          >
-            Start session
-          </button>
-        </>
-      ) : null}
-
-      {props.phase === "play" ? (
-        <>
-          {/*
-            Single force-advance button. The User-Agent review flagged
-            two stacked buttons that landed on the same handler as
-            "reads like an unfinished refactor" — fair. We now ship one
-            primary action with a clarifying tooltip + a one-line
-            inline hint that covers both intents (nudge AI / skip
-            missing voices).
-          */}
-          <button
-            onClick={props.onForceAdvance}
-            disabled={props.busy}
-            className="rounded border border-emerald-500 bg-emerald-900/30 px-2 py-1 text-sm font-semibold text-emerald-100 hover:bg-emerald-700/40 disabled:opacity-50"
-            title="Hand the turn to the AI now. Use when conversation has stalled OR when one player is unresponsive."
-          >
-            AI: take next beat
-          </button>
-          <p className="text-[10px] leading-tight text-slate-500">
-            Marks the current player turn complete (skipping any missing
-            voices) and lets the AI run the next beat.
-          </p>
-          <button
-            onClick={props.onEnd}
-            disabled={props.busy}
-            className="rounded border border-red-500 px-2 py-1 text-sm font-semibold text-red-300 hover:bg-red-900/30 disabled:opacity-50"
-          >
-            End session
-          </button>
-        </>
-      ) : null}
-
-      {props.phase === "ended" ? (() => {
-        // Single AAR entry point. The popup contains the actual Download
-        // button; this CTA only opens the viewer. Pre-fix there were two
-        // competing buttons (sidebar "Download AAR" that bypassed the
-        // popup, plus an in-chat "Show AAR report").
-        if (props.aarStatus === "ready") {
-          return (
+    <div className="border-b border-slate-800 bg-slate-900/60 px-4 py-2">
+      <div className="mx-auto flex w-full max-w-7xl flex-wrap items-center gap-2 text-sm">
+        {props.phase === "ready" || props.phase === "setup" ? (
+          <>
             <button
-              onClick={props.onViewAar}
-              className="rounded bg-emerald-600 px-2 py-1 text-sm font-semibold text-white hover:bg-emerald-500"
+              onClick={props.onStart}
+              disabled={!canStart || props.busy}
+              className="rounded bg-emerald-600 px-3 py-1 text-sm font-semibold text-white hover:bg-emerald-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-emerald-300 disabled:cursor-not-allowed disabled:opacity-50"
+              title={
+                !props.hasFinalizedPlan
+                  ? "Finalize the plan first"
+                  : props.playerCount < 2
+                    ? "Add at least 2 player roles"
+                    : ""
+              }
             >
-              View AAR
+              Start session
             </button>
-          );
-        }
-        if (props.aarStatus === "failed") {
-          return (
-            <div
-              role="status"
-              className="flex flex-col gap-1 rounded border border-red-500/60 bg-red-950/30 px-2 py-1 text-xs text-red-200"
-            >
-              <span>AAR generation failed.</span>
-              <span className="text-[11px] text-red-200/80">
-                Use Retry in the main panel, or end + restart the session.
-              </span>
-            </div>
-          );
-        }
-        return (
-          <span
-            role="status"
-            aria-live="polite"
-            className="inline-flex items-center gap-1.5 rounded bg-slate-800/80 px-2 py-1 text-xs text-slate-300"
-          >
-            <span
-              aria-hidden="true"
-              className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-400"
-            />
-            AAR generating… (~30 s)
-          </span>
-        );
-      })() : null}
+            <span className="text-xs text-slate-400">
+              Players: {props.playerCount} (need ≥ 2 to start)
+            </span>
+          </>
+        ) : null}
 
-      <button
-        onClick={props.onNewSession}
-        disabled={props.busy}
-        className="mt-1 rounded border border-slate-600 px-2 py-1 text-xs text-slate-300 hover:bg-slate-800 disabled:opacity-50"
-        title="End the current session (if any) and return to the new-session form."
-      >
-        Start a new session
-      </button>
+        {props.phase === "play" ? (
+          <>
+            <button
+              onClick={props.onForceAdvance}
+              disabled={props.busy}
+              className="rounded border border-emerald-500 bg-emerald-900/30 px-3 py-1 text-sm font-semibold text-emerald-100 hover:bg-emerald-700/40 focus-visible:outline focus-visible:outline-2 focus-visible:outline-emerald-300 disabled:opacity-50"
+              title="Hand the turn to the AI now. Use when conversation has stalled OR when one player is unresponsive."
+            >
+              AI: take next beat
+            </button>
+            <button
+              onClick={props.onEnd}
+              disabled={props.busy}
+              className="rounded border border-red-500 px-3 py-1 text-sm font-semibold text-red-300 hover:bg-red-900/30 focus-visible:outline focus-visible:outline-2 focus-visible:outline-red-300 disabled:opacity-50"
+            >
+              End session
+            </button>
+            <span className="text-[11px] leading-tight text-slate-500">
+              "Take next beat" marks the current player turn complete
+              (skipping any missing voices).
+            </span>
+          </>
+        ) : null}
+
+        {props.phase === "ended"
+          ? (() => {
+              if (props.aarStatus === "ready") {
+                return (
+                  <button
+                    onClick={props.onViewAar}
+                    className="rounded bg-emerald-600 px-3 py-1 text-sm font-semibold text-white hover:bg-emerald-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-emerald-300"
+                  >
+                    View AAR
+                  </button>
+                );
+              }
+              if (props.aarStatus === "failed") {
+                return (
+                  <span
+                    role="status"
+                    className="inline-flex items-center gap-1 rounded border border-red-500/60 bg-red-950/30 px-2 py-1 text-xs text-red-200"
+                  >
+                    AAR generation failed — use Retry in the main panel.
+                  </span>
+                );
+              }
+              return (
+                <span
+                  role="status"
+                  aria-live="polite"
+                  className="inline-flex items-center gap-1.5 rounded bg-slate-800/80 px-2 py-1 text-xs text-slate-300"
+                >
+                  <span
+                    aria-hidden="true"
+                    className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-400"
+                  />
+                  AAR generating… (~30 s)
+                </span>
+              );
+            })()
+          : null}
+
+        <button
+          onClick={props.onNewSession}
+          disabled={props.busy}
+          className="ml-auto rounded border border-slate-600 px-3 py-1 text-xs text-slate-300 hover:bg-slate-800 focus-visible:outline focus-visible:outline-2 focus-visible:outline-slate-300 disabled:opacity-50"
+          title="End the current session (if any) and return to the new-session form."
+        >
+          Start a new session
+        </button>
+      </div>
     </div>
   );
 }
