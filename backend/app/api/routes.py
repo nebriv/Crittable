@@ -14,6 +14,7 @@ from ..auth.authz import (
     AuthorizationError,
     require_creator,
     require_participant,
+    require_seated,
 )
 from ..extensions.registry import FrozenRegistry
 from ..sessions.manager import SessionManager
@@ -767,7 +768,16 @@ def register_api_routes(app: FastAPI) -> None:
             name_chars=len(body.display_name),
         )
         try:
-            require_participant(token)
+            # Self-only rename — spectators legitimately need to label
+            # themselves so peers (creator + players) see who's
+            # watching. Use ``require_seated`` instead of
+            # ``require_participant`` so spectators aren't 403'd out
+            # of the join-intro flow. The token binding above
+            # (``_bind_token``) already verified the role exists and
+            # the token is theirs; the role_id we pass to the
+            # manager is sourced from the verified token, NOT from a
+            # query param, so callers can only rename themselves.
+            require_seated(token)
             role = await manager.set_role_display_name(
                 session_id=session_id,
                 role_id=token["role_id"],

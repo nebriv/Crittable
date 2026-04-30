@@ -376,8 +376,9 @@ export function Facilitator() {
         // ``message_complete`` will refresh the snapshot and paint the
         // final body via the same MarkdownBody path everything else
         // uses, so what the creator sees in the chat matches what's
-        // persisted (and what players see).
-        if (!streamingActive) setStreamingActive(true);
+        // persisted (and what players see). Idempotent set — no
+        // stale-closure guard needed.
+        setStreamingActive(true);
         break;
       case "message_complete":
         setStreamingActive(false);

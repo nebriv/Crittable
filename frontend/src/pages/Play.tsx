@@ -133,7 +133,12 @@ export function Play({ sessionId, token }: Props) {
         // Ignore chunk content; we only render the final message after
         // ``message_complete``. Flip the streaming flag so the typing
         // indicator can read "Typing…" while chunks are flowing.
-        if (!streamingActive) setStreamingActive(true);
+        // ``setStreamingActive(true)`` is idempotent — React bails out
+        // on equal-value sets — so we don't guard against a stale
+        // closure read of ``streamingActive`` here. (``WsClient``
+        // captures ``onEvent`` once at mount, so any guard would be
+        // reading stale state anyway.)
+        setStreamingActive(true);
         break;
       case "message_complete":
         setStreamingActive(false);
@@ -351,21 +356,70 @@ export function Play({ sessionId, token }: Props) {
     wsRef.current?.send({ type: "request_end_session", reason: "ended by participant" });
   }
 
-  if (!displayName) {
+  const myRoleFromSnapshot = snapshot?.roles.find((r) => r.id === selfRoleId);
+  const serverDisplayName = myRoleFromSnapshot?.display_name ?? null;
+  // Server is the source of truth; if it has a name we use that. Pre-
+  // fix the gate looked at localStorage only, which meant: (a) a user
+  // returning on a different browser (no localStorage entry) was
+  // forced through JoinIntro again even though the server knew them;
+  // (b) a user with a stale localStorage entry from before this
+  // deploy skipped JoinIntro and never POSTed their name, so peers
+  // saw the bare role label forever.
+  const effectiveDisplayName = serverDisplayName ?? displayName;
+
+  // Reconcile local ``displayName`` state with the server. Two
+  // directions are possible:
+  //
+  // 1. **Server has it, local doesn't** — fresh browser / cleared
+  //    localStorage / different device. Hydrate local from server
+  //    so the rest of the UI ("Your turn — {role} ({name})") has a
+  //    name to render. No network call.
+  //
+  // 2. **Local has it, server doesn't** — pre-server-persist deploy
+  //    or a long-lived tab. Quietly POST the local name so peers see
+  //    it. Best-effort; a failure just means the user might have
+  //    to re-enter via JoinIntro on a future visit.
+  //
+  // Without this, case (1) leaves the active-role banner reading
+  // "Your turn — Cybersecurity Manager ()" with empty parens, and
+  // case (2) is the bug Copilot flagged: peers never see the name.
+  useEffect(() => {
+    if (!myRoleFromSnapshot) return;
+    if (serverDisplayName && !displayName) {
+      window.localStorage.setItem(
+        `${DISPLAY_NAME_KEY}:${sessionId}`,
+        serverDisplayName,
+      );
+      setDisplayName(serverDisplayName);
+      return;
+    }
+    if (!serverDisplayName && displayName) {
+      api.setSelfDisplayName(sessionId, token, displayName).catch((err) => {
+        console.warn("[play] background display_name sync failed", {
+          session_id: sessionId,
+          message: err instanceof Error ? err.message : String(err),
+        });
+      });
+    }
+    // ``myRoleFromSnapshot?.id`` keeps the effect from re-running on
+    // unrelated snapshot churn (messages, turns, etc.).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [serverDisplayName, displayName, sessionId, token, myRoleFromSnapshot?.id]);
+
+  if (!effectiveDisplayName) {
     // Pre-fix this was a tiny "what's your name?" dialog that operators
     // routinely missed (the user's report — "I'm not sure if Bridget
     // was prompted to enter her name at all"). The intro page now
     // names the role, sets expectations for AI interaction, and
     // posts the entered name to the server so peers see it (was:
     // localStorage-only, invisible to other clients).
-    const myRoleFromSnapshot = snapshot?.roles.find((r) => r.id === selfRoleId);
     return (
       <JoinIntro
         sessionId={sessionId}
         token={token}
         roleLabel={myRoleFromSnapshot?.label}
         roleKind={myRoleFromSnapshot?.kind}
-        roleExistingDisplayName={myRoleFromSnapshot?.display_name ?? null}
+        roleExistingDisplayName={serverDisplayName}
         scenarioPrompt={snapshot?.scenario_prompt}
         sessionState={snapshot?.state}
         snapshotLoaded={snapshot !== null}
@@ -915,7 +969,12 @@ function JoinIntro({
             // button already cover empty submission, and the browser
             // tooltip from native required would conflict with our
             // own error surface.
-            disabled={submitting || sessionEnded}
+            // ``sessionEnded`` does NOT disable the input — the copy
+            // below tells the user they can still join in read-only
+            // mode after entering a name. Disabling the input made
+            // that promise impossible to keep for first-time joiners
+            // of an ENDED session.
+            disabled={submitting}
             value={name}
             onChange={(e) => setName(e.target.value)}
             placeholder="e.g. Bridget"

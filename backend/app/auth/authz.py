@@ -29,6 +29,20 @@ def require_participant(token: JoinTokenPayload) -> None:
         raise AuthorizationError("participant-only action")
 
 
+def require_seated(token: JoinTokenPayload) -> None:
+    """Allow ANY seated role on the session (creator / player / spectator).
+
+    Used by self-only endpoints — those whose subject is unambiguously
+    the role bound to the token (e.g. ``POST .../roles/me/display_name``).
+    The token binding itself is the access control; spectators have a
+    legitimate need to set their own display_name so peers see who's
+    watching, and the action can't affect anyone else.
+    """
+
+    if token["kind"] not in ("creator", "player", "spectator"):
+        raise AuthorizationError("token kind not recognised")
+
+
 def require_active_role(
     token: JoinTokenPayload,
     *,

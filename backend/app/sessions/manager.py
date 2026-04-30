@@ -294,18 +294,21 @@ class SessionManager:
         because no event signalled the rename to peer clients.
         """
 
-        # Strip C0/C1 control characters (NUL, BEL, newline, vertical
-        # tab, etc.) before persisting. ``Field(max_length=64)`` lets a
-        # malicious player submit something like
+        # Strip C0 (``\x00-\x1f``) + DEL (``\x7f``) + C1 (``\x80-\x9f``)
+        # control characters before persisting. ``Field(max_length=64)``
+        # lets a malicious player submit something like
         # ``"Bridget\nFAKE: state_changed"`` — the inner ``\n`` would
-        # split a structlog audit line into two and confuse log parsers
-        # / SIEM regexes (this branch is the first player-callable
-        # mutation route, so the rule lands here). The frontend's React
-        # render path is XSS-safe; this is defence-in-depth at the
-        # storage boundary.
+        # split a structlog audit line into two and confuse log
+        # parsers / SIEM regexes. C1 controls are less common but still
+        # valid Unicode and can interfere with downstream consumers
+        # (some terminal emulators, log shippers, ANSI-aware viewers
+        # interpret 0x80-0x9F as escape sequences). This is the first
+        # player-callable mutation route, so the rule lands here. The
+        # frontend's React render path is XSS-safe; this is defence-
+        # in-depth at the storage boundary.
         import re
 
-        sanitised = re.sub(r"[\x00-\x1f\x7f]+", "", display_name)
+        sanitised = re.sub(r"[\x00-\x1f\x7f-\x9f]+", "", display_name)
         cleaned = sanitised.strip()
         if not cleaned:
             raise IllegalTransitionError("display_name must not be blank")
