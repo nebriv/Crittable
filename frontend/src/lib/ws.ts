@@ -54,9 +54,9 @@ export type ServerEvent =
       type: "presence";
       role_id: string;
       active: boolean;
-      /** Total open WS tabs on this session (added in PR #66 round 3 for
-       *  the top-bar "Tabs: N" chip). May be undefined when received from
-       *  an older backend; treat as "unknown". */
+      /** Total open WS tabs on this session, used for the top-bar
+       *  "Tabs: N" chip. May be undefined when received from an older
+       *  backend; treat as "unknown". */
       connection_count?: number;
     }
   | {

@@ -1433,12 +1433,22 @@ export function TopBar(props: {
   // 1 s cadence matches the resolution of the data we have (Date.now()
   // is millisecond-precise but a sub-second indicator would just look
   // jittery).
+  //
+  // Depend on the *boolean* presence of a timestamp rather than its
+  // value: ``lastEventAt`` is bumped on every WS frame (including
+  // typing pings + heartbeats), so a value-dep would tear down and
+  // re-create the timer hundreds of times a minute under load. The
+  // boolean only flips once (null → number on first frame), so the
+  // interval is created exactly once per session. The timer reads the
+  // latest timestamp from ``props`` on each tick via ``lastEventLabel``
+  // below, which closes over ``props`` afresh on every render.
+  const hasLastEvent = props.lastEventAt !== null;
   const [, _setTick] = useState(0);
   useEffect(() => {
-    if (props.lastEventAt === null) return;
+    if (!hasLastEvent) return;
     const id = setInterval(() => _setTick((n) => n + 1), 1000);
     return () => clearInterval(id);
-  }, [props.lastEventAt]);
+  }, [hasLastEvent]);
   const lastEventLabel = props.lastEventAt === null
     ? "—"
     : (() => {
