@@ -212,9 +212,11 @@ union); contracts say which slots are required vs forbidden.
 
 ```mermaid
 flowchart LR
-    subgraph "Player-facing question (DRIVE)"
+    subgraph "Player-facing — DRIVE slot"
         broadcast --> DRIVE
         address_role --> DRIVE
+        share_data --> DRIVE
+        pose_choice --> DRIVE
     end
     subgraph "Advances the turn (YIELD)"
         set_active_roles --> YIELD
@@ -222,13 +224,10 @@ flowchart LR
     subgraph "Ends the exercise (TERMINATE)"
         end_session --> TERMINATE
     end
-    subgraph "Stage direction"
-        inject_event --> NARRATE
-        mark_timeline_point --> PIN
+    subgraph "Critical escalation"
         inject_critical_event --> ESCALATE
     end
     subgraph "Bookkeeping (no slot value for the contract)"
-        record_decision_rationale --> BOOKKEEPING
         track_role_followup --> BOOKKEEPING
         resolve_role_followup --> BOOKKEEPING
         request_artifact --> BOOKKEEPING
@@ -243,9 +242,18 @@ flowchart LR
 
     class DRIVE,YIELD goodSlot
     class TERMINATE terminateSlot
-    class NARRATE,PIN,ESCALATE narrateSlot
+    class ESCALATE narrateSlot
     class BOOKKEEPING bookSlot
 ```
+
+> **Tool palette redesign (2026-04-30):** `inject_event`,
+> `mark_timeline_point`, and `record_decision_rationale` were removed
+> from `PLAY_TOOLS`. They were perpetual "do something easy and stop"
+> attractors. `share_data` (synthetic data dumps for IOCs/logs/telemetry)
+> and `pose_choice` (multi-choice tactical decisions) replaced their
+> legitimate use cases. Rationale is now harvested from the model's
+> natural text content blocks. See [`tool-design.md`](tool-design.md)
+> for the case studies.
 
 ### The two slots that matter for this regression
 

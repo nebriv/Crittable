@@ -66,6 +66,8 @@ Custom tools, resources, and prompts (Skills-style) are loaded at startup via en
 ## Engine-side phase policy (read before touching any LLM call site)
 
 > **Pair this section with [`docs/turn-lifecycle.md`](docs/turn-lifecycle.md)** — the load-bearing reference for the play-turn engine. Flowcharts of every gate, slot, contract, validator branch, and recovery directive, plus a full write-up of the 2026-04-30 silent-yield regression. Read both before touching `app/sessions/turn_validator.py`, `app/sessions/turn_driver.py`, `app/sessions/slots.py`, or `app/llm/dispatch.py`.
+>
+> **Adding or rewording a tool:** read [`docs/tool-design.md`](docs/tool-design.md) first. The five trap patterns there are the difference between a tool the model picks correctly and one it ignores or over-applies. Run `pytest backend/tests/live/ -v` against `ANTHROPIC_API_KEY` after any change to `app/llm/tools.py`, Block 6 of `app/llm/prompts.py`, or the recovery directives.
 
 [`backend/app/sessions/phase_policy.py`](backend/app/sessions/phase_policy.py) is the **single source of truth** for "what is the LLM allowed to do in tier X at session state Y?" Do not duplicate these rules elsewhere. Three enforcement points consume it:
 

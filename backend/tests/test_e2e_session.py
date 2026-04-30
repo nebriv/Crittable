@@ -675,7 +675,13 @@ def test_ws_rejects_session_mismatch(client: TestClient) -> None:
     "first_tool_name, first_input",
     [
         ("broadcast", {"message": "Detection — alarms firing on the vendor portal."}),
-        ("inject_event", {"description": "Lateral movement detected on a finance VLAN."}),
+        # ``inject_event`` and ``mark_timeline_point`` were removed from
+        # the play palette in the 2026-04-30 redesign — testing them
+        # against the live model as "first tool the AI emitted" is no
+        # longer meaningful since the API rejects tools not in the
+        # palette. The behavior they exercised (non-yielding tool fired
+        # alone → cascade recovers) is still covered by the `None` case
+        # below (no tool fired) and by the dedicated cascade test.
         # No tool at all — model returns text only with stop_reason=end_turn.
         # This is the *original* failure mode the strict retry was written for.
         (None, None),
@@ -784,9 +790,13 @@ def test_strict_retry_recovers_when_ai_skips_yield(
         f"first attempt must not set tool_choice; got {first_call.get('tool_choice')!r}"
     )
     first_tools = {t["name"] for t in first_call.get("tools", [])}
+    # ``inject_event`` and ``mark_timeline_point`` were removed from the
+    # standard play palette in the 2026-04-30 redesign — they were
+    # perpetual attractors for "do something easy and stop" misfires.
+    # The dispatcher handlers remain as defensive dead code.
     assert first_tools >= {
         "broadcast",
-        "inject_event",
+        "share_data",
         "set_active_roles",
         "end_session",
     }, f"first attempt should expose the full play tool list; got {first_tools}"
@@ -1160,7 +1170,7 @@ def test_player_question_does_not_downgrade_drive_recovery(
 ) -> None:
     """Regression for the captured production bug (session
     ``e4d6503317d6``): player asks the AI a direct ``?``-terminated
-    question, AI's tool calls are only ``record_decision_rationale``,
+    question, AI's tool calls are only ``inject_event``,
     and the legacy soft-drive carve-out used to downgrade the missing
     DRIVE to a warning — leaving the player's question unanswered. The
     carve-out's predicate matches the *opposite* case (player asking
@@ -1194,15 +1204,16 @@ def test_player_question_does_not_downgrade_drive_recovery(
         ],
         stop_reason="tool_use",
     )
-    # The bad turn: only bookkeeping, no DRIVE, no YIELD. Mirrors the
-    # exact tool surface from the production log.
+    # The bad turn: only stage-direction (inject_event), no DRIVE, no
+    # YIELD. Mirrors a real production failure mode where the AI used
+    # a system note as a substitute for answering the player.
     bad_mid_turn = _Response(
         content=[
             _ContentBlock(
                 type="tool_use",
-                name="record_decision_rationale",
-                input={"rationale": "Beat 1: triage — narrating logs."},
-                id="tu_rationale",
+                name="inject_event",
+                input={"description": "Defender telemetry pull initiated."},
+                id="tu_event",
             )
         ],
         stop_reason="tool_use",

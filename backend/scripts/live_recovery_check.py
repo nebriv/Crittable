@@ -62,6 +62,7 @@ from app.sessions.models import (
     Session,
     SessionState,
 )
+from app.sessions.turn_driver import _play_messages
 from app.sessions.turn_validator import (
     _DRIVE_RECOVERY_NOTE,
     _STRICT_YIELD_NOTE,
@@ -141,19 +142,11 @@ def _empty_registry() -> Any:
 
 
 def _build_play_messages(session: Session) -> list[dict[str, Any]]:
-    """Build the user/assistant messages array the same way `_play_messages` does."""
+    """Delegate to the production message builder so the live test
+    sees the same context (incl. the per-turn reminder) the engine
+    sends to the model in production."""
 
-    # Replicating the basics — opener + transcript replays.
-    msgs: list[dict[str, Any]] = []
-    for m in session.messages:
-        if m.kind == MessageKind.AI_TEXT:
-            msgs.append({"role": "assistant", "content": m.body or ""})
-        elif m.kind == MessageKind.PLAYER:
-            role = next(r for r in session.roles if r.id == m.role_id)
-            tag = f"[{role.label} / {role.display_name or role.label}]"
-            msgs.append({"role": "user", "content": f"{tag} {m.body}"})
-    msgs.append({"role": "user", "content": "[system] Roster turn — your move."})
-    return msgs
+    return _play_messages(session, strict=False)
 
 
 async def _call_model(

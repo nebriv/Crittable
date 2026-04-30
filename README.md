@@ -114,6 +114,11 @@ boundaries are enforced in code:
   contracts, validator, recovery cascade, and the 2026-04-30 silent-
   yield regression. Read before touching `app/sessions/turn_*` or
   `app/llm/dispatch.py`.
+- [`docs/tool-design.md`](docs/tool-design.md) — **tool authoring
+  guidelines.** Five trap patterns we hit, an authoring checklist, the
+  current play-tier palette, and the live tool-routing pytest suite
+  used as the regression net. Read before adding, renaming, or
+  rewording any tool in `app/llm/tools.py`.
 - [`CLAUDE.md`](CLAUDE.md) — guidance for Claude Code sessions on this
   repo (six-agent review protocol, logging rules, dependency intake).
 

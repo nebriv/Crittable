@@ -13,6 +13,8 @@ BUILTIN_TOOL_NAMES = frozenset(
     {
         "address_role",
         "broadcast",
+        "pose_choice",
+        "share_data",
         "inject_event",
         "set_active_roles",
         "request_artifact",
