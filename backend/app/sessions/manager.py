@@ -484,10 +484,70 @@ class SessionManager:
         )
         return turn
 
+    def _enforce_dedupe_window(
+        self, session: Session, *, role_id: str, content: str
+    ) -> None:
+        """Raise ``IllegalTransitionError`` if ``role_id`` posted the same
+        body within ``duplicate_submission_window_seconds``.
+
+        Backstop for the duplicate-submission path (issue #63). The
+        15-second-apart duplicate visible in the screenshot is dissolved
+        by the ``ai_thinking`` / ``ai_status`` indicators, but this
+        guard prevents a stray double-Enter from producing two visible
+        bubbles. Shared by ``submit_response`` and ``proxy_submit_as``
+        (issue #78 — pre-fix the proxy path skipped this scan, which
+        magnified into a real risk once the proxy became the documented
+        out-of-turn interjection path).
+
+        Scans backwards for the most recent ``PLAYER`` message from this
+        same role within the dedupe window. We can't just check
+        ``messages[-1]`` because an interject path can splice an AI
+        reply between the two participant submits — and a SYSTEM banner
+        can land in the same gap. The window itself bounds the scan, so
+        the cost is at worst O(messages_in_last_30s).
+        """
+
+        window_seconds = self._settings.duplicate_submission_window_seconds
+        if window_seconds <= 0:
+            return
+        stripped_new = content.strip()
+        now = datetime.now(UTC)
+        for prior in reversed(session.messages):
+            if (now - prior.ts).total_seconds() >= window_seconds:
+                return
+            if prior.kind != MessageKind.PLAYER or prior.role_id != role_id:
+                continue
+            if prior.body.strip() == stripped_new:
+                self._emit(
+                    "dedupe_dropped_submission",
+                    session,
+                    role_id=role_id,
+                    content_preview=content[:120],
+                    elapsed_seconds=int((now - prior.ts).total_seconds()),
+                )
+                raise IllegalTransitionError(
+                    "You just sent the same message — wait a moment "
+                    "or change something to send again."
+                )
+            # Found the most recent same-role player message and it
+            # didn't match — stop scanning.
+            return
+
     async def submit_response(
         self, *, session_id: str, role_id: str, content: str
     ) -> bool:
-        """Record a player's submission. Returns True if the turn is now complete."""
+        """Record a player's submission. Returns True if the turn is now complete.
+
+        Issue #78: a participant may post a message at any time while the
+        session is ``AWAITING_PLAYERS``, even when the engine isn't
+        explicitly waiting on them. If the role *is* in the current
+        turn's active set and hasn't yet submitted, the post counts as
+        their turn submission and may advance the turn. Otherwise the
+        post is recorded as an out-of-turn interjection — appended to
+        the transcript so the AI sees it on the next turn (and so the
+        WS layer can fire ``run_interject`` for question-style content),
+        but with no effect on ``submitted_role_ids`` or session state.
+        """
 
         async with await self._lock_for(session_id):
             session = await self._repo.get(session_id)
@@ -496,67 +556,39 @@ class SessionManager:
             turn = session.current_turn
             if turn is None:
                 raise IllegalTransitionError("no current turn")
-            if not can_submit(turn, role_id):
-                raise IllegalTransitionError("role cannot submit on this turn")
-            # Backstop the duplicate-submission path. The 15-second-apart
-            # duplicate visible in the issue #63 screenshot is dissolved
-            # by the new ``ai_thinking`` / ``ai_status`` indicators (the
-            # participant retyped because they had no feedback) but the
-            # belt-and-braces guard prevents a stray double-Enter from
-            # producing two visible bubbles.
-            #
-            # Scan backwards for the most recent ``PLAYER`` message from
-            # this same role within the dedupe window. We can't just
-            # check ``messages[-1]`` because an interject path can splice
-            # an AI reply (``run_interject`` appends ``broadcast`` /
-            # ``address_role`` outputs) between the two participant
-            # submits — and a SYSTEM banner can land in the same gap.
-            # The window itself bounds the scan, so the cost is at worst
-            # O(messages_in_last_30s).
-            stripped_new = content.strip()
-            window_seconds = self._settings.duplicate_submission_window_seconds
-            if window_seconds > 0:
-                now = datetime.now(UTC)
-                for prior in reversed(session.messages):
-                    if (now - prior.ts).total_seconds() >= window_seconds:
-                        break
-                    if prior.kind != MessageKind.PLAYER or prior.role_id != role_id:
-                        continue
-                    if prior.body.strip() == stripped_new:
-                        self._emit(
-                            "dedupe_dropped_submission",
-                            session,
-                            role_id=role_id,
-                            content_preview=content[:120],
-                            elapsed_seconds=int((now - prior.ts).total_seconds()),
-                        )
-                        raise IllegalTransitionError(
-                            "You just sent the same message — wait a moment "
-                            "or change something to send again."
-                        )
-                    # Found the most recent same-role player message and it
-                    # didn't match — stop scanning.
-                    break
-            turn.submitted_role_ids.append(role_id)
+            is_turn_submission = can_submit(turn, role_id)
+            self._enforce_dedupe_window(session, role_id=role_id, content=content)
             session.messages.append(
                 Message(
                     kind=MessageKind.PLAYER,
                     role_id=role_id,
                     body=content,
                     turn_id=turn.id,
+                    is_interjection=not is_turn_submission,
                 )
             )
-            ready_to_advance = all_submitted(turn)
-            if ready_to_advance:
-                turn.status = "processing"
-                session.state = SessionState.AI_PROCESSING
+            if is_turn_submission:
+                turn.submitted_role_ids.append(role_id)
+                ready_to_advance = all_submitted(turn)
+                if ready_to_advance:
+                    turn.status = "processing"
+                    session.state = SessionState.AI_PROCESSING
+            else:
+                # Out-of-turn interjection: the message is in the
+                # transcript so the AI sees it next turn, but the role
+                # is not added to ``submitted_role_ids`` and the turn
+                # cannot advance off the back of it.
+                ready_to_advance = False
+            active_snapshot = list(turn.active_role_ids)
             await self._repo.save(session)
         self._emit(
-            "response_submitted",
+            "response_submitted" if is_turn_submission else "interjection_submitted",
             session,
             role_id=role_id,
             content_preview=content[:120],
             ready_to_advance=ready_to_advance,
+            interjection=not is_turn_submission,
+            active_role_ids=active_snapshot,
         )
         await self._connections.broadcast(
             session.id,
@@ -565,6 +597,7 @@ class SessionManager:
                 "role_id": role_id,
                 "kind": "player",
                 "body": content,
+                "is_interjection": not is_turn_submission,
             },
         )
         if ready_to_advance:
@@ -669,6 +702,11 @@ class SessionManager:
         only allows a participant to submit for *their own* role; this
         helper is the explicit creator escape hatch for one-tester multi-
         seat exercises.
+
+        Mirrors ``submit_response`` for issue #78: if the proxied role is
+        active and not yet submitted the post counts as a turn submission;
+        otherwise it's recorded as an out-of-turn interjection (transcript
+        only, no turn-state change).
         """
 
         async with await self._lock_for(session_id):
@@ -678,28 +716,38 @@ class SessionManager:
             turn = session.current_turn
             if turn is None:
                 raise IllegalTransitionError("no current turn")
-            if not can_submit(turn, as_role_id):
-                raise IllegalTransitionError(
-                    f"role {as_role_id} cannot submit on this turn"
-                )
-            turn.submitted_role_ids.append(as_role_id)
+            is_turn_submission = can_submit(turn, as_role_id)
+            # Apply the same dedupe scan ``submit_response`` runs.
+            # Pre-issue-#78 the proxy path skipped this guard; once
+            # proxy_submit_as became the documented out-of-turn
+            # interjection path, the asymmetry let a creator hammer the
+            # endpoint with identical bodies without backstop.
+            self._enforce_dedupe_window(
+                session, role_id=as_role_id, content=content
+            )
             session.messages.append(
                 Message(
                     kind=MessageKind.PLAYER,
                     role_id=as_role_id,
                     body=content,
                     turn_id=turn.id,
+                    is_interjection=not is_turn_submission,
                 )
             )
-            ready_to_advance = all_submitted(turn)
-            # Mirror submit_response: when this fills the last seat we
-            # MUST flip state to AI_PROCESSING so the route knows to
-            # drive the next AI turn. Pre-fix the proxy path left the
-            # session stuck in AWAITING_PLAYERS even though every active
-            # role had submitted.
-            if ready_to_advance:
-                turn.status = "processing"
-                session.state = SessionState.AI_PROCESSING
+            if is_turn_submission:
+                turn.submitted_role_ids.append(as_role_id)
+                ready_to_advance = all_submitted(turn)
+                # Mirror submit_response: when this fills the last seat we
+                # MUST flip state to AI_PROCESSING so the route knows to
+                # drive the next AI turn. Pre-fix the proxy path left the
+                # session stuck in AWAITING_PLAYERS even though every active
+                # role had submitted.
+                if ready_to_advance:
+                    turn.status = "processing"
+                    session.state = SessionState.AI_PROCESSING
+            else:
+                ready_to_advance = False
+            active_snapshot = list(turn.active_role_ids)
             await self._repo.save(session)
         await self.connections().broadcast(
             session_id,
@@ -708,9 +756,18 @@ class SessionManager:
                 "role_id": as_role_id,
                 "kind": "player",
                 "body": content,
+                "is_interjection": not is_turn_submission,
             },
         )
-        self._emit("proxy_submit_as", session, by=by_role_id, as_role=as_role_id)
+        self._emit(
+            "proxy_submit_as",
+            session,
+            by=by_role_id,
+            as_role=as_role_id,
+            content_preview=content[:120],
+            interjection=not is_turn_submission,
+            active_role_ids=active_snapshot,
+        )
         if ready_to_advance:
             await self._broadcast_state(session)
         return ready_to_advance

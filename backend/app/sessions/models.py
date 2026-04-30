@@ -80,6 +80,14 @@ class Message(BaseModel):
     visibility: list[str] | Literal["all"] = "all"
     tool_name: str | None = None
     tool_args: dict[str, Any] | None = None
+    # Issue #78: True when this PLAYER message was posted by a role that
+    # was NOT in the current turn's active set (or had already submitted)
+    # — i.e. an out-of-turn interjection. The play-turn prompt renders
+    # interjections with an explicit ``[OUT-OF-TURN] …`` marker so the AI
+    # doesn't mistake the interjector for an active responder. The
+    # transcript UI uses the same flag to render a "sidebar" badge so
+    # human players don't confuse an interjection with a turn answer.
+    is_interjection: bool = False
 
     def is_visible_to(self, role_id: str | None, *, is_creator: bool = False) -> bool:
         if self.visibility == "all":

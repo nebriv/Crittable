@@ -278,7 +278,7 @@ Client → server events: `submit_response`, `request_force_advance`, `request_e
 ### AAA (built in, swappable)
 
 - **AuthN** (`auth/authn.py`) — `Authenticator` protocol. MVP impl validates HMAC-signed join tokens (`itsdangerous`). Tokens carry `session_id`, `role_id`, `display_name_required=True`. Pluggable for OAuth/SSO.
-- **AuthZ** (`auth/authz.py`) — role-based gates: only the role on the current turn can `submit_response`; any participant can request force-advance/end.
+- **AuthZ** (`auth/authz.py`) — role-based gates: any seated participant (player kind, not spectator) can `submit_response` while the session is `AWAITING_PLAYERS` — submissions from a role NOT on the active set (or already submitted) land as out-of-turn **interjections** (transcript-only, no turn-state change). See issue #78 and `docs/turn-lifecycle.md` §1 for the engine flow. Any participant can request force-advance/end. Spectators are rejected at the WS gate before reaching the manager.
 - **Audit** (`audit/log.py`) — every state transition, tool call, participant message, and force-advance/end action emitted as a JSONL line to stdout (picked up by container logs) and held in an in-memory ring buffer for inclusion in the AAR.
 - Rate-limit middleware stub (`slowapi` or hand-rolled), default off in MVP.
 

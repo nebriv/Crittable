@@ -66,6 +66,11 @@ export interface MessageView {
   tool_name: string | null;
   /** Raw tool input args, used by Timeline to surface titles/headlines. */
   tool_args: Record<string, unknown> | null;
+  /** Issue #78: true when the player posted this message while NOT on
+   * the active set (or after already submitting on this turn). The
+   * transcript renders a "sidebar" badge so it isn't confused with a
+   * turn submission. */
+  is_interjection?: boolean;
 }
 
 export interface CostSnapshot {

@@ -1313,9 +1313,15 @@ export function Facilitator() {
                 const selfRole = snapshot.roles.find(
                   (r) => r.id === state.creatorRoleId,
                 );
-                // The composer is enabled when EITHER the creator can
-                // speak as themselves OR they have other seats to proxy
-                // for — solo testers need both paths.
+                // Issue #78: the creator can post any time the session
+                // is awaiting players — even when they're not on the
+                // active set. Out-of-turn submissions land as
+                // interjections (transcript only, no turn advance).
+                // ``!busy`` keeps double-submits during an in-flight
+                // creator action (force-advance, end-session) out of
+                // the queue.
+                const composerEnabled =
+                  snapshot.state === "AWAITING_PLAYERS" && !busy;
                 const canSelfSpeak = isMyTurn && !busy;
                 const canProxy = impersonateOptions.length > 0 && !busy;
                 return (
@@ -1331,13 +1337,24 @@ export function Facilitator() {
                       </p>
                     ) : null}
                     <Composer
-                      enabled={canSelfSpeak || canProxy}
+                      enabled={composerEnabled}
+                      label={
+                        canSelfSpeak
+                          ? "Your turn"
+                          : canProxy
+                            ? "Respond as / sidebar"
+                            : composerEnabled
+                              ? "Add a comment"
+                              : "Your message"
+                      }
                       placeholder={
                         canSelfSpeak
                           ? "You are an active role. Make your decision."
                           : canProxy
-                            ? "Solo test: respond on behalf of a pending role using the dropdown."
-                            : "Waiting for the AI / other roles."
+                            ? "Add a comment, or use 'Respond as' to answer for a pending role."
+                            : composerEnabled
+                              ? "Add a comment anytime — it lands in the transcript."
+                              : "Waiting for the AI / other roles."
                       }
                       onSubmit={handleSubmit}
                       onTypingChange={handleTypingChange}

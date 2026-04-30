@@ -10,6 +10,11 @@ interface ImpersonateOption {
 interface Props {
   enabled: boolean;
   placeholder: string;
+  /** Visible label above the textarea. Issue #78: parents render
+   * "Your turn" when ``isMyTurn`` and "Add a comment" / "Your message"
+   * otherwise so the at-a-glance signal isn't lost when the composer
+   * stays enabled for out-of-turn sidebar comments. */
+  label?: string;
   /**
    * ``asRoleId`` is omitted for normal submissions (use the local
    * participant's role). When the creator picks a different role from
@@ -40,6 +45,7 @@ interface Props {
 export function Composer({
   enabled,
   placeholder,
+  label,
   onSubmit,
   onTypingChange,
   impersonateOptions,
@@ -209,7 +215,7 @@ export function Composer({
           className="text-xs uppercase tracking-widest text-slate-400"
           htmlFor="composer"
         >
-          Your turn
+          {label ?? "Your message"}
         </label>
         {hasImpersonate ? (
           <label className="flex items-center gap-1 text-xs text-slate-300">

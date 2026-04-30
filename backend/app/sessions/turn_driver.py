@@ -263,12 +263,22 @@ class TurnDriver:
         dispatcher = self._manager.dispatcher()
         registry = self._manager.registry()
         settings = self._manager.settings()
+        # Issue #78: count out-of-turn interjections in the trailing
+        # transcript window so an operator debugging "AI is addressing
+        # the wrong people" can correlate misroutes with how many
+        # interjections sat in front of the model on this turn.
+        interjection_count = sum(
+            1
+            for m in session.messages
+            if m.kind == MessageKind.PLAYER and m.is_interjection
+        )
         _logger.info(
             "play_turn_start",
             session_id=session.id,
             turn_index=turn.index,
             roster=len(session.roles),
             roster_size=session.roster_size,
+            interjection_count=interjection_count,
         )
 
         contract = contract_for(
@@ -592,6 +602,30 @@ class TurnDriver:
             messages = _play_messages(session, strict=False)
             system_blocks = build_play_system_blocks(session, registry=registry)
             system_blocks.append({"type": "text", "text": INTERJECT_NOTE})
+            # Surface ``for_role_id`` directly in the system context so
+            # the model doesn't have to guess which transcript message
+            # triggered this interject (issue #78 prompt-expert review:
+            # multiple roles posting in quick succession can confuse the
+            # "look at the most recent ?" heuristic). Cheap — ~30 tokens.
+            asker_role = (
+                session.role_by_id(for_role_id) if for_role_id else None
+            )
+            if asker_role is not None:
+                asker_label = asker_role.label
+                if asker_role.display_name:
+                    asker_label = f"{asker_role.label} / {asker_role.display_name}"
+                system_blocks.append(
+                    {
+                        "type": "text",
+                        "text": (
+                            "## Interject context\n"
+                            f"The player who triggered this interject is "
+                            f"role_id=`{for_role_id}` ({asker_label}). "
+                            "Answer them directly, by name, in your "
+                            "first tool call."
+                        ),
+                    }
+                )
 
             # Narrow tools to non-yielding narration only. ``set_active_roles``
             # / ``end_session`` are the two yielding/terminal calls; excluding
@@ -1037,6 +1071,13 @@ def _play_messages(session: Session, *, strict: bool = False) -> list[dict[str, 
                 if role.display_name:
                     label += f" / {role.display_name}"
                 label += "] "
+            # Issue #78: mark out-of-turn interjections so the model
+            # doesn't mistake the speaker for an active responder. The
+            # play-tier system prompt (Block 6) and ``INTERJECT_NOTE``
+            # both reference this exact prefix — change here means
+            # change there.
+            if m.is_interjection:
+                label = "[OUT-OF-TURN] " + label
             msgs.append({"role": "user", "content": label + m.body})
         elif m.kind in (
             MessageKind.AI_TEXT,

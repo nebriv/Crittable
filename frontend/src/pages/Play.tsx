@@ -319,6 +319,16 @@ export function Play({ sessionId, token }: Props) {
     setError(null);
     try {
       wsRef.current?.send({ type: "submit_response", content: text });
+      // Issue #78: confirm out-of-turn submits inline so the user
+      // doesn't think "did it post? did the AI hear me?" while waiting
+      // on the active roles. ``isMyTurn`` is computed from the snapshot
+      // at render time, so capturing it here is correct for the just-
+      // sent submission.
+      if (!isMyTurn) {
+        setNotice(
+          "Posted as a sidebar — the AI will see this on its next turn.",
+        );
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
@@ -499,18 +509,50 @@ export function Play({ sessionId, token }: Props) {
   // making it look like the submission hadn't gone through.
   const isMyTurn = iAmActive && !iHaveSubmitted;
   const myRole = snapshot.roles.find((r) => r.id === selfRoleId);
+  // Fail closed: an undefined ``myRole`` (token's role_id missing from
+  // snapshot.roles, e.g. mid-rehydrate) must NOT light up the composer.
+  // The backend WS gate still rejects, but disabling here keeps the
+  // loud red error banner off the screen during the brief gap.
+  const isPlayer = !!myRole && myRole.kind !== "spectator";
   const otherPending = activeRoleIds
     .filter((id) => id !== selfRoleId && !submittedRoleIds.includes(id))
     .map((id) => snapshot.roles.find((r) => r.id === id)?.label ?? id);
+  // Issue #78: composer is enabled for any participant whenever the
+  // session is ``AWAITING_PLAYERS`` so out-of-turn comments / follow-
+  // ups can land in the transcript. Spectators stay locked out (the WS
+  // layer would reject anyway). ``ENDED`` / ``AI_PROCESSING`` /
+  // ``BRIEFING`` are also disabled — the backend would reject those on
+  // submit, so disabling client-side is just early UX.
+  const composerEnabled =
+    isPlayer && snapshot.state === "AWAITING_PLAYERS";
+  // "Your turn" stays as the at-a-glance label only when this viewer
+  // is actually on the active set; otherwise we soften to "Add a
+  // comment" so a non-active player typing into the still-enabled
+  // composer doesn't read it as "this counts as my turn answer".
+  const composerLabel = isMyTurn
+    ? "Your turn"
+    : iHaveSubmitted
+      ? "Add a follow-up"
+      : composerEnabled
+        ? "Add a comment"
+        : "Your message";
+  // Plain-English placeholder copy — the user-persona review flagged
+  // "interject" as jargon that reads as rude. We surface the
+  // distinction (counts vs. sidebar) in the label + the post-submit
+  // toast instead.
   const placeholder = isMyTurn
     ? "It's your turn — make your decision."
     : iHaveSubmitted && otherPending.length > 0
-      ? `Submitted. Waiting on ${otherPending.join(", ")}.`
+      ? `Submitted. You can add a follow-up while waiting on ${otherPending.join(", ")}.`
       : iHaveSubmitted
-        ? "Submitted. Waiting on the AI to respond."
-        : otherPending.length > 0
-          ? `Waiting for ${otherPending.join(", ")}.`
-          : "Waiting for the AI.";
+        ? "Submitted. You can add a follow-up while the AI replies."
+        : composerEnabled
+          ? otherPending.length > 0
+            ? `Add a comment anytime — waiting on ${otherPending.join(", ")}.`
+            : "Add a comment anytime — waiting for the AI."
+          : otherPending.length > 0
+            ? `Waiting for ${otherPending.join(", ")}.`
+            : "Waiting for the AI.";
 
   return (
     <main className="flex min-h-screen flex-col lg:h-screen lg:min-h-0 lg:overflow-hidden">
@@ -643,7 +685,8 @@ export function Play({ sessionId, token }: Props) {
               </div>
             ) : null}
             <Composer
-              enabled={isMyTurn && snapshot.state !== "ENDED"}
+              enabled={composerEnabled}
+              label={composerLabel}
               placeholder={placeholder}
               onSubmit={handleSubmit}
               onTypingChange={handleTypingChange}
