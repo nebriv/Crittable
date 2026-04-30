@@ -1,17 +1,17 @@
-import { act, render } from "@testing-library/react";
+import { act, fireEvent, render } from "@testing-library/react";
 import { useCallback, useLayoutEffect, useRef } from "react";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { useStickyScroll } from "../lib/useStickyScroll";
 
 /**
  * JSdom doesn't compute layout, so ``scrollHeight`` / ``clientHeight``
- * default to 0 — which would skip every scroll branch in the hook.
- * Override the prototype getters so the test can prescribe the
- * geometry of the rendered ``<div>`` and assert on the (also shimmed)
- * ``scrollTop`` setter to verify the hook actually scrolled.
+ * default to 0 and ``scrollTop`` writes are forwarded to a stub. The
+ * shims below let a test prescribe geometry on the rendered ``<div>``,
+ * observe ``scrollTop`` writes, and dispatch ``scroll`` events to
+ * exercise the hook's event-driven pin tracking.
  *
- * The shims are scoped to this file's ``beforeEach`` / ``afterEach``
- * so they don't leak into other test suites.
+ * The shims are scoped to this file's ``beforeEach`` / ``afterEach`` so
+ * they don't leak into other test suites.
  */
 interface Geometry {
   scrollHeight: number;
@@ -67,7 +67,14 @@ beforeEach(() => {
       return readGeometry(this).scrollTop;
     },
     set(this: HTMLElement, value: number) {
-      setGeometry(this, { scrollTop: value });
+      // Mirror the browser's behaviour: scrollTop is clamped to
+      // ``max(0, min(value, scrollHeight - clientHeight))``. Without
+      // this clamp the post-hoc-distance bug we just fixed wouldn't
+      // be reproducible in tests.
+      const g = readGeometry(this);
+      const max = Math.max(0, g.scrollHeight - g.clientHeight);
+      const clamped = Math.max(0, Math.min(value, max));
+      setGeometry(this, { scrollTop: clamped });
     },
   });
 });
@@ -101,38 +108,28 @@ interface HarnessProps {
    *  changes the deps array the hook watches. */
   messageCount: number;
   /** Second-channel deps signal: stands in for the production
-   *  ``streamingActive`` flag that Play.tsx and Facilitator.tsx pass
-   *  alongside ``messageCount``. Lets the test verify that flipping
-   *  ``streamingActive`` alone (no message added) still re-triggers
-   *  the slack-follow — which is the dominant runtime signal because
-   *  chunk events fire much more often than ``message_complete``. */
+   *  ``streamingActive`` flag that Play.tsx / Facilitator.tsx pass
+   *  alongside ``messageCount``. */
   streamingActive?: boolean;
   /** Total content height. Tests prescribe this to simulate an
    *  overflowing transcript. The harness deliberately does NOT set
    *  ``scrollTop`` from props — that dimension is owned by the hook
-   *  (and by direct ``setGeometry`` calls between rerenders) so the
-   *  geometry layout effect can't accidentally clobber what the hook
-   *  just wrote. */
+   *  and by the test's direct ``setGeometry`` calls between renders. */
   scrollHeight: number;
   clientHeight: number;
   /** Conditionally render the scroll element. Lets a test simulate
    *  the production scenario where the hook lives in a long-lived
    *  parent (Facilitator) and the scroll element is mounted /
-   *  unmounted by phase / session changes — e.g.
-   *  ``handleNewSession`` resets to the intro screen, then a new
-   *  session re-mounts the scroll div within the same hook instance.
-   *  The hook must reset its per-element state on identity change so
-   *  the new element gets the initial-pin treatment. */
+   *  unmounted by phase / session changes. */
   mountElement?: boolean;
   bindForceScroll?: (fn: () => void) => void;
-  slack?: number;
 }
 
 /**
- * Test harness that wires ``useStickyScroll`` to a div and applies the
- * prescribed scroll-extent geometry via a ``useLayoutEffect`` declared
- * **before** the hook call so the geometry is in place when the hook's
- * own layout effect runs and reads ``scrollHeight``.
+ * Test harness that wires ``useStickyScroll`` to a div and applies
+ * the prescribed scrollHeight + clientHeight via a useLayoutEffect
+ * declared **before** the hook call so the geometry is in place when
+ * the hook's own layout effect runs and reads it.
  */
 function Harness({
   messageCount,
@@ -141,34 +138,28 @@ function Harness({
   clientHeight,
   mountElement = true,
   bindForceScroll,
-  slack,
 }: HarnessProps) {
   const elRef = useRef<HTMLDivElement | null>(null);
 
-  // Apply scrollHeight + clientHeight first so the hook's layout
-  // effect (declared inside useStickyScroll, *after* this hook) reads
-  // the prescribed values. Crucially, do not write ``scrollTop`` —
-  // that's the dimension the hook controls and we'd clobber the
-  // hook's write if we set it from props on every render.
   useLayoutEffect(() => {
     if (!elRef.current) return;
     setGeometry(elRef.current, { scrollHeight, clientHeight });
   });
 
-  const { scrollRef, forceScrollToBottom } = useStickyScroll<HTMLDivElement>(
-    [messageCount, streamingActive],
-    slack !== undefined ? { slack } : undefined,
-  );
+  const { scrollRef, forceScrollToBottom } = useStickyScroll<HTMLDivElement>([
+    messageCount,
+    streamingActive,
+  ]);
 
   useLayoutEffect(() => {
     bindForceScroll?.(forceScrollToBottom);
   }, [bindForceScroll, forceScrollToBottom]);
 
-  // ``scrollRef`` is memoized inside the hook (useCallback with []),
-  // so this combined callback is stable too. Stability matters: an
-  // unstable ref callback would detach + re-attach on every render,
-  // and the hook's scrollRef bumps an internal nonce on each non-null
-  // attach — which compounds into a re-render loop.
+  // ``scrollRef`` is memoized inside the hook (useCallback). The
+  // combined callback below stays stable too. Stability matters: an
+  // unstable ref callback would detach + re-attach on every render
+  // and the hook detaches its scroll listener / ResizeObserver on
+  // every detach — which would silently lose pin tracking.
   const combinedRef = useCallback(
     (node: HTMLDivElement | null) => {
       elRef.current = node;
@@ -191,50 +182,83 @@ function Harness({
 describe("useStickyScroll", () => {
   it("pins to the bottom on initial mount when content overflows", () => {
     // Issue #79: a player joining mid-exercise lands on a transcript
-    // that overflows the viewport. The pre-fix slack check read
-    // scrollTop=0 as "user has scrolled up" and stranded them at the
-    // top. The hook's initial-mount branch overrides that.
+    // that overflows the viewport. The hook starts pinned, so the
+    // first commit with overflowing content scrolls to the bottom.
     const { getByTestId } = render(
       <Harness messageCount={20} scrollHeight={2000} clientHeight={400} />,
     );
     const el = getByTestId("scroll-region");
-    expect(el.scrollTop).toBe(2000);
+    // scrollTop is clamped by the browser-shim to max(0, scrollHeight
+    // - clientHeight) = 1600. That is the visual bottom — distance
+    // from bottom = scrollHeight - scrollTop - clientHeight = 0.
+    expect(el.scrollTop).toBe(1600);
   });
 
-  it("follows new content when the user is near the bottom", () => {
+  it("follows new content while pinned (browser-clamp regression net)", () => {
+    // The pre-rewrite hook bug: after a "follow" pin, scrollTop is
+    // clamped to scrollHeight-clientHeight, NOT scrollHeight. The next
+    // dep change re-evaluated distance from the post-clamp scrollTop
+    // and read the user as "scrolled up" by clientHeight. New content
+    // would NOT pin. The event-driven model fixes this — pinnedRef
+    // tracks the user's intent, not a post-hoc distance metric.
     const { getByTestId, rerender } = render(
       <Harness messageCount={20} scrollHeight={2000} clientHeight={400} />,
     );
     const el = getByTestId("scroll-region");
-    // Initial mount pinned us to the bottom (2000).
-    expect(el.scrollTop).toBe(2000);
+    expect(el.scrollTop).toBe(1600);
 
-    // A new message arrives; transcript grew. User stayed pinned at
-    // the previous bottom (2000) so they're well within the slack
-    // window of the new bottom (2200) — pin should follow.
+    // New message arrives — transcript grows below the user.
     rerender(
       <Harness messageCount={21} scrollHeight={2200} clientHeight={400} />,
     );
-    expect(el.scrollTop).toBe(2200);
+    // pinnedRef is still true (user hasn't scrolled), so pin to new
+    // bottom: scrollTop clamped to 2200 - 400 = 1800.
+    expect(el.scrollTop).toBe(1800);
   });
 
-  it("leaves the user alone when they have scrolled up beyond the slack window", () => {
+  it("unpins when the user scrolls up", () => {
     const { getByTestId, rerender } = render(
       <Harness messageCount={20} scrollHeight={2000} clientHeight={400} />,
     );
     const el = getByTestId("scroll-region");
-    expect(el.scrollTop).toBe(2000);
+    expect(el.scrollTop).toBe(1600);
 
-    // User scrolls up well outside the 120px slack window.
+    // User scrolls up. The shim clamps scrollTop and stores it; we
+    // dispatch a synthetic scroll event so the hook's listener fires.
     setGeometry(el, { scrollTop: 500 });
+    fireEvent.scroll(el);
 
-    // A new message arrives.
+    // New message arrives. Pinned was flipped to false → leave alone.
     rerender(
       <Harness messageCount={21} scrollHeight={2200} clientHeight={400} />,
     );
-
-    // distanceFromBottom = 2200 - 500 - 400 = 1300 >> 120 → no scroll.
     expect(el.scrollTop).toBe(500);
+  });
+
+  it("re-pins when the user scrolls back to the bottom", () => {
+    const { getByTestId, rerender } = render(
+      <Harness messageCount={20} scrollHeight={2000} clientHeight={400} />,
+    );
+    const el = getByTestId("scroll-region");
+    expect(el.scrollTop).toBe(1600);
+
+    // Scroll up → unpin.
+    setGeometry(el, { scrollTop: 500 });
+    fireEvent.scroll(el);
+    rerender(
+      <Harness messageCount={21} scrollHeight={2200} clientHeight={400} />,
+    );
+    expect(el.scrollTop).toBe(500);
+
+    // Scroll back to bottom → re-pin.
+    setGeometry(el, { scrollTop: 1800 });
+    fireEvent.scroll(el);
+
+    // Next content arrival should pin again.
+    rerender(
+      <Harness messageCount={22} scrollHeight={2400} clientHeight={400} />,
+    );
+    expect(el.scrollTop).toBe(2000);
   });
 
   it("force-scrolls to the bottom even when the user has scrolled up", () => {
@@ -250,15 +274,19 @@ describe("useStickyScroll", () => {
       />,
     );
     const el = getByTestId("scroll-region");
-    expect(el.scrollTop).toBe(2000);
+    expect(el.scrollTop).toBe(1600);
 
-    // User scrolls up far from the bottom.
+    // Scroll up.
     setGeometry(el, { scrollTop: 100 });
+    fireEvent.scroll(el);
 
-    // Local submit fires + a message lands.
+    // Local submit — hook pins synchronously and re-pins.
     act(() => {
       force?.();
     });
+    expect(el.scrollTop).toBe(1600);
+
+    // Subsequent content arrives — still pinned (force re-pinned).
     rerender(
       <Harness
         messageCount={21}
@@ -269,17 +297,12 @@ describe("useStickyScroll", () => {
         }}
       />,
     );
-
-    // Force-scroll bypasses the slack check; pin to bottom.
-    expect(el.scrollTop).toBe(2100);
+    expect(el.scrollTop).toBe(1700);
   });
 
-  it("returns to honoring the slack window after a force-scroll", () => {
-    // Regression net for the bug in the pre-fix Facilitator effect:
-    // once forceScrollNonce > 0, the slack check was bypassed
-    // forever. The hook tracks the last-seen nonce so a one-shot
-    // force-scroll doesn't permanently override the user's scroll
-    // position.
+  it("returns to honoring the user's scroll position after a force-scroll", () => {
+    // Regression net: after one force-scroll, a subsequent user
+    // scroll-up should still unpin them; the force shouldn't latch.
     let force: (() => void) | null = null;
     const { getByTestId, rerender } = render(
       <Harness
@@ -292,29 +315,22 @@ describe("useStickyScroll", () => {
       />,
     );
     const el = getByTestId("scroll-region");
-    expect(el.scrollTop).toBe(2000);
+    expect(el.scrollTop).toBe(1600);
 
-    // Local submit force-scrolls to bottom on the next message.
+    // Force-scroll.
     act(() => {
       force?.();
     });
-    rerender(
-      <Harness
-        messageCount={21}
-        scrollHeight={2100}
-        clientHeight={400}
-        bindForceScroll={(fn) => {
-          force = fn;
-        }}
-      />,
-    );
-    expect(el.scrollTop).toBe(2100);
+    expect(el.scrollTop).toBe(1600);
 
-    // Now the user scrolls up to re-read.
+    // User scrolls up afterwards.
     setGeometry(el, { scrollTop: 200 });
+    fireEvent.scroll(el);
+
+    // Next content arrives — leave alone, user is unpinned.
     rerender(
       <Harness
-        messageCount={22}
+        messageCount={21}
         scrollHeight={2200}
         clientHeight={400}
         bindForceScroll={(fn) => {
@@ -322,164 +338,26 @@ describe("useStickyScroll", () => {
         }}
       />,
     );
-
-    // distanceFromBottom = 2200 - 200 - 400 = 1600 > 120 → leave alone.
-    // The pre-fix bug would have re-pinned to 2200.
     expect(el.scrollTop).toBe(200);
-  });
-
-  it("respects a custom slack window", () => {
-    const { getByTestId, rerender } = render(
-      <Harness
-        messageCount={20}
-        slack={30}
-        scrollHeight={2000}
-        clientHeight={400}
-      />,
-    );
-    const el = getByTestId("scroll-region");
-    expect(el.scrollTop).toBe(2000);
-
-    // User scrolls up 50px (just outside the tighter 30px slack).
-    setGeometry(el, { scrollTop: 1550 });
-    rerender(
-      <Harness
-        messageCount={21}
-        slack={30}
-        scrollHeight={2050}
-        clientHeight={400}
-      />,
-    );
-
-    // distanceFromBottom = 2050 - 1550 - 400 = 100 > 30 → no scroll.
-    expect(el.scrollTop).toBe(1550);
-  });
-
-  it("follows new content when only the streaming flag flips", () => {
-    // Streaming-chunk events fire much more often than
-    // ``message_complete``, so ``streamingActive`` flipping (without
-    // ``messageCount`` changing) is the dominant runtime signal that
-    // the chat is growing. Verify the slack-follow path triggers from
-    // the streaming flag alone.
-    const { getByTestId, rerender } = render(
-      <Harness
-        messageCount={20}
-        scrollHeight={2000}
-        clientHeight={400}
-        streamingActive={false}
-      />,
-    );
-    const el = getByTestId("scroll-region");
-    // Initial mount pin.
-    expect(el.scrollTop).toBe(2000);
-
-    // Streaming kicks in. Chunk text expands the transcript.
-    // ``messageCount`` is unchanged — only ``streamingActive`` flips.
-    rerender(
-      <Harness
-        messageCount={20}
-        scrollHeight={2400}
-        clientHeight={400}
-        streamingActive={true}
-      />,
-    );
-    // distanceFromBottom = 2400 - 2000 - 400 = 0 → well within slack.
-    // Pin should follow.
-    expect(el.scrollTop).toBe(2400);
-  });
-
-  it("handles back-to-back force-scrolls without sticking", () => {
-    // Two ``forceScrollToBottom()`` calls in quick succession (e.g. a
-    // proxy submit immediately followed by a force-advance) should
-    // both pin to bottom, and the slack check should still resume
-    // honouring the user's scroll position once the nonce stabilizes.
-    let force: (() => void) | null = null;
-    const { getByTestId, rerender } = render(
-      <Harness
-        messageCount={20}
-        scrollHeight={2000}
-        clientHeight={400}
-        bindForceScroll={(fn) => {
-          force = fn;
-        }}
-      />,
-    );
-    const el = getByTestId("scroll-region");
-    expect(el.scrollTop).toBe(2000);
-
-    // First force-scroll + new message.
-    act(() => {
-      force?.();
-    });
-    rerender(
-      <Harness
-        messageCount={21}
-        scrollHeight={2100}
-        clientHeight={400}
-        bindForceScroll={(fn) => {
-          force = fn;
-        }}
-      />,
-    );
-    expect(el.scrollTop).toBe(2100);
-
-    // User scrolls up between the two forces.
-    setGeometry(el, { scrollTop: 50 });
-
-    // Second force-scroll + another new message.
-    act(() => {
-      force?.();
-    });
-    rerender(
-      <Harness
-        messageCount={22}
-        scrollHeight={2200}
-        clientHeight={400}
-        bindForceScroll={(fn) => {
-          force = fn;
-        }}
-      />,
-    );
-    // Each force bump consumed; second must still pin to bottom.
-    expect(el.scrollTop).toBe(2200);
-
-    // After the second force settles, slack check should resume:
-    // user scrolls up again, next message arrives without a force.
-    setGeometry(el, { scrollTop: 100 });
-    rerender(
-      <Harness
-        messageCount={23}
-        scrollHeight={2300}
-        clientHeight={400}
-        bindForceScroll={(fn) => {
-          force = fn;
-        }}
-      />,
-    );
-    // distanceFromBottom = 2300 - 100 - 400 = 1800 > 120 → leave alone.
-    expect(el.scrollTop).toBe(100);
   });
 
   it("re-pins when the scroll element remounts within the same hook instance", () => {
     // Production scenario: Facilitator's ``handleNewSession()`` resets
     // ``state`` to ``null`` and routes back to the intro screen,
-    // unmounting the chat scroll region. A new session then re-mounts
-    // a fresh scroll element. The hook itself stays mounted (the
-    // Facilitator component persists), so per-element state like
-    // ``didInitialScrollRef`` would carry over from the previous
-    // session and skip the initial pin on the new element — re-
-    // introducing the #79 stuck-at-top bug for the second exercise of
-    // the same browser tab. The hook resets that flag on element
-    // identity change to defend against this.
+    // unmounting the chat scroll region. A new session re-mounts a
+    // fresh element. The hook itself stays mounted (Facilitator
+    // persists), so per-element state would carry over and a stale
+    // unpinned flag would skip the auto-pin on the new session. The
+    // hook resets pinnedRef to true on every re-attach to defend
+    // against this.
     const { getByTestId, queryByTestId, rerender } = render(
       <Harness messageCount={20} scrollHeight={2000} clientHeight={400} />,
     );
     const el1 = getByTestId("scroll-region");
-    expect(el1.scrollTop).toBe(2000);
+    expect(el1.scrollTop).toBe(1600);
 
-    // Unmount the scroll region (e.g. routing back to the intro
-    // screen). The hook stays mounted; ``scrollRef`` is called with
-    // null on detach.
+    // Unmount the scroll element. Hook stays mounted; scrollRef is
+    // called with null on detach.
     rerender(
       <Harness
         messageCount={20}
@@ -490,9 +368,7 @@ describe("useStickyScroll", () => {
     );
     expect(queryByTestId("scroll-region")).toBeNull();
 
-    // Re-mount the scroll region with a fresh element (e.g. starting
-    // a new session). The hook should treat this as a new initial
-    // mount and pin to the bottom of the new content.
+    // Re-mount with a fresh element + fresh content.
     rerender(
       <Harness
         messageCount={30}
@@ -502,48 +378,75 @@ describe("useStickyScroll", () => {
       />,
     );
     const el2 = getByTestId("scroll-region");
-    expect(el2.scrollTop).toBe(3000);
+    expect(el2.scrollTop).toBe(2600);
   });
 
-  it("re-pins to bottom after unmount + remount", () => {
-    // A user routing away (e.g. opening the join intro again) and
-    // routing back unmounts and remounts the component. The new mount
-    // should re-fire the initial-pin branch — ``didInitialScrollRef``
-    // is per-hook-instance and resets on remount.
+  it("re-pins after unmount + remount of the parent", () => {
+    // Different from the within-hook-instance remount above: this
+    // unmounts and remounts the entire harness (and therefore the hook
+    // instance). Catches a different class of regression — that
+    // pinnedRef defaults are correct on a fresh hook.
     const { getByTestId, unmount } = render(
       <Harness messageCount={20} scrollHeight={2000} clientHeight={400} />,
     );
     const el1 = getByTestId("scroll-region");
-    expect(el1.scrollTop).toBe(2000);
+    expect(el1.scrollTop).toBe(1600);
     unmount();
 
-    // Remount with a different transcript.
     const { getByTestId: getByTestId2 } = render(
       <Harness messageCount={30} scrollHeight={3000} clientHeight={400} />,
     );
     const el2 = getByTestId2("scroll-region");
-    // Fresh hook instance → didInitialScrollRef = false → pin.
-    expect(el2.scrollTop).toBe(3000);
+    expect(el2.scrollTop).toBe(2600);
   });
 
   it("waits for overflow before consuming the initial-mount pin", () => {
     // A user who joins early (transcript empty / shorter than the
-    // viewport) shouldn't have the initial-mount branch fire and mark
-    // itself as done while there's nothing to scroll. Otherwise the
-    // first message that overflows would fall through to the slack
-    // check and read scrollTop=0 as "user has scrolled up."
+    // viewport) shouldn't have the initial-mount branch fire and
+    // settle in a way that leaves them stuck once content does
+    // overflow. With pinnedRef defaulting to true and remaining true
+    // until the user actively scrolls away, an early non-overflow
+    // render is a no-op (scrollTop = scrollHeight = clientHeight) and
+    // the first overflowing render pins to the new bottom.
     const { getByTestId, rerender } = render(
       <Harness messageCount={0} scrollHeight={400} clientHeight={400} />,
     );
     const el = getByTestId("scroll-region");
-    // No overflow yet; hook didn't write scrollTop. Default is 0.
+    // Browser-clamp shim: max(0, 400 - 400) = 0. The hook's "pin to
+    // bottom" wrote scrollTop = 400 → clamp to 0.
     expect(el.scrollTop).toBe(0);
 
-    // First real content arrives — transcript now overflows. The
-    // initial-mount branch should still be live (didInitial wasn't
-    // marked done in the no-overflow render) and pin to bottom.
+    // First real content arrives — transcript now overflows.
     rerender(
       <Harness messageCount={20} scrollHeight={2000} clientHeight={400} />,
+    );
+    // pinnedRef stayed true → pin to new bottom (clamped).
+    expect(el.scrollTop).toBe(1600);
+  });
+
+  it("follows new content when only the streaming flag flips", () => {
+    // ``streamingActive`` flipping is the dominant runtime signal
+    // because chunk events fire much more often than
+    // ``message_complete``. Verify that flag-only deps changes still
+    // pin a pinned user.
+    const { getByTestId, rerender } = render(
+      <Harness
+        messageCount={20}
+        scrollHeight={2000}
+        clientHeight={400}
+        streamingActive={false}
+      />,
+    );
+    const el = getByTestId("scroll-region");
+    expect(el.scrollTop).toBe(1600);
+
+    rerender(
+      <Harness
+        messageCount={20}
+        scrollHeight={2400}
+        clientHeight={400}
+        streamingActive={true}
+      />,
     );
     expect(el.scrollTop).toBe(2000);
   });

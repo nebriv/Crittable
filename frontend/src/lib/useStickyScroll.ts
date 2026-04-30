@@ -1,35 +1,79 @@
-import { useCallback, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 
 /**
  * Auto-pin a scrollable region to the bottom on new content unless the
- * user has scrolled up to re-read earlier content. Three behaviors:
+ * user has scrolled up to re-read earlier content.
  *
- * 1. **Initial mount with content.** When the scroll element first
- *    attaches and has overflowing content, pin it to the bottom
- *    unconditionally so a participant joining mid-exercise lands on the
- *    latest beat. (Pre-fix, the slack check below read scrollTop=0 as
- *    "user has scrolled up" and stranded them at the top of the
- *    transcript — issue #79.)
+ * ## Why event-driven instead of post-hoc distance math
  *
- * 2. **Incoming content while pinned.** When ``deps`` change and the
- *    user is within ``slack`` px of the bottom, follow the chat down.
- *    If they've scrolled up beyond the slack window, leave their
- *    position alone so the transcript doesn't yank under them.
+ * The original (#79) implementation read ``scrollHeight - scrollTop -
+ * clientHeight`` from inside a layout effect that fired on dep change,
+ * and pinned only if that distance was below a slack window. That
+ * design was broken for two reasons that bit us in production:
  *
- * 3. **Force-scroll on local action.** ``forceScrollToBottom()`` pins
- *    to the bottom on the next render regardless of slack. Use this
- *    after a local user action (submit, force-advance) so the user
- *    sees their own action commit, even if they happen to be reading
- *    older content.
+ * 1. **The browser clamps ``scrollTop``.** Setting
+ *    ``el.scrollTop = el.scrollHeight`` doesn't store ``scrollHeight``
+ *    — it stores ``min(scrollHeight, scrollHeight - clientHeight)``,
+ *    which is the bottom-of-overflow position. So after a "follow"
+ *    pin, ``scrollTop`` reads as ``scrollHeight - clientHeight``, NOT
+ *    ``scrollHeight``. The next time content lands, the math sees the
+ *    user as having scrolled up by ``clientHeight`` and bails.
+ * 2. **Content added below shifts the user's relative position.**
+ *    When a new message lands, ``scrollHeight`` grows but ``scrollTop``
+ *    doesn't. The user *was* at the bottom a frame ago; now the
+ *    distance check reads them as scrolled up by the height of the
+ *    new content and bails. Worse, layout shifts above the chat
+ *    (the "Your turn" banner appearing) shrink ``clientHeight`` and
+ *    move the math even further off the rails.
  *
- * The returned ``scrollRef`` is a callback ref. Attach it to the
- * scrollable element instead of a plain ``useRef`` so the hook learns
- * exactly when the element mounts — a regular ``useEffect`` keyed on
- * ``deps`` won't re-run when the ref attaches if the deps haven't
- * changed, which is the exact race that bit Play.tsx (snapshot loaded
- * while JoinIntro was still showing → chat element mounted later with
- * no further dep change → effect never re-ran with a non-null ref).
+ * The robust pattern (Slack / Discord / every chat app) is to track a
+ * ``pinned`` flag updated **from scroll events** — i.e. only the
+ * user's deliberate scroll can unpin them, and content arriving below
+ * a pinned user always follows. That's what this hook does.
+ *
+ * ## Behaviors
+ *
+ * 1. **Initial mount.** Element starts pinned. The first commit with
+ *    overflowing content scrolls to the bottom unconditionally, so a
+ *    participant joining mid-exercise lands on the latest message.
+ *
+ * 2. **Pinned + new content.** Layout effect runs on dep change (new
+ *    message, streaming flag flip). If pinned, scroll to bottom.
+ *
+ * 3. **Pinned + container resize.** A ResizeObserver watches the
+ *    scroll element. When the chat region shrinks (e.g. the "Your
+ *    turn" banner appears above and the section's flex layout
+ *    redistributes height), if pinned, re-pin to the new bottom so
+ *    the user doesn't get visually "left behind" by the shrink.
+ *
+ * 4. **User scrolls.** A ``scroll`` listener checks
+ *    ``scrollHeight - scrollTop - clientHeight``. Within a small
+ *    tolerance (``PINNED_TOLERANCE``) → pinned. Otherwise → unpinned.
+ *    The hook will leave them alone until they scroll back to the
+ *    bottom (or call ``forceScrollToBottom``).
+ *
+ * 5. **Force-scroll.** ``forceScrollToBottom()`` re-pins synchronously
+ *    and scrolls. Use after a local user action (submit, force-
+ *    advance) so the user sees their own action commit even if they'd
+ *    been reading older content.
+ *
+ * ## Why a callback ref
+ *
+ * A regular ``useRef`` would race in the Play.tsx flow: the snapshot
+ * loads while JoinIntro is still showing → chat element mounts later
+ * with no further dep change → effect never re-runs with a non-null
+ * ref. The callback ref bumps an internal counter on attach so the
+ * layout effect re-fires once the element is actually in the DOM.
  */
+
+/** Tolerance for "user is at the bottom" comparisons. Browsers report
+ *  fractional values for these dimensions on hi-DPI displays, and any
+ *  layout that uses sub-pixel rounding can leave the bottom-most
+ *  scrollTop a pixel or two short of ``scrollHeight - clientHeight``.
+ *  4px is small enough that a deliberate scroll-up is still detected
+ *  and large enough that we don't unpin from rounding noise. */
+const PINNED_TOLERANCE = 4;
+
 export interface UseStickyScrollResult<T extends HTMLElement = HTMLDivElement> {
   scrollRef: (el: T | null) => void;
   forceScrollToBottom: () => void;
@@ -37,115 +81,143 @@ export interface UseStickyScrollResult<T extends HTMLElement = HTMLDivElement> {
 
 export function useStickyScroll<T extends HTMLElement = HTMLDivElement>(
   deps: ReadonlyArray<unknown>,
-  options: { slack?: number } = {},
 ): UseStickyScrollResult<T> {
-  const slack = options.slack ?? 120;
   const elRef = useRef<T | null>(null);
-  const didInitialScrollRef = useRef(false);
-  const lastForceNonceRef = useRef(0);
-  // ``refVersion`` is bumped each time the callback ref attaches a new
-  // element. Including it in the layout-effect deps guarantees the
-  // effect re-runs once the element is in the DOM, even if the caller's
-  // ``deps`` happen not to have changed since the previous render.
+  // ``pinnedRef`` is the authoritative answer to "should we follow new
+  // content to the bottom?". It's a ref (not state) so reading and
+  // writing it doesn't trigger re-renders — scroll events fire many
+  // times per second.
+  const pinnedRef = useRef(true);
+  // Detach handler for the currently attached element's scroll +
+  // ResizeObserver. Stored in a ref so the callback ref can invoke
+  // it before attaching to a new element.
+  const detachRef = useRef<(() => void) | null>(null);
+  // Bumped each time the callback ref attaches a new element. Including
+  // it in the layout-effect deps guarantees the effect re-runs once the
+  // element is in the DOM, even if the caller's ``deps`` haven't
+  // changed since the previous render. (This is the JoinIntro → chat
+  // transition race in Play.tsx.)
   const [refVersion, setRefVersion] = useState(0);
-  const [forceNonce, setForceNonce] = useState(0);
 
-  const scrollRef = useCallback((el: T | null) => {
-    const previous = elRef.current;
-    elRef.current = el;
-    if (el !== previous) {
-      // Element identity changed. Reset per-element state so a
-      // remount within the same hook instance gets fresh initial-pin
-      // treatment. Without this, Facilitator's ``handleNewSession()``
-      // (which routes back to the intro screen — unmounting the
-      // scroll region — and a new session remounts a fresh one) would
-      // skip the initial-pin branch and re-introduce the #79
-      // stuck-at-top bug for the second exercise of the same tab.
-      // Same scenario applies to anything that swaps the scroll
-      // element while keeping the parent component mounted.
-      didInitialScrollRef.current = false;
-    }
-    if (el !== null) {
-      setRefVersion((v) => v + 1);
-    }
+  const isAtBottom = useCallback((el: T) => {
+    return el.scrollHeight - el.scrollTop - el.clientHeight <= PINNED_TOLERANCE;
+  }, []);
+
+  const pinToBottom = useCallback((el: T, reason: string) => {
+    el.scrollTop = el.scrollHeight;
+    console.debug("[scroll] pin", {
+      reason,
+      scrollHeight: el.scrollHeight,
+      clientHeight: el.clientHeight,
+    });
+  }, []);
+
+  const scrollRef = useCallback(
+    (el: T | null) => {
+      // Detach listeners from the old element first.
+      if (detachRef.current) {
+        detachRef.current();
+        detachRef.current = null;
+      }
+
+      elRef.current = el;
+
+      if (el !== null) {
+        // Fresh element starts pinned. If the user immediately scrolls
+        // up before any content arrives, the scroll handler will flip
+        // pinnedRef to false.
+        pinnedRef.current = true;
+
+        const onScroll = () => {
+          const nowPinned = isAtBottom(el);
+          if (pinnedRef.current !== nowPinned) {
+            pinnedRef.current = nowPinned;
+            console.debug(
+              nowPinned ? "[scroll] re-pinned" : "[scroll] unpinned",
+              {
+                scrollHeight: el.scrollHeight,
+                scrollTop: el.scrollTop,
+                clientHeight: el.clientHeight,
+              },
+            );
+          }
+        };
+        el.addEventListener("scroll", onScroll, { passive: true });
+
+        // ResizeObserver catches layout shifts that change the chat
+        // region's height without the user touching anything — e.g.
+        // the "Your turn" banner appearing above the grid causes the
+        // flex section to shrink, which leaves a previously-pinned
+        // user a few hundred pixels above the new bottom. Re-pin in
+        // that case so the layout shift never moves them off the
+        // latest beat. We deliberately re-pin even when the resize
+        // doesn't perfectly align with a content change — the
+        // alternative ("only re-pin on content arrival") loses the
+        // user's bottom anchor in exactly the production scenario
+        // that triggered this rewrite.
+        let resizeObserver: ResizeObserver | null = null;
+        if (typeof ResizeObserver !== "undefined") {
+          resizeObserver = new ResizeObserver(() => {
+            if (pinnedRef.current && elRef.current === el) {
+              pinToBottom(el, "resize");
+            }
+          });
+          resizeObserver.observe(el);
+        }
+
+        detachRef.current = () => {
+          el.removeEventListener("scroll", onScroll);
+          resizeObserver?.disconnect();
+        };
+
+        // Bump refVersion so the layout effect below re-fires now that
+        // the element is in the DOM and ready to be measured.
+        setRefVersion((v) => v + 1);
+      }
+    },
+    [isAtBottom, pinToBottom],
+  );
+
+  // Detach on unmount.
+  useEffect(() => {
+    return () => {
+      if (detachRef.current) {
+        detachRef.current();
+        detachRef.current = null;
+      }
+    };
   }, []);
 
   const forceScrollToBottom = useCallback(() => {
-    setForceNonce((n) => n + 1);
-  }, []);
+    pinnedRef.current = true;
+    const el = elRef.current;
+    if (el) {
+      pinToBottom(el, "force");
+    }
+  }, [pinToBottom]);
 
+  // Pin to bottom on dep change if pinned. The dep-driven path covers
+  // "new message arrived" (messageCount changed) and "streaming flag
+  // toggled" (streamingActive changed). The ResizeObserver path above
+  // covers layout shifts; together they handle every scenario the
+  // post-hoc distance math used to miss.
   useLayoutEffect(() => {
     const el = elRef.current;
     if (!el) return;
-
-    if (!didInitialScrollRef.current) {
-      // First commit with the element attached. Pin to bottom so a
-      // participant joining mid-exercise lands on the latest message
-      // rather than the top of a long transcript. We only mark the
-      // initial scroll as "done" once content actually overflows —
-      // otherwise an empty / short initial render (transcript with
-      // 0 messages) would consume the initial-scroll branch, and a
-      // later content arrival would fall through to the slack check
-      // and read scrollTop=0 as "user scrolled up". Repeating the
-      // pin while there's no overflow is harmless: setting
-      // ``scrollTop`` on a non-scrollable element is a no-op.
-      if (el.scrollHeight <= el.clientHeight) {
-        // Nothing to scroll yet (empty transcript, or layout hasn't
-        // settled). Wait for the next render to retry.
-        return;
-      }
-      el.scrollTop = el.scrollHeight;
-      didInitialScrollRef.current = true;
-      lastForceNonceRef.current = forceNonce;
-      console.debug("[scroll] initial-pin", {
-        scrollHeight: el.scrollHeight,
-        clientHeight: el.clientHeight,
-      });
-      return;
-    }
-
-    if (forceNonce !== lastForceNonceRef.current) {
-      // ``forceScrollToBottom`` was called since the previous run.
-      // Pin unconditionally — the user just took a local action and
-      // wants to see the result. Tracking the last-seen nonce (rather
-      // than the original ``forceNonce > 0`` shortcut) is what keeps
-      // the slack check working *after* a force-scroll: once the
-      // nonce is stable again we go back to honoring the user's
-      // scroll position.
-      el.scrollTop = el.scrollHeight;
-      lastForceNonceRef.current = forceNonce;
-      console.debug("[scroll] force-pin", {
-        scrollHeight: el.scrollHeight,
-        nonce: forceNonce,
-      });
-      return;
-    }
-
-    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
-    if (distanceFromBottom < slack) {
-      el.scrollTop = el.scrollHeight;
-      console.debug("[scroll] follow", {
-        scrollHeight: el.scrollHeight,
-        distanceFromBottom,
-        slack,
-      });
-    } else {
-      // Logged so a "scroll didn't follow my new message" report can
-      // be correlated to the user's scroll position. Without this the
-      // UI just sits there silently.
-      console.debug("[scroll] leave-alone", {
+    if (!pinnedRef.current) {
+      console.debug("[scroll] leave-alone (unpinned)", {
         scrollHeight: el.scrollHeight,
         scrollTop: el.scrollTop,
         clientHeight: el.clientHeight,
-        distanceFromBottom,
-        slack,
       });
+      return;
     }
+    pinToBottom(el, "deps");
     // The deps array is intentionally dynamic: callers pass whatever
     // signals "content changed" (message count, streaming flag, etc.).
     // The eslint rule can't statically verify that.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [...deps, refVersion, forceNonce, slack]);
+  }, [...deps, refVersion]);
 
   return { scrollRef, forceScrollToBottom };
 }

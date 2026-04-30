@@ -1259,6 +1259,15 @@ export function Facilitator() {
                 typingRoleIds={Object.keys(typing).filter(
                   (rid) => rid !== state.creatorRoleId,
                 )}
+                // Pair the latest-AI amber ring with the participant
+                // path. ``isMyTurn`` here is the creator-as-active-role
+                // version (line ~1072: ``activeRoleIds.includes(state.creatorRoleId)``).
+                // Pre-fix the prop was simply not passed on the creator
+                // surface, so the ring never appeared even when the
+                // creator was on the active set — an asymmetry the user
+                // flagged as a regression on the same screen as the
+                // scroll bug.
+                highlightLastAi={isMyTurn}
               />
             </>
           ) : null}
