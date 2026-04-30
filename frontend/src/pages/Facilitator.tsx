@@ -1030,21 +1030,15 @@ export function Facilitator() {
           onAcknowledge={() => setCriticalBanner(null)}
         />
       ) : null}
-      <StatusBar
+      {/* Issue #62 (round 2): consolidated top bar — debug telemetry +
+          phase CTA + meta actions on a single row. See ``TopBar`` for
+          layout rationale. */}
+      <TopBar
         phase={phase}
         backendState={snapshot.state}
         wsStatus={wsStatus}
-        busy={busy}
-        busyMessage={busyMessage}
-        onToggleGodMode={() => setGodMode((g) => !g)}
         godMode={godMode}
-      />
-      {/* Issue #62: pin the session controls (Start / Force-advance / End /
-          View AAR / New session) to a horizontal bar at the very top of
-          the layout so the primary CTA is always reachable on narrow
-          viewports without scrolling past the role roster. */}
-      <SessionActionBar
-        phase={phase}
+        onToggleGodMode={() => setGodMode((g) => !g)}
         onStart={handleStart}
         onForceAdvance={handleForceAdvance}
         onEnd={handleEnd}
@@ -1116,6 +1110,7 @@ export function Facilitator() {
               onSkipSetup={handleSkipSetup}
               onPickOption={(opt) => callSetup(opt, "Sending your selection to the AI…")}
               busy={busy}
+              busyMessage={busyMessage}
             />
           ) : null}
           {phase === "ready" ? (
@@ -1213,6 +1208,10 @@ export function Facilitator() {
             // transcript length. ``shrink-0`` here is what keeps Submit
             // reachable on a 30-message exercise.
             <div className="shrink-0">
+              {/* Operator-action busy chip — moved out of the top bar so
+                  the "is the AI thinking or stuck?" signal sits where
+                  the operator's eye already is during a turn. */}
+              <BusyChip busy={busy} message={busyMessage} />
               {!isMyTurn && snapshot.current_turn?.active_role_ids?.length ? (
                 <WaitingChip
                   activeRoleIds={activeRoleIds}
@@ -1311,73 +1310,218 @@ export function Facilitator() {
   );
 }
 
-function StatusBar({
-  phase,
-  backendState,
-  wsStatus,
-  busy,
-  busyMessage,
-  onToggleGodMode,
-  godMode,
-}: {
+/**
+ * Issue #62 (round 2): single consolidated top bar that combines the
+ * pre-merge ``StatusBar`` (debug pills + God Mode) with the
+ * ``SessionActionBar`` (phase CTA / supporting buttons / "Start a new
+ * session"). Two stacked bars wasted vertical space and read as
+ * redundant; one bar with the CTA on the left and debug telemetry on the
+ * right keeps every datum we surface today while halving the chrome
+ * height. Mobile lets the bar wrap naturally — content rolls onto
+ * additional rows but still sits at the top of the viewport.
+ *
+ * Layout:
+ *   [title] [phase CTA] [supporting buttons] [helper text]
+ *                          ml-auto →
+ *   [state pill] [ws pill] [build SHA] [God Mode] [Start a new session]
+ *
+ * The "AI is thinking…" / generic-busy chip lives next to the Composer
+ * (see ``BusyChip`` below) per the operator's instruction to keep the
+ * stuck-vs-thinking signal at the bottom of the transcript where their
+ * eye already is during a turn.
+ */
+export function TopBar(props: {
   phase: Phase;
   backendState: string;
   wsStatus: "connecting" | "open" | "closed" | "error";
-  busy: boolean;
-  onToggleGodMode: () => void;
   godMode: boolean;
-  busyMessage: string | null;
+  onToggleGodMode: () => void;
+  // Session-action props (was SessionActionBar):
+  onStart: () => void;
+  onForceAdvance: () => void;
+  onEnd: () => void;
+  onNewSession: () => void;
+  /** Opens the single AAR popup (which contains the actual Download button). */
+  onViewAar: () => void;
+  playerCount: number;
+  hasFinalizedPlan: boolean;
+  /** "pending" | "generating" | "ready" | "failed" — null while loading. */
+  aarStatus: string | null;
+  busy: boolean;
 }) {
   const wsColour =
-    wsStatus === "open"
+    props.wsStatus === "open"
       ? "text-emerald-300"
-      : wsStatus === "connecting"
+      : props.wsStatus === "connecting"
         ? "text-amber-300"
         : "text-red-300";
+  const canStart =
+    (props.phase === "ready" || props.phase === "setup") &&
+    props.hasFinalizedPlan &&
+    props.playerCount >= 2;
+
   return (
-    <header className="border-b border-slate-800 bg-slate-900/70 px-4 py-2 text-xs">
-      <div className="mx-auto flex max-w-7xl flex-wrap items-center gap-4">
+    <header
+      role="banner"
+      className="border-b border-slate-800 bg-slate-900/70 px-4 py-2 text-xs"
+    >
+      <div className="mx-auto flex w-full max-w-7xl flex-wrap items-center gap-2">
+        {/* Left cluster: title + phase-conditional primary actions. The
+            CTA sits early in the row so an LTR reader's eye lands on the
+            verb before the debug pills. */}
         <span className="font-semibold uppercase tracking-widest text-slate-400">
           Facilitator
         </span>
-        <span className="rounded bg-slate-800 px-2 py-0.5 text-slate-200">
-          state: {backendState} · phase: {phase}
-        </span>
-        <span className={wsColour}>● ws: {wsStatus}</span>
-        {/* Build identification — surfaced so a creator filing a bug
-            report can tell us which version they're on without opening
-            DevTools. Vite injects ``__ATF_GIT_SHA__`` at build time. */}
-        <span
-          className="rounded bg-slate-800 px-2 py-0.5 font-mono text-[10px] text-slate-400"
-          title={`Build: ${__ATF_GIT_SHA__} · ${__ATF_BUILD_TS__}`}
-        >
-          v {__ATF_GIT_SHA__}
-        </span>
-        {busy ? (
-          <span
-            role="status"
-            aria-live="polite"
-            className="inline-flex items-center gap-2 rounded bg-sky-900/40 px-2 py-0.5 text-sky-200"
-          >
-            <Spinner /> {busyMessage ?? "Working…"}
-          </span>
+
+        {props.phase === "ready" || props.phase === "setup" ? (
+          <>
+            <button
+              type="button"
+              onClick={props.onStart}
+              disabled={!canStart || props.busy}
+              className="rounded bg-emerald-600 px-3 py-1 text-sm font-semibold text-white hover:bg-emerald-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-emerald-300 disabled:cursor-not-allowed disabled:opacity-50"
+              title={
+                !props.hasFinalizedPlan
+                  ? "Finalize the plan first"
+                  : props.playerCount < 2
+                    ? "Add at least 2 player roles"
+                    : ""
+              }
+            >
+              Start session
+            </button>
+            <span className="text-slate-400">
+              Players: {props.playerCount} (need ≥ 2 to start)
+            </span>
+          </>
         ) : null}
-        <button
-          type="button"
-          onClick={onToggleGodMode}
-          aria-pressed={godMode}
-          className={
-            "ml-auto rounded border px-2 py-0.5 font-semibold focus-visible:outline focus-visible:outline-2 focus-visible:outline-purple-300 " +
-            (godMode
-              ? "border-purple-500 bg-purple-700/40 text-purple-100"
-              : "border-purple-700/40 text-purple-300 hover:bg-purple-900/30")
-          }
-          title="Toggle full debug overlay (audit log, system prompt, etc). Creator-only."
-        >
-          {godMode ? "● God Mode" : "○ God Mode"}
-        </button>
+
+        {props.phase === "play" ? (
+          <>
+            <button
+              type="button"
+              onClick={props.onForceAdvance}
+              disabled={props.busy}
+              className="rounded border border-emerald-500 bg-emerald-900/30 px-3 py-1 text-sm font-semibold text-emerald-100 hover:bg-emerald-700/40 focus-visible:outline focus-visible:outline-2 focus-visible:outline-emerald-300 disabled:opacity-50"
+              title="Hand the turn to the AI now. Use when conversation has stalled OR when one player is unresponsive."
+            >
+              AI: take next beat
+            </button>
+            <button
+              type="button"
+              onClick={props.onEnd}
+              disabled={props.busy}
+              className="rounded border border-red-500 px-3 py-1 text-sm font-semibold text-red-300 hover:bg-red-900/30 focus-visible:outline focus-visible:outline-2 focus-visible:outline-red-300 disabled:opacity-50"
+            >
+              End session
+            </button>
+          </>
+        ) : null}
+
+        {props.phase === "ended"
+          ? (() => {
+              if (props.aarStatus === "ready") {
+                return (
+                  <button
+                    type="button"
+                    onClick={props.onViewAar}
+                    className="rounded bg-emerald-600 px-3 py-1 text-sm font-semibold text-white hover:bg-emerald-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-emerald-300"
+                  >
+                    View AAR
+                  </button>
+                );
+              }
+              if (props.aarStatus === "failed") {
+                return (
+                  <span
+                    role="status"
+                    className="inline-flex items-center gap-1 rounded border border-red-500/60 bg-red-950/30 px-2 py-0.5 text-red-200"
+                  >
+                    AAR failed — see Retry in main panel.
+                  </span>
+                );
+              }
+              return (
+                <span
+                  role="status"
+                  aria-live="polite"
+                  className="inline-flex items-center gap-1.5 rounded bg-slate-800/80 px-2 py-0.5 text-slate-300"
+                >
+                  <span
+                    aria-hidden="true"
+                    className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-400"
+                  />
+                  AAR generating… (~30 s)
+                </span>
+              );
+            })()
+          : null}
+
+        {/* Right cluster: debug telemetry + meta actions. Wrapped in its
+            own container so ``ml-auto`` reliably pushes the whole group
+            to the row's end (and stays grouped when the row wraps on
+            mobile). Per operator request, every debug datum currently
+            shown is preserved — only the layout changed. */}
+        <div className="ml-auto flex flex-wrap items-center gap-2">
+          <span className="rounded bg-slate-800 px-2 py-0.5 text-slate-200">
+            state: {props.backendState} · phase: {props.phase}
+          </span>
+          <span className={wsColour}>● ws: {props.wsStatus}</span>
+          {/* Build identification — surfaced so a creator filing a bug
+              report can tell us which version they're on without opening
+              DevTools. Vite injects ``__ATF_GIT_SHA__`` at build time. */}
+          <span
+            className="rounded bg-slate-800 px-2 py-0.5 font-mono text-[10px] text-slate-400"
+            title={`Build: ${__ATF_GIT_SHA__} · ${__ATF_BUILD_TS__}`}
+          >
+            v {__ATF_GIT_SHA__}
+          </span>
+          <button
+            type="button"
+            onClick={props.onToggleGodMode}
+            aria-pressed={props.godMode}
+            className={
+              "rounded border px-2 py-0.5 font-semibold focus-visible:outline focus-visible:outline-2 focus-visible:outline-purple-300 " +
+              (props.godMode
+                ? "border-purple-500 bg-purple-700/40 text-purple-100"
+                : "border-purple-700/40 text-purple-300 hover:bg-purple-900/30")
+            }
+            title="Toggle full debug overlay (audit log, system prompt, etc). Creator-only."
+          >
+            {props.godMode ? "● God Mode" : "○ God Mode"}
+          </button>
+          <button
+            type="button"
+            onClick={props.onNewSession}
+            disabled={props.busy}
+            className="rounded border border-slate-600 px-2 py-0.5 text-slate-300 hover:bg-slate-800 focus-visible:outline focus-visible:outline-2 focus-visible:outline-slate-300 disabled:opacity-50"
+            title="End the current session (if any) and return to the new-session form."
+          >
+            Start a new session
+          </button>
+        </div>
       </div>
     </header>
+  );
+}
+
+/**
+ * Operator-action busy chip. Pre-merge this lived in the top bar; the
+ * operator preferred it pinned near the transcript bottom (where their
+ * eye is during a turn) so it reads as a "is the AI stuck or thinking?"
+ * signal rather than disappearing into the chrome at the top of the
+ * page. Renders nothing when no operation is in flight.
+ */
+function BusyChip({ busy, message }: { busy: boolean; message: string | null }) {
+  if (!busy) return null;
+  return (
+    <span
+      role="status"
+      aria-live="polite"
+      className="mb-1 inline-flex shrink-0 items-center gap-2 self-start rounded bg-sky-900/40 px-2 py-1 text-xs text-sky-200"
+    >
+      <Spinner /> {message ?? "Working…"}
+    </span>
   );
 }
 
@@ -1527,125 +1671,6 @@ function WaitingChip({
  * viewport the Start button was below the fold, requiring a scroll past
  * the entire role roster + activity panel to reach it.
  */
-export function SessionActionBar(props: {
-  phase: Phase;
-  onStart: () => void;
-  onForceAdvance: () => void;
-  onEnd: () => void;
-  onNewSession: () => void;
-  /** Opens the single AAR popup (which contains the actual Download button). */
-  onViewAar: () => void;
-  playerCount: number;
-  hasFinalizedPlan: boolean;
-  /** "pending" | "generating" | "ready" | "failed" — null while loading. */
-  aarStatus: string | null;
-  busy: boolean;
-}) {
-  const canStart =
-    (props.phase === "ready" || props.phase === "setup") &&
-    props.hasFinalizedPlan &&
-    props.playerCount >= 2;
-
-  return (
-    <div className="border-b border-slate-800 bg-slate-900/60 px-4 py-2">
-      <div className="mx-auto flex w-full max-w-7xl flex-wrap items-center gap-2 text-sm">
-        {props.phase === "ready" || props.phase === "setup" ? (
-          <>
-            <button
-              onClick={props.onStart}
-              disabled={!canStart || props.busy}
-              className="rounded bg-emerald-600 px-3 py-1 text-sm font-semibold text-white hover:bg-emerald-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-emerald-300 disabled:cursor-not-allowed disabled:opacity-50"
-              title={
-                !props.hasFinalizedPlan
-                  ? "Finalize the plan first"
-                  : props.playerCount < 2
-                    ? "Add at least 2 player roles"
-                    : ""
-              }
-            >
-              Start session
-            </button>
-            <span className="text-xs text-slate-400">
-              Players: {props.playerCount} (need ≥ 2 to start)
-            </span>
-          </>
-        ) : null}
-
-        {props.phase === "play" ? (
-          <>
-            <button
-              onClick={props.onForceAdvance}
-              disabled={props.busy}
-              className="rounded border border-emerald-500 bg-emerald-900/30 px-3 py-1 text-sm font-semibold text-emerald-100 hover:bg-emerald-700/40 focus-visible:outline focus-visible:outline-2 focus-visible:outline-emerald-300 disabled:opacity-50"
-              title="Hand the turn to the AI now. Use when conversation has stalled OR when one player is unresponsive."
-            >
-              AI: take next beat
-            </button>
-            <button
-              onClick={props.onEnd}
-              disabled={props.busy}
-              className="rounded border border-red-500 px-3 py-1 text-sm font-semibold text-red-300 hover:bg-red-900/30 focus-visible:outline focus-visible:outline-2 focus-visible:outline-red-300 disabled:opacity-50"
-            >
-              End session
-            </button>
-            <span className="text-[11px] leading-tight text-slate-500">
-              "Take next beat" marks the current player turn complete
-              (skipping any missing voices).
-            </span>
-          </>
-        ) : null}
-
-        {props.phase === "ended"
-          ? (() => {
-              if (props.aarStatus === "ready") {
-                return (
-                  <button
-                    onClick={props.onViewAar}
-                    className="rounded bg-emerald-600 px-3 py-1 text-sm font-semibold text-white hover:bg-emerald-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-emerald-300"
-                  >
-                    View AAR
-                  </button>
-                );
-              }
-              if (props.aarStatus === "failed") {
-                return (
-                  <span
-                    role="status"
-                    className="inline-flex items-center gap-1 rounded border border-red-500/60 bg-red-950/30 px-2 py-1 text-xs text-red-200"
-                  >
-                    AAR generation failed — use Retry in the main panel.
-                  </span>
-                );
-              }
-              return (
-                <span
-                  role="status"
-                  aria-live="polite"
-                  className="inline-flex items-center gap-1.5 rounded bg-slate-800/80 px-2 py-1 text-xs text-slate-300"
-                >
-                  <span
-                    aria-hidden="true"
-                    className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-400"
-                  />
-                  AAR generating… (~30 s)
-                </span>
-              );
-            })()
-          : null}
-
-        <button
-          onClick={props.onNewSession}
-          disabled={props.busy}
-          className="ml-auto rounded border border-slate-600 px-3 py-1 text-xs text-slate-300 hover:bg-slate-800 focus-visible:outline focus-visible:outline-2 focus-visible:outline-slate-300 disabled:opacity-50"
-          title="End the current session (if any) and return to the new-session form."
-        >
-          Start a new session
-        </button>
-      </div>
-    </div>
-  );
-}
-
 function SetupView({
   snapshot,
   setupReply,
@@ -1656,6 +1681,7 @@ function SetupView({
   onSkipSetup,
   onPickOption,
   busy,
+  busyMessage,
 }: {
   snapshot: SessionSnapshot;
   setupReply: string;
@@ -1666,6 +1692,7 @@ function SetupView({
   onSkipSetup: () => void;
   onPickOption: (option: string) => void;
   busy: boolean;
+  busyMessage: string | null;
 }) {
   const hasPlan = Boolean(snapshot.plan);
   const notes = snapshot.setup_notes ?? [];
@@ -1691,6 +1718,12 @@ function SetupView({
       ) : null}
 
       <SetupChat notes={notes} busy={busy} onPickOption={onPickOption} />
+
+      {/* Operator-action busy chip — pinned with the reply form so the
+          "is the AI thinking?" signal stays where the operator's eye is.
+          See the play-phase BusyChip above the Composer for the same
+          pattern. */}
+      <BusyChip busy={busy} message={busyMessage} />
 
       <form onSubmit={onSubmit} className="flex flex-col gap-2">
         <textarea

@@ -1,6 +1,6 @@
 import { fireEvent, render, screen, within } from "@testing-library/react";
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
-import { Facilitator, SessionActionBar } from "../pages/Facilitator";
+import { Facilitator, TopBar } from "../pages/Facilitator";
 import { api } from "../api/client";
 
 // The intro page renders both an `<ol>` ("What to expect") and the chip
@@ -110,19 +110,23 @@ describe("Facilitator intro — Roles to invite (issue #61)", () => {
   });
 });
 
-describe("SessionActionBar (issue #62)", () => {
+describe("TopBar (issue #62)", () => {
   const baseProps = {
     onStart: vi.fn(),
     onForceAdvance: vi.fn(),
     onEnd: vi.fn(),
     onNewSession: vi.fn(),
     onViewAar: vi.fn(),
+    onToggleGodMode: vi.fn(),
     busy: false,
+    backendState: "READY",
+    wsStatus: "open" as const,
+    godMode: false,
   };
 
   it("renders Start session disabled when plan not finalized", () => {
     render(
-      <SessionActionBar
+      <TopBar
         {...baseProps}
         phase="setup"
         playerCount={3}
@@ -136,7 +140,7 @@ describe("SessionActionBar (issue #62)", () => {
 
   it("renders Start session disabled when fewer than 2 players", () => {
     render(
-      <SessionActionBar
+      <TopBar
         {...baseProps}
         phase="ready"
         playerCount={1}
@@ -149,7 +153,7 @@ describe("SessionActionBar (issue #62)", () => {
 
   it("enables Start session when plan finalized and ≥2 players", () => {
     render(
-      <SessionActionBar
+      <TopBar
         {...baseProps}
         phase="ready"
         playerCount={2}
@@ -165,7 +169,7 @@ describe("SessionActionBar (issue #62)", () => {
 
   it("renders force-advance + end buttons during play", () => {
     render(
-      <SessionActionBar
+      <TopBar
         {...baseProps}
         phase="play"
         playerCount={3}
@@ -186,7 +190,7 @@ describe("SessionActionBar (issue #62)", () => {
 
   it("renders View AAR when ended phase + AAR ready", () => {
     render(
-      <SessionActionBar
+      <TopBar
         {...baseProps}
         phase="ended"
         playerCount={3}
@@ -201,7 +205,7 @@ describe("SessionActionBar (issue #62)", () => {
 
   it("renders AAR generating status when ended phase + AAR pending", () => {
     render(
-      <SessionActionBar
+      <TopBar
         {...baseProps}
         phase="ended"
         playerCount={3}
@@ -218,7 +222,7 @@ describe("SessionActionBar (issue #62)", () => {
   it("always renders 'Start a new session' regardless of phase", () => {
     for (const phase of ["setup", "ready", "play", "ended"] as const) {
       const { unmount } = render(
-        <SessionActionBar
+        <TopBar
           {...baseProps}
           phase={phase}
           playerCount={2}
