@@ -148,13 +148,20 @@ export function Facilitator() {
   // before kicking off the exercise.
   const [presence, setPresence] = useState<Set<string>>(() => new Set());
   // Real-time AI-thinking tracking — same shape as Play.tsx. ``aiCalls``
-  // collects in-flight LLM ``call_id``s from ``ai_thinking`` boundary
+  // maps in-flight LLM ``call_id`` → tier (``setup`` / ``play`` / ``aar``
+  // / ``guardrail`` / ``interject``) from ``ai_thinking`` boundary
   // events; ``aiStatus`` carries the labelled phase/attempt/recovery
   // breadcrumb the turn-driver emits at known points. Together they let
   // the operator distinguish "thinking" from "stuck" during the
   // strict-retry loop and see interject / setup / AAR work that doesn't
-  // change ``session.state`` (issue #63).
-  const [aiCalls, setAiCalls] = useState<Set<string>>(() => new Set());
+  // change ``session.state`` (issue #63). The tier is what powers the
+  // top-bar ``LLM: <tier>`` chip (round 4 of issue #62) — the operator
+  // wanted to see *which* tier is currently active, not just that
+  // *something* is in flight, so they can spot e.g. guardrail spikes
+  // separately from play-tier turns.
+  const [aiCalls, setAiCalls] = useState<Map<string, string>>(
+    () => new Map(),
+  );
   const [aiStatus, setAiStatus] = useState<{
     phase: "play" | "interject" | "setup" | "briefing" | "aar";
     attempt?: number;
@@ -372,7 +379,7 @@ export function Facilitator() {
         // when the engine actually moves to a non-busy state.
         if (evt.state !== "AI_PROCESSING" && evt.state !== "BRIEFING") {
           setAiStatus(null);
-          setAiCalls(new Set());
+          setAiCalls(new Map());
         }
         break;
       case "turn_changed":
@@ -384,10 +391,14 @@ export function Facilitator() {
       case "ai_thinking":
         // Reference-counted concurrent calls (guardrail + interject can
         // overlap). Add/remove by call_id so the indicator only clears
-        // when ALL calls have ended.
+        // when ALL calls have ended. Tier is retained so the top-bar
+        // ``LLM: <tier>`` chip can show *what* is in flight, not just
+        // *that* something is — a guardrail call layered on top of a
+        // play turn shows as ``LLM: guardrail+play`` rather than the
+        // operator having to guess from the transcript.
         setAiCalls((prev) => {
-          const next = new Set(prev);
-          if (evt.active) next.add(evt.call_id);
+          const next = new Map(prev);
+          if (evt.active) next.set(evt.call_id, evt.tier);
           else next.delete(evt.call_id);
           return next;
         });
@@ -1078,6 +1089,14 @@ export function Facilitator() {
         lastEventAt={lastEventAt}
         cost={cost ?? snapshot.cost}
         messageCount={snapshot.messages.length}
+        activeTiers={(() => {
+          // De-dupe tiers across overlapping calls and sort for a stable
+          // chip label. Empty set → idle. The chip itself decides how to
+          // render the empty case; we pass an empty array.
+          const seen = new Set<string>();
+          for (const tier of aiCalls.values()) seen.add(tier);
+          return Array.from(seen).sort();
+        })()}
       />
       <div className="mx-auto grid w-full max-w-7xl flex-1 grid-cols-1 gap-4 p-4 lg:min-h-0 lg:grid-cols-[280px_1fr_280px] lg:overflow-hidden">
         <aside className="flex flex-col gap-4 lg:min-h-0 lg:overflow-y-auto lg:pr-1">
@@ -1392,6 +1411,11 @@ export function TopBar(props: {
   cost: CostSnapshot | null;
   /** ``snapshot.messages.length`` — raw message-count debug telemetry. */
   messageCount: number;
+  /** Sorted, de-duped LLM tiers currently in flight (e.g. ``["play"]``,
+   *  ``["guardrail", "play"]``). Empty array = idle. Source: every
+   *  ``ai_thinking`` event carries a ``tier``; ``Facilitator`` retains
+   *  the mapping per ``call_id``. */
+  activeTiers: string[];
 }) {
   const wsColour =
     props.wsStatus === "open"
@@ -1564,6 +1588,27 @@ export function TopBar(props: {
           >
             Last: {lastEventLabel}
           </span>
+          {/* LLM tier chip (#9). When idle the chip stays present (just
+              de-emphasised) so the bar layout doesn't reflow on every
+              call boundary; when active it goes amber + bold so the
+              operator's eye picks it up while glancing across the bar. */}
+          {props.activeTiers.length > 0 ? (
+            <span
+              className="rounded bg-amber-900/40 px-2 py-0.5 font-semibold text-amber-200"
+              role="status"
+              aria-live="polite"
+              title={`Active LLM call(s) — tier${props.activeTiers.length === 1 ? "" : "s"}: ${props.activeTiers.join(", ")}.`}
+            >
+              LLM: {props.activeTiers.join("+")}
+            </span>
+          ) : (
+            <span
+              className="rounded bg-slate-800 px-2 py-0.5 text-slate-500"
+              title="No LLM call currently in flight."
+            >
+              LLM: idle
+            </span>
+          )}
           {/* Cost: click-to-expand chip. The summary shows the dollar
               amount; the disclosure body shows the token breakdown
               (mirrors the old sidebar CostMeter, but inline). Native

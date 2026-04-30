@@ -129,6 +129,8 @@ describe("TopBar (issue #62)", () => {
     lastEventAt: null,
     cost: null,
     messageCount: 0,
+    // Round 4 — LLM tier chip (#9).
+    activeTiers: [] as string[],
   };
 
   it("renders Start session disabled when plan not finalized", () => {
@@ -283,6 +285,48 @@ describe("TopBar (issue #62)", () => {
       />,
     );
     expect(screen.getByText(/Last: 5s ago/)).toBeInTheDocument();
+  });
+
+  it("renders 'LLM: idle' when no LLM calls are in flight", () => {
+    render(
+      <TopBar
+        {...baseProps}
+        phase="play"
+        playerCount={2}
+        hasFinalizedPlan={true}
+        aarStatus={null}
+      />,
+    );
+    expect(screen.getByText("LLM: idle")).toBeInTheDocument();
+  });
+
+  it("renders 'LLM: <tier>' when a single tier is active", () => {
+    render(
+      <TopBar
+        {...baseProps}
+        phase="play"
+        playerCount={2}
+        hasFinalizedPlan={true}
+        aarStatus={null}
+        activeTiers={["play"]}
+      />,
+    );
+    expect(screen.getByText("LLM: play")).toBeInTheDocument();
+    expect(screen.queryByText("LLM: idle")).not.toBeInTheDocument();
+  });
+
+  it("joins multiple concurrent tiers with '+' (e.g. guardrail + play)", () => {
+    render(
+      <TopBar
+        {...baseProps}
+        phase="play"
+        playerCount={2}
+        hasFinalizedPlan={true}
+        aarStatus={null}
+        activeTiers={["guardrail", "play"]}
+      />,
+    );
+    expect(screen.getByText("LLM: guardrail+play")).toBeInTheDocument();
   });
 
   it("expands the cost chip to show the token breakdown", () => {
