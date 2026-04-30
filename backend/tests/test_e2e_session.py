@@ -3159,6 +3159,81 @@ def test_active_role_can_post_followup_after_submitting(
     assert interjection_msgs[0]["body"] == "Wait — also revoke the API token."
 
 
+def test_proxy_respond_rejects_unknown_or_spectator_role(
+    client: TestClient,
+) -> None:
+    """PR #86 review: ``proxy_submit_as`` must validate that the target
+    ``as_role_id`` resolves to a real seated *player* role. Pre-fix
+    the relaxed gate (issue #78) let a creator post on behalf of any
+    arbitrary role_id — non-existent roles would leave orphaned
+    transcript rows the UI couldn't render, and spectator roles would
+    sneak past the spectator-cannot-submit gate the WS layer enforces.
+    """
+
+    import asyncio
+
+    from app.sessions.models import SessionState, Turn
+
+    seats = _create_and_seat(client, role_count=2)
+    sid = seats["session_id"]
+    cr = seats["creator_token"]
+    creator_role_id = seats["creator_role_id"]
+
+    client.post(f"/api/sessions/{sid}/setup/skip?token={cr}")
+
+    async def _open_awaiting() -> None:
+        manager = client.app.state.manager
+        session = await manager.get_session(sid)
+        turn = Turn(
+            index=0,
+            active_role_ids=[creator_role_id],
+            status="awaiting",
+        )
+        session.turns.append(turn)
+        session.state = SessionState.AWAITING_PLAYERS
+        await manager._repo.save(session)
+
+    asyncio.run(_open_awaiting())
+
+    # Unknown role_id → 409 (IllegalTransitionError surfaces as 409
+    # via the route's existing exception mapping).
+    r = client.post(
+        f"/api/sessions/{sid}/admin/proxy-respond?token={cr}",
+        json={"as_role_id": "ghost-role-id-xyz", "content": "hello"},
+    )
+    assert r.status_code == 409, r.text
+    assert "not seated" in r.text.lower()
+
+    # Now seat a spectator role and confirm the proxy path refuses to
+    # post on its behalf.
+    async def _add_spectator() -> str:
+        manager = client.app.state.manager
+        session = await manager.get_session(sid)
+        from app.sessions.models import Role
+
+        spectator = Role(label="Observer", kind="spectator")
+        session.roles.append(spectator)
+        await manager._repo.save(session)
+        return spectator.id
+
+    spectator_role_id = asyncio.run(_add_spectator())
+    r = client.post(
+        f"/api/sessions/{sid}/admin/proxy-respond?token={cr}",
+        json={"as_role_id": spectator_role_id, "content": "hello"},
+    )
+    assert r.status_code == 409, r.text
+    assert "not a player role" in r.text.lower()
+
+    # Nothing landed in the transcript on either rejected attempt.
+    snap = client.get(f"/api/sessions/{sid}?token={cr}").json()
+    bodies = [
+        m["body"]
+        for m in snap["messages"]
+        if m.get("kind") == "player" and m.get("body") == "hello"
+    ]
+    assert bodies == []
+
+
 def test_proxy_respond_blocks_prompt_injection(client: TestClient) -> None:
     """Issue #78 security review: the creator-only proxy endpoint must
     apply the same prompt-injection guardrail the WS submit path runs.

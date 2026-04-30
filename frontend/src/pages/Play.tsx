@@ -324,9 +324,25 @@ export function Play({ sessionId, token }: Props) {
       // on the active roles. ``isMyTurn`` is computed from the snapshot
       // at render time, so capturing it here is correct for the just-
       // sent submission.
+      //
+      // Question-style submissions trip the backend ``run_interject``
+      // side-channel and typically get an inline AI reply within a few
+      // seconds, so the "AI will see this on its next turn" copy is
+      // misleading for them. We approximate the backend's
+      // ``_looks_like_question`` heuristic with a trimmed-trailing-?
+      // check (the prefix path — "can we …" without a ? — is the
+      // minority case; the generic "noted" copy still reads correctly
+      // there if it ends up routed to the next turn instead of an
+      // interject). Both branches deliver the same core reassurance
+      // (your message landed; here's what happens next), differentiated
+      // so the user isn't told "wait until next turn" when the AI is
+      // already composing a reply.
       if (!isMyTurn) {
+        const looksLikeQuestion = text.trim().endsWith("?");
         setNotice(
-          "Posted as a sidebar — the AI will see this on its next turn.",
+          looksLikeQuestion
+            ? "Posted as a sidebar — if the AI reads this as a question it'll reply inline; otherwise it sees it on its next turn."
+            : "Posted as a sidebar — the AI will see this on its next turn.",
         );
       }
     } catch (err) {

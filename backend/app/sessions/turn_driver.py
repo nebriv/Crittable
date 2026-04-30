@@ -263,14 +263,27 @@ class TurnDriver:
         dispatcher = self._manager.dispatcher()
         registry = self._manager.registry()
         settings = self._manager.settings()
-        # Issue #78: count out-of-turn interjections in the trailing
-        # transcript window so an operator debugging "AI is addressing
-        # the wrong people" can correlate misroutes with how many
-        # interjections sat in front of the model on this turn.
-        interjection_count = sum(
+        # Issue #78 + PR #86 review: count *all* out-of-turn
+        # interjections persisted on this session and *also* the
+        # subset attached to the current turn. ``_play_messages``
+        # currently feeds the entire ``session.messages`` array to the
+        # model, so ``interjections_in_prompt`` is the count the model
+        # actually sees; ``interjections_this_turn`` is the narrower
+        # "since the turn opened" view operators usually want when
+        # debugging "the AI is addressing the wrong people on THIS
+        # beat." Both shipped to keep correlation cheap when the prompt
+        # window or transcript-trim policy changes.
+        interjections_in_prompt = sum(
             1
             for m in session.messages
             if m.kind == MessageKind.PLAYER and m.is_interjection
+        )
+        interjections_this_turn = sum(
+            1
+            for m in session.messages
+            if m.kind == MessageKind.PLAYER
+            and m.is_interjection
+            and m.turn_id == turn.id
         )
         _logger.info(
             "play_turn_start",
@@ -278,7 +291,8 @@ class TurnDriver:
             turn_index=turn.index,
             roster=len(session.roles),
             roster_size=session.roster_size,
-            interjection_count=interjection_count,
+            interjections_in_prompt=interjections_in_prompt,
+            interjections_this_turn=interjections_this_turn,
         )
 
         contract = contract_for(

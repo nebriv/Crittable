@@ -716,6 +716,23 @@ class SessionManager:
             turn = session.current_turn
             if turn is None:
                 raise IllegalTransitionError("no current turn")
+            # Validate ``as_role_id`` resolves to an actual seated player
+            # role on this session. Pre-fix the relaxed gate (issue #78
+            # + Copilot review) let a creator post messages on behalf of
+            # arbitrary role_ids — including ones that don't exist or
+            # are tagged spectator — which would have left orphaned
+            # transcript entries the UI can't render properly and let
+            # the proxy path side-step the spectator-cannot-submit gate
+            # the WS layer enforces for real participants.
+            target_role = session.role_by_id(as_role_id)
+            if target_role is None:
+                raise IllegalTransitionError(
+                    f"role {as_role_id!r} is not seated on this session"
+                )
+            if target_role.kind != "player":
+                raise IllegalTransitionError(
+                    f"role {as_role_id!r} is not a player role; cannot proxy-submit"
+                )
             is_turn_submission = can_submit(turn, as_role_id)
             # Apply the same dedupe scan ``submit_response`` runs.
             # Pre-issue-#78 the proxy path skipped this guard; once
