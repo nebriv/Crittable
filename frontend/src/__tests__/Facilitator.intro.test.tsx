@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, within } from "@testing-library/react";
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
-import { Facilitator, TopBar } from "../pages/Facilitator";
-import { api } from "../api/client";
+import { Facilitator, TopBar, SetupView, PlanView } from "../pages/Facilitator";
+import { api, type ScenarioPlan, type SessionSnapshot } from "../api/client";
 
 // The intro page renders both an `<ol>` ("What to expect") and the chip
 // list in the fieldset, so a bare `getByRole("list")` is ambiguous.
@@ -369,5 +369,193 @@ describe("TopBar (issue #62)", () => {
       ).toBeInTheDocument();
       unmount();
     }
+  });
+
+  // Issue #36: hide debug-y chips behind God Mode so a fresh creator
+  // doesn't see "ws: open · v 7a1862f" on first impression. The God Mode
+  // toggle button itself stays visible — it's the only entry to debug
+  // mode now and must remain reachable.
+  it("hides ws-pill and build-SHA chip when God Mode is off (healthy connection)", () => {
+    render(
+      <TopBar
+        {...baseProps}
+        phase="play"
+        playerCount={2}
+        hasFinalizedPlan={true}
+        aarStatus={null}
+        godMode={false}
+        wsStatus="open"
+      />,
+    );
+    // ``state: ... · phase: ...`` chip stays — it carries user-facing meaning.
+    expect(screen.getByText(/state: READY · phase: play/i)).toBeInTheDocument();
+    // Debug-y chips are hidden until God Mode is on (when connection healthy).
+    expect(screen.queryByTestId("ws-pill")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("build-sha-chip")).not.toBeInTheDocument();
+    // God Mode toggle stays reachable — it's the only entry to debug mode.
+    expect(screen.getByRole("button", { name: /God Mode/i })).toBeInTheDocument();
+  });
+
+  it("shows ws-pill and build-SHA chip when God Mode is on", () => {
+    render(
+      <TopBar
+        {...baseProps}
+        phase="play"
+        playerCount={2}
+        hasFinalizedPlan={true}
+        aarStatus={null}
+        godMode={true}
+        wsStatus="open"
+      />,
+    );
+    expect(screen.getByText(/state: READY · phase: play/i)).toBeInTheDocument();
+    expect(screen.getByTestId("ws-pill")).toHaveTextContent(/ws: open/);
+    expect(screen.getByTestId("build-sha-chip")).toHaveTextContent(/^v /);
+  });
+
+  // Resurfacing the WS pill on a degraded connection is the only "is the
+  // app stuck?" signal a non-operator creator has — without it, hiding
+  // the pill behind God Mode would leave them silently disconnected.
+  it("resurfaces ws-pill on degraded connection even when God Mode is off", () => {
+    render(
+      <TopBar
+        {...baseProps}
+        phase="play"
+        playerCount={2}
+        hasFinalizedPlan={true}
+        aarStatus={null}
+        godMode={false}
+        wsStatus="closed"
+      />,
+    );
+    expect(screen.getByTestId("ws-pill")).toHaveTextContent(/ws: closed/);
+    // Build-SHA chip stays God-Mode-only — it's bug-report ergonomics, not
+    // user-facing connection health.
+    expect(screen.queryByTestId("build-sha-chip")).not.toBeInTheDocument();
+  });
+});
+
+// Issue #36: ``Skip setup (dev only)`` is gated on God Mode so first-time
+// creators see only the two real CTAs ("Send reply" and "Looks ready").
+describe("SetupView Skip-setup gating (issue #36)", () => {
+  const baseSnapshot: SessionSnapshot = {
+    id: "sess-1",
+    state: "SETUP",
+    scenario_prompt: "ransomware drill",
+    plan: null,
+    roles: [],
+    current_turn: null,
+    messages: [],
+    setup_notes: null,
+    cost: null,
+    aar_status: null,
+  };
+  const baseProps = {
+    snapshot: baseSnapshot,
+    setupReply: "",
+    setSetupReply: vi.fn(),
+    onSubmit: vi.fn(),
+    onLooksReady: vi.fn(),
+    onApprovePlan: vi.fn(),
+    onSkipSetup: vi.fn(),
+    onPickOption: vi.fn(),
+    busy: false,
+    busyMessage: null,
+  };
+
+  it("hides Skip setup (dev only) when God Mode is off", () => {
+    render(<SetupView {...baseProps} godMode={false} />);
+    expect(
+      screen.queryByRole("button", { name: /Skip setup \(dev only\)/i }),
+    ).not.toBeInTheDocument();
+    // Real CTAs still render.
+    expect(screen.getByRole("button", { name: /Send reply/i })).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /Looks ready — propose the plan/i }),
+    ).toBeInTheDocument();
+  });
+
+  it("shows Skip setup (dev only) when God Mode is on", () => {
+    const onSkipSetup = vi.fn();
+    render(<SetupView {...baseProps} godMode={true} onSkipSetup={onSkipSetup} />);
+    const skip = screen.getByRole("button", { name: /Skip setup \(dev only\)/i });
+    expect(skip).toBeInTheDocument();
+    fireEvent.click(skip);
+    expect(onSkipSetup).toHaveBeenCalledTimes(1);
+  });
+});
+
+// Issue #36: spoiler toggle is now a stateful checkbox with a stable
+// label ("Show injects (facilitator mode)") instead of a button whose
+// label flipped between "Switch to participant mode" / "Switch to
+// facilitator mode".
+describe("PlanView spoiler checkbox (issue #36)", () => {
+  const planFixture: ScenarioPlan = {
+    title: "Ransomware drill",
+    executive_summary: "Tabletop for an IR exercise.",
+    key_objectives: ["Restore service"],
+    narrative_arc: [
+      { beat: 1, label: "Initial detection", expected_actors: ["IR Lead"] },
+      { beat: 2, label: "Containment", expected_actors: ["IR Lead", "Comms"] },
+    ],
+    injects: [
+      { trigger: "+5min", type: "media", summary: "Reporter calls for comment" },
+    ],
+    guardrails: [],
+    success_criteria: [],
+    out_of_scope: [],
+  };
+
+  beforeEach(() => {
+    window.localStorage.clear();
+  });
+
+  afterEach(() => {
+    window.localStorage.clear();
+  });
+
+  it("renders the stable label regardless of state", () => {
+    render(<PlanView plan={planFixture} sessionId="s-1" />);
+    // Default: hidden (participant mode).
+    expect(screen.getByText(/Show injects \(facilitator mode\)/i)).toBeInTheDocument();
+    // Click the checkbox to flip state.
+    fireEvent.click(screen.getByTestId("plan-spoiler-checkbox"));
+    // Label is unchanged — only the checkbox state flipped.
+    expect(screen.getByText(/Show injects \(facilitator mode\)/i)).toBeInTheDocument();
+  });
+
+  it("hides narrative-arc / inject content by default and reveals on toggle", () => {
+    render(<PlanView plan={planFixture} sessionId="s-1" />);
+    // Default: spoiler hidden — the arc beat label and inject summary
+    // should NOT be in the DOM.
+    expect(screen.queryByText(/Initial detection/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Reporter calls for comment/i)).not.toBeInTheDocument();
+    expect(screen.getByText(/Participant mode\./i)).toBeInTheDocument();
+
+    // Toggle the checkbox.
+    const checkbox = screen.getByTestId("plan-spoiler-checkbox") as HTMLInputElement;
+    expect(checkbox.checked).toBe(false);
+    fireEvent.click(checkbox);
+    expect(checkbox.checked).toBe(true);
+
+    // Arc + inject content now visible.
+    expect(screen.getByText(/Initial detection/i)).toBeInTheDocument();
+    expect(screen.getByText(/Reporter calls for comment/i)).toBeInTheDocument();
+  });
+
+  it("persists the reveal preference to localStorage scoped per session", () => {
+    render(<PlanView plan={planFixture} sessionId="abc" />);
+    fireEvent.click(screen.getByTestId("plan-spoiler-checkbox"));
+    expect(window.localStorage.getItem("atf-plan-reveal:abc")).toBe("1");
+    fireEvent.click(screen.getByTestId("plan-spoiler-checkbox"));
+    expect(window.localStorage.getItem("atf-plan-reveal:abc")).toBe("0");
+  });
+
+  it("reads the previously-stored reveal preference on mount", () => {
+    window.localStorage.setItem("atf-plan-reveal:abc", "1");
+    render(<PlanView plan={planFixture} sessionId="abc" />);
+    const checkbox = screen.getByTestId("plan-spoiler-checkbox") as HTMLInputElement;
+    expect(checkbox.checked).toBe(true);
+    expect(screen.getByText(/Initial detection/i)).toBeInTheDocument();
   });
 });

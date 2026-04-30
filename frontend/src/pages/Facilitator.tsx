@@ -1073,7 +1073,16 @@ export function Facilitator() {
         backendState={snapshot.state}
         wsStatus={wsStatus}
         godMode={godMode}
-        onToggleGodMode={() => setGodMode((g) => !g)}
+        onToggleGodMode={() =>
+          setGodMode((g) => {
+            const next = !g;
+            // Per CLAUDE.md logging rules — every state transition gets one
+            // line. Once #36 hid debug chips behind God Mode, "is God Mode
+            // on?" became a load-bearing question for future bug triage.
+            console.info("[facilitator] godMode toggled", { godMode: next });
+            return next;
+          })
+        }
         onStart={handleStart}
         onForceAdvance={handleForceAdvance}
         onEnd={handleEnd}
@@ -1159,6 +1168,7 @@ export function Facilitator() {
               onPickOption={(opt) => callSetup(opt, "Sending your selection to the AI…")}
               busy={busy}
               busyMessage={busyMessage}
+              godMode={godMode}
             />
           ) : null}
           {phase === "ready" ? (
@@ -1626,19 +1636,35 @@ export function TopBar(props: {
               free; the popup positions absolutely so it overlays the
               page chrome below the bar without pushing layout. */}
           <CostChip cost={props.cost} />
-          <span className={wsColour}>● ws: {props.wsStatus}</span>
+          {/* Per #36: ws-pill and build-SHA chip are operator/debug signals
+              that read as a "this is a debug overlay" first impression for
+              a fresh creator. Gate them behind God Mode so the everyday
+              chrome stays clean while operators triaging a stuck session
+              still get the connection state and the build hash for bug
+              reports. The WS pill *also* surfaces unconditionally on a
+              degraded connection (``wsStatus !== "open"``) so a non-
+              operator creator still sees when their tab loses the server
+              — the only "is the app stuck?" signal a non-debug user has.
+              The ``state: / phase:`` chip stays always-visible because
+              it carries user-facing meaning ("phase: ended" tells a
+              creator the exercise is done). */}
+          {props.godMode || props.wsStatus !== "open" ? (
+            <span className={wsColour} data-testid="ws-pill">
+              ● ws: {props.wsStatus}
+            </span>
+          ) : null}
           <span className="rounded bg-slate-800 px-2 py-0.5 text-slate-200">
             state: {props.backendState} · phase: {props.phase}
           </span>
-          {/* Build identification — surfaced so a creator filing a bug
-              report can tell us which version they're on without opening
-              DevTools. Vite injects ``__ATF_GIT_SHA__`` at build time. */}
-          <span
-            className="rounded bg-slate-800 px-2 py-0.5 font-mono text-[10px] text-slate-400"
-            title={`Build: ${__ATF_GIT_SHA__} · ${__ATF_BUILD_TS__}`}
-          >
-            v {__ATF_GIT_SHA__}
-          </span>
+          {props.godMode ? (
+            <span
+              className="rounded bg-slate-800 px-2 py-0.5 font-mono text-[10px] text-slate-400"
+              title={`Build: ${__ATF_GIT_SHA__} · ${__ATF_BUILD_TS__}`}
+              data-testid="build-sha-chip"
+            >
+              v {__ATF_GIT_SHA__}
+            </span>
+          ) : null}
           <button
             type="button"
             onClick={props.onToggleGodMode}
@@ -1649,7 +1675,7 @@ export function TopBar(props: {
                 ? "border-purple-500 bg-purple-700/40 text-purple-100"
                 : "border-purple-700/40 text-purple-300 hover:bg-purple-900/30")
             }
-            title="Toggle full debug overlay (audit log, system prompt, etc). Creator-only."
+            title="Toggle full debug overlay (ws status, build hash, audit log, system prompt, dev shortcuts). Creator-only."
           >
             {props.godMode ? "● God Mode" : "○ God Mode"}
           </button>
@@ -1884,7 +1910,7 @@ function WaitingChip({
  * viewport the Start button was below the fold, requiring a scroll past
  * the entire role roster + activity panel to reach it.
  */
-function SetupView({
+export function SetupView({
   snapshot,
   setupReply,
   setSetupReply,
@@ -1895,6 +1921,7 @@ function SetupView({
   onPickOption,
   busy,
   busyMessage,
+  godMode,
 }: {
   snapshot: SessionSnapshot;
   setupReply: string;
@@ -1906,6 +1933,14 @@ function SetupView({
   onPickOption: (option: string) => void;
   busy: boolean;
   busyMessage: string | null;
+  /**
+   * Per #36: ``Skip setup (dev only)`` is a developer/test shortcut that
+   * read as confusing chrome to a first-time creator. Hidden behind God
+   * Mode so the setup row stays focused on the two real CTAs ("Send
+   * reply" and "Looks ready / Approve") while still being available to
+   * operators with God Mode on.
+   */
+  godMode: boolean;
 }) {
   const hasPlan = Boolean(snapshot.plan);
   const notes = snapshot.setup_notes ?? [];
@@ -1977,15 +2012,17 @@ function SetupView({
               Looks ready — propose the plan
             </button>
           )}
-          <button
-            type="button"
-            onClick={onSkipSetup}
-            disabled={busy}
-            className="ml-auto rounded border border-dashed border-slate-700 px-3 py-1 text-xs text-slate-500 opacity-70 hover:opacity-100 hover:bg-slate-800 disabled:opacity-50"
-            title="Dev/testing only: skip the AI setup dialogue and use a generic default plan."
-          >
-            Skip setup (dev only)
-          </button>
+          {godMode ? (
+            <button
+              type="button"
+              onClick={onSkipSetup}
+              disabled={busy}
+              className="ml-auto rounded border border-dashed border-slate-700 px-3 py-1 text-xs text-slate-500 opacity-70 hover:opacity-100 hover:bg-slate-800 disabled:opacity-50"
+              title="Dev/testing only: skip the AI setup dialogue and use a generic default plan."
+            >
+              Skip setup (dev only)
+            </button>
+          ) : null}
         </div>
       </form>
 
@@ -2021,7 +2058,7 @@ function PlanPreview({ plan, sessionId }: { plan: ScenarioPlan; sessionId?: stri
  * ``injects`` are spoiler-hidden behind a Reveal toggle whose state is
  * persisted in localStorage so it carries across reloads.
  */
-function PlanView({
+export function PlanView({
   plan,
   sessionId,
 }: {
@@ -2136,19 +2173,25 @@ function PlanView({
             <h4 className="text-xs uppercase tracking-widest text-amber-200">
               Narrative arc &amp; injects
             </h4>
-            <button
-              type="button"
-              onClick={toggleReveal}
-              className="rounded border border-amber-500/60 px-2 py-0.5 text-xs font-semibold text-amber-100 hover:bg-amber-900/30"
-              aria-pressed={reveal}
-              title={
-                reveal
-                  ? "Switch to participant mode — hide upcoming injects so you can play fresh."
-                  : "Switch to facilitator mode — show upcoming injects so you can pace the meeting."
-              }
+            {/* Per #36: previously a button whose label flipped between
+                "Switch to participant mode" and "Switch to facilitator
+                mode" — every read required mentally inverting the label
+                to know the current state. A native checkbox keeps the
+                label stable ("Show injects (facilitator mode)") and uses
+                the checked indicator to communicate state. */}
+            <label
+              className="inline-flex cursor-pointer select-none items-center gap-1.5 rounded border border-amber-500/60 px-2 py-0.5 text-xs font-semibold text-amber-100 hover:bg-amber-900/30"
+              title="When checked, upcoming narrative beats and injects are visible (facilitator mode). Uncheck to play through fresh alongside the team (participant mode)."
             >
-              {reveal ? "Switch to participant mode" : "Switch to facilitator mode"}
-            </button>
+              <input
+                type="checkbox"
+                className="h-3 w-3 cursor-pointer accent-amber-500"
+                checked={reveal}
+                onChange={toggleReveal}
+                data-testid="plan-spoiler-checkbox"
+              />
+              <span>Show injects (facilitator mode)</span>
+            </label>
           </header>
           {!reveal ? (
             <p className="text-xs text-amber-200/80">
