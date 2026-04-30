@@ -20,6 +20,35 @@ export type ServerEvent =
   | { type: "plan_finalized_announcement" }
   | { type: "plan_edited"; field: string }
   | { type: "aar_status_changed"; status: "pending" | "generating" | "ready" | "failed" }
+  // Real-time AI-thinking indicator. Emitted by the LLM client at every
+  // call boundary (begin / end), regardless of tier — so interject /
+  // guardrail / setup-tier / AAR-generation work all show the indicator
+  // without each driver path having to remember to emit. ``call_id`` is a
+  // stable opaque token so a UI that sees concurrent calls (e.g. guardrail
+  // overlapping a play turn) can reference-count rather than naively
+  // toggle on/off. ``record=False`` server-side, so the events do NOT
+  // replay on reconnect (they would be stale by then).
+  | {
+      type: "ai_thinking";
+      active: boolean;
+      tier: string;
+      call_id: string;
+      started_at_ms?: number;
+    }
+  // Labelled "what is the AI doing right now?" status, emitted by the
+  // turn-driver at known points (play attempt N/M, recovery directive
+  // active, interject for role X, briefing, AAR). ``ai_thinking`` answers
+  // "is anything running"; ``ai_status`` answers "what should the human
+  // see?". A null phase clears the label.
+  | {
+      type: "ai_status";
+      phase: "play" | "interject" | "setup" | "briefing" | "aar" | null;
+      attempt?: number;
+      budget?: number;
+      recovery?: string | null;
+      turn_index?: number | null;
+      for_role_id?: string | null;
+    }
   | { type: "typing"; role_id: string; typing: boolean }
   | { type: "presence"; role_id: string; active: boolean }
   | { type: "presence_snapshot"; role_ids: string[] }
@@ -132,6 +161,17 @@ export class WsClient {
             break;
           case "aar_status_changed":
             safe.status = parsed.status;
+            break;
+          case "ai_thinking":
+            safe.active = parsed.active;
+            safe.tier = parsed.tier;
+            safe.call_id = parsed.call_id;
+            break;
+          case "ai_status":
+            safe.phase = parsed.phase;
+            safe.attempt = parsed.attempt;
+            safe.budget = parsed.budget;
+            safe.recovery = parsed.recovery;
             break;
           case "typing":
             safe.role_id = parsed.role_id;

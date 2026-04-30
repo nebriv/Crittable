@@ -16,14 +16,18 @@ events depending on ``stream``.
 from __future__ import annotations
 
 import asyncio
+import secrets
 import time
 from collections.abc import AsyncIterator
-from dataclasses import dataclass
-from typing import Any, Protocol
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Any, Protocol
 
 from ..config import ModelTier, Settings
 from ..logging_setup import get_logger
 from .cost import estimate_usd
+
+if TYPE_CHECKING:
+    from ..ws.connection_manager import ConnectionManager
 
 _logger = get_logger("llm.client")
 
@@ -97,12 +101,21 @@ def _validate_tool_choice(tool_choice: dict[str, Any] | None) -> None:
 
 @dataclass
 class InFlightCall:
-    """One active LLM call. Used by the creator's activity panel."""
+    """One active LLM call. Used by the creator's activity panel.
+
+    ``call_id`` is a short opaque identifier so a real-time WS subscriber
+    (the participant + creator UI's "AI thinking" indicator, see
+    issue #63) can match a ``ai_thinking active=true`` event with the
+    later ``active=false`` event for the same call. Concurrent calls on
+    the same session (e.g. guardrail + interject) overlap, so the
+    indicator must reference-count rather than naively toggle.
+    """
 
     tier: str
     model: str
     stream: bool
     started_at: float  # time.monotonic() seconds
+    call_id: str = field(default_factory=lambda: secrets.token_hex(6))
 
 
 class _AnthropicCallable(Protocol):
@@ -144,6 +157,22 @@ class LLMClient:
         # session manager dispatches the AAR while a guardrail call is also
         # active; rare but possible).
         self._in_flight: dict[str, list[InFlightCall]] = {}
+        # ConnectionManager is wired in post-construction (set_connections)
+        # because the app builds the LLM client before the connection manager
+        # in some startup orderings. Until set, ``_begin_call`` / ``_end_call``
+        # skip the WS broadcast — non-fatal (the call still tracks via
+        # ``_in_flight`` for the polled ``/activity`` endpoint).
+        self._connections: ConnectionManager | None = None
+
+    def set_connections(self, connections: ConnectionManager) -> None:
+        """Wire the connection manager so begin/end-of-call events fan out
+        to participant + creator UIs as ``ai_thinking`` WS events. See
+        issue #63 (the "AI thinking" indicator was previously gated on
+        ``session.state``, which left interject / guardrail / setup-tier
+        / AAR-generation work invisible to clients).
+        """
+
+        self._connections = connections
 
     def in_flight_for(self, session_id: str) -> list[InFlightCall]:
         """Snapshot of active LLM calls for a session. Safe from any thread."""
@@ -162,6 +191,7 @@ class LLMClient:
             return None
         call = InFlightCall(tier=tier, model=model, stream=stream, started_at=time.monotonic())
         self._in_flight.setdefault(session_id, []).append(call)
+        self._broadcast_thinking(session_id, call, active=True)
         return call
 
     def _end_call(self, session_id: str | None, call: InFlightCall | None) -> None:
@@ -171,6 +201,46 @@ class LLMClient:
                 bucket.remove(call)
             if bucket is not None and not bucket:
                 self._in_flight.pop(session_id, None)
+            self._broadcast_thinking(session_id, call, active=False)
+
+    def _broadcast_thinking(
+        self, session_id: str, call: InFlightCall, *, active: bool
+    ) -> None:
+        """Fire-and-forget ``ai_thinking`` event so every connected client
+        sees the indicator the moment a call starts / stops, regardless
+        of which tier or driver path triggered it.
+
+        ``record=False`` because the event is stale on reconnect — the
+        replay buffer would otherwise show "AI was thinking" forever
+        for a call that finished an hour ago. Failures are swallowed
+        but logged: a misbehaving WS handler must NOT break the LLM
+        call (a swallowed exception here is intentional, but per
+        CLAUDE.md "Logging rules" it has to be visible in the log).
+        """
+
+        if self._connections is None:
+            return
+        event: dict[str, Any] = {
+            "type": "ai_thinking",
+            "active": active,
+            "tier": call.tier,
+            "call_id": call.call_id,
+        }
+        if active:
+            event["started_at_ms"] = int(call.started_at * 1000)
+        try:
+            asyncio.get_running_loop().create_task(
+                self._connections.broadcast(session_id, event, record=False)
+            )
+        except Exception as exc:
+            _logger.warning(
+                "ai_thinking_broadcast_failed",
+                session_id=session_id,
+                call_id=call.call_id,
+                tier=call.tier,
+                active=active,
+                error=str(exc),
+            )
 
     # ---------------------------------------------------------------- setup
     def set_transport(self, transport: _AnthropicCallable) -> None:

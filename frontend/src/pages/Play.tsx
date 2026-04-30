@@ -50,8 +50,28 @@ export function Play({ sessionId, token }: Props) {
   // issue #52. Used to render the green online dot in RoleRoster so the
   // creator can tell at a glance who has actually opened their join link.
   const [presence, setPresence] = useState<Set<string>>(() => new Set());
+  // Real-time "AI is thinking" tracking. Set of in-flight LLM call_ids
+  // collected from ``ai_thinking`` WS events. The set's non-emptiness is
+  // the authoritative "is the engine working right now" boolean — used
+  // alongside the existing state-based heuristic so the indicator lights
+  // up even during interject / guardrail / setup / AAR (issue #63).
+  const [aiCalls, setAiCalls] = useState<Set<string>>(() => new Set());
+  // Labelled status from the turn driver, e.g. recovery pass 2/3.
+  // ``phase: null`` (or null state itself) clears the label.
+  const [aiStatus, setAiStatus] = useState<{
+    phase: "play" | "interject" | "setup" | "briefing" | "aar";
+    attempt?: number;
+    budget?: number;
+    recovery?: string | null;
+    forRoleId?: string | null;
+  } | null>(null);
+  // 3-second client-side cooldown on force-advance — paired with the
+  // backend in-flight gate. Prevents the triple-banner cascade from a
+  // double/triple click (issue #63).
+  const [forceAdvanceCooldown, setForceAdvanceCooldown] = useState(false);
   const wsRef = useRef<WsClient | null>(null);
   const scrollRegionRef = useRef<HTMLDivElement | null>(null);
+  const forceAdvanceTimerRef = useRef<number | null>(null);
 
   // Determine self by inspecting snapshot.roles and matching the role with the
   // missing display_name (server doesn't echo our token; we use the snapshot
@@ -96,6 +116,17 @@ export function Play({ sessionId, token }: Props) {
       case "state_changed":
         console.info("[play] state changed", evt);
         refreshSnapshot();
+        // Clear the labelled status AND the in-flight call set when
+        // leaving a busy state. ``ai_thinking`` events use
+        // ``record=False``, so a reconnect during an LLM call won't
+        // replay the matching ``active=false`` event — without this
+        // safety net, ``aiCalls`` could be left non-empty forever and
+        // pin the indicator on. ``state_changed`` IS recorded in the
+        // replay buffer, so it's the right place to anchor the reset.
+        if (evt.state !== "AI_PROCESSING" && evt.state !== "BRIEFING") {
+          setAiStatus(null);
+          setAiCalls(new Set());
+        }
         break;
       case "turn_changed":
         console.info("[play] turn changed", evt);
@@ -128,6 +159,36 @@ export function Play({ sessionId, token }: Props) {
         break;
       case "presence_snapshot":
         setPresence(new Set(evt.role_ids));
+        break;
+      case "ai_thinking":
+        // Reference-counted indicator. Concurrent LLM calls (guardrail
+        // + interject) overlap by design, so we add/remove call_ids
+        // rather than toggling a single boolean.
+        setAiCalls((prev) => {
+          const next = new Set(prev);
+          if (evt.active) next.add(evt.call_id);
+          else next.delete(evt.call_id);
+          return next;
+        });
+        console.debug(
+          "[play] ai_thinking",
+          evt.active ? "add" : "remove",
+          { tier: evt.tier, call_id: evt.call_id },
+        );
+        break;
+      case "ai_status":
+        if (evt.phase === null) {
+          setAiStatus(null);
+        } else {
+          setAiStatus({
+            phase: evt.phase,
+            attempt: evt.attempt,
+            budget: evt.budget,
+            recovery: evt.recovery,
+            forRoleId: evt.for_role_id ?? null,
+          });
+        }
+        console.debug("[play] ai_status", { phase: evt.phase, recovery: evt.recovery });
         break;
       case "typing":
         setTyping((prev) => {
@@ -178,6 +239,17 @@ export function Play({ sessionId, token }: Props) {
     }
   }, [messageCount, streamingText]);
 
+  // Clean up the force-advance cooldown timer on unmount so a tab
+  // close mid-cooldown doesn't fire setState on an unmounted component.
+  useEffect(() => {
+    return () => {
+      if (forceAdvanceTimerRef.current !== null) {
+        window.clearTimeout(forceAdvanceTimerRef.current);
+        forceAdvanceTimerRef.current = null;
+      }
+    };
+  }, []);
+
   // Expire stale typing entries.
   useEffect(() => {
     const id = setInterval(() => {
@@ -222,7 +294,23 @@ export function Play({ sessionId, token }: Props) {
   }
 
   function handleForceAdvance() {
-    wsRef.current?.send({ type: "request_force_advance" });
+    if (forceAdvanceCooldown) {
+      console.warn("[play] force-advance suppressed (cooldown)");
+      return;
+    }
+    setForceAdvanceCooldown(true);
+    // Tracked in a ref so a tab-close mid-cooldown doesn't try to
+    // setState on an unmounted component.
+    forceAdvanceTimerRef.current = window.setTimeout(() => {
+      setForceAdvanceCooldown(false);
+      forceAdvanceTimerRef.current = null;
+    }, 3000);
+    try {
+      wsRef.current?.send({ type: "request_force_advance" });
+    } catch (err) {
+      console.warn("[play] force-advance send failed", err);
+      setError(err instanceof Error ? err.message : String(err));
+    }
   }
 
   function handleEnd() {
@@ -244,6 +332,52 @@ export function Play({ sessionId, token }: Props) {
     );
   }
 
+  // Build the displayed indicator from BOTH the LLM-call boundary
+  // (``aiCalls``, authoritative) and the legacy state-based heuristic
+  // below. The state-based fallback handles reconnects (``ai_thinking``
+  // events are ``record=False``, so they don't replay) and any future
+  // driver path that forgets to round-trip through the LLM client.
+  const stateBasedAiThinking =
+    snapshot.state !== "ENDED" &&
+    !streamingText &&
+    snapshot.current_turn?.status !== "errored" &&
+    (snapshot.state === "AI_PROCESSING" ||
+      snapshot.state === "BRIEFING" ||
+      snapshot.current_turn?.status === "processing");
+  const showAiThinking = aiCalls.size > 0 || stateBasedAiThinking;
+  // Compose a human-readable label from the most recent ``ai_status``
+  // event. Falls back to "AI thinking…" when the engine hasn't told us
+  // anything more specific. Participant-facing copy: we deliberately
+  // hide the engineering jargon (``missing_yield`` / ``missing_drive``)
+  // from non-operator viewers — they read as "the AI is broken" rather
+  // than "the AI is normalising its tool call". The full breadcrumb
+  // stays visible to the operator in Facilitator.tsx.
+  const aiStatusLabel = (() => {
+    if (!showAiThinking) return undefined;
+    if (!aiStatus) return undefined;
+    if (aiStatus.phase === "play" && aiStatus.recovery) {
+      // Surface "Retrying" only on attempt ≥ 2 — the first attempt
+      // hasn't actually retried anything yet.
+      const a = aiStatus.attempt ?? 1;
+      const b = aiStatus.budget ?? 1;
+      if (a >= 2) return `Retrying (${a}/${b})`;
+      return undefined;
+    }
+    if (aiStatus.phase === "interject") {
+      // "Replying to <self>" is uncanny — render "Composing a reply"
+      // when the AI is responding to the local participant.
+      if (aiStatus.forRoleId && aiStatus.forRoleId === selfRoleId) {
+        return "Composing a reply";
+      }
+      const role = snapshot?.roles.find((r) => r.id === aiStatus.forRoleId);
+      if (!role) return "Composing a reply";
+      return `Replying to ${role.label}`;
+    }
+    if (aiStatus.phase === "briefing") return "Briefing the team";
+    if (aiStatus.phase === "setup") return "Preparing the scenario";
+    if (aiStatus.phase === "aar") return "Drafting the after-action report";
+    return undefined;
+  })();
   const activeRoleIds = snapshot.current_turn?.active_role_ids ?? [];
   const submittedRoleIds = snapshot.current_turn?.submitted_role_ids ?? [];
   const iAmActive = selfRoleId !== null && activeRoleIds.includes(selfRoleId);
@@ -333,9 +467,13 @@ export function Play({ sessionId, token }: Props) {
           <div className="flex flex-col gap-2 rounded border border-slate-700 bg-slate-900 p-2 text-xs">
             <button
               onClick={handleForceAdvance}
-              className="rounded border border-amber-500 px-2 py-1 font-semibold text-amber-200 hover:bg-amber-900/30"
+              disabled={forceAdvanceCooldown}
+              aria-disabled={forceAdvanceCooldown}
+              className="rounded border border-amber-500 px-2 py-1 font-semibold text-amber-200 hover:bg-amber-900/30 disabled:cursor-not-allowed disabled:opacity-50"
             >
-              Force-advance turn
+              {forceAdvanceCooldown
+                ? "Force-advance turn (cooling down)"
+                : "Force-advance turn"}
             </button>
             <button
               onClick={handleEnd}
@@ -363,14 +501,8 @@ export function Play({ sessionId, token }: Props) {
               messages={snapshot.messages}
               roles={snapshot.roles}
               streamingText={streamingText}
-              aiThinking={
-                snapshot.state !== "ENDED" &&
-                !streamingText &&
-                snapshot.current_turn?.status !== "errored" &&
-                (snapshot.state === "AI_PROCESSING" ||
-                  snapshot.state === "BRIEFING" ||
-                  snapshot.current_turn?.status === "processing")
-              }
+              aiThinking={showAiThinking}
+              aiStatusLabel={aiStatusLabel}
               typingRoleIds={Object.keys(typing).filter((rid) => rid !== selfRoleId)}
             />
           </div>

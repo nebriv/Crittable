@@ -34,6 +34,12 @@ def _e2e_env(monkeypatch) -> None:
     monkeypatch.setenv("SESSION_SECRET", "x" * 32)
     monkeypatch.setenv("INPUT_GUARDRAIL_ENABLED", "false")
     monkeypatch.setenv("EXTENSIONS_TOOLS_JSON", _TOOLS_JSON)
+    # The 2-role / 12-role drivers in this file submit the same body
+    # ("Acknowledged, taking action.") every turn for every active
+    # role. The new same-body dedupe guard (issue #63) would reject
+    # the repeat in real sessions, but the e2e drive loop relies on
+    # the repetition to walk the state machine. Disable the window.
+    monkeypatch.setenv("DUPLICATE_SUBMISSION_WINDOW_SECONDS", "0")
     reset_settings_cache()
 
 

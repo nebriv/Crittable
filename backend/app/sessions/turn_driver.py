@@ -61,6 +61,49 @@ class TurnDriver:
     def __init__(self, *, manager: SessionManager) -> None:
         self._manager = manager
 
+    async def _emit_ai_status(
+        self,
+        session_id: str,
+        *,
+        phase: str | None,
+        attempt: int | None = None,
+        budget: int | None = None,
+        recovery: str | None = None,
+        turn_index: int | None = None,
+        for_role_id: str | None = None,
+    ) -> None:
+        """Broadcast a labelled "what is the AI doing?" breadcrumb.
+
+        ``ai_thinking`` (emitted from the LLM-call boundary) answers
+        "is anything running"; ``ai_status`` (this method) answers
+        "what should the human see?". Failure to emit must NOT break
+        the turn — wrap and log.
+
+        ``record=False`` because the breadcrumb is stale on reconnect.
+        """
+
+        try:
+            await self._manager.connections().broadcast(
+                session_id,
+                {
+                    "type": "ai_status",
+                    "phase": phase,
+                    "attempt": attempt,
+                    "budget": budget,
+                    "recovery": recovery,
+                    "turn_index": turn_index,
+                    "for_role_id": for_role_id,
+                },
+                record=False,
+            )
+        except Exception as exc:
+            _logger.warning(
+                "ai_status_broadcast_failed",
+                session_id=session_id,
+                phase=phase,
+                error=str(exc),
+            )
+
     def _check_truncation(
         self,
         *,
@@ -124,62 +167,71 @@ class TurnDriver:
             note_count=len(session.setup_notes),
             has_plan=session.plan is not None,
         )
+        # Light up the labelled indicator so the creator sees "AI —
+        # Designing the scenario" while the setup tier is at work.
+        # The ``finally`` clause clears it on every return path; the
+        # ``ai_thinking`` events from the LLM-call boundary handle the
+        # binary "is something running" signal.
+        await self._emit_ai_status(session.id, phase="setup")
 
-        # Safety cap on chained setup tool calls — operator-tunable via
-        # ``MAX_SETUP_TURNS``. Lifting it lets a model that wants to
-        # ``ask_setup_question`` → ``propose_scenario_plan`` → ``finalize_setup``
-        # in one cycle do so without a premature break.
-        for _ in range(self._manager.settings().max_setup_turns):
-            messages = _setup_messages(session)
-            result = await llm.acomplete(
-                tier="setup",
-                system_blocks=build_setup_system_blocks(session),
-                messages=messages,
-                # Pin ``tool_choice`` to "any" so the model MUST emit a
-                # setup tool call. Eliminates the bare-text leak path
-                # entirely — the only way the setup tier can produce
-                # text without a tool is if the SDK contract is
-                # violated, in which case we discard below.
-                tool_choice=tool_choice_for("setup"),
-                tools=SETUP_TOOLS,
-                # Per-tier default from settings.max_tokens_for(tier) — call passes None.
-                session_id=session.id,
-            )
-            await self._apply_cost(session.id, result)
-            self._check_truncation(session_id=session.id, tier="setup", result=result)
+        try:
+            # Safety cap on chained setup tool calls — operator-tunable via
+            # ``MAX_SETUP_TURNS``. Lifting it lets a model that wants to
+            # ``ask_setup_question`` → ``propose_scenario_plan`` →
+            # ``finalize_setup`` in one cycle do so without a premature break.
+            for _ in range(self._manager.settings().max_setup_turns):
+                messages = _setup_messages(session)
+                result = await llm.acomplete(
+                    tier="setup",
+                    system_blocks=build_setup_system_blocks(session),
+                    messages=messages,
+                    # Pin ``tool_choice`` to "any" so the model MUST emit a
+                    # setup tool call. Eliminates the bare-text leak path
+                    # entirely — the only way the setup tier can produce
+                    # text without a tool is if the SDK contract is
+                    # violated, in which case we discard below.
+                    tool_choice=tool_choice_for("setup"),
+                    tools=SETUP_TOOLS,
+                    # Per-tier default from settings.max_tokens_for(tier) — call passes None.
+                    session_id=session.id,
+                )
+                await self._apply_cost(session.id, result)
+                self._check_truncation(session_id=session.id, tier="setup", result=result)
 
-            tool_uses = _tool_uses(result)
-            if not tool_uses:
-                # Bare text from the setup tier should be impossible:
-                # ``tool_choice={"type":"any"}`` forces a tool call.
-                # If we land here anyway (SDK contract violation, mock
-                # in tests, or a future refactor that drops the pin),
-                # discard the text rather than persist it — the
-                # transcript belongs to the play tier and we don't
-                # want setup-style assistant prose leaking into the
-                # play history. Log loudly so the regression is
-                # visible.
-                text = _all_text(result)
-                if text:
-                    _logger.warning(
-                        "setup_tier_bare_text_discarded",
-                        session_id=session.id,
-                        chars=len(text),
-                    )
-                return session
+                tool_uses = _tool_uses(result)
+                if not tool_uses:
+                    # Bare text from the setup tier should be impossible:
+                    # ``tool_choice={"type":"any"}`` forces a tool call.
+                    # If we land here anyway (SDK contract violation, mock
+                    # in tests, or a future refactor that drops the pin),
+                    # discard the text rather than persist it — the
+                    # transcript belongs to the play tier and we don't
+                    # want setup-style assistant prose leaking into the
+                    # play history. Log loudly so the regression is
+                    # visible.
+                    text = _all_text(result)
+                    if text:
+                        _logger.warning(
+                            "setup_tier_bare_text_discarded",
+                            session_id=session.id,
+                            chars=len(text),
+                        )
+                    return session
 
-            outcome = await dispatcher.dispatch(
-                session=session,
-                tool_uses=tool_uses,
-                turn_id=None,
-                critical_inject_allowed_cb=lambda: True,
-            )
-            await self._apply_setup_outcome(session, outcome)
-            # All three setup tools (ask_setup_question / propose / finalize)
-            # set ``had_yielding_call`` — that's our single yield signal.
-            if outcome.had_yielding_call:
-                return session
-        return session
+                outcome = await dispatcher.dispatch(
+                    session=session,
+                    tool_uses=tool_uses,
+                    turn_id=None,
+                    critical_inject_allowed_cb=lambda: True,
+                )
+                await self._apply_setup_outcome(session, outcome)
+                # All three setup tools (ask_setup_question / propose / finalize)
+                # set ``had_yielding_call`` — that's our single yield signal.
+                if outcome.had_yielding_call:
+                    return session
+            return session
+        finally:
+            await self._emit_ai_status(session.id, phase=None)
 
     async def run_play_turn(self, *, session: Session, turn: Turn) -> Session:
         """Drive one play-tier turn end-to-end via the turn validator.
@@ -231,6 +283,16 @@ class TurnDriver:
         budget = 1 + settings.llm_strict_retry_max
         attempt = 0
 
+        # Phase label for the labelled "what is the AI doing?" indicator.
+        # When state is BRIEFING we expose ``phase=briefing`` so the UI
+        # can render "Briefing the team" instead of a generic play
+        # status; otherwise it's a normal play turn. The ``finally``
+        # clause guarantees a ``phase=None`` clear on every exit path
+        # — including exceptions from the streamed LLM call, dispatcher,
+        # or apply-outcome — so the indicator can never show a stale
+        # label on the next thinking cycle.
+        status_phase = "briefing" if session.state == SessionState.BRIEFING else "play"
+
         # Cumulative outcome across attempts. Holds the merged slot
         # set + appended messages + tool_results so the validator sees
         # everything that fired this turn, not just the latest attempt.
@@ -247,161 +309,184 @@ class TurnDriver:
         prior_assistant_blocks: list[dict[str, Any]] | None = None
         prior_tool_results: list[dict[str, Any]] | None = None
 
-        while attempt < budget:
-            attempt += 1
-            recovery = active_directive is not None
-
-            # Build messages. On a recovery pass replace the trailing
-            # kickoff/strict nudge with the directive's user_nudge,
-            # then splice the prior assistant tool_use blocks +
-            # dispatcher tool_results in as a proper Anthropic tool-
-            # loop pair.
-            messages = _play_messages(session, strict=recovery)
-            if (
-                recovery
-                and active_directive is not None
-                and active_directive.replays_prior_tool_loop
-                and prior_assistant_blocks is not None
-                and prior_tool_results is not None
-            ):
-                # Drop the trailing user nudge that ``_play_messages``
-                # appended; we'll re-insert a directive-specific one
-                # *after* the tool-loop pair.
-                if messages and messages[-1]["role"] == "user":
-                    messages.pop()
-                messages.append({"role": "assistant", "content": prior_assistant_blocks})
-                # tool_results + the directive's user_nudge in one user
-                # turn so the message sequence stays user → assistant →
-                # user (Anthropic accepts mixed tool_result + text
-                # blocks within a single user message).
-                recovery_blocks: list[dict[str, Any]] = list(prior_tool_results)
-                recovery_blocks.append(
-                    {"type": "text", "text": active_directive.user_nudge}
-                )
-                messages.append({"role": "user", "content": recovery_blocks})
-
-            system_blocks = build_play_system_blocks(session, registry=registry)
-            if active_directive is not None:
-                system_blocks.append(
-                    {"type": "text", "text": active_directive.system_addendum}
+        try:
+            while attempt < budget:
+                attempt += 1
+                recovery = active_directive is not None
+                # Labelled status: surface attempt N/M and the recovery kind
+                # so the operator can tell "AI is on attempt 2/3 because
+                # the first response missed a yield" from "AI is stuck"
+                # (issue #63 — the strict-retry loop was previously
+                # invisible to clients).
+                # Only the directive ``kind`` (e.g. ``"missing_yield"``) goes
+                # on the wire — NEVER the full ``user_nudge`` /
+                # ``system_addendum`` text. Those carry plan-derived
+                # structure that's creator-only; broadcasting them would
+                # leak via the WS to participants.
+                await self._emit_ai_status(
+                    session.id,
+                    phase=status_phase,
+                    attempt=attempt,
+                    budget=budget,
+                    recovery=active_directive.kind if active_directive else None,
+                    turn_index=turn.index,
                 )
 
-            # Tool surface. Recovery narrows to the directive's
-            # allowlist and pins tool_choice; first attempt exposes
-            # the full palette + extensions.
-            if active_directive is not None:
-                tools = [
-                    t
-                    for t in PLAY_TOOLS
-                    if t["name"] in active_directive.tools_allowlist
-                ]
-                tool_choice = active_directive.tool_choice
-            else:
-                tools = PLAY_TOOLS + dispatcher_extension_specs(registry)
-                tool_choice = None
+                # Build messages. On a recovery pass replace the trailing
+                # kickoff/strict nudge with the directive's user_nudge,
+                # then splice the prior assistant tool_use blocks +
+                # dispatcher tool_results in as a proper Anthropic tool-
+                # loop pair.
+                messages = _play_messages(session, strict=recovery)
+                if (
+                    recovery
+                    and active_directive is not None
+                    and active_directive.replays_prior_tool_loop
+                    and prior_assistant_blocks is not None
+                    and prior_tool_results is not None
+                ):
+                    # Drop the trailing user nudge that ``_play_messages``
+                    # appended; we'll re-insert a directive-specific one
+                    # *after* the tool-loop pair.
+                    if messages and messages[-1]["role"] == "user":
+                        messages.pop()
+                    messages.append({"role": "assistant", "content": prior_assistant_blocks})
+                    # tool_results + the directive's user_nudge in one user
+                    # turn so the message sequence stays user → assistant →
+                    # user (Anthropic accepts mixed tool_result + text
+                    # blocks within a single user message).
+                    recovery_blocks: list[dict[str, Any]] = list(prior_tool_results)
+                    recovery_blocks.append(
+                        {"type": "text", "text": active_directive.user_nudge}
+                    )
+                    messages.append({"role": "user", "content": recovery_blocks})
 
-            result = await self._streamed_play_call(
-                session=session,
-                turn=turn,
-                tier="play",
-                system_blocks=system_blocks,
-                messages=messages,
-                tools=tools,
-                tool_choice=tool_choice,
-            )
-            await self._apply_cost(session.id, result)
-            self._check_truncation(
-                session_id=session.id, tier="play", result=result, turn_id=turn.id
-            )
+                system_blocks = build_play_system_blocks(session, registry=registry)
+                if active_directive is not None:
+                    system_blocks.append(
+                        {"type": "text", "text": active_directive.system_addendum}
+                    )
 
-            tool_uses = _tool_uses(result)
-            outcome = await dispatcher.dispatch(
-                session=session,
-                tool_uses=tool_uses,
-                turn_id=turn.id,
-                critical_inject_allowed_cb=lambda: critical_inject_allowed(
-                    session,
-                    max_per_5_turns=settings.max_critical_injects_per_5_turns,
-                ),
-            )
+                # Tool surface. Recovery narrows to the directive's
+                # allowlist and pins tool_choice; first attempt exposes
+                # the full palette + extensions.
+                if active_directive is not None:
+                    tools = [
+                        t
+                        for t in PLAY_TOOLS
+                        if t["name"] in active_directive.tools_allowlist
+                    ]
+                    tool_choice = active_directive.tool_choice
+                else:
+                    tools = PLAY_TOOLS + dispatcher_extension_specs(registry)
+                    tool_choice = None
 
-            # Merge into the cumulative outcome — this is what the
-            # validator inspects.
-            _merge_outcomes(cumulative, outcome)
+                result = await self._streamed_play_call(
+                    session=session,
+                    turn=turn,
+                    tier="play",
+                    system_blocks=system_blocks,
+                    messages=messages,
+                    tools=tools,
+                    tool_choice=tool_choice,
+                )
+                await self._apply_cost(session.id, result)
+                self._check_truncation(
+                    session_id=session.id, tier="play", result=result, turn_id=turn.id
+                )
 
-            # Validate cumulative state against the contract.
-            validation = validate(
-                session=session,
-                cumulative_slots=cumulative.slots,
-                contract=contract,
-                soft_drive_carve_out_enabled=settings.llm_recovery_drive_soft_on_open_question,
-            )
+                tool_uses = _tool_uses(result)
+                outcome = await dispatcher.dispatch(
+                    session=session,
+                    tool_uses=tool_uses,
+                    turn_id=turn.id,
+                    critical_inject_allowed_cb=lambda: critical_inject_allowed(
+                        session,
+                        max_per_5_turns=settings.max_critical_injects_per_5_turns,
+                    ),
+                )
 
-            _logger.info(
-                "turn_validation",
-                session_id=session.id,
-                turn_index=turn.index,
-                attempt=attempt,
-                slots=sorted(s.value for s in cumulative.slots),
-                violations=[d.kind for d in validation.violations],
-                warnings=validation.warnings,
-                ok=validation.ok,
-            )
+                # Merge into the cumulative outcome — this is what the
+                # validator inspects.
+                _merge_outcomes(cumulative, outcome)
 
-            if validation.ok:
-                # Persist + advance state.
+                # Validate cumulative state against the contract.
+                validation = validate(
+                    session=session,
+                    cumulative_slots=cumulative.slots,
+                    contract=contract,
+                    soft_drive_carve_out_enabled=settings.llm_recovery_drive_soft_on_open_question,
+                )
+
+                _logger.info(
+                    "turn_validation",
+                    session_id=session.id,
+                    turn_index=turn.index,
+                    attempt=attempt,
+                    slots=sorted(s.value for s in cumulative.slots),
+                    violations=[d.kind for d in validation.violations],
+                    warnings=validation.warnings,
+                    ok=validation.ok,
+                )
+
+                if validation.ok:
+                    # Persist + advance state.
+                    await self._apply_play_outcome(
+                        session,
+                        turn,
+                        cumulative,
+                        result_text=_all_text(result),
+                    )
+                    return session
+
+                # Not ok — pick the highest-priority directive and run
+                # another attempt (sequential calls, per the plan: DRIVE
+                # before YIELD).
+                if attempt >= budget:
+                    break
+
+                ordered = order_directives(validation.violations)
+                active_directive = ordered[0]
+                turn.retried_with_strict = True
+                prior_assistant_blocks = result.content
+                prior_tool_results = list(outcome.tool_results)
+                _logger.info(
+                    "turn_recovery_directive",
+                    session_id=session.id,
+                    turn_index=turn.index,
+                    attempt=attempt,
+                    kind=active_directive.kind,
+                    tools=sorted(active_directive.tools_allowlist),
+                )
+
+            # Budget exhausted with violations remaining. If a YIELD did
+            # land at some point we can still apply the outcome — players
+            # at least see the partial work. If no YIELD ever fired the
+            # turn is errored.
+            if Slot.YIELD in cumulative.slots or Slot.TERMINATE in cumulative.slots:
                 await self._apply_play_outcome(
-                    session,
-                    turn,
-                    cumulative,
-                    result_text=_all_text(result),
+                    session, turn, cumulative, result_text=""
                 )
                 return session
 
-            # Not ok — pick the highest-priority directive and run
-            # another attempt (sequential calls, per the plan: DRIVE
-            # before YIELD).
-            if attempt >= budget:
-                break
-
-            ordered = order_directives(validation.violations)
-            active_directive = ordered[0]
-            turn.retried_with_strict = True
-            prior_assistant_blocks = result.content
-            prior_tool_results = list(outcome.tool_results)
-            _logger.info(
-                "turn_recovery_directive",
-                session_id=session.id,
-                turn_index=turn.index,
-                attempt=attempt,
-                kind=active_directive.kind,
-                tools=sorted(active_directive.tools_allowlist),
-            )
-
-        # Budget exhausted with violations remaining. If a YIELD did
-        # land at some point we can still apply the outcome — players
-        # at least see the partial work. If no YIELD ever fired the
-        # turn is errored.
-        if Slot.YIELD in cumulative.slots or Slot.TERMINATE in cumulative.slots:
-            await self._apply_play_outcome(
-                session, turn, cumulative, result_text=""
+            turn.status = "errored"
+            turn.error_reason = "model did not yield via a tool call"
+            await self._manager.connections().broadcast(
+                session.id,
+                {
+                    "type": "error",
+                    "scope": "turn",
+                    "message": "AI failed to yield. Use force-advance or retry.",
+                    "turn_index": turn.index,
+                },
             )
             return session
+        finally:
+            await self._emit_ai_status(session.id, phase=None)
 
-        turn.status = "errored"
-        turn.error_reason = "model did not yield via a tool call"
-        await self._manager.connections().broadcast(
-            session.id,
-            {
-                "type": "error",
-                "scope": "turn",
-                "message": "AI failed to yield. Use force-advance or retry.",
-                "turn_index": turn.index,
-            },
-        )
-        return session
-
-    async def run_interject(self, *, session: Session, turn: Turn) -> Session:
+    async def run_interject(
+        self, *, session: Session, turn: Turn, for_role_id: str | None = None
+    ) -> Session:
         """Side-channel AI response that does NOT advance the turn.
 
         Triggered when a player asks the facilitator a direct question
@@ -444,58 +529,76 @@ class TurnDriver:
             "interject_start",
             session_id=session.id,
             turn_index=turn.index,
+            for_role_id=for_role_id,
+        )
+        # Light up the labelled "Replying to {role}" status so the asking
+        # participant + everyone else knows the AI received the question
+        # and is composing an answer (issue #63 — without this the entire
+        # interject path was invisible because it doesn't change
+        # ``session.state``). The ``finally`` clause guarantees the
+        # ``phase=None`` clear even if the streamed LLM call, dispatcher,
+        # or persist raises — without try/finally a stale "Replying to X"
+        # would otherwise be displayed on the next thinking cycle.
+        await self._emit_ai_status(
+            session.id,
+            phase="interject",
+            turn_index=turn.index,
+            for_role_id=for_role_id,
         )
 
-        messages = _play_messages(session, strict=False)
-        system_blocks = build_play_system_blocks(session, registry=registry)
-        system_blocks.append({"type": "text", "text": INTERJECT_NOTE})
+        try:
+            messages = _play_messages(session, strict=False)
+            system_blocks = build_play_system_blocks(session, registry=registry)
+            system_blocks.append({"type": "text", "text": INTERJECT_NOTE})
 
-        # Narrow tools to non-yielding narration only. ``set_active_roles``
-        # / ``end_session`` are the two yielding/terminal calls; excluding
-        # them guarantees the interject can't accidentally advance the
-        # turn or end the session.
-        allowed = {"broadcast", "address_role", "mark_timeline_point"}
-        tools = [t for t in PLAY_TOOLS if t["name"] in allowed]
-        tool_choice: dict[str, Any] = {"type": "any"}
+            # Narrow tools to non-yielding narration only. ``set_active_roles``
+            # / ``end_session`` are the two yielding/terminal calls; excluding
+            # them guarantees the interject can't accidentally advance the
+            # turn or end the session.
+            allowed = {"broadcast", "address_role", "mark_timeline_point"}
+            tools = [t for t in PLAY_TOOLS if t["name"] in allowed]
+            tool_choice: dict[str, Any] = {"type": "any"}
 
-        result = await self._streamed_play_call(
-            session=session,
-            turn=turn,
-            tier="play",
-            system_blocks=system_blocks,
-            messages=messages,
-            tools=tools,
-            tool_choice=tool_choice,
-        )
-        await self._apply_cost(session.id, result)
-
-        tool_uses = _tool_uses(result)
-        outcome = await dispatcher.dispatch(
-            session=session,
-            tool_uses=tool_uses,
-            turn_id=turn.id,
-            critical_inject_allowed_cb=lambda: critical_inject_allowed(
-                session,
-                max_per_5_turns=self._manager.settings().max_critical_injects_per_5_turns,
-            ),
-        )
-        # Persist appended messages but do NOT touch turn state — the
-        # interject is purely additive content.
-        for msg in outcome.appended_messages:
-            session.messages.append(msg)
-            await self._manager.connections().broadcast(
-                session.id,
-                {
-                    "type": "message_complete",
-                    "kind": msg.kind.value,
-                    "body": msg.body,
-                    "tool_name": msg.tool_name,
-                    "tool_args": msg.tool_args,
-                    "turn_id": turn.id,
-                },
+            result = await self._streamed_play_call(
+                session=session,
+                turn=turn,
+                tier="play",
+                system_blocks=system_blocks,
+                messages=messages,
+                tools=tools,
+                tool_choice=tool_choice,
             )
-        await self._manager._repo.save(session)
-        return session
+            await self._apply_cost(session.id, result)
+
+            tool_uses = _tool_uses(result)
+            outcome = await dispatcher.dispatch(
+                session=session,
+                tool_uses=tool_uses,
+                turn_id=turn.id,
+                critical_inject_allowed_cb=lambda: critical_inject_allowed(
+                    session,
+                    max_per_5_turns=self._manager.settings().max_critical_injects_per_5_turns,
+                ),
+            )
+            # Persist appended messages but do NOT touch turn state — the
+            # interject is purely additive content.
+            for msg in outcome.appended_messages:
+                session.messages.append(msg)
+                await self._manager.connections().broadcast(
+                    session.id,
+                    {
+                        "type": "message_complete",
+                        "kind": msg.kind.value,
+                        "body": msg.body,
+                        "tool_name": msg.tool_name,
+                        "tool_args": msg.tool_args,
+                        "turn_id": turn.id,
+                    },
+                )
+            await self._manager._repo.save(session)
+            return session
+        finally:
+            await self._emit_ai_status(session.id, phase=None)
 
     # ------------------------------------------------- internals
     async def _streamed_play_call(

@@ -137,6 +137,24 @@ export function Facilitator() {
   // creator needs to know which invites have actually been opened
   // before kicking off the exercise.
   const [presence, setPresence] = useState<Set<string>>(() => new Set());
+  // Real-time AI-thinking tracking — same shape as Play.tsx. ``aiCalls``
+  // collects in-flight LLM ``call_id``s from ``ai_thinking`` boundary
+  // events; ``aiStatus`` carries the labelled phase/attempt/recovery
+  // breadcrumb the turn-driver emits at known points. Together they let
+  // the operator distinguish "thinking" from "stuck" during the
+  // strict-retry loop and see interject / setup / AAR work that doesn't
+  // change ``session.state`` (issue #63).
+  const [aiCalls, setAiCalls] = useState<Set<string>>(() => new Set());
+  const [aiStatus, setAiStatus] = useState<{
+    phase: "play" | "interject" | "setup" | "briefing" | "aar";
+    attempt?: number;
+    budget?: number;
+    recovery?: string | null;
+    forRoleId?: string | null;
+  } | null>(null);
+  // 3-second client-side cooldown on force-advance — paired with the
+  // backend in-flight gate in ``manager.force_advance``. See issue #63.
+  const [forceAdvanceCooldown, setForceAdvanceCooldown] = useState(false);
   // Live AI decision rationale stream (issue #55). Entries arrive via
   // ``decision_logged`` events as the AI calls
   // ``record_decision_rationale``; on snapshot refresh we replace the
@@ -144,6 +162,15 @@ export function Facilitator() {
   // WebSocket frame was missed during reconnect.
   const [decisionLog, setDecisionLog] = useState<DecisionLogEntry[]>([]);
   const wsRef = useRef<WsClient | null>(null);
+  const forceAdvanceTimerRef = useRef<number | null>(null);
+  useEffect(() => {
+    return () => {
+      if (forceAdvanceTimerRef.current !== null) {
+        window.clearTimeout(forceAdvanceTimerRef.current);
+        forceAdvanceTimerRef.current = null;
+      }
+    };
+  }, []);
   // Wraps the chat scroll region so we can auto-pin the latest message to
   // the bottom on each new arrival. Without this the user's view stays
   // fixed where they were last reading and they don't realise a new AI
@@ -270,11 +297,56 @@ export function Facilitator() {
         refreshSnapshot();
         break;
       case "state_changed":
+        refreshSnapshot();
+        // Reconnect safety-net: ``ai_thinking`` events are
+        // ``record=False`` so a reconnect during an LLM call wouldn't
+        // replay the matching ``active=false`` event. ``state_changed``
+        // IS recorded in the replay buffer, so this is the anchor
+        // point that guarantees ``aiCalls`` and ``aiStatus`` reset
+        // when the engine actually moves to a non-busy state.
+        if (evt.state !== "AI_PROCESSING" && evt.state !== "BRIEFING") {
+          setAiStatus(null);
+          setAiCalls(new Set());
+        }
+        break;
       case "turn_changed":
       case "plan_proposed":
       case "plan_finalized":
       case "plan_edited":
         refreshSnapshot();
+        break;
+      case "ai_thinking":
+        // Reference-counted concurrent calls (guardrail + interject can
+        // overlap). Add/remove by call_id so the indicator only clears
+        // when ALL calls have ended.
+        setAiCalls((prev) => {
+          const next = new Set(prev);
+          if (evt.active) next.add(evt.call_id);
+          else next.delete(evt.call_id);
+          return next;
+        });
+        console.debug(
+          "[facilitator] ai_thinking",
+          evt.active ? "add" : "remove",
+          { tier: evt.tier, call_id: evt.call_id },
+        );
+        break;
+      case "ai_status":
+        if (evt.phase === null) {
+          setAiStatus(null);
+        } else {
+          setAiStatus({
+            phase: evt.phase,
+            attempt: evt.attempt,
+            budget: evt.budget,
+            recovery: evt.recovery,
+            forRoleId: evt.for_role_id ?? null,
+          });
+        }
+        console.debug("[facilitator] ai_status", {
+          phase: evt.phase,
+          recovery: evt.recovery,
+        });
         break;
       case "critical_event":
         setCriticalBanner({ severity: evt.severity, headline: evt.headline, body: evt.body });
@@ -592,6 +664,21 @@ export function Facilitator() {
 
   async function handleForceAdvance() {
     if (!state) return;
+    // Client-side cooldown: prevents the triple-banner cascade visible
+    // in the issue #63 screenshot when a frustrated operator double- or
+    // triple-clicks. The backend gate in ``manager.force_advance``
+    // (refuses while a play-tier LLM call is in flight) is the
+    // authoritative protection; this is just a UX courtesy so a healthy
+    // session doesn't dispatch three rapid requests.
+    if (forceAdvanceCooldown) {
+      console.warn("[facilitator] force-advance suppressed (cooldown)");
+      return;
+    }
+    setForceAdvanceCooldown(true);
+    forceAdvanceTimerRef.current = window.setTimeout(() => {
+      setForceAdvanceCooldown(false);
+      forceAdvanceTimerRef.current = null;
+    }, 3000);
     setBusy(true);
     setBusyMessage("Force-advancing turn — AI is drafting the next beat…");
     setForceScrollNonce((n) => n + 1);
@@ -799,7 +886,7 @@ export function Facilitator() {
             creatorToken={state.token}
             roles={snapshot.roles}
             onForceAdvance={handleForceAdvance}
-            busy={busy}
+            busy={busy || forceAdvanceCooldown}
           />
           <DecisionLogPanel entries={decisionLog} />
           <CostMeter cost={cost ?? snapshot.cost} />
@@ -881,10 +968,11 @@ export function Facilitator() {
                   <button
                     type="button"
                     onClick={handleForceAdvance}
-                    disabled={busy}
-                    className="rounded border border-emerald-500 bg-emerald-900/30 px-3 py-1 text-xs font-semibold text-emerald-100 hover:bg-emerald-700/40 disabled:opacity-50"
+                    disabled={busy || forceAdvanceCooldown}
+                    aria-disabled={busy || forceAdvanceCooldown}
+                    className="rounded border border-emerald-500 bg-emerald-900/30 px-3 py-1 text-xs font-semibold text-emerald-100 hover:bg-emerald-700/40 disabled:cursor-not-allowed disabled:opacity-50"
                   >
-                    AI: take next beat
+                    {forceAdvanceCooldown ? "AI: take next beat (cooling down)" : "AI: take next beat"}
                   </button>
                 </div>
               ) : null}
@@ -893,16 +981,44 @@ export function Facilitator() {
                 roles={snapshot.roles}
                 streamingText={streamingText}
                 aiThinking={
-                  phase === "play" &&
+                  // Authoritative: any LLM call boundary in flight for
+                  // this session lights the indicator (issue #63 — without
+                  // this, interject / guardrail / setup / AAR work was
+                  // invisible to the operator). State-based predicate
+                  // remains as a reconnect-time safety net.
                   !streamingText &&
-                  // Don't spin the indicator if the turn errored — the
-                  // AI is no longer working; the activity panel surfaces
-                  // the error and the operator can force-advance.
                   snapshot.current_turn?.status !== "errored" &&
-                  (snapshot.state === "AI_PROCESSING" ||
-                    snapshot.state === "BRIEFING" ||
-                    snapshot.current_turn?.status === "processing")
+                  (aiCalls.size > 0 ||
+                    (phase === "play" &&
+                      (snapshot.state === "AI_PROCESSING" ||
+                        snapshot.state === "BRIEFING" ||
+                        snapshot.current_turn?.status === "processing")))
                 }
+                aiStatusLabel={(() => {
+                  // Operator surface — keep the engineering detail
+                  // (``missing_yield`` / ``missing_drive``) so a CISO
+                  // running the exercise can correlate the indicator
+                  // with the activity panel + audit feed. Participant
+                  // copy in Play.tsx hides the jargon.
+                  if (!aiStatus) return undefined;
+                  if (aiStatus.phase === "play" && aiStatus.recovery) {
+                    const a = aiStatus.attempt ?? "?";
+                    const b = aiStatus.budget ?? "?";
+                    const kind = aiStatus.recovery.replace(/_/g, " ");
+                    return `Recovery pass ${a}/${b} (${kind})`;
+                  }
+                  if (aiStatus.phase === "interject") {
+                    const role = snapshot.roles.find(
+                      (r) => r.id === aiStatus.forRoleId,
+                    );
+                    return `Replying to ${role?.label ?? "a participant"}`;
+                  }
+                  if (aiStatus.phase === "briefing") return "Briefing the team";
+                  if (aiStatus.phase === "setup") return "Preparing the scenario";
+                  if (aiStatus.phase === "aar")
+                    return "Drafting the after-action report";
+                  return undefined;
+                })()}
                 typingRoleIds={Object.keys(typing).filter(
                   (rid) => rid !== state.creatorRoleId,
                 )}
