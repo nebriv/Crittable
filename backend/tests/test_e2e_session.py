@@ -218,14 +218,22 @@ def test_e2e_2_role(client: TestClient) -> None:
         "After-Action Report",
         "Header",
         "Executive summary",
-        "Full transcript",
+        "After-action narrative",
         "Per-role scores",
         "Overall session score",
         "Appendix A — Setup conversation",
         "Appendix B — Frozen scenario plan",
         "Appendix C — Audit log",
+        "Appendix D — Full transcript",
     ):
         assert section in md, f"missing section: {section}"
+
+    # Issue #83: the transcript must come AFTER the analytic content so
+    # the report is readable. Verify the appendix transcript header
+    # appears after the per-role scores table.
+    assert md.index("Per-role scores") < md.index(
+        "Appendix D — Full transcript"
+    ), "transcript appendix must be below the analytic sections"
 
     # Roster-size adaptation: small strategy
     snap = client.get(
