@@ -114,6 +114,19 @@ class ConnectionManager:
                 seen[c.role_id] = True
             return list(seen.keys())
 
+    async def connection_count(self, session_id: str) -> int:
+        """Total number of open WS connections (tabs) on this session.
+
+        Distinct from ``connected_role_ids`` which de-dupes by role —
+        a single role with two tabs open counts as 1 in
+        ``connected_role_ids`` but 2 here. The creator surfaces this in
+        the top bar so they can tell at a glance "how many tabs are
+        watching" while facilitating.
+        """
+
+        async with self._lock:
+            return len(self._connections.get(session_id, ()))
+
     async def role_has_other_connections(
         self, session_id: str, role_id: str, *, exclude: _Connection | None = None
     ) -> bool:

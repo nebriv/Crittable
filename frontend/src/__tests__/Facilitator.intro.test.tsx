@@ -122,6 +122,13 @@ describe("TopBar (issue #62)", () => {
     backendState: "READY",
     wsStatus: "open" as const,
     godMode: false,
+    // Round 3 telemetry props.
+    turnIndex: null,
+    rationaleCount: 0,
+    connectionCount: null,
+    lastEventAt: null,
+    cost: null,
+    messageCount: 0,
   };
 
   it("renders Start session disabled when plan not finalized", () => {
@@ -217,6 +224,89 @@ describe("TopBar (issue #62)", () => {
     expect(
       screen.queryByRole("button", { name: "View AAR" }),
     ).not.toBeInTheDocument();
+  });
+
+  it("surfaces turn / message / rationale / tabs / cost telemetry chips", () => {
+    render(
+      <TopBar
+        {...baseProps}
+        phase="play"
+        playerCount={3}
+        hasFinalizedPlan={true}
+        aarStatus={null}
+        turnIndex={4}
+        messageCount={42}
+        rationaleCount={7}
+        connectionCount={5}
+        cost={{
+          input_tokens: 1000,
+          output_tokens: 500,
+          cache_read_tokens: 200,
+          cache_creation_tokens: 100,
+          estimated_usd: 0.0234,
+        }}
+      />,
+    );
+    expect(screen.getByText("T#4")).toBeInTheDocument();
+    expect(screen.getByText("42 msgs")).toBeInTheDocument();
+    expect(screen.getByText("Rationale: 7")).toBeInTheDocument();
+    expect(screen.getByText("Tabs: 5")).toBeInTheDocument();
+    expect(screen.getByText("Cost: $0.0234")).toBeInTheDocument();
+  });
+
+  it("renders dash placeholders when telemetry is null", () => {
+    render(
+      <TopBar
+        {...baseProps}
+        phase="setup"
+        playerCount={1}
+        hasFinalizedPlan={false}
+        aarStatus={null}
+      />,
+    );
+    expect(screen.getByText("T#—")).toBeInTheDocument();
+    expect(screen.getByText("Tabs: —")).toBeInTheDocument();
+    expect(screen.getByText("Cost: $—")).toBeInTheDocument();
+    expect(screen.getByText("Last: —")).toBeInTheDocument();
+  });
+
+  it("renders 'Last: <Ns ago' once a lastEventAt timestamp is set", () => {
+    const fiveSecondsAgo = Date.now() - 5_500;
+    render(
+      <TopBar
+        {...baseProps}
+        phase="play"
+        playerCount={2}
+        hasFinalizedPlan={true}
+        aarStatus={null}
+        lastEventAt={fiveSecondsAgo}
+      />,
+    );
+    expect(screen.getByText(/Last: 5s ago/)).toBeInTheDocument();
+  });
+
+  it("expands the cost chip to show the token breakdown", () => {
+    render(
+      <TopBar
+        {...baseProps}
+        phase="play"
+        playerCount={2}
+        hasFinalizedPlan={true}
+        aarStatus={null}
+        cost={{
+          input_tokens: 12345,
+          output_tokens: 6789,
+          cache_read_tokens: 100,
+          cache_creation_tokens: 50,
+          estimated_usd: 1.2345,
+        }}
+      />,
+    );
+    const summary = screen.getByText("Cost: $1.2345");
+    fireEvent.click(summary);
+    expect(screen.getByText("Cost — token breakdown")).toBeInTheDocument();
+    expect(screen.getByText("12,345")).toBeInTheDocument();
+    expect(screen.getByText("6,789")).toBeInTheDocument();
   });
 
   it("always renders 'Start a new session' regardless of phase", () => {

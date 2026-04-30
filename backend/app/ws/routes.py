@@ -184,8 +184,17 @@ def register_ws_routes(app: FastAPI) -> None:
         # event after the player has actually disconnected would be
         # misleading. See issue #52.
         connected = await connections.connected_role_ids(session_id)
+        # Total open WS tabs (distinct from ``connected`` role count). The
+        # creator's top bar surfaces this so they can see at a glance how
+        # many participant tabs are watching the session — useful when
+        # facilitating to spot dropped tabs vs stale invitee links.
+        conn_count = await connections.connection_count(session_id)
         await websocket.send_json(
-            {"type": "presence_snapshot", "role_ids": connected}
+            {
+                "type": "presence_snapshot",
+                "role_ids": connected,
+                "connection_count": conn_count,
+            }
         )
         await connections.broadcast(
             session_id,
@@ -193,6 +202,7 @@ def register_ws_routes(app: FastAPI) -> None:
                 "type": "presence",
                 "role_id": payload["role_id"],
                 "active": True,
+                "connection_count": conn_count,
             },
             record=False,
         )
@@ -228,6 +238,13 @@ def register_ws_routes(app: FastAPI) -> None:
             still_connected = await connections.role_has_other_connections(
                 session_id, payload["role_id"]
             )
+            # Recompute the total connection count *after* this conn has
+            # been unregistered so the broadcast reflects the new tab
+            # total. Always emit on disconnect (even when the role is
+            # still connected via another tab) so the count stays
+            # accurate — a creator with two tabs who closes one should
+            # see the count drop in real time.
+            conn_count = await connections.connection_count(session_id)
             if not still_connected:
                 await connections.broadcast(
                     session_id,
@@ -235,6 +252,20 @@ def register_ws_routes(app: FastAPI) -> None:
                         "type": "presence",
                         "role_id": payload["role_id"],
                         "active": False,
+                        "connection_count": conn_count,
+                    },
+                    record=False,
+                )
+            else:
+                # Role still has other tabs — but the tab count changed,
+                # so emit a count-only update for the top-bar chip.
+                await connections.broadcast(
+                    session_id,
+                    {
+                        "type": "presence",
+                        "role_id": payload["role_id"],
+                        "active": True,
+                        "connection_count": conn_count,
                     },
                     record=False,
                 )

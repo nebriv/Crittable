@@ -50,8 +50,20 @@ export type ServerEvent =
       for_role_id?: string | null;
     }
   | { type: "typing"; role_id: string; typing: boolean }
-  | { type: "presence"; role_id: string; active: boolean }
-  | { type: "presence_snapshot"; role_ids: string[] }
+  | {
+      type: "presence";
+      role_id: string;
+      active: boolean;
+      /** Total open WS tabs on this session (added in PR #66 round 3 for
+       *  the top-bar "Tabs: N" chip). May be undefined when received from
+       *  an older backend; treat as "unknown". */
+      connection_count?: number;
+    }
+  | {
+      type: "presence_snapshot";
+      role_ids: string[];
+      connection_count?: number;
+    }
   | {
       type: "decision_logged";
       entry: {
@@ -180,9 +192,11 @@ export class WsClient {
           case "presence":
             safe.role_id = parsed.role_id;
             safe.active = parsed.active;
+            safe.connection_count = parsed.connection_count;
             break;
           case "presence_snapshot":
             safe.role_count = parsed.role_ids?.length ?? 0;
+            safe.connection_count = parsed.connection_count;
             break;
           case "decision_logged":
             // Don't log the rationale text itself — it's debug content

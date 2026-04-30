@@ -171,6 +171,16 @@ export function Facilitator() {
   // local state with the canonical server list to avoid drift if a
   // WebSocket frame was missed during reconnect.
   const [decisionLog, setDecisionLog] = useState<DecisionLogEntry[]>([]);
+  // Issue #62 round 3 — per-bar telemetry. ``lastEventAt`` is bumped on
+  // every incoming WS frame so the top bar can render "Last: Xs ago",
+  // which fills the diagnostic gap between the binary ``ws: open`` pill
+  // (the socket is up) and "is anything actually flowing?". A frozen
+  // counter is a strong signal the backend went quiet even when TCP is
+  // still healthy. ``connectionCount`` is server-pushed via the existing
+  // ``presence`` / ``presence_snapshot`` events and tells the creator
+  // how many tabs are currently watching the session.
+  const [lastEventAt, setLastEventAt] = useState<number | null>(null);
+  const [connectionCount, setConnectionCount] = useState<number | null>(null);
   const wsRef = useRef<WsClient | null>(null);
   const forceAdvanceTimerRef = useRef<number | null>(null);
   useEffect(() => {
@@ -338,6 +348,12 @@ export function Facilitator() {
   }, [state?.sessionId, state?.token]);
 
   function handleEvent(evt: ServerEvent) {
+    // Top-bar "Last: Xs ago" — bump on every frame regardless of type.
+    // We *don't* try to filter to "interesting" events here because the
+    // signal we're surfacing is "is the connection delivering anything?";
+    // typing pings, heartbeats and presence updates are all valid
+    // liveness evidence.
+    setLastEventAt(Date.now());
     switch (evt.type) {
       case "message_chunk":
         setStreamingText((t) => t + evt.text);
@@ -419,9 +435,15 @@ export function Facilitator() {
           else next.delete(evt.role_id);
           return next;
         });
+        if (typeof evt.connection_count === "number") {
+          setConnectionCount(evt.connection_count);
+        }
         break;
       case "presence_snapshot":
         setPresence(new Set(evt.role_ids));
+        if (typeof evt.connection_count === "number") {
+          setConnectionCount(evt.connection_count);
+        }
         break;
       case "typing":
         setTyping((prev) => {
@@ -664,6 +686,8 @@ export function Facilitator() {
     setDecisionLog([]);
     setPresence(new Set());
     setCost(null);
+    setLastEventAt(null);
+    setConnectionCount(null);
     setSetupReply("");
     setError(null);
   }
@@ -1048,6 +1072,12 @@ export function Facilitator() {
         hasFinalizedPlan={Boolean(snapshot.plan)}
         aarStatus={snapshot.aar_status ?? null}
         busy={busy}
+        turnIndex={snapshot.current_turn?.index ?? null}
+        rationaleCount={decisionLog.length}
+        connectionCount={connectionCount}
+        lastEventAt={lastEventAt}
+        cost={cost ?? snapshot.cost}
+        messageCount={snapshot.messages.length}
       />
       <div className="mx-auto grid w-full max-w-7xl flex-1 grid-cols-1 gap-4 p-4 lg:min-h-0 lg:grid-cols-[280px_1fr_280px] lg:overflow-hidden">
         <aside className="flex flex-col gap-4 lg:min-h-0 lg:overflow-y-auto lg:pr-1">
@@ -1075,7 +1105,6 @@ export function Facilitator() {
             busy={busy || forceAdvanceCooldown}
           />
           <DecisionLogPanel entries={decisionLog} />
-          <CostMeter cost={cost ?? snapshot.cost} />
         </aside>
 
         <section className="flex min-w-0 flex-col gap-3 lg:min-h-0 lg:overflow-hidden">
@@ -1348,6 +1377,21 @@ export function TopBar(props: {
   /** "pending" | "generating" | "ready" | "failed" — null while loading. */
   aarStatus: string | null;
   busy: boolean;
+  // Round 3 telemetry — see ``Facilitator`` state for source-of-truth
+  // notes. Each prop is optional / nullable so the bar still renders
+  // before the first WS frame / snapshot fetch lands.
+  /** ``snapshot.current_turn?.index`` — null when no turn is active. */
+  turnIndex: number | null;
+  /** ``decisionLog.length`` — count of AI rationale entries logged. */
+  rationaleCount: number;
+  /** Server-pushed total open WS tabs on this session, or null if unknown. */
+  connectionCount: number | null;
+  /** ``Date.now()`` of the last received WS frame; null until first frame. */
+  lastEventAt: number | null;
+  /** Latest cost snapshot — drives the click-to-expand chip. */
+  cost: CostSnapshot | null;
+  /** ``snapshot.messages.length`` — raw message-count debug telemetry. */
+  messageCount: number;
 }) {
   const wsColour =
     props.wsStatus === "open"
@@ -1359,6 +1403,29 @@ export function TopBar(props: {
     (props.phase === "ready" || props.phase === "setup") &&
     props.hasFinalizedPlan &&
     props.playerCount >= 2;
+  // ``Last: Xs ago`` chip — re-render once a second so the displayed
+  // delta stays fresh without bumping component state from outside. We
+  // tick a meaningless integer; React diffs the rendered string. The
+  // 1 s cadence matches the resolution of the data we have (Date.now()
+  // is millisecond-precise but a sub-second indicator would just look
+  // jittery).
+  const [, _setTick] = useState(0);
+  useEffect(() => {
+    if (props.lastEventAt === null) return;
+    const id = setInterval(() => _setTick((n) => n + 1), 1000);
+    return () => clearInterval(id);
+  }, [props.lastEventAt]);
+  const lastEventLabel = props.lastEventAt === null
+    ? "—"
+    : (() => {
+        const ms = Math.max(0, Date.now() - props.lastEventAt);
+        if (ms < 1000) return "<1s ago";
+        const s = Math.floor(ms / 1000);
+        if (s < 60) return `${s}s ago`;
+        const m = Math.floor(s / 60);
+        if (m < 60) return `${m}m ago`;
+        return `${Math.floor(m / 60)}h ago`;
+      })();
 
   return (
     <header
@@ -1463,10 +1530,51 @@ export function TopBar(props: {
             mobile). Per operator request, every debug datum currently
             shown is preserved — only the layout changed. */}
         <div className="ml-auto flex flex-wrap items-center gap-2">
+          {/* Turn / message / rationale / tabs / last-event chips. All
+              read straight off existing snapshot + WS state; no extra
+              round-trip. Useful for "what's happening?" diagnostics
+              while the app is under active development. */}
+          <span
+            className="rounded bg-slate-800 px-2 py-0.5 text-slate-200"
+            title="Current turn index from snapshot.current_turn.index"
+          >
+            T#{props.turnIndex ?? "—"}
+          </span>
+          <span
+            className="rounded bg-slate-800 px-2 py-0.5 text-slate-200"
+            title="Total messages on the session (snapshot.messages.length)"
+          >
+            {props.messageCount} msgs
+          </span>
+          <span
+            className="rounded bg-slate-800 px-2 py-0.5 text-slate-200"
+            title="AI rationale entries logged via record_decision_rationale"
+          >
+            Rationale: {props.rationaleCount}
+          </span>
+          <span
+            className="rounded bg-slate-800 px-2 py-0.5 text-slate-200"
+            title="Total open WebSocket tabs watching this session (server-reported)"
+          >
+            Tabs: {props.connectionCount ?? "—"}
+          </span>
+          <span
+            className="rounded bg-slate-800 px-2 py-0.5 text-slate-300"
+            title="Time since the last WebSocket frame arrived. Stalls here mean the connection is silent even if ws: open."
+          >
+            Last: {lastEventLabel}
+          </span>
+          {/* Cost: click-to-expand chip. The summary shows the dollar
+              amount; the disclosure body shows the token breakdown
+              (mirrors the old sidebar CostMeter, but inline). Native
+              <details> gives focus management + Esc-to-collapse for
+              free; the popup positions absolutely so it overlays the
+              page chrome below the bar without pushing layout. */}
+          <CostChip cost={props.cost} />
+          <span className={wsColour}>● ws: {props.wsStatus}</span>
           <span className="rounded bg-slate-800 px-2 py-0.5 text-slate-200">
             state: {props.backendState} · phase: {props.phase}
           </span>
-          <span className={wsColour}>● ws: {props.wsStatus}</span>
           {/* Build identification — surfaced so a creator filing a bug
               report can tell us which version they're on without opening
               DevTools. Vite injects ``__ATF_GIT_SHA__`` at build time. */}
@@ -1534,23 +1642,73 @@ function Spinner() {
   );
 }
 
-function CostMeter({ cost }: { cost: CostSnapshot | null }) {
-  if (!cost) return null;
-  return (
-    <div className="rounded border border-slate-700 bg-slate-900 p-2 text-xs text-slate-300">
-      <p className="uppercase tracking-widest text-slate-500">Cost (creator only)</p>
-      <p>
-        in {cost.input_tokens.toLocaleString()} · out {cost.output_tokens.toLocaleString()} · cache_r{" "}
-        {cost.cache_read_tokens.toLocaleString()}
-      </p>
-      <p className="font-semibold text-emerald-300">≈ ${cost.estimated_usd.toFixed(4)}</p>
-      <p
-        className="mt-0.5 text-[10px] leading-tight text-slate-500"
-        title="Anthropic API spend, attributed to the operator's ANTHROPIC_API_KEY. Not billed to participants."
+/**
+ * Top-bar cost chip with a click-to-expand disclosure (Anthropic
+ * plan-usage popup style). Replaces the old ``CostMeter`` sidebar card —
+ * the dollar number now lives in the always-visible debug strip and
+ * clicking it reveals the token breakdown that previously took up a
+ * fixed sidebar slot. Native ``<details>`` gives keyboard + screen
+ * reader behavior for free; ``open`` is internal to the element.
+ */
+function CostChip({ cost }: { cost: CostSnapshot | null }) {
+  if (!cost) {
+    // Render a placeholder chip so the bar's column count is stable
+    // before the first ``cost_updated`` arrives. The "Cost: $—" form
+    // also tells the creator the channel exists but is empty rather
+    // than missing.
+    return (
+      <span
+        className="rounded bg-slate-800 px-2 py-0.5 text-slate-400"
+        title="No cost data yet — first LLM call will populate this."
       >
-        Charged to the operator's Anthropic key. Cumulative for this session.
-      </p>
-    </div>
+        Cost: $—
+      </span>
+    );
+  }
+  return (
+    <details className="relative">
+      <summary
+        className="cursor-pointer list-none rounded bg-slate-800 px-2 py-0.5 font-semibold text-emerald-300 hover:bg-slate-700/60 focus-visible:outline focus-visible:outline-2 focus-visible:outline-emerald-300"
+        title="Cumulative Anthropic API spend for this session. Click to expand the token breakdown."
+      >
+        Cost: ${cost.estimated_usd.toFixed(4)}
+      </summary>
+      {/* Absolutely-positioned popover so the disclosure body doesn't
+          push siblings around when toggled. ``z-20`` keeps it above the
+          page grid; matching the bar's right-side anchor lets it expand
+          left without leaving the viewport. */}
+      <div className="absolute right-0 top-full z-20 mt-1 w-72 rounded border border-slate-700 bg-slate-900 p-3 text-xs text-slate-200 shadow-lg">
+        <p className="mb-1 uppercase tracking-widest text-slate-400">
+          Cost — token breakdown
+        </p>
+        <dl className="grid grid-cols-2 gap-x-3 gap-y-1">
+          <dt className="text-slate-400">Input</dt>
+          <dd className="text-right text-slate-100">
+            {cost.input_tokens.toLocaleString()}
+          </dd>
+          <dt className="text-slate-400">Output</dt>
+          <dd className="text-right text-slate-100">
+            {cost.output_tokens.toLocaleString()}
+          </dd>
+          <dt className="text-slate-400">Cache read</dt>
+          <dd className="text-right text-slate-100">
+            {cost.cache_read_tokens.toLocaleString()}
+          </dd>
+          <dt className="text-slate-400">Cache create</dt>
+          <dd className="text-right text-slate-100">
+            {cost.cache_creation_tokens.toLocaleString()}
+          </dd>
+          <dt className="font-semibold text-emerald-300">Estimated</dt>
+          <dd className="text-right font-semibold text-emerald-300">
+            ${cost.estimated_usd.toFixed(4)}
+          </dd>
+        </dl>
+        <p className="mt-2 text-[10px] leading-tight text-slate-500">
+          Charged to the operator's Anthropic key. Cumulative for this
+          session.
+        </p>
+      </div>
+    </details>
   );
 }
 
