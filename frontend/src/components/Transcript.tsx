@@ -183,11 +183,20 @@ export function Transcript({
           : m.kind.startsWith("ai")
             ? "AI Facilitator"
             : "System";
+        // Issue #78: out-of-turn interjections render in a quieter
+        // slate tone with a "Sidebar" badge so a real player can tell
+        // a turn answer apart from a comment posted while not active.
+        // (Pre-fix all PLAYER messages rendered identically and the
+        // user couldn't distinguish "answered the question" from "added
+        // a sidebar comment".)
+        const isInterjection = m.kind === "player" && m.is_interjection;
         const colour =
           m.kind === "critical_inject"
             ? "border-red-500/60 bg-red-950/40"
             : m.kind === "player"
-              ? "border-sky-700/40 bg-sky-950/30"
+              ? isInterjection
+                ? "border-slate-600/60 bg-slate-900/60"
+                : "border-sky-700/40 bg-sky-950/30"
               : m.kind === "system"
                 ? "border-slate-700 bg-slate-900/50 text-slate-400"
                 : "border-emerald-700/40 bg-emerald-950/30";
@@ -212,8 +221,18 @@ export function Transcript({
             data-kind={m.kind}
             data-message-id={m.id}
           >
-            <header className="mb-1 flex items-center justify-between text-xs uppercase tracking-wide text-slate-400">
-              <span>{actor}</span>
+            <header className="mb-1 flex items-center justify-between gap-2 text-xs uppercase tracking-wide text-slate-400">
+              <span className="flex items-center gap-1.5">
+                <span>{actor}</span>
+                {isInterjection ? (
+                  <span
+                    className="rounded-sm border border-slate-500/60 bg-slate-800/80 px-1 py-0.5 text-[10px] font-semibold leading-none normal-case text-slate-300"
+                    title="Posted while not on the active turn — a sidebar comment, not a turn answer."
+                  >
+                    sidebar
+                  </span>
+                ) : null}
+              </span>
               <span>{new Date(m.ts).toLocaleTimeString()}</span>
             </header>
             {isAi ? (

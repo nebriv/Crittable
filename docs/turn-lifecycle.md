@@ -159,10 +159,17 @@ flowchart TD
 | Force-advance | `AWAITING_PLAYERS` → `AI_PROCESSING` | `run_play_turn` | Inserts `[system] Force-advanced by X; missing voices skipped`. |
 | `/start` | `READY` → `BRIEFING` → `AI_PROCESSING` | `run_play_turn` (briefing contract) | The first play turn uses `PLAY_CONTRACT_BRIEFING` — no soft carve-out. |
 | Proxy-respond | Same as submit | Same as submit | Creator types on behalf of an absent role; same code path. |
-| `?`-question mid-turn | `AWAITING_PLAYERS` (stays) | `run_interject` | Side channel; doesn't advance the turn; uses its own contract (see §8). |
+| `?`-question mid-turn (active asker) | `AWAITING_PLAYERS` (stays) | `run_interject` | Side channel; doesn't advance the turn; uses its own contract (see §8). |
+| **Out-of-turn `?`-interjection (issue #78)** | `AWAITING_PLAYERS` (stays) | `run_interject` | A non-active role (or already-submitted active role) posts a question. Same `run_interject` path as the active-asker case; the asker's role_id is threaded through `for_role_id` and exposed to the model in a per-call system note. |
+| **Out-of-turn comment (issue #78)** | `AWAITING_PLAYERS` (stays) | none — transcript-only | A non-active role (or already-submitted active role) posts non-question text. The message lands in the transcript with `is_interjection=True` (rendered to the model with an `[OUT-OF-TURN]` prefix); no LLM call fires. The next normal `run_play_turn` reads it as context and Block 6 of the play prompt instructs the model not to add the speaker to `set_active_roles`. |
 
 > **The inverted carve-out only ever applied on the `run_play_turn` path.**
 > `run_interject` has its own narrowed tool surface and never silently yields.
+
+> **Issue #78 contract:** a non-active role's submission NEVER mutates
+> `submitted_role_ids`, NEVER advances the turn, NEVER changes
+> `active_role_ids`. It only appends a `MessageKind.PLAYER` row with
+> `is_interjection=True`. The state machine is preserved.
 
 ---
 

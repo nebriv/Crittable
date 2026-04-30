@@ -277,6 +277,9 @@ def register_api_routes(app: FastAPI) -> None:
                     # less structured); the visibility filter on Message
                     # itself still applies.
                     "tool_args": m.tool_args,
+                    # Issue #78: True for out-of-turn interjections so
+                    # the transcript UI can render a "sidebar" badge.
+                    "is_interjection": m.is_interjection,
                 }
                 for m in session.visible_messages(token["role_id"])
             ],
@@ -494,6 +497,18 @@ def register_api_routes(app: FastAPI) -> None:
                 if len(content) > cap
                 else content
             )
+            # Mirror the WS submit path's prompt-injection guardrail
+            # (issue #78 security review): the proxy endpoint feeds
+            # arbitrary content into the transcript that the next play
+            # turn ingests. Without this gate a creator (or anyone with
+            # a leaked creator token) could drip attacker-controlled
+            # content past the input-side filter the WS pump applies.
+            verdict = await manager.guardrail().classify(message=posted)
+            if verdict == "prompt_injection":
+                raise HTTPException(
+                    status.HTTP_400_BAD_REQUEST,
+                    "message looked like a prompt-injection attempt and was blocked",
+                )
             await manager.proxy_submit_as(
                 session_id=session_id,
                 by_role_id=token["role_id"],
@@ -521,9 +536,13 @@ def register_api_routes(app: FastAPI) -> None:
             # Mirror the WS submit path: when the proxy submission is a
             # direct question and the turn isn't ready to advance, fire
             # the constrained AI interject so the asking role gets an
-            # answer without waiting for every other active role.
+            # answer without waiting for every other active role. This
+            # also fires for out-of-turn interjections (issue #78) where
+            # the proxied role isn't in ``active_role_ids``.
             await TurnDriver(manager=manager).run_interject(
-                session=session, turn=session.current_turn
+                session=session,
+                turn=session.current_turn,
+                for_role_id=as_role_id,
             )
         return {"ok": True}
 
