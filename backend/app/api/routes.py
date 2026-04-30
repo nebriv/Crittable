@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from fastapi import APIRouter, FastAPI, HTTPException, Request, status
@@ -13,6 +14,7 @@ from ..auth.authz import (
     AuthorizationError,
     require_creator,
     require_participant,
+    require_seated,
 )
 from ..extensions.registry import FrozenRegistry
 from ..sessions.manager import SessionManager
@@ -20,6 +22,25 @@ from ..sessions.models import ParticipantKind, ScenarioPlan, SessionState
 from ..sessions.repository import SessionNotFoundError
 from ..sessions.turn_driver import TurnDriver
 from ..sessions.turn_engine import IllegalTransitionError
+
+
+def _ascii_filename_slug(title: str | None, *, max_len: int = 40) -> str:
+    """Build an ASCII-only filename-safe slug from a plan title.
+
+    HTTP headers are latin-1 only; non-ASCII characters in the title
+    (em-dash, accented letters, emoji) cause a 500 in starlette's
+    header encoding step when used in ``Content-Disposition``. We
+    lowercase, collapse runs of non-alphanumeric chars to a single
+    dash, and trim leading/trailing dashes. Empty / all-non-ASCII
+    titles fall back to ``"exercise"`` so the download always has a
+    sensible filename.
+    """
+
+    base = title or "exercise"
+    slug = re.sub(r"[^a-z0-9]+", "-", base.lower()).strip("-")
+    # Strip again after the length truncation so a slice that lands
+    # mid-separator doesn't leave a trailing "-" in the filename.
+    return slug[:max_len].strip("-") or "exercise"
 
 
 class CreateSessionBody(BaseModel):
@@ -44,6 +65,21 @@ class AddRoleBody(BaseModel):
     label: str = Field(min_length=1, max_length=64)
     display_name: str | None = Field(default=None, max_length=64)
     kind: ParticipantKind = "player"
+
+
+class SelfDisplayNameBody(BaseModel):
+    """Player-side display-name self-set body for ``POST .../roles/me/display_name``.
+
+    The previous flow stored the player's entered name in browser
+    localStorage only — other participants saw the role label without
+    a name suffix because the server's ``role.display_name`` was never
+    populated for self-joining players. This endpoint lets a
+    token-bound role update their own ``display_name`` so it
+    propagates through the snapshot to every other client.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+    display_name: str = Field(min_length=1, max_length=64)
 
 
 class EndBody(BaseModel):
@@ -704,6 +740,78 @@ def register_api_routes(app: FastAPI) -> None:
             raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
         return {"token": new_token, "join_url": f"/play/{session_id}/{new_token}"}
 
+    @router.post("/sessions/{session_id}/roles/me/display_name")
+    async def set_self_display_name(
+        session_id: str, body: SelfDisplayNameBody, request: Request
+    ) -> dict[str, Any]:
+        """Player-side: set the display_name on the role bound to your token.
+
+        The join intro page calls this so other participants see the
+        player's chosen name in transcript headers. Auth is via the
+        existing token-binding helper; we don't accept a separate
+        ``role_id`` query param — you can only rename yourself.
+        """
+
+        import structlog
+
+        manager = _manager(request)
+        token = await _bind_token(request, session_id)
+        api_logger = structlog.get_logger("api")
+        # Log entry at the route boundary per CLAUDE.md "Logging rules
+        # — every external boundary". ``role_id`` comes from the
+        # verified token; ``name_chars`` is a safe length proxy that
+        # doesn't leak the raw value to logs.
+        api_logger.info(
+            "set_self_display_name_request",
+            session_id=session_id,
+            role_id=token["role_id"],
+            name_chars=len(body.display_name),
+        )
+        try:
+            # Self-only rename — spectators legitimately need to label
+            # themselves so peers (creator + players) see who's
+            # watching. Use ``require_seated`` instead of
+            # ``require_participant`` so spectators aren't 403'd out
+            # of the join-intro flow. The token binding above
+            # (``_bind_token``) already verified the role exists and
+            # the token is theirs; the role_id we pass to the
+            # manager is sourced from the verified token, NOT from a
+            # query param, so callers can only rename themselves.
+            require_seated(token)
+            role = await manager.set_role_display_name(
+                session_id=session_id,
+                role_id=token["role_id"],
+                display_name=body.display_name,
+            )
+        except AuthorizationError as exc:
+            api_logger.warning(
+                "set_self_display_name_unauthorized",
+                session_id=session_id,
+                role_id=token["role_id"],
+                error=str(exc),
+            )
+            raise HTTPException(status.HTTP_403_FORBIDDEN, str(exc)) from exc
+        except IllegalTransitionError as exc:
+            api_logger.warning(
+                "set_self_display_name_rejected",
+                session_id=session_id,
+                role_id=token["role_id"],
+                error=str(exc),
+            )
+            raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
+        except SessionNotFoundError as exc:
+            api_logger.warning(
+                "set_self_display_name_session_missing",
+                session_id=session_id,
+                role_id=token["role_id"],
+            )
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "session not found") from exc
+        return {
+            "role_id": role.id,
+            "label": role.label,
+            "display_name": role.display_name,
+        }
+
     @router.delete("/sessions/{session_id}/roles/{role_id}")
     async def remove_role(
         session_id: str, role_id: str, request: Request
@@ -791,8 +899,9 @@ def register_api_routes(app: FastAPI) -> None:
             else strip_creator_only(session.aar_markdown)
         )
 
-        filename_slug = (session.plan.title if session.plan else "exercise")
-        filename_slug = "-".join(filename_slug.lower().split())[:40] or "exercise"
+        filename_slug = _ascii_filename_slug(
+            session.plan.title if session.plan else None
+        )
         return PlainTextResponse(
             content=body,
             media_type="text/markdown",

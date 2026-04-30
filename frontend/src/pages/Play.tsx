@@ -29,7 +29,18 @@ export function Play({ sessionId, token }: Props) {
     () => window.localStorage.getItem(`${DISPLAY_NAME_KEY}:${sessionId}`),
   );
   const [snapshot, setSnapshot] = useState<SessionSnapshot | null>(null);
-  const [streamingText, setStreamingText] = useState("");
+  // Live AI message-text streaming was producing visible mid-flight
+  // revisions: chunks accumulated and rendered in a green "streaming…"
+  // bubble, then on ``message_complete`` the bubble was replaced with
+  // the final persisted markdown — which sometimes diverges from the
+  // raw delta concatenation (different whitespace, tool wrappers, the
+  // model emitting two short messages instead of one). Players read
+  // that as the AI changing its mind. We now ignore chunk content
+  // entirely and only show a typing indicator until the final message
+  // lands. ``streamingActive`` tracks whether *some* chunks are still
+  // arriving, so the indicator stays "Typing…" (vs. "Thinking…") at
+  // that point — a small UX cue that the LLM is actively writing.
+  const [streamingActive, setStreamingActive] = useState(false);
   const [criticalBanner, setCriticalBanner] = useState<{
     severity: string;
     headline: string;
@@ -90,6 +101,19 @@ export function Play({ sessionId, token }: Props) {
     }
   }, [token]);
 
+  // Snapshot fetch runs unconditionally so the join-intro page can
+  // show the player's role label + scenario context (was: gated on
+  // displayName, which meant the intro page had nothing to render).
+  useEffect(() => {
+    refreshSnapshot();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessionId, token]);
+
+  // WebSocket is gated on displayName because we want the intro page
+  // to be a clean read-only landing — opening the WS before the user
+  // has acknowledged the role brief produces "Player joined" pings
+  // that read as them being present when they haven't actually
+  // engaged yet.
   useEffect(() => {
     if (!displayName) return;
     const ws = new WsClient({
@@ -99,7 +123,6 @@ export function Play({ sessionId, token }: Props) {
     });
     ws.connect();
     wsRef.current = ws;
-    refreshSnapshot();
     return () => ws.close();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [displayName, sessionId, token]);
@@ -107,10 +130,18 @@ export function Play({ sessionId, token }: Props) {
   function handleEvent(evt: ServerEvent) {
     switch (evt.type) {
       case "message_chunk":
-        setStreamingText((t) => t + evt.text);
+        // Ignore chunk content; we only render the final message after
+        // ``message_complete``. Flip the streaming flag so the typing
+        // indicator can read "Typing…" while chunks are flowing.
+        // ``setStreamingActive(true)`` is idempotent — React bails out
+        // on equal-value sets — so we don't guard against a stale
+        // closure read of ``streamingActive`` here. (``WsClient``
+        // captures ``onEvent`` once at mount, so any guard would be
+        // reading stale state anyway.)
+        setStreamingActive(true);
         break;
       case "message_complete":
-        setStreamingText("");
+        setStreamingActive(false);
         refreshSnapshot();
         break;
       case "state_changed":
@@ -130,6 +161,14 @@ export function Play({ sessionId, token }: Props) {
         break;
       case "turn_changed":
         console.info("[play] turn changed", evt);
+        refreshSnapshot();
+        break;
+      case "participant_renamed":
+        // Player set their display_name via the join intro (or any
+        // future self-rename surface). Refresh the snapshot so the
+        // updated name appears in transcript headers, the active-
+        // role banner, and the roster.
+        console.info("[play] participant renamed", evt);
         refreshSnapshot();
         break;
       case "critical_event":
@@ -237,7 +276,7 @@ export function Play({ sessionId, token }: Props) {
     if (distanceFromBottom < 120) {
       el.scrollTop = el.scrollHeight;
     }
-  }, [messageCount, streamingText]);
+  }, [messageCount, streamingActive]);
 
   // Clean up the force-advance cooldown timer on unmount so a tab
   // close mid-cooldown doesn't fire setState on an unmounted component.
@@ -317,11 +356,84 @@ export function Play({ sessionId, token }: Props) {
     wsRef.current?.send({ type: "request_end_session", reason: "ended by participant" });
   }
 
-  if (!displayName) {
-    return <DisplayNameModal onSubmit={(name) => {
-      window.localStorage.setItem(`${DISPLAY_NAME_KEY}:${sessionId}`, name);
-      setDisplayName(name);
-    }} />;
+  const myRoleFromSnapshot = snapshot?.roles.find((r) => r.id === selfRoleId);
+  const serverDisplayName = myRoleFromSnapshot?.display_name ?? null;
+  // Server is the source of truth; if it has a name we use that. Pre-
+  // fix the gate looked at localStorage only, which meant: (a) a user
+  // returning on a different browser (no localStorage entry) was
+  // forced through JoinIntro again even though the server knew them;
+  // (b) a user with a stale localStorage entry from before this
+  // deploy skipped JoinIntro and never POSTed their name, so peers
+  // saw the bare role label forever.
+  const effectiveDisplayName = serverDisplayName ?? displayName;
+
+  // Reconcile local ``displayName`` state with the server. Two
+  // directions are possible:
+  //
+  // 1. **Server has it, local doesn't** — fresh browser / cleared
+  //    localStorage / different device. Hydrate local from server
+  //    so the rest of the UI ("Your turn — {role} ({name})") has a
+  //    name to render. No network call.
+  //
+  // 2. **Local has it, server doesn't** — pre-server-persist deploy
+  //    or a long-lived tab. Quietly POST the local name so peers see
+  //    it. Best-effort; a failure just means the user might have
+  //    to re-enter via JoinIntro on a future visit.
+  //
+  // Without this, case (1) leaves the active-role banner reading
+  // "Your turn — Cybersecurity Manager ()" with empty parens, and
+  // case (2) is the bug Copilot flagged: peers never see the name.
+  useEffect(() => {
+    if (!myRoleFromSnapshot) return;
+    if (serverDisplayName && !displayName) {
+      window.localStorage.setItem(
+        `${DISPLAY_NAME_KEY}:${sessionId}`,
+        serverDisplayName,
+      );
+      setDisplayName(serverDisplayName);
+      return;
+    }
+    if (!serverDisplayName && displayName) {
+      api.setSelfDisplayName(sessionId, token, displayName).catch((err) => {
+        console.warn("[play] background display_name sync failed", {
+          session_id: sessionId,
+          message: err instanceof Error ? err.message : String(err),
+        });
+      });
+    }
+    // ``myRoleFromSnapshot?.id`` keeps the effect from re-running on
+    // unrelated snapshot churn (messages, turns, etc.).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [serverDisplayName, displayName, sessionId, token, myRoleFromSnapshot?.id]);
+
+  if (!effectiveDisplayName) {
+    // Pre-fix this was a tiny "what's your name?" dialog that operators
+    // routinely missed (the user's report — "I'm not sure if Bridget
+    // was prompted to enter her name at all"). The intro page now
+    // names the role, sets expectations for AI interaction, and
+    // posts the entered name to the server so peers see it (was:
+    // localStorage-only, invisible to other clients).
+    return (
+      <JoinIntro
+        sessionId={sessionId}
+        token={token}
+        roleLabel={myRoleFromSnapshot?.label}
+        roleKind={myRoleFromSnapshot?.kind}
+        roleExistingDisplayName={serverDisplayName}
+        scenarioPrompt={snapshot?.scenario_prompt}
+        sessionState={snapshot?.state}
+        snapshotLoaded={snapshot !== null}
+        snapshotError={snapshot === null ? error : null}
+        onRetry={() => {
+          setError(null);
+          refreshSnapshot();
+        }}
+        onJoined={(name) => {
+          window.localStorage.setItem(`${DISPLAY_NAME_KEY}:${sessionId}`, name);
+          setDisplayName(name);
+        }}
+      />
+    );
   }
 
   if (!snapshot) {
@@ -339,12 +451,11 @@ export function Play({ sessionId, token }: Props) {
   // driver path that forgets to round-trip through the LLM client.
   const stateBasedAiThinking =
     snapshot.state !== "ENDED" &&
-    !streamingText &&
     snapshot.current_turn?.status !== "errored" &&
     (snapshot.state === "AI_PROCESSING" ||
       snapshot.state === "BRIEFING" ||
       snapshot.current_turn?.status === "processing");
-  const showAiThinking = aiCalls.size > 0 || stateBasedAiThinking;
+  const showAiThinking = aiCalls.size > 0 || streamingActive || stateBasedAiThinking;
   // Compose a human-readable label from the most recent ``ai_status``
   // event. Falls back to "AI thinking…" when the engine hasn't told us
   // anything more specific. Participant-facing copy: we deliberately
@@ -500,13 +611,37 @@ export function Play({ sessionId, token }: Props) {
             <Transcript
               messages={snapshot.messages}
               roles={snapshot.roles}
-              streamingText={streamingText}
               aiThinking={showAiThinking}
-              aiStatusLabel={aiStatusLabel}
+              aiStatusLabel={
+                aiStatusLabel ?? (streamingActive ? "Typing…" : undefined)
+              }
               typingRoleIds={Object.keys(typing).filter((rid) => rid !== selfRoleId)}
+              highlightLastAi={isMyTurn}
             />
           </div>
           <div className="flex shrink-0 flex-col gap-2">
+            {/* Sticky pending-response chip immediately above the composer.
+                When the AI addresses one role specifically (e.g. "Ben —
+                what's your call?"), the OTHER roles in active_role_ids
+                can't tell from their composer placeholder alone that
+                they're being waited on too. This chip + the latest-AI
+                message highlight (above) make the wait state hard to
+                miss without scrolling back to the top banner. */}
+            {snapshot.state !== "ENDED" && isMyTurn ? (
+              <div
+                role="status"
+                // Polite (not assertive) because the top "Your turn"
+                // banner already does an assertive announcement when
+                // ``isMyTurn`` flips on. Two assertive regions firing
+                // simultaneously trains screen-reader users to ignore
+                // both. The chip is visual reinforcement; the polite
+                // region is a quieter follow-up.
+                aria-live="polite"
+                className="rounded border border-amber-500/70 bg-amber-500/10 px-3 py-1.5 text-center text-xs font-semibold leading-tight text-amber-200 break-words"
+              >
+                ⚠ Awaiting your response — {myRole?.label ?? "you"}
+              </div>
+            ) : null}
             <Composer
               enabled={isMyTurn && snapshot.state !== "ENDED"}
               placeholder={placeholder}
@@ -548,59 +683,328 @@ export function Play({ sessionId, token }: Props) {
   );
 }
 
-function DisplayNameModal({ onSubmit }: { onSubmit: (name: string) => void }) {
-  const [name, setName] = useState("");
-  const dialogRef = useRef<HTMLDialogElement | null>(null);
+interface JoinIntroProps {
+  sessionId: string;
+  token: string;
+  roleLabel?: string;
+  /** ``"player"`` | ``"spectator"`` from the snapshot. Spectators get
+   *  a read-only variant of the "How to play" copy because their
+   *  composer never unlocks; the original copy promised
+   *  participation-style interaction and confused them. */
+  roleKind?: "player" | "spectator";
+  roleExistingDisplayName: string | null;
+  scenarioPrompt?: string;
+  sessionState?: string;
+  /** ``true`` once the snapshot fetch has resolved. Pre-fix the page
+   *  rendered a generic header until the fetch completed, which let
+   *  participants click Begin against an undefined role label.
+   *  Now we render a loading skeleton until the snapshot lands. */
+  snapshotLoaded: boolean;
+  /** Surface for the snapshot fetch failure (network blip, expired
+   *  token). Without this the page renders forever with no role
+   *  label and no error explanation. */
+  snapshotError: string | null;
+  /** Retry handler for the snapshot-error branch. */
+  onRetry: () => void;
+  onJoined: (name: string) => void;
+}
 
-  // Use a native <dialog open> so the browser handles focus-trap +
-  // background-inert + Escape semantics for free.
+/**
+ * Replaces the prior tiny "what's your name?" dialog. The user reported
+ * they had to verbally coach a participant on how to interact with the
+ * AI ("ask it questions, push back, propose alternatives") — the old
+ * modal didn't communicate any of that. This page:
+ *
+ * - Names the role they've been invited as so they don't have to read
+ *   the URL or guess.
+ * - Asks for a display name (was: localStorage only; now POSTs to the
+ *   ``set_self_display_name`` endpoint so peers see the name).
+ * - Lays out a short "How to play" guide so a participant who's never
+ *   used a Claude-driven tabletop knows what kind of input the AI
+ *   expects.
+ *
+ * The form is a single CTA — name + "Begin" — because the goal is to
+ * ship the participant into the chat as fast as possible while still
+ * giving them the prereq context.
+ */
+function JoinIntro({
+  sessionId,
+  token,
+  roleLabel,
+  roleKind,
+  roleExistingDisplayName,
+  scenarioPrompt,
+  sessionState,
+  snapshotLoaded,
+  snapshotError,
+  onRetry,
+  onJoined,
+}: JoinIntroProps) {
+  const [name, setName] = useState(roleExistingDisplayName ?? "");
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  // Pre-fill the entered name from the snapshot when it lands (so a
+  // returning player whose name is already on the server doesn't have
+  // to retype it). Only runs when the snapshot just loaded — once
+  // ``name`` has been edited, we don't clobber the user's typing.
   useEffect(() => {
-    const el = dialogRef.current;
-    if (el && !el.open && typeof el.showModal === "function") {
-      el.showModal();
+    if (snapshotLoaded && !name && roleExistingDisplayName) {
+      setName(roleExistingDisplayName);
     }
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [snapshotLoaded, roleExistingDisplayName]);
 
-  function submit(e: FormEvent) {
+  async function submit(e: FormEvent) {
     e.preventDefault();
-    if (!name.trim()) return;
-    onSubmit(name.trim());
+    const trimmed = name.trim();
+    if (!trimmed) {
+      setError("Please enter a display name.");
+      return;
+    }
+    setSubmitting(true);
+    setError(null);
+    try {
+      // Persist server-side first. If the network call fails we
+      // surface the error and DON'T hand the user into the chat —
+      // otherwise other participants would see them as the bare
+      // role label and we'd silently lose their typed name.
+      await api.setSelfDisplayName(sessionId, token, trimmed);
+      console.info("[play] display_name set", {
+        session_id: sessionId,
+        name_chars: trimmed.length,
+      });
+      onJoined(trimmed);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.warn("[play] setSelfDisplayName failed", {
+        session_id: sessionId,
+        message,
+      });
+      setError(`Could not save your name: ${message}`);
+    } finally {
+      // ``onJoined`` will dispose the JoinIntro on success, so the
+      // ``submitting=false`` set never paints — but in StrictMode a
+      // double-render or a tab-close mid-flight could leave the
+      // button stuck disabled. Belt-and-braces.
+      setSubmitting(false);
+    }
   }
-  return (
-    <main className="flex min-h-screen items-center justify-center bg-slate-950 p-6">
-      <dialog
-        ref={dialogRef}
-        aria-labelledby="display-name-heading"
-        aria-modal="true"
-        className="rounded border border-slate-700 bg-slate-900 text-slate-100 backdrop:bg-slate-950/80"
-      >
-        <form
-          onSubmit={submit}
-          method="dialog"
-          className="flex w-full max-w-md flex-col gap-3 p-6"
+
+  // The scenario prompt is creator-authored seed text that's part of
+  // the public session — it's not the AI-generated plan (that stays
+  // hidden from non-creators). A short trimmed preview is fine for
+  // setting the room expectation without spoiling injects.
+  const scenarioPreview = scenarioPrompt
+    ? scenarioPrompt.slice(0, 240).trim() + (scenarioPrompt.length > 240 ? "…" : "")
+    : null;
+
+  const sessionEnded = sessionState === "ENDED";
+  const isSpectator = roleKind === "spectator";
+
+  // Snapshot-error branch: the snapshot fetch failed (network blip,
+  // expired token). Pre-fix the page rendered forever with a generic
+  // header and no error explanation, leading the user to bounce. Now
+  // we surface the failure inline with a Retry button.
+  if (snapshotError && !snapshotLoaded) {
+    return (
+      <main className="flex min-h-screen items-center justify-center bg-slate-950 p-6 text-slate-100">
+        <article
+          className="flex w-full max-w-md flex-col gap-4 rounded-lg border border-red-500/40 bg-slate-900 p-8 shadow-xl"
+          aria-labelledby="join-intro-error-heading"
         >
-          <h1 id="display-name-heading" className="text-lg font-semibold">
-            Join the tabletop exercise
+          <h1 id="join-intro-error-heading" className="text-lg font-semibold text-red-300">
+            Couldn't load the session
           </h1>
-          <label className="text-xs uppercase tracking-widest text-slate-300" htmlFor="display-name">
-            Your display name
+          <p className="text-sm text-slate-300">
+            We tried to fetch the session details and got an error. The
+            most common causes are: the join link has expired, the
+            session was ended by the facilitator, or your network blipped.
+          </p>
+          <p
+            role="alert"
+            className="rounded border border-red-700/60 bg-red-950/40 p-2 text-xs text-red-200"
+          >
+            {snapshotError}
+          </p>
+          <button
+            type="button"
+            onClick={onRetry}
+            className="self-end rounded bg-sky-600 px-4 py-2 text-sm font-semibold text-white hover:bg-sky-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-300"
+          >
+            Retry
+          </button>
+        </article>
+      </main>
+    );
+  }
+
+  // Snapshot-loading branch: render a small skeleton until the fetch
+  // resolves. Pre-fix the page painted with ``roleLabel === undefined``
+  // → "Join the tabletop exercise" generic heading, then the role label
+  // popped in 1-2s later, which let users click Begin against an
+  // undefined role context.
+  if (!snapshotLoaded) {
+    return (
+      <main
+        className="flex min-h-screen items-center justify-center bg-slate-950 p-6 text-slate-300"
+        role="status"
+        aria-busy="true"
+        aria-label="Loading session"
+      >
+        Loading session…
+      </main>
+    );
+  }
+
+  return (
+    <main className="flex min-h-screen items-start justify-center bg-slate-950 p-6 py-8 text-slate-100 sm:items-center">
+      <article
+        className="flex w-full max-w-2xl flex-col gap-6 rounded-lg border border-slate-700 bg-slate-900 p-8 shadow-xl"
+        aria-labelledby="join-intro-heading"
+      >
+        <header className="flex flex-col gap-2">
+          <p className="text-xs uppercase tracking-widest text-emerald-400">
+            Tabletop exercise — join{isSpectator ? " (spectator)" : ""}
+          </p>
+          <h1
+            id="join-intro-heading"
+            className="break-words text-2xl font-semibold"
+          >
+            {roleLabel
+              ? isSpectator
+                ? `You're joining as a spectator (${roleLabel})`
+                : `You're invited as ${roleLabel}`
+              : "Join the tabletop exercise"}
+          </h1>
+          {scenarioPreview ? (
+            <p className="mt-2 rounded border border-slate-700 bg-slate-950/40 p-3 text-sm leading-relaxed text-slate-300">
+              <span className="block text-[0.65rem] uppercase tracking-widest text-slate-400">
+                Scenario brief
+              </span>
+              {scenarioPreview}
+            </p>
+          ) : null}
+        </header>
+
+        <section aria-labelledby="how-to-play-heading" className="flex flex-col gap-2">
+          <h2
+            id="how-to-play-heading"
+            className="text-sm font-semibold uppercase tracking-widest text-slate-300"
+          >
+            {isSpectator ? "How to watch" : "How to play"}
+          </h2>
+          {isSpectator ? (
+            <ul className="flex flex-col gap-2 text-sm leading-relaxed text-slate-200">
+              <li>
+                <span className="font-semibold">You're in read-only mode.</span>{" "}
+                You'll see the full transcript, the AI's narration, and
+                player responses live, but your composer stays disabled.
+                The AI will not call on you to respond.
+              </li>
+              <li>
+                <span className="font-semibold">No active-role chip will appear.</span>{" "}
+                The amber "Awaiting your response" cue is for active
+                players only.
+              </li>
+              <li>
+                <span className="font-semibold">After-action report (AAR).</span>{" "}
+                When the facilitator ends the session you'll be able to
+                download the markdown AAR from the same screen.
+              </li>
+            </ul>
+          ) : (
+            <ul className="flex flex-col gap-2 text-sm leading-relaxed text-slate-200">
+              <li>
+                <span className="font-semibold">Type how you'd respond on the job.</span>{" "}
+                Plain English — no special syntax. The AI is your facilitator;
+                talk to it the way you'd talk to a colleague running the
+                exercise.
+              </li>
+              <li>
+                <span className="font-semibold">Ask for what you'd actually have.</span>{" "}
+                Logs, alerts, packet captures, threat intel, screenshots —
+                say "what does Defender show?" or "pull the auth logs"
+                and the AI will produce realistic synthetic data.
+              </li>
+              <li>
+                <span className="font-semibold">Push back, propose alternatives, or hand off.</span>{" "}
+                Disagree with a teammate? Say so. Want to bring in
+                another role ("loop in Legal")? Just say it. The AI
+                tracks decisions and handoffs.
+              </li>
+              <li>
+                <span className="font-semibold">When it's your turn,</span>{" "}
+                the input box at the bottom unlocks and an amber{" "}
+                <span className="rounded border border-amber-500/70 bg-amber-500/10 px-1.5 py-0.5 text-[0.7rem] font-semibold text-amber-200">
+                  ⚠ Awaiting your response
+                </span>{" "}
+                chip appears. The most recent AI message is also
+                outlined in amber so you can spot what to react to.
+              </li>
+            </ul>
+          )}
+        </section>
+
+        <form onSubmit={submit} className="flex flex-col gap-2">
+          <label
+            htmlFor="display-name"
+            className="text-xs uppercase tracking-widest text-slate-300"
+          >
+            Your display name (visible to the rest of the team)
           </label>
+          {roleExistingDisplayName ? (
+            <p className="text-xs text-slate-400">
+              Welcome back — your saved name is pre-filled. Click Begin
+              to rejoin, or edit if you'd like to change it.
+            </p>
+          ) : null}
           <input
             id="display-name"
-            autoFocus
-            required
+            // ``autoFocus`` removed: screen-reader users would land
+            // mid-form and miss the heading + "How to play" guide
+            // (which is the whole point of this page). Sighted users
+            // can tab into the input in one keystroke.
+            // ``required`` removed: the JS guard + disabled-Begin
+            // button already cover empty submission, and the browser
+            // tooltip from native required would conflict with our
+            // own error surface.
+            // ``sessionEnded`` does NOT disable the input — the copy
+            // below tells the user they can still join in read-only
+            // mode after entering a name. Disabling the input made
+            // that promise impossible to keep for first-time joiners
+            // of an ENDED session.
+            disabled={submitting}
             value={name}
             onChange={(e) => setName(e.target.value)}
-            className="rounded border border-slate-700 bg-slate-950 p-2 text-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-400"
+            placeholder="e.g. Bridget"
+            maxLength={64}
+            className="rounded border border-slate-700 bg-slate-950 p-2 text-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-400 disabled:cursor-not-allowed disabled:opacity-60"
           />
+          {error ? (
+            <p className="text-sm text-red-400" role="alert">
+              {error}
+            </p>
+          ) : null}
+          {sessionEnded ? (
+            <p className="text-sm text-amber-300" role="status">
+              This session has already ended. You can still join in
+              read-only mode after entering a name, but no new
+              responses will be accepted.
+            </p>
+          ) : null}
           <button
             type="submit"
-            className="self-end rounded bg-sky-600 px-3 py-1 text-sm font-semibold text-white hover:bg-sky-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-300"
+            disabled={submitting || !name.trim()}
+            // Full-width tap target on mobile (avoids cramped right-
+            // aligned button when the on-screen keyboard pushes the
+            // viewport up); right-aligned on sm+.
+            className="mt-2 self-stretch rounded bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-emerald-300 disabled:cursor-not-allowed disabled:opacity-60 sm:self-end"
           >
-            Continue
+            {submitting ? "Joining…" : "Begin"}
           </button>
         </form>
-      </dialog>
+      </article>
     </main>
   );
 }

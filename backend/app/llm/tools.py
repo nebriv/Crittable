@@ -67,7 +67,11 @@ PLAY_TOOLS: list[dict[str, Any]] = [
             "a direct question and you want to reply just to them; you "
             "want to brief, prompt, or push one specific role; you're "
             "redirecting one role without sidetracking the others. "
-            "Does NOT yield the turn — pair with `set_active_roles`."
+            "Does NOT yield the turn — pair with `set_active_roles`. "
+            "**Single-addressee rule:** if this is the only player-facing "
+            "tool on the turn and you're not asking any other role anything, "
+            "`set_active_roles` MUST be exactly `[that_role_id]`. Adding "
+            "other roles makes the engine wait on people you didn't address."
         ),
         "input_schema": {
             "type": "object",
@@ -83,14 +87,22 @@ PLAY_TOOLS: list[dict[str, Any]] = [
         "description": (
             "PLAYER-FACING MESSAGE FROM YOU to all roles. Renders as your "
             "AI bubble in the chat — this is YOUR VOICE speaking to the "
-            "team. USE THIS WHEN: answering a player's question (always — "
-            "even if directed at one specific person, broadcast keeps "
-            "everyone in sync); narrating the next beat; briefing a "
-            "decision; reporting telemetry / logs / findings the team "
-            "asked about; redirecting an off-topic message; reacting to "
-            "a player's call (\"good — proceed with...\"). This is the "
-            "DEFAULT player-facing tool. Does NOT yield the turn — "
-            "pair with `set_active_roles`."
+            "team. USE THIS WHEN: narrating the next beat; briefing a "
+            "decision the WHOLE team needs; reporting telemetry / logs / "
+            "findings the team asked about; redirecting an off-topic "
+            "message; reacting to a player's call (\"good — proceed with"
+            "...\"). This is the DEFAULT player-facing tool when the "
+            "audience is the whole roster. Does NOT yield the turn — "
+            "pair with `set_active_roles`. "
+            "**Audience matches yield.** If the body of your broadcast "
+            "only asks ONE role a question (e.g. \"Ben — what's your "
+            "call?\"), `set_active_roles` MUST be exactly that one "
+            "role_id. If two roles are asked, exactly those two ids. "
+            "Including roles you didn't actually ask anything of stalls "
+            "the turn — the engine waits for replies that aren't coming. "
+            "When you genuinely want a single-addressee turn, prefer "
+            "`address_role` over `broadcast` to make the audience "
+            "explicit."
         ),
         "input_schema": {
             "type": "object",
@@ -233,7 +245,15 @@ PLAY_TOOLS: list[dict[str, Any]] = [
             "any participant). MUST be the LAST tool call of the turn "
             "and MUST be paired with a `broadcast` or `address_role` in "
             "the same response (the player-facing message that tells the "
-            "named roles what to do)."
+            "named roles what to do). "
+            "**Strict subset rule.** `role_ids` must contain ONLY the "
+            "roles you actually asked something of in this same turn's "
+            "player-facing message. If you used `address_role(Ben, …)` "
+            "and asked nothing of the engineer, do NOT include the "
+            "engineer here. If your `broadcast` body asks only Ben, do "
+            "NOT include other roles. Every extra id in this list creates "
+            "a wait gate on a reply the model never requested — the turn "
+            "stalls until force-advanced. When in doubt, yield narrower."
         ),
         "input_schema": {
             "type": "object",

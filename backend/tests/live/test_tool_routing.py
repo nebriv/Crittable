@@ -322,6 +322,141 @@ async def test_pose_choice_tool_call_well_formed(
     )
 
 
+async def test_single_addressee_yields_narrowly_or_engine_narrows(
+    anthropic_client: Any,
+    play_model: str,
+    session_with_doctrine_fork: Any,
+    empty_registry: Any,
+) -> None:
+    """End-to-end check that the audience-matches-yield rule + the
+    server-side narrower together prevent the captured 2026-04-30
+    production regression (AI addresses one role, yields to all, turn
+    stalls).
+
+    The doctrine-fork fixture sets up a scenario where the CISO has
+    explicitly asked for the options to be laid out — the model's
+    natural response is ``pose_choice(role_id=ciso, …)`` (or a
+    broadcast addressing CISO at clause-start). Either path makes
+    CISO the unambiguous addressee. SOC was not asked anything.
+
+    Pipeline mirrored in production:
+    1. Call live LLM with the session.
+    2. If no ``set_active_roles`` came back, run strict-retry
+       recovery (forced ``tool_choice``) to get the yield.
+    3. Run ``narrow_active_roles`` against the appended messages +
+       role_ids.
+    4. Assert the FINAL active set is ``[ciso]`` — never ``[ciso, soc]``.
+
+    Failure modes this test catches:
+    * The matcher misses an addressing pattern the model legitimately
+      used (false negative — drops too much, correctly fails the
+      "ciso must be in final" assertion).
+    * The matcher fires on a passing reference and keeps SOC (false
+      positive — fails the "soc must NOT be in final" assertion).
+    * The wiring in ``turn_driver`` doesn't run the narrower at all
+      (final set still has SOC).
+    """
+
+    from app.sessions.active_roles import narrow_active_roles
+    from app.sessions.models import Message, MessageKind
+
+    resp = await call_play(
+        anthropic_client,
+        model=play_model,
+        session=session_with_doctrine_fork,
+        registry=empty_registry,
+    )
+
+    # Reconstruct the same Message objects the dispatcher would have
+    # appended, so the narrower runs against the same surface it sees
+    # in production. We only need ``broadcast`` / ``address_role`` /
+    # ``pose_choice`` bodies + their ``tool_args``.
+    def _appended_from(response: Any) -> list[Message]:
+        appended: list[Message] = []
+        for u in tool_uses(response):
+            if u.name == "broadcast":
+                appended.append(
+                    Message(
+                        kind=MessageKind.AI_TEXT,
+                        body=u.input.get("message", ""),
+                        tool_name="broadcast",
+                        tool_args=dict(u.input),
+                    )
+                )
+            elif u.name == "address_role":
+                appended.append(
+                    Message(
+                        kind=MessageKind.AI_TEXT,
+                        body=u.input.get("message", ""),
+                        tool_name="address_role",
+                        tool_args=dict(u.input),
+                    )
+                )
+            elif u.name == "pose_choice":
+                appended.append(
+                    Message(
+                        kind=MessageKind.AI_TEXT,
+                        body=u.input.get("question", ""),
+                        tool_name="pose_choice",
+                        tool_args=dict(u.input),
+                    )
+                )
+        return appended
+
+    appended = _appended_from(resp)
+
+    # First attempt: did the model yield on its own?
+    set_active_calls = [u for u in tool_uses(resp) if u.name == "set_active_roles"]
+    if not set_active_calls:
+        # Mirror production strict-yield recovery: force the model to
+        # emit ``set_active_roles`` via tool_choice. The engine does
+        # this when the first attempt didn't yield. The yield from
+        # this recovery pass is what production would commit.
+        recovery = await call_play(
+            anthropic_client,
+            model=play_model,
+            session=session_with_doctrine_fork,
+            registry=empty_registry,
+            tools=[t for t in PLAY_TOOLS if t["name"] == "set_active_roles"],
+            tool_choice={"type": "tool", "name": "set_active_roles"},
+        )
+        set_active_calls = [u for u in tool_uses(recovery) if u.name == "set_active_roles"]
+        assert set_active_calls, (
+            "strict-retry recovery should have produced set_active_roles; "
+            f"got {tool_names(recovery)}"
+        )
+    ai_set: list[str] = list(set_active_calls[-1].input.get("role_ids", []))
+
+    result = narrow_active_roles(
+        roles=session_with_doctrine_fork.roles,
+        appended_messages=appended,
+        ai_set=ai_set,
+    )
+
+    # The CISO is the role being asked the question (per the player
+    # transcript: "Lay them out clearly — I want to pick one
+    # explicitly"). The SOC was not asked anything. The final active
+    # set must NOT include the SOC.
+    assert "role-soc" not in result.kept, (
+        "Final active set kept the SOC role even though it wasn't "
+        "addressed. Either the model emitted text that matched the "
+        "narrower's clause-start pattern for SOC, or the matcher has "
+        "a bug. "
+        f"AI yield: {ai_set}\n"
+        f"narrower kept: {result.kept}\n"
+        f"narrower dropped: {result.dropped}\n"
+        f"narrower reason: {result.reason}\n"
+        f"appended bodies: "
+        f"{[m.body[:160] for m in appended]}"
+    )
+    assert "role-ciso" in result.kept, (
+        f"CISO was the addressee but didn't make the final active "
+        f"set. AI yield: {ai_set}, narrower kept: {result.kept}, "
+        f"reason: {result.reason}, appended: "
+        f"{[m.body[:160] for m in appended]}"
+    )
+
+
 async def test_no_attempt_to_call_removed_rationale_tool(
     anthropic_client: Any,
     play_model: str,

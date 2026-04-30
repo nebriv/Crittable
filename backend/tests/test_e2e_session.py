@@ -3653,3 +3653,110 @@ def test_ws_submit_truncates_with_marker_and_warning(monkeypatch) -> None:
         body = creator_msgs[-1]["body"]
         assert body.startswith("y" * 20)
         assert "[message truncated by server]" in body
+
+
+def test_aar_export_filename_slug_strips_non_ascii() -> None:
+    """Regression for the captured 2026-04-30 production 500.
+
+    The plan title "Operation Frozen Ledger — AMNH Ransomware
+    Tabletop" contains an em-dash. Pre-fix, that em-dash flowed into
+    the ``Content-Disposition`` header which starlette encodes as
+    latin-1 — producing a UnicodeEncodeError + 500 instead of the
+    AAR download. The slug builder is now ASCII-only.
+    """
+
+    from app.api.routes import _ascii_filename_slug
+
+    # The exact failure case from the production traceback.
+    assert (
+        _ascii_filename_slug("Operation Frozen Ledger — AMNH Ransomware Tabletop")
+        == "operation-frozen-ledger-amnh-ransomware"
+    )
+    # Other non-ASCII shapes that previously would have leaked
+    # through: accented letters, smart quotes, emoji, mixed scripts.
+    # All collapse to ASCII letters + single-dash separators.
+    assert _ascii_filename_slug("Café Résumé") == "caf-r-sum"
+    assert _ascii_filename_slug("“Quoted”") == "quoted"
+    assert _ascii_filename_slug("🚨 Crisis 🚨") == "crisis"
+    # Pure non-ASCII titles fall back to "exercise" instead of "".
+    assert _ascii_filename_slug("———") == "exercise"
+    assert _ascii_filename_slug("") == "exercise"
+    assert _ascii_filename_slug(None) == "exercise"
+    # Length cap is enforced (40 chars by default).
+    long_title = "a" * 100
+    assert len(_ascii_filename_slug(long_title)) <= 40
+    # Embedded whitespace collapses to a single dash.
+    assert _ascii_filename_slug("Hello   World") == "hello-world"
+
+
+def test_player_can_set_own_display_name(client: TestClient) -> None:
+    """The join-intro flow POSTs the player's typed name here so it
+    propagates to other participants. Pre-fix the player's name lived
+    in localStorage only — peers saw the bare role label.
+    """
+
+    seats = _create_and_seat(client, role_count=2)
+    sid = seats["session_id"]
+    creator_token = seats["creator_token"]
+    creator_role_id = seats["role_ids"][0]
+    player_role_id = seats["role_ids"][1]
+    player_token = seats["role_tokens"][player_role_id]
+
+    # Player sets their own display_name.
+    r = client.post(
+        f"/api/sessions/{sid}/roles/me/display_name?token={player_token}",
+        json={"display_name": "Bridget"},
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["role_id"] == player_role_id
+    assert body["display_name"] == "Bridget"
+
+    # Snapshot reflects the rename for ALL participants — that's the
+    # whole point; pre-fix the localStorage approach made the name
+    # visible only to the player themselves.
+    snap = client.get(f"/api/sessions/{sid}?token={creator_token}").json()
+    roles_by_id = {r["id"]: r for r in snap["roles"]}
+    assert roles_by_id[player_role_id]["display_name"] == "Bridget"
+
+    # The creator cannot use this endpoint to rename someone else —
+    # the role_id comes from the token, not from a query param. Two
+    # ways to verify: (a) creator's token renames the creator, not
+    # the player.
+    r2 = client.post(
+        f"/api/sessions/{sid}/roles/me/display_name?token={creator_token}",
+        json={"display_name": "Renamed Creator"},
+    )
+    assert r2.status_code == 200
+    snap2 = client.get(f"/api/sessions/{sid}?token={creator_token}").json()
+    roles2 = {r["id"]: r for r in snap2["roles"]}
+    assert roles2[creator_role_id]["display_name"] == "Renamed Creator"
+    # Player's name unchanged by creator's self-rename
+    assert roles2[player_role_id]["display_name"] == "Bridget"
+
+
+def test_player_display_name_validation_rejects_blank(client: TestClient) -> None:
+    """Pydantic guards: blank or oversized names get a 4xx."""
+
+    seats = _create_and_seat(client, role_count=2)
+    sid = seats["session_id"]
+    player_token = seats["role_tokens"][seats["role_ids"][1]]
+
+    r = client.post(
+        f"/api/sessions/{sid}/roles/me/display_name?token={player_token}",
+        json={"display_name": ""},
+    )
+    assert r.status_code == 422, r.text
+
+    r = client.post(
+        f"/api/sessions/{sid}/roles/me/display_name?token={player_token}",
+        json={"display_name": "x" * 65},
+    )
+    assert r.status_code == 422, r.text
+
+    # Whitespace-only is a 409 (manager strips and rejects empty)
+    r = client.post(
+        f"/api/sessions/{sid}/roles/me/display_name?token={player_token}",
+        json={"display_name": "   "},
+    )
+    assert r.status_code == 409, r.text

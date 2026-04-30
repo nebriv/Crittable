@@ -7,14 +7,28 @@ import { TableScroll } from "./TableScroll";
 interface Props {
   messages: MessageView[];
   roles: RoleView[];
+  /**
+   * Live AI text streaming: previously this prop fed a green
+   * "AI Facilitator (streaming…)" bubble that rendered the
+   * concatenated chunk deltas as they arrived. The bubble was visible
+   * to players, but the final ``message_complete`` payload sometimes
+   * diverged from the chunk concatenation (the model writes a short
+   * rationale then a separate broadcast; chunk text is the rationale,
+   * final body is the broadcast). Players read that as the AI
+   * silently rewriting its answer mid-flight, which is a trust hit.
+   *
+   * The prop is now intentionally ignored at render time: chunks
+   * trigger the typing indicator (via ``aiThinking``) but never paint
+   * partial body text. Kept for backwards compat with the facilitator
+   * tab during the transition; will be removed once both call-sites
+   * stop passing it.
+   */
   streamingText?: string;
   /**
    * True when the backend is doing AI work (any tier — play, interject,
-   * setup, briefing, AAR, guardrail) but no streaming chunks have arrived
-   * yet. Renders an inline "AI is thinking…" bubble so a scrolled
-   * participant doesn't have to look at the StatusBar. Driven primarily
-   * by ``ai_thinking`` WS events from the LLM-call boundary, with a
-   * ``state``-based fallback for reconnect.
+   * setup, briefing, AAR, guardrail). Renders an inline
+   * "AI Facilitator is typing…" indicator so a scrolled participant
+   * doesn't have to look at the StatusBar.
    */
   aiThinking?: boolean;
   /**
@@ -28,6 +42,15 @@ interface Props {
   aiStatusLabel?: string;
   /** role_ids of human players currently typing (excluding the local user). */
   typingRoleIds?: string[];
+  /**
+   * When true, the most recent AI bubble is rendered with an amber
+   * focus ring so a player who's now active can spot the message they
+   * need to respond to without scrolling. Pairs with the
+   * "Awaiting your response" chip near the composer; the two cues
+   * together mean a non-addressed-but-still-active role can't miss
+   * that they're being waited on.
+   */
+  highlightLastAi?: boolean;
 }
 
 /**
@@ -114,12 +137,26 @@ function MarkdownBody({ body }: { body: string }) {
 export function Transcript({
   messages,
   roles,
-  streamingText,
+  // streamingText is intentionally not destructured — see the prop
+  // docstring. We accept it so existing callers don't break, but we
+  // never render partial chunk text.
   aiThinking,
   aiStatusLabel,
   typingRoleIds,
+  highlightLastAi,
 }: Props) {
   const roleById = new Map(roles.map((r) => [r.id, r]));
+  // Find the index of the latest AI-authored bubble (ai_text or
+  // critical_inject). Only that one gets the focus ring; an older AI
+  // message in the transcript stays visually neutral.
+  let lastAiIndex = -1;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const k = messages[i].kind;
+    if (k === "ai_text" || k === "critical_inject") {
+      lastAiIndex = i;
+      break;
+    }
+  }
   const typing = (typingRoleIds ?? []).flatMap((id) => {
     const r = roleById.get(id);
     return r ? [`${r.label}${r.display_name ? ` · ${r.display_name}` : ""}`] : [];
@@ -139,7 +176,7 @@ export function Transcript({
       aria-live="polite"
       aria-relevant="additions text"
     >
-      {messages.map((m) => {
+      {messages.map((m, idx) => {
         const role = m.role_id ? roleById.get(m.role_id) : undefined;
         const actor = role
           ? `${role.label}${role.display_name ? ` · ${role.display_name}` : ""}`
@@ -158,11 +195,20 @@ export function Transcript({
         // lists). Everything else stays as plain text — players type prose,
         // system notes are pre-formatted.
         const isAi = m.kind === "ai_text" || m.kind === "critical_inject";
+        // Amber focus ring on the latest AI bubble when this viewer is
+        // the active responder. Pairs with the "Awaiting your response"
+        // chip near the composer (Play.tsx). Critical-inject bubbles
+        // already have their own red emphasis so we skip the ring there
+        // to avoid double-glow noise.
+        const focusRing =
+          highlightLastAi && idx === lastAiIndex && m.kind === "ai_text"
+            ? "ring-2 ring-amber-400/70 ring-offset-1 ring-offset-slate-950 shadow-[0_0_0_2px_rgba(252,211,77,0.15)]"
+            : "";
         return (
           <article
             key={m.id}
             id={`msg-${m.id}`}
-            className={`scroll-mt-24 min-w-0 break-words rounded-md border p-3 ${colour}`}
+            className={`scroll-mt-24 min-w-0 break-words rounded-md border p-3 ${colour} ${focusRing}`}
             data-kind={m.kind}
             data-message-id={m.id}
           >
@@ -181,24 +227,7 @@ export function Transcript({
           </article>
         );
       })}
-      {streamingText ? (
-        <article
-          className="min-w-0 break-words rounded-md border border-emerald-500/60 bg-emerald-900/30 p-3"
-          aria-busy="true"
-        >
-          <header className="mb-1 text-xs uppercase tracking-wide text-emerald-300">
-            AI Facilitator (streaming…)
-          </header>
-          {/*
-           * Render the streaming preview as plain pre-wrap so half-tokens
-           * (e.g. ``**bo``) don't visually flicker between bold and plain
-           * mid-stream. The ``message_complete`` event re-renders the final
-           * bubble through ``MarkdownBody`` so the user still sees real
-           * markdown when the message lands.
-           */}
-          <p className="whitespace-pre-wrap text-sm leading-relaxed">{streamingText}</p>
-        </article>
-      ) : aiThinking ? (
+      {aiThinking ? (
         <ChatIndicator
           label={
             aiStatusLabel
