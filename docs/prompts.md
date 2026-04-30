@@ -161,12 +161,16 @@ This block carries the operational rules. Highlights:
 - **Answer pending questions first.** If a recent player message
   ends in `?` and was directed at the facilitator, the turn's first
   `broadcast` or `address_role` must answer it concretely.
-- **Give active roles something to act on — usually.** Pair
+- **Give active roles something to act on — every turn.** Always pair
   `set_active_roles` with a `broadcast` / `address_role` carrying the
-  next concrete question or task. Yielding silently *is* fine when
-  players are clearly mid-discussion. `inject_event` /
-  `inject_critical_event` / `mark_timeline_point` are FYI / pin
-  tools — they do NOT satisfy this rule on their own.
+  next concrete question or task. Silent yields are not used in this
+  exercise — even when players have just spoken, the turn must
+  answer/acknowledge them and brief the next decision. `inject_event`
+  / `inject_critical_event` / `mark_timeline_point` are FYI / pin
+  tools — they do NOT satisfy this rule on their own. (See
+  [`turn-lifecycle.md`](turn-lifecycle.md) for the validator + recovery
+  decision tree behind this rule and the 2026-04-30 silent-yield
+  regression that motivated tightening the wording.)
 - **Stage direction is NOT a drive.** If you have just used
   `inject_event` or `mark_timeline_point` on this turn, you have NOT
   yet given the active roles a question to answer. Pair with

@@ -1155,6 +1155,201 @@ def test_drive_required_kill_switch_drops_drive_from_contract() -> None:
     assert res.ok, "kill-switch must allow yield without drive"
 
 
+def test_player_question_does_not_downgrade_drive_recovery(
+    client: TestClient,
+) -> None:
+    """Regression for the captured production bug (session
+    ``e4d6503317d6``): player asks the AI a direct ``?``-terminated
+    question, AI's tool calls are only ``record_decision_rationale``,
+    and the legacy soft-drive carve-out used to downgrade the missing
+    DRIVE to a warning — leaving the player's question unanswered. The
+    carve-out's predicate matches the *opposite* case (player asking
+    AI), and the kill-switch
+    ``LLM_RECOVERY_DRIVE_SOFT_ON_OPEN_QUESTION`` is now default-off.
+    Verify the cascade fires and the recovery broadcast lands."""
+
+    from tests.mock_anthropic import MockAnthropic, _ContentBlock, _Response
+
+    seats = _create_and_seat(client, role_count=2)
+    sid = seats["session_id"]
+    cr = seats["creator_token"]
+    creator_role = seats["role_ids"][0]
+    other_role = seats["role_ids"][1]
+
+    # Healthy briefing turn so we land in mid-exercise cleanly.
+    briefing = _Response(
+        content=[
+            _ContentBlock(
+                type="tool_use",
+                name="broadcast",
+                input={"message": "Welcome — your move."},
+                id="tu_brief",
+            ),
+            _ContentBlock(
+                type="tool_use",
+                name="set_active_roles",
+                input={"role_ids": [creator_role]},
+                id="tu_yield_brief",
+            ),
+        ],
+        stop_reason="tool_use",
+    )
+    # The bad turn: only bookkeeping, no DRIVE, no YIELD. Mirrors the
+    # exact tool surface from the production log.
+    bad_mid_turn = _Response(
+        content=[
+            _ContentBlock(
+                type="tool_use",
+                name="record_decision_rationale",
+                input={"rationale": "Beat 1: triage — narrating logs."},
+                id="tu_rationale",
+            )
+        ],
+        stop_reason="tool_use",
+    )
+    drive_recovery = _Response(
+        content=[
+            _ContentBlock(
+                type="tool_use",
+                name="broadcast",
+                input={
+                    "message": (
+                        "Defender shows the service account auth'd "
+                        "from 5 hosts in the last 90 minutes. "
+                        "Player_1 — what's our containment posture?"
+                    )
+                },
+                id="tu_drive_recovery",
+            )
+        ],
+        stop_reason="tool_use",
+    )
+    yield_recovery = _Response(
+        content=[
+            _ContentBlock(
+                type="tool_use",
+                name="set_active_roles",
+                input={"role_ids": [other_role]},
+                id="tu_yield_recovery",
+            )
+        ],
+        stop_reason="tool_use",
+    )
+    mock = MockAnthropic(
+        {"play": [briefing, bad_mid_turn, drive_recovery, yield_recovery]}
+    )
+    client.app.state.llm.set_transport(mock.messages)
+
+    client.post(f"/api/sessions/{sid}/setup/skip?token={cr}")
+    client.post(f"/api/sessions/{sid}/start?token={cr}")
+
+    # Creator submits a `?`-terminated message — exactly the case that
+    # used to trip the carve-out and silence the AI's response.
+    creator_token = seats["role_tokens"][creator_role]
+    with client.websocket_connect(
+        f"/ws/sessions/{sid}?token={creator_token}"
+    ) as ws:
+        ws.send_json(
+            {
+                "type": "submit_response",
+                "content": "Yeah we can pull account activity. What do we see?",
+            }
+        )
+        for _ in range(8):
+            try:
+                ws.receive_json(mode="text")
+            except Exception:
+                break
+
+    # The mid-exercise turn must produce a recovery broadcast despite
+    # the player's `?`. Pre-fix: this broadcast was missing and the
+    # turn ended on a silent yield.
+    snap = client.get(f"/api/sessions/{sid}?token={cr}").json()
+    broadcasts = [m for m in snap["messages"] if m.get("tool_name") == "broadcast"]
+    assert len(broadcasts) >= 2, (
+        "drive recovery must add a broadcast even when the player's "
+        "message ends in `?`; got broadcasts: "
+        f"{[b.get('body','')[:50] for b in broadcasts]}"
+    )
+    # The recovery broadcast must answer the player's question, not
+    # just brief a generic next beat. Locks the prompt-shape contract:
+    # if a future edit pins ``broadcast`` but lets the model return an
+    # off-topic message, this assertion catches it.
+    recovery_body = broadcasts[-1].get("body", "")
+    assert "Defender" in recovery_body, (
+        "recovery broadcast must answer the player's question (about "
+        "Defender service-account activity), got: "
+        f"{recovery_body[:100]!r}"
+    )
+
+    # Both recovery directives must have been pinned in the play call
+    # sequence in priority order: broadcast first (DRIVE recovery,
+    # priority 10), then set_active_roles (YIELD recovery, priority
+    # 20). Order matters — a future regression that runs YIELD before
+    # DRIVE would yield silently.
+    play_calls = [c for c in mock.messages.calls if "play" in c.get("model", "")]
+    pinned = [c.get("tool_choice") for c in play_calls if c.get("tool_choice")]
+    broadcast_pin = {"type": "tool", "name": "broadcast"}
+    yield_pin = {"type": "tool", "name": "set_active_roles"}
+    assert broadcast_pin in pinned, (
+        f"missing drive recovery (broadcast pin); pins seen: {pinned}"
+    )
+    assert yield_pin in pinned, (
+        f"missing yield recovery (set_active_roles pin); pins seen: {pinned}"
+    )
+    assert pinned.index(broadcast_pin) < pinned.index(yield_pin), (
+        "drive recovery (broadcast) must run before yield recovery "
+        f"(set_active_roles); pins in order: {pinned}"
+    )
+
+    # The recovery system addendum reaches the play call as part of
+    # the system-message segment list. Lock the wording so a future
+    # edit that drops the "answer the player's `?` first" directive
+    # or the Block-4 plan-disclosure defense fails this test instead
+    # of silently regressing. We pick the drive-recovery call by its
+    # tool_choice pin (NOT by index into the filtered pinned list,
+    # which would be off-by-one relative to play_calls).
+    drive_call = next(
+        c for c in play_calls if c.get("tool_choice") == broadcast_pin
+    )
+    sys_blocks = drive_call.get("system", [])
+    if isinstance(sys_blocks, list):
+        sys_text = " ".join(b.get("text", "") for b in sys_blocks if isinstance(b, dict))
+    else:
+        sys_text = str(sys_blocks)
+    assert "answer it concretely" in sys_text, (
+        "drive-recovery system addendum must instruct the model to "
+        f"answer the player's question first; system text: {sys_text[-400:]!r}"
+    )
+    assert "Block 4 hard boundaries still apply" in sys_text, (
+        "drive-recovery addendum must reference Block 4 plan-disclosure "
+        f"defense; system text: {sys_text[-400:]!r}"
+    )
+
+    # The drive-recovery user-block should embed the player's verbatim
+    # question (capped) so the model is grounded on which `?` to
+    # answer. Without this an under-grounded model can satisfy the
+    # DRIVE slot via a generic "what's the move?" broadcast and leave
+    # the original question untouched — same regression in disguise.
+    user_blocks = drive_call.get("messages", [])
+    user_text_chunks: list[str] = []
+    for b in user_blocks:
+        if not isinstance(b, dict) or b.get("role") != "user":
+            continue
+        content = b.get("content")
+        if isinstance(content, str):
+            user_text_chunks.append(content)
+        elif isinstance(content, list):
+            for seg in content:
+                if isinstance(seg, dict) and seg.get("type") == "text":
+                    user_text_chunks.append(seg.get("text", ""))
+    user_text = " ".join(user_text_chunks)
+    assert "What do we see?" in user_text, (
+        "drive-recovery user nudge must quote the unanswered player "
+        f"question verbatim; user text tail: {user_text[-400:]!r}"
+    )
+
+
 def test_compound_violation_runs_drive_then_yield_sequentially(client: TestClient) -> None:
     """When a turn fires neither DRIVE nor YIELD, the engine must run
     TWO sequential recovery calls: first narrowed to ``broadcast``,

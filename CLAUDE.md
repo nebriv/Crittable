@@ -65,6 +65,8 @@ Custom tools, resources, and prompts (Skills-style) are loaded at startup via en
 
 ## Engine-side phase policy (read before touching any LLM call site)
 
+> **Pair this section with [`docs/turn-lifecycle.md`](docs/turn-lifecycle.md)** — the load-bearing reference for the play-turn engine. Flowcharts of every gate, slot, contract, validator branch, and recovery directive, plus a full write-up of the 2026-04-30 silent-yield regression. Read both before touching `app/sessions/turn_validator.py`, `app/sessions/turn_driver.py`, `app/sessions/slots.py`, or `app/llm/dispatch.py`.
+
 [`backend/app/sessions/phase_policy.py`](backend/app/sessions/phase_policy.py) is the **single source of truth** for "what is the LLM allowed to do in tier X at session state Y?" Do not duplicate these rules elsewhere. Three enforcement points consume it:
 
 1. **`turn_driver.py`** — every `run_*_turn` calls `assert_state(tier, session.state)` at entry. A `PhaseViolation` here means the calling code is wrong, not the LLM.
