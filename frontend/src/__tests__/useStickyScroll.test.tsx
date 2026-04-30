@@ -115,6 +115,15 @@ interface HarnessProps {
    *  just wrote. */
   scrollHeight: number;
   clientHeight: number;
+  /** Conditionally render the scroll element. Lets a test simulate
+   *  the production scenario where the hook lives in a long-lived
+   *  parent (Facilitator) and the scroll element is mounted /
+   *  unmounted by phase / session changes — e.g.
+   *  ``handleNewSession`` resets to the intro screen, then a new
+   *  session re-mounts the scroll div within the same hook instance.
+   *  The hook must reset its per-element state on identity change so
+   *  the new element gets the initial-pin treatment. */
+  mountElement?: boolean;
   bindForceScroll?: (fn: () => void) => void;
   slack?: number;
 }
@@ -130,6 +139,7 @@ function Harness({
   streamingActive = false,
   scrollHeight,
   clientHeight,
+  mountElement = true,
   bindForceScroll,
   slack,
 }: HarnessProps) {
@@ -167,12 +177,14 @@ function Harness({
     [scrollRef],
   );
 
-  return (
+  return mountElement ? (
     <div data-testid="scroll-region" ref={combinedRef}>
       {Array.from({ length: messageCount }, (_, i) => (
         <div key={i}>message {i}</div>
       ))}
     </div>
+  ) : (
+    <div data-testid="placeholder">no scroll region rendered</div>
   );
 }
 
@@ -446,6 +458,51 @@ describe("useStickyScroll", () => {
     );
     // distanceFromBottom = 2300 - 100 - 400 = 1800 > 120 → leave alone.
     expect(el.scrollTop).toBe(100);
+  });
+
+  it("re-pins when the scroll element remounts within the same hook instance", () => {
+    // Production scenario: Facilitator's ``handleNewSession()`` resets
+    // ``state`` to ``null`` and routes back to the intro screen,
+    // unmounting the chat scroll region. A new session then re-mounts
+    // a fresh scroll element. The hook itself stays mounted (the
+    // Facilitator component persists), so per-element state like
+    // ``didInitialScrollRef`` would carry over from the previous
+    // session and skip the initial pin on the new element — re-
+    // introducing the #79 stuck-at-top bug for the second exercise of
+    // the same browser tab. The hook resets that flag on element
+    // identity change to defend against this.
+    const { getByTestId, queryByTestId, rerender } = render(
+      <Harness messageCount={20} scrollHeight={2000} clientHeight={400} />,
+    );
+    const el1 = getByTestId("scroll-region");
+    expect(el1.scrollTop).toBe(2000);
+
+    // Unmount the scroll region (e.g. routing back to the intro
+    // screen). The hook stays mounted; ``scrollRef`` is called with
+    // null on detach.
+    rerender(
+      <Harness
+        messageCount={20}
+        scrollHeight={2000}
+        clientHeight={400}
+        mountElement={false}
+      />,
+    );
+    expect(queryByTestId("scroll-region")).toBeNull();
+
+    // Re-mount the scroll region with a fresh element (e.g. starting
+    // a new session). The hook should treat this as a new initial
+    // mount and pin to the bottom of the new content.
+    rerender(
+      <Harness
+        messageCount={30}
+        scrollHeight={3000}
+        clientHeight={400}
+        mountElement={true}
+      />,
+    );
+    const el2 = getByTestId("scroll-region");
+    expect(el2.scrollTop).toBe(3000);
   });
 
   it("re-pins to bottom after unmount + remount", () => {

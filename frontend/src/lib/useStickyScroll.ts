@@ -51,7 +51,20 @@ export function useStickyScroll<T extends HTMLElement = HTMLDivElement>(
   const [forceNonce, setForceNonce] = useState(0);
 
   const scrollRef = useCallback((el: T | null) => {
+    const previous = elRef.current;
     elRef.current = el;
+    if (el !== previous) {
+      // Element identity changed. Reset per-element state so a
+      // remount within the same hook instance gets fresh initial-pin
+      // treatment. Without this, Facilitator's ``handleNewSession()``
+      // (which routes back to the intro screen — unmounting the
+      // scroll region — and a new session remounts a fresh one) would
+      // skip the initial-pin branch and re-introduce the #79
+      // stuck-at-top bug for the second exercise of the same tab.
+      // Same scenario applies to anything that swaps the scroll
+      // element while keeping the parent component mounted.
+      didInitialScrollRef.current = false;
+    }
     if (el !== null) {
       setRefVersion((v) => v + 1);
     }
