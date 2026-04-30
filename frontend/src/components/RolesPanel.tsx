@@ -21,8 +21,12 @@ interface Props {
 /**
  * Creator-only role manager: add a role, copy a role's join link, kick
  * (revoke + reissue), or remove a role entirely. Each per-role action is
- * a single round-trip; the join URL is rendered inline + auto-copied.
+ * a single round-trip; copies go straight to the clipboard with a
+ * transient "Copied!" badge on the originating button — no token ever
+ * renders on screen (issue #82, screenshare hijack risk).
  */
+const COPIED_FLASH_MS = 2000;
+
 export function RolesPanel({
   sessionId,
   creatorToken,
@@ -34,7 +38,12 @@ export function RolesPanel({
   connectedRoleIds,
 }: Props) {
   const [newRole, setNewRole] = useState("");
-  const [linksByRole, setLinksByRole] = useState<Record<string, string>>({});
+  // Set of role_ids whose Copy/Add/Kick button is currently flashing
+  // "Copied!". Holds no token data — copies happen inside the handler
+  // via navigator.clipboard, never via React state.
+  const [copiedRoleIds, setCopiedRoleIds] = useState<ReadonlySet<string>>(
+    () => new Set(),
+  );
   const [hint, setHint] = useState<string | null>(null);
   const origin = window.location.origin;
 
@@ -43,16 +52,45 @@ export function RolesPanel({
     setTimeout(() => setHint(null), 2500);
   }
 
+  function markCopied(roleId: string) {
+    setCopiedRoleIds((prev) => {
+      const next = new Set(prev);
+      next.add(roleId);
+      return next;
+    });
+    setTimeout(() => {
+      setCopiedRoleIds((prev) => {
+        if (!prev.has(roleId)) return prev;
+        const next = new Set(prev);
+        next.delete(roleId);
+        return next;
+      });
+    }, COPIED_FLASH_MS);
+  }
+
+  async function writeUrl(url: string): Promise<boolean> {
+    try {
+      await navigator.clipboard?.writeText(url);
+      return true;
+    } catch (err) {
+      console.warn("[RolesPanel] clipboard write failed", err);
+      return false;
+    }
+  }
+
   async function add(e: FormEvent) {
     e.preventDefault();
     if (!newRole.trim()) return;
     try {
       const r = await api.addRole(sessionId, creatorToken, { label: newRole.trim() });
       const url = `${origin}/play/${sessionId}/${encodeURIComponent(r.token)}`;
-      setLinksByRole((s) => ({ ...s, [r.role_id]: url }));
-      await navigator.clipboard?.writeText(url).catch(() => undefined);
+      const ok = await writeUrl(url);
       setNewRole("");
-      flash(`Added "${r.label}" — join link copied`);
+      if (ok) {
+        markCopied(r.role_id);
+      } else {
+        onError("Could not copy link to clipboard. Use Kick & reissue to retry.");
+      }
       onRoleAdded();
     } catch (err) {
       onError(err instanceof Error ? err.message : String(err));
@@ -63,9 +101,12 @@ export function RolesPanel({
     try {
       const r = await api.reissueRole(sessionId, creatorToken, roleId);
       const url = `${origin}/play/${sessionId}/${encodeURIComponent(r.token)}`;
-      setLinksByRole((s) => ({ ...s, [roleId]: url }));
-      await navigator.clipboard?.writeText(url).catch(() => undefined);
-      flash("Join link copied to clipboard");
+      const ok = await writeUrl(url);
+      if (ok) {
+        markCopied(roleId);
+      } else {
+        onError("Could not copy link to clipboard.");
+      }
     } catch (err) {
       onError(err instanceof Error ? err.message : String(err));
     }
@@ -82,9 +123,12 @@ export function RolesPanel({
     try {
       const r = await api.revokeRole(sessionId, creatorToken, roleId);
       const url = `${origin}/play/${sessionId}/${encodeURIComponent(r.token)}`;
-      setLinksByRole((s) => ({ ...s, [roleId]: url }));
-      await navigator.clipboard?.writeText(url).catch(() => undefined);
-      flash(`Kicked. New join link copied — share with the replacement.`);
+      const ok = await writeUrl(url);
+      if (ok) {
+        markCopied(roleId);
+      } else {
+        onError("Kicked, but copying the new link failed. Use Copy link to retry.");
+      }
       onRoleChanged();
     } catch (err) {
       onError(err instanceof Error ? err.message : String(err));
@@ -95,10 +139,11 @@ export function RolesPanel({
     if (!confirm(`Remove the "${label}" role from this session?`)) return;
     try {
       await api.removeRole(sessionId, creatorToken, roleId);
-      setLinksByRole((s) => {
-        const out = { ...s };
-        delete out[roleId];
-        return out;
+      setCopiedRoleIds((prev) => {
+        if (!prev.has(roleId)) return prev;
+        const next = new Set(prev);
+        next.delete(roleId);
+        return next;
       });
       flash(`Removed "${label}".`);
       onRoleChanged();
@@ -180,10 +225,17 @@ export function RolesPanel({
                     type="button"
                     onClick={() => copyExistingLink(r.id)}
                     disabled={busy}
-                    className="rounded border border-slate-700 px-2 py-0.5 text-xs text-slate-200 hover:bg-slate-800 disabled:opacity-50"
+                    className={
+                      "rounded border px-2 py-0.5 text-xs disabled:opacity-50 " +
+                      (copiedRoleIds.has(r.id)
+                        ? "border-emerald-500 bg-emerald-900/40 text-emerald-100"
+                        : "border-slate-700 text-slate-200 hover:bg-slate-800")
+                    }
                     title="Re-mint and copy the join link without invalidating any existing tabs."
                   >
-                    Copy link
+                    <span aria-live="polite">
+                      {copiedRoleIds.has(r.id) ? "Copied!" : "Copy link"}
+                    </span>
                   </button>
                   <button
                     type="button"
@@ -206,11 +258,6 @@ export function RolesPanel({
                 </div>
               ) : null}
             </div>
-            {linksByRole[r.id] ? (
-              <p className="break-all rounded bg-slate-900 p-1 text-xs text-emerald-300">
-                {linksByRole[r.id]}
-              </p>
-            ) : null}
           </li>
           );
         })}
