@@ -72,6 +72,27 @@ either (a) remove it, or (b) split into two tools where one is
 clearly the right answer, or (c) accept the recovery cascade as the
 backstop.
 
+### Trap 4b: Phantom-tool references survive a removal
+
+After removing a tool from `PLAY_TOOLS`, **every backticked mention of
+its name in a model-facing string is now a bug**. The model can't
+call a tool that isn't in the API's `tools=[...]` array, but seeing
+the name in the prompt confuses it and wastes tokens. The 2026-04-30
+redesign removed three tools and missed eight separate references to
+them in prompt blocks / recovery directives / tool descriptions. Each
+one slipped past the live tool-routing tests because they don't fail
+on "the model was told about X but couldn't pick X" — only on routing
+outcomes.
+
+**Mitigation**: `backend/tests/test_prompt_tool_consistency.py`
+reconstructs every model-facing string per tier, regex-extracts
+backticked snake_case names, and asserts each one is a current
+tool in the tier's palette or a known non-tool concept. The
+removal protocol in [`CLAUDE.md`](../CLAUDE.md) §"Prompt ↔ tool
+consistency" requires adding the removed name to
+`HISTORICAL_REMOVED_PLAY_TOOLS` so the test will flag any future
+re-introduction.
+
 ### Trap 5: Trigger phrases bleed into adjacent contexts
 
 `share_data` triggered on player phrases like *"pulling the logs"*.

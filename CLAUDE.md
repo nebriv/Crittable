@@ -77,6 +77,23 @@ Custom tools, resources, and prompts (Skills-style) are loaded at startup via en
 
 Adding a new tier or tool: update `phase_policy.POLICIES`, add `ALLOWED_*_TOOL_NAMES` to the relevant frozenset, and run `pytest backend/tests/test_phase_policy.py`. Adding a new tool to an existing tier: add it to that tier's `_<TIER>_TOOL_NAMES` constant.
 
+## Prompt ↔ tool consistency (don't tell the model about tools that don't exist)
+
+`backend/tests/test_prompt_tool_consistency.py` is a **mandatory regression net** for the class of bug where a model-facing string mentions a tool that isn't in the tier's palette. The 2026-04-30 redesign removed three tools from `PLAY_TOOLS` but missed cleaning up eight separate model-facing references to them in prompt blocks, recovery directives, kickoff messages, and tool descriptions. The model can't *call* a tool that's absent from the API request, but seeing the name in the prompt confuses it, wastes tokens, and misroutes its attention. The test catches this by reconstructing every model-facing string per tier, regex-extracting backticked snake_case names, and asserting each one is either a current tool in the tier's palette or a known non-tool concept.
+
+**Removal protocol** (every tool removal must do all four):
+
+1. Drop the tool from `PLAY_TOOLS` / `SETUP_TOOLS` / `AAR_TOOL` in `app/llm/tools.py`.
+2. Add the name to `HISTORICAL_REMOVED_PLAY_TOOLS` (or the tier-equivalent set) in `backend/tests/test_prompt_tool_consistency.py`. **Do not skip this** — it's how future regressions get caught.
+3. Search the codebase for the name in backticks: `grep -rn '`<name>`' backend/app frontend/src` — every hit in a model-facing string is a bug. Hits in code comments, removal-explanation docstrings, and `BUILTIN_TOOL_NAMES` (extension shadowing prevention) are intentional.
+4. Run `pytest backend/tests/test_prompt_tool_consistency.py` — must pass. Then run `pytest backend/tests/live/` against `ANTHROPIC_API_KEY` to confirm no model-routing regression.
+
+**Addition protocol**:
+
+1. Add the tool to the tier's array.
+2. The consistency test pulls names directly from those arrays — no test edit needed for additions.
+3. If the tool's input schema introduces a new field name that appears in prompt copy (e.g. `share_data`'s `label` field), add the field name to `_NON_TOOL_ALLOWLIST` in the test file.
+
 ## Coding conventions
 
 - Python: `ruff` (config in `backend/pyproject.toml`), `mypy --strict`. No `print` or stdlib `logging` in business code — use `structlog`.
