@@ -209,7 +209,7 @@ sequenceDiagram
     Dev->>Live: 8. Run live tool-routing suite
     Live-->>Dev: PASS / FAIL routing
     alt routing fails
-        Dev->>Code: Tighten description; iterate
+        Dev->>Code: Tighten description and iterate
         Dev->>Live: Re-run live suite
     end
     Dev->>Code: 9. Update docs/turn-lifecycle.md

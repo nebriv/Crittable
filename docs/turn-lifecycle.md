@@ -278,17 +278,17 @@ turn before the validator runs.
 flowchart TD
     Start([contract_for called]):::start
 
-    Start --> Q1{tier == 'play'?}
+    Start --> Q1{"tier == 'play'?"}
     Q1 -- "no<br/>(setup/aar/guardrail)" --> NoOp["TurnContract(required={})<br/>= validator no-ops"]:::noop
-    Q1 -- "yes" --> Q2{mode == 'interject'?}
+    Q1 -- "yes" --> Q2{"mode == 'interject'?"}
 
     Q2 -- "yes" --> Interject["PLAY_CONTRACT_INTERJECT<br/>required = {DRIVE}<br/>forbidden = {YIELD, TERMINATE}<br/>soft_drive_when_open_question = false"]:::interjectC
-    Q2 -- "no" --> Q3{state == BRIEFING?}
+    Q2 -- "no" --> Q3{"state == BRIEFING?"}
 
     Q3 -- "yes" --> Brief["PLAY_CONTRACT_BRIEFING<br/>required = {DRIVE, YIELD}<br/>soft_drive_when_open_question = false"]:::briefC
     Q3 -- "no" --> Norm["PLAY_CONTRACT_NORMAL<br/>required = {DRIVE, YIELD}<br/>soft_drive_when_open_question = true*"]:::normC
 
-    Norm --> Q4{LLM_RECOVERY_DRIVE_REQUIRED<br/>(env kill-switch)<br/>= false?}
+    Norm --> Q4{"LLM_RECOVERY_DRIVE_REQUIRED<br/>env kill-switch<br/>= false?"}
     Brief --> Q4
     Q4 -- "no (default)" --> Use[Use the contract above]:::useC
     Q4 -- "yes" --> Stripped["TurnContract(required={YIELD})<br/>DRIVE dropped — pre-validator legacy"]:::stripped
@@ -328,25 +328,26 @@ This is the function whose inverted predicate caused the regression. It is a
 ```mermaid
 flowchart TD
     Start([validate called]):::start
-
-    Start --> A[/"Compute forbidden_fired<br/>= cumulative_slots ∩ contract.forbidden_slots"/]
-    A --> B{forbidden_fired<br/>non-empty?}
-    B -- "yes" --> WarnFb["warnings += 'forbidden slots fired: ...'<br/>(no recovery directive — operator's call)"]:::warn
-    B -- "no" --> C
-    WarnFb --> C{"contract.requires_drive<br/>AND DRIVE not in slots?"}
-
-    C -- "no" --> E
-    C -- "yes" --> D{"Carve-out gate<br/>(see sub-tree below)"}:::carveOut
-    D -- "all four conditions true" --> WarnDr["warnings += 'drive missing but downgraded'<br/>(legacy path — kill-switch)"]:::warn
-    D -- "any condition false<br/>(default)" --> ViolDr["violations += drive_recovery_directive<br/>(quoted player ? embedded)"]:::violation
-
-    WarnDr --> E
-    ViolDr --> E
+    A["Compute forbidden_fired<br/>= cumulative_slots ∩ contract.forbidden_slots"]
+    B{"forbidden_fired<br/>non-empty?"}
+    WarnFb["warnings += 'forbidden slots fired: ...'<br/>(no recovery directive — operator's call)"]:::warn
+    C{"contract.requires_drive<br/>AND DRIVE not in slots?"}
+    D{"Carve-out gate<br/>see sub-tree below"}:::carveOut
+    WarnDr["warnings += 'drive missing but downgraded'<br/>(legacy path — kill-switch)"]:::warn
+    ViolDr["violations += drive_recovery_directive<br/>(quoted player ? embedded)"]:::violation
     E{"contract.requires_yield<br/>AND YIELD not in slots<br/>AND TERMINATE not in slots?"}
-    E -- "yes" --> ViolY["violations += strict_yield_directive"]:::violation
-    E -- "no" --> Out
-    ViolY --> Out
+    ViolY["violations += strict_yield_directive"]:::violation
     Out([Return ValidationResult<br/>ok = no violations]):::done
+
+    Start --> A --> B
+    B -- "yes" --> WarnFb --> C
+    B -- "no" --> C
+    C -- "no" --> E
+    C -- "yes" --> D
+    D -- "all four conditions true" --> WarnDr --> E
+    D -- "any condition false (default)" --> ViolDr --> E
+    E -- "yes" --> ViolY --> Out
+    E -- "no" --> Out
 
     classDef start fill:#1f6feb,stroke:#0a3070,color:#fff
     classDef carveOut fill:#cf222e,stroke:#67060c,color:#fff
@@ -447,7 +448,7 @@ sequenceDiagram
 
     Note over Dr: Pick next directive → strict_yield_directive
     Dr->>LLM: Attempt 3 — tools={set_active_roles}, tool_choice=set_active_roles
-    LLM-->>Dr: tool_uses = [set_active_roles([role_id])]
+    LLM-->>Dr: tool_uses = set_active_roles with role_id
     Dr->>Disp: dispatch
     Disp-->>Dr: slots = {YIELD}
     Dr->>V: validate(slots={BOOKKEEPING, DRIVE, YIELD})
@@ -489,25 +490,25 @@ the decision path under both the buggy and the fixed validator.
 
 ```mermaid
 flowchart TD
-    subgraph PRE["BEFORE FIX (LLM_RECOVERY_DRIVE_SOFT_ON_OPEN_QUESTION = true, default)"]
+    subgraph PRE["BEFORE FIX — kill-switch true, legacy default"]
         direction TB
-        A1[Attempt 1: record_decision_rationale<br/>slots = BOOKKEEPING]
-        A1 --> A2{validate}
-        A2 --> A3{Carve-out gate}
-        A3 -- "all 4 conditions true:<br/>• kill-switch ON<br/>• per-contract ON<br/>• player msg ends in '?'<br/>• no new beat" --> A4["DOWNGRADE missing_drive<br/>→ warning only"]:::badPath
-        A4 --> A5["violations = [missing_yield]"]
-        A5 --> A6[Attempt 2: forced set_active_roles]
-        A6 --> A7["Turn ends:<br/>• transcript: [system] Force-advanced<br/>• NO answer to player<br/>• ❌ EXERCISE BROKEN"]:::brokenEnd
+        A1["Attempt 1: record_decision_rationale<br/>slots = BOOKKEEPING"]
+        A1 --> A2{"validate"}
+        A2 --> A3{"Carve-out gate"}
+        A3 -- "all 4 conditions true:<br/>• kill-switch ON<br/>• per-contract ON<br/>• player msg ends in ?<br/>• no new beat" --> A4["DOWNGRADE missing_drive<br/>→ warning only"]:::badPath
+        A4 --> A5["violations = missing_yield"]
+        A5 --> A6["Attempt 2: forced set_active_roles"]
+        A6 --> A7["Turn ends:<br/>• transcript: system Force-advanced<br/>• NO answer to player<br/>• ❌ EXERCISE BROKEN"]:::brokenEnd
     end
 
-    subgraph POST["AFTER FIX (LLM_RECOVERY_DRIVE_SOFT_ON_OPEN_QUESTION = false, new default)"]
+    subgraph POST["AFTER FIX — kill-switch false, new default"]
         direction TB
-        B1[Attempt 1: record_decision_rationale<br/>slots = BOOKKEEPING]
-        B1 --> B2{validate}
-        B2 --> B3{Carve-out gate}
-        B3 -- "first condition false:<br/>kill-switch OFF" --> B4["violations =<br/>[missing_drive, missing_yield]"]:::goodPath
-        B4 --> B5[Attempt 2: forced broadcast<br/>+ user nudge quotes<br/>'What do we see?'<br/>verbatim]
-        B5 --> B6[Attempt 3: forced set_active_roles]
+        B1["Attempt 1: record_decision_rationale<br/>slots = BOOKKEEPING"]
+        B1 --> B2{"validate"}
+        B2 --> B3{"Carve-out gate"}
+        B3 -- "first condition false:<br/>kill-switch OFF" --> B4["violations =<br/>missing_drive + missing_yield"]:::goodPath
+        B4 --> B5["Attempt 2: forced broadcast<br/>+ user nudge quotes<br/>What do we see?<br/>verbatim"]
+        B5 --> B6["Attempt 3: forced set_active_roles"]
         B6 --> B7["Turn ends:<br/>• AI answers SOC's question<br/>• AI briefs next decision<br/>• ✅ EXERCISE PROCEEDS"]:::workingEnd
     end
 
@@ -546,10 +547,10 @@ unit test.
 
 ```mermaid
 flowchart TD
-    A[POST /start] --> B[state = BRIEFING<br/>contract = PLAY_CONTRACT_BRIEFING]
-    B --> C{soft_drive_when_open_question}
-    C -- "false on briefing" --> D[Carve-out can never fire on first turn]
-    D --> E[Missing DRIVE always recovers]
+    A["POST /start"] --> B["state = BRIEFING<br/>contract = PLAY_CONTRACT_BRIEFING"]
+    B --> C{"soft_drive_when_open_question"}
+    C -- "false on briefing" --> D["Carve-out can never fire on first turn"]
+    D --> E["Missing DRIVE always recovers"]
 ```
 
 Why it matters: there is no "open `?`" possible on turn 1 (no prior player
@@ -560,9 +561,9 @@ state machine were ever broken.
 
 ```mermaid
 flowchart TD
-    A[Validator] --> B{TERMINATE in slots?}
-    B -- "yes (end_session fired)" --> C[YIELD requirement satisfied<br/>by TERMINATE]
-    B -- "no" --> D[Standard YIELD check]
+    A["Validator"] --> B{"TERMINATE in slots?"}
+    B -- "yes (end_session fired)" --> C["YIELD requirement satisfied<br/>by TERMINATE"]
+    B -- "no" --> D["Standard YIELD check"]
 ```
 
 `end_session` substitutes for `set_active_roles` — the AAR pipeline is what players
@@ -579,9 +580,9 @@ fires `ESCALATE` (not DRIVE), so DRIVE recovery still runs.
 
 ```mermaid
 flowchart TD
-    A[Operator clicks force-advance] --> B[Append [system] Force-advanced by X message]
-    B --> C[run_play_turn]
-    C --> D[Same validator, same cascade]
+    A["Operator clicks force-advance"] --> B["Append a system Force-advanced message"]
+    B --> C["run_play_turn"]
+    C --> D["Same validator, same cascade"]
     D --> E["The force-advance does NOT skip recovery —<br/>it just kicks the turn even with missing voices"]
 ```
 
@@ -589,11 +590,11 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-    A[Player message ends in ?] --> B{state == AWAITING_PLAYERS?}
-    B -- "yes" --> C[run_interject]
-    B -- "no" --> D[run_play_turn — normal path]
-    C --> E[Tools narrowed to broadcast / address_role / share_data / pose_choice<br/>tool_choice = any<br/>set_active_roles + end_session FORBIDDEN]
-    E --> F[State stays AWAITING_PLAYERS — turn doesn't advance]
+    A["Player message ends in ?"] --> B{"state == AWAITING_PLAYERS?"}
+    B -- "yes" --> C["run_interject"]
+    B -- "no" --> D["run_play_turn — normal path"]
+    C --> E["Tools narrowed to broadcast / address_role / share_data / pose_choice<br/>tool_choice = any<br/>set_active_roles + end_session FORBIDDEN"]
+    E --> F["State stays AWAITING_PLAYERS — turn doesn't advance"]
 ```
 
 Interject uses its own contract (`PLAY_CONTRACT_INTERJECT`): forbids YIELD + TERMINATE,
