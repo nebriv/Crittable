@@ -1289,7 +1289,7 @@ export function Facilitator() {
               <button
                 type="button"
                 onClick={forceScrollToBottom}
-                className="pointer-events-auto -mt-12 mb-1 rounded-full border border-sky-300 bg-sky-500 px-4 py-1.5 text-xs font-semibold text-white shadow-lg ring-2 ring-sky-500/30 hover:bg-sky-400"
+                className="pointer-events-auto -mt-12 mb-1 rounded-full border border-sky-300 bg-sky-500 px-4 py-1.5 text-xs font-semibold text-white animate-chip-pulse hover:bg-sky-400 motion-reduce:animate-none motion-reduce:shadow-lg motion-reduce:ring-2 motion-reduce:ring-sky-500/30"
                 aria-live="polite"
               >
                 New messages below ↓
