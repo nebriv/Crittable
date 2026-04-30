@@ -531,8 +531,8 @@ class TurnDriver:
 
         Triggered when a player asks the facilitator a direct question
         mid-turn (heuristic: trailing ``?``). The AI is restricted to
-        ``broadcast`` / ``address_role`` / ``mark_timeline_point``, with
-        ``tool_choice={"type":"any"}`` forcing at least one call.
+        ``broadcast`` / ``address_role`` / ``share_data`` / ``pose_choice``,
+        with ``tool_choice={"type":"any"}`` forcing at least one call.
         ``set_active_roles`` and ``end_session`` are deliberately
         excluded — the asking player's submission still counts toward
         the active turn and the other roles continue to owe their own

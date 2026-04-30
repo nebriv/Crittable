@@ -37,7 +37,7 @@ contract. Four exist:
 | Tier | When | Tools | Validator runs? |
 |---|---|---|---|
 | `setup` | Creator setup loop | `ask_setup_question`, `propose_scenario_plan`, `finalize_setup` | No — own loop. |
-| `play` | Driving the exercise (this doc) | broadcast, address_role, set_active_roles, inject_event, inject_critical_event, mark_timeline_point, end_session, request_artifact, track/resolve_role_followup, record_decision_rationale, lookup_resource, use_extension_tool | **Yes** — the focus of this doc. |
+| `play` | Driving the exercise (this doc) | `broadcast`, `address_role`, `share_data`, `pose_choice`, `set_active_roles`, `inject_critical_event`, `end_session`, `request_artifact`, `track/resolve_role_followup`, `lookup_resource`, `use_extension_tool` | **Yes** — the focus of this doc. |
 | `aar` | After-action report generation | `finalize_report` only | No — `tool_choice` pinned. |
 | `guardrail` | Pre-flight off-topic / harmful classifier | classifier tool only | No. |
 
@@ -50,13 +50,13 @@ forbidden. See §3 for the full map.
 
 | Slot | Meaning | Produced by |
 |---|---|---|
-| `DRIVE` | Player-facing message — answer or brief | `broadcast`, `address_role` |
+| `DRIVE` | Player-facing message — answer or brief | `broadcast`, `address_role`, `share_data`, `pose_choice` |
 | `YIELD` | Advances the turn to the next active roles | `set_active_roles` |
 | `TERMINATE` | Ends the exercise (kicks AAR) | `end_session` |
-| `NARRATE` | System note (gray text) | `inject_event` |
-| `PIN` | Right-sidebar timeline pin (no chat bubble) | `mark_timeline_point` |
+| `NARRATE` | System note (gray text) | `inject_event` *(removed from active palette 2026-04-30; dispatcher handles as dead code)* |
+| `PIN` | Right-sidebar timeline pin (no chat bubble) | `mark_timeline_point` *(removed from active palette 2026-04-30; dispatcher handles as dead code)* |
 | `ESCALATE` | Critical-event banner | `inject_critical_event` |
-| `BOOKKEEPING` | Engine-side tracking only — no player effect | `record_decision_rationale`, `track/resolve_role_followup`, `request_artifact`, `lookup_resource`, `use_extension_tool` |
+| `BOOKKEEPING` | Engine-side tracking only — no player effect | `track/resolve_role_followup`, `request_artifact`, `lookup_resource`, `use_extension_tool` |
 
 ### Contract
 
@@ -592,7 +592,7 @@ flowchart TD
     A[Player message ends in ?] --> B{state == AWAITING_PLAYERS?}
     B -- "yes" --> C[run_interject]
     B -- "no" --> D[run_play_turn — normal path]
-    C --> E[Tools narrowed to broadcast / address_role / mark_timeline_point<br/>tool_choice = any<br/>set_active_roles + end_session FORBIDDEN]
+    C --> E[Tools narrowed to broadcast / address_role / share_data / pose_choice<br/>tool_choice = any<br/>set_active_roles + end_session FORBIDDEN]
     E --> F[State stays AWAITING_PLAYERS — turn doesn't advance]
 ```
 
