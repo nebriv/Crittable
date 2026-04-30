@@ -886,9 +886,10 @@ _KICKOFF_USER_MSG = (
     "Begin the exercise. Your FIRST tool call MUST be `broadcast` with the "
     "situation brief — what just happened, what the active roles need to "
     "do, ≤200 words. THEN call `set_active_roles` to yield to those roles. "
-    "Do NOT use only `mark_timeline_point` + `inject_event` — those are "
-    "FYI tools and leave players with nothing to respond to. The brief is "
-    "mandatory on this turn."
+    "Do NOT call only bookkeeping tools (`track_role_followup`, "
+    "`request_artifact`, etc.) — those produce no chat bubble and leave "
+    "players with nothing to respond to. The brief is mandatory on this "
+    "turn."
 )
 
 # Per-turn reminder appended after the player batch on EVERY normal play

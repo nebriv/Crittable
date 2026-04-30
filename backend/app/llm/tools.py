@@ -67,9 +67,7 @@ PLAY_TOOLS: list[dict[str, Any]] = [
             "a direct question and you want to reply just to them; you "
             "want to brief, prompt, or push one specific role; you're "
             "redirecting one role without sidetracking the others. "
-            "DO NOT use `inject_event` for any of these — that's a "
-            "system note, not your voice. Does NOT yield the turn — "
-            "pair with `set_active_roles`."
+            "Does NOT yield the turn — pair with `set_active_roles`."
         ),
         "input_schema": {
             "type": "object",
@@ -91,9 +89,7 @@ PLAY_TOOLS: list[dict[str, Any]] = [
             "decision; reporting telemetry / logs / findings the team "
             "asked about; redirecting an off-topic message; reacting to "
             "a player's call (\"good — proceed with...\"). This is the "
-            "DEFAULT player-facing tool. DO NOT use `inject_event` to "
-            "answer questions or convey data — that renders as a quiet "
-            "system note, not your reply. Does NOT yield the turn — "
+            "DEFAULT player-facing tool. Does NOT yield the turn — "
             "pair with `set_active_roles`."
         ),
         "input_schema": {
@@ -208,10 +204,12 @@ PLAY_TOOLS: list[dict[str, Any]] = [
             "red banner above the chat that requires acknowledgement. "
             "MUST be followed in the SAME turn by a `broadcast` (or "
             "`address_role`) naming who acts on it, then a "
-            "`set_active_roles` yielding to those roles. Routine "
-            "developments use `inject_event`. NEVER use this to answer "
-            "a player question — that's `broadcast` / `address_role`. "
-            "Rate-limited (default 1 per 5 turns)."
+            "`set_active_roles` yielding to those roles. Use ONLY for "
+            "headline-grade escalations — routine developments and "
+            "background events stay inside a regular `broadcast` "
+            "(stylize the urgency in prose if needed). NEVER use this "
+            "to answer a player question — that's `broadcast` / "
+            "`address_role`. Rate-limited (default 1 per 5 turns)."
         ),
         "input_schema": {
             "type": "object",

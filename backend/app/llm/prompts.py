@@ -53,7 +53,7 @@ _STYLE_BASE = (
 
 _STYLE_LARGE_OVERRIDE = (
     " For rosters of 11+ roles, cap individual turn prose at ≤ 120 words and lean "
-    "on `broadcast` / `inject_event` for shared context."
+    "on `broadcast` / `share_data` for shared context."
 )
 
 _TOOL_USE_PROTOCOL = (
@@ -431,11 +431,12 @@ def build_play_system_blocks(
                 f"turn {until} (current turn: {cur}). Your previous attempts "
                 "have been (or will be) rejected with `is_error=True` until "
                 "the budget refreshes. If a planned critical inject is due "
-                "in this window, narrate it via `inject_event` + `broadcast` "
-                "instead — players still see the escalation, just without "
-                "the red banner. Do NOT keep retrying `inject_critical_event` "
-                "in the meantime; the rejection is structural, not a model "
-                "error you can talk your way past."
+                "in this window, narrate it via a regular `broadcast` "
+                "(stylize the urgency in the prose — players still see the "
+                "escalation, just without the red banner). Do NOT keep "
+                "retrying `inject_critical_event` in the meantime; the "
+                "rejection is structural, not a model error you can talk "
+                "your way past."
             )
 
     text = "\n\n".join(blocks)
