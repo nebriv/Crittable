@@ -5,6 +5,7 @@ import { CriticalEventBanner } from "../components/CriticalEventBanner";
 import { RightSidebar } from "../components/RightSidebar";
 import { RoleRoster } from "../components/RoleRoster";
 import { Transcript } from "../components/Transcript";
+import { isMidSessionJoiner } from "../lib/proxy";
 import { useStickyScroll } from "../lib/useStickyScroll";
 import { ServerEvent, WsClient } from "../lib/ws";
 
@@ -81,6 +82,19 @@ export function Play({ sessionId, token }: Props) {
   // backend in-flight gate. Prevents the triple-banner cascade from a
   // double/triple click (issue #63).
   const [forceAdvanceCooldown, setForceAdvanceCooldown] = useState(false);
+  // Issue #76 transition cue: when the participant exits the JoinIntro
+  // waiting variant (state goes SETUP/BRIEFING → AWAITING_PLAYERS) the
+  // page used to hard-cut to the chat layout, leaving a screen-reader
+  // user with no signal that the screen they were on is gone. This
+  // flag drives a transient "Session has started" banner shown for
+  // ~4s on the first render of the main view after the transition.
+  const [sessionStartedFlash, setSessionStartedFlash] = useState(false);
+  const wasWaitingRef = useRef(false);
+  // Issue #80 bonus: tracks the previous value of the joiner-chip
+  // predicate so the boundary log only fires on the false→true edge.
+  // Pre-fix the log fired every time the WS replaced ``snapshot``
+  // (multiple times per turn) — too noisy in production.
+  const wasShowingMidSessionChipRef = useRef(false);
   const wsRef = useRef<WsClient | null>(null);
   const forceAdvanceTimerRef = useRef<number | null>(null);
 
@@ -460,13 +474,99 @@ export function Play({ sessionId, token }: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [serverDisplayName, displayName, sessionId, token, myRoleFromSnapshot?.id]);
 
-  if (!effectiveDisplayName) {
+  // Issue #80 bonus: log when the mid-session-joiner chip is on
+  // screen. Pure boundary log — without it, "Bridget got the chip
+  // but shouldn't have" has no telemetry trail. Effect lives ABOVE
+  // the early returns so the hook count is stable across renders;
+  // the predicate guards on snapshot existing.
+  //
+  // The full ``snapshot`` object is in the dep array (it's a single
+  // reference that gets replaced on every WS event), but the log
+  // itself is gated on the previous-value ref so it only fires on
+  // the false→true edge — pre-fix it churned a line on every
+  // turn-message arrival even when the chip was already on screen.
+  // ``console.debug`` (not info) keeps this out of production
+  // console noise; the boundary log is for operators inspecting a
+  // stuck-chip report.
+  useEffect(() => {
+    let show = false;
+    if (snapshot && selfRoleId) {
+      const myRoleHere = snapshot.roles.find((r) => r.id === selfRoleId);
+      const activeIds = snapshot.current_turn?.active_role_ids ?? [];
+      show = isMidSessionJoiner({
+        sessionState: snapshot.state,
+        iAmActive: activeIds.includes(selfRoleId),
+        messages: snapshot.messages,
+        selfRoleId,
+        selfRoleKind: myRoleHere?.kind,
+        selfIsCreator: myRoleHere?.is_creator ?? false,
+      });
+    }
+    if (show && !wasShowingMidSessionChipRef.current) {
+      console.debug("[play] mid-session-joiner chip on", {
+        session_id: sessionId,
+        role_id: selfRoleId,
+        session_state: snapshot?.state,
+      });
+    } else if (!show && wasShowingMidSessionChipRef.current) {
+      console.debug("[play] mid-session-joiner chip off", {
+        session_id: sessionId,
+        role_id: selfRoleId,
+        session_state: snapshot?.state,
+      });
+    }
+    wasShowingMidSessionChipRef.current = show;
+  }, [snapshot, selfRoleId, sessionId]);
+
+  // Issue #76 transition cue: detect the SETUP/BRIEFING →
+  // AWAITING_PLAYERS flip and surface a transient "Session started"
+  // banner so the participant has an explicit acknowledgement that
+  // their JoinIntro screen was replaced (UI/UX review HIGH: pre-fix
+  // the page hard-cut and a screen-reader user had no signal).
+  useEffect(() => {
+    const isWaitingNow =
+      snapshot?.state === "SETUP" || snapshot?.state === "BRIEFING";
+    const wasWaiting = wasWaitingRef.current;
+    // Always update the ref before any conditional return — pre-fix
+    // the early `return` left ``wasWaitingRef.current`` stuck at
+    // ``true`` after the first flash, so a later state cycle (e.g.
+    // AWAITING_PLAYERS → AI_PROCESSING returning ``isWaitingNow ===
+    // false`` again) could re-trigger the banner. Update first,
+    // then decide whether to fire.
+    wasWaitingRef.current = isWaitingNow;
+    if (wasWaiting && !isWaitingNow && Boolean(effectiveDisplayName)) {
+      console.info("[play] session started — exiting waiting variant", {
+        session_id: sessionId,
+        new_state: snapshot?.state,
+      });
+      setSessionStartedFlash(true);
+      const id = window.setTimeout(() => setSessionStartedFlash(false), 4000);
+      return () => window.clearTimeout(id);
+    }
+    return undefined;
+  }, [snapshot?.state, effectiveDisplayName, sessionId]);
+
+  // Issue #76: a participant who has submitted their display name but
+  // arrived while the creator is still drafting the plan was previously
+  // dropped onto the main page with a blank transcript and a disabled
+  // composer pinned to the bottom — "looks funny with a chat box and
+  // all the blank space" (issue comment). Hold them on JoinIntro
+  // instead, with the form swapped for a "Waiting for the facilitator
+  // to start" panel + tip carousel. Auto-resolves the moment the
+  // session transitions to AWAITING_PLAYERS / AI_PROCESSING / etc.
+  const isWaitingForSessionStart =
+    snapshot?.state === "SETUP" || snapshot?.state === "BRIEFING";
+
+  if (!effectiveDisplayName || isWaitingForSessionStart) {
     // Pre-fix this was a tiny "what's your name?" dialog that operators
     // routinely missed (the user's report — "I'm not sure if Bridget
     // was prompted to enter her name at all"). The intro page now
     // names the role, sets expectations for AI interaction, and
     // posts the entered name to the server so peers see it (was:
-    // localStorage-only, invisible to other clients).
+    // localStorage-only, invisible to other clients). When ``hasName``
+    // is true but the session hasn't started, the form is replaced by
+    // a spinner panel so the user has somewhere friendly to wait
+    // (issue #76).
     return (
       <JoinIntro
         sessionId={sessionId}
@@ -478,6 +578,16 @@ export function Play({ sessionId, token }: Props) {
         sessionState={snapshot?.state}
         snapshotLoaded={snapshot !== null}
         snapshotError={snapshot === null ? error : null}
+        hasName={Boolean(effectiveDisplayName)}
+        joinedDisplayName={effectiveDisplayName}
+        // Subtract the local participant from the count — UI/UX
+        // review: pre-fix "1 seat joined" was just *me*, which read
+        // as lonely on a cue meant to signal "the room is filling
+        // up". Floor at 0 in case presence hasn't yet seen self.
+        joinedSeatCount={Math.max(
+          0,
+          presence.size - (selfRoleId && presence.has(selfRoleId) ? 1 : 0),
+        )}
         onRetry={() => {
           setError(null);
           refreshSnapshot();
@@ -585,6 +695,20 @@ export function Play({ sessionId, token }: Props) {
       : composerEnabled
         ? "Add a comment"
         : "Your message";
+  // Issue #80 bonus: re-derive the mid-session-joiner chip flag for
+  // the render block. The predicate's log breadcrumb fires from a
+  // hook declared *above* the early returns (so the hook count is
+  // stable across renders) — this re-compute is a cheap pure call
+  // that the React reconciler memo-deduplicates.
+  const showMidSessionJoinerChip = isMidSessionJoiner({
+    sessionState: snapshot.state,
+    iAmActive,
+    messages: snapshot.messages,
+    selfRoleId,
+    selfRoleKind: myRole?.kind,
+    selfIsCreator: myRole?.is_creator ?? false,
+  });
+
   // Plain-English placeholder copy — the user-persona review flagged
   // "interject" as jargon that reads as rude. We surface the
   // distinction (counts vs. sidebar) in the label + the post-submit
@@ -605,6 +729,21 @@ export function Play({ sessionId, token }: Props) {
 
   return (
     <main className="flex min-h-screen flex-col lg:h-screen lg:min-h-0 lg:overflow-hidden">
+      {sessionStartedFlash ? (
+        // Issue #76 transition cue (UI/UX review HIGH): the screen
+        // the participant was on (JoinIntro waiting variant) just
+        // unmounted; without this banner SR users had no signal.
+        // ``aria-live="assertive"`` because this announcement
+        // supersedes any ongoing tip-rotation announcement.
+        <div
+          role="status"
+          aria-live="assertive"
+          data-testid="session-started-flash"
+          className="bg-emerald-700 px-4 py-2 text-center text-sm font-semibold text-white shadow-lg"
+        >
+          Session started — you're in.
+        </div>
+      ) : null}
       {criticalBanner ? (
         <CriticalEventBanner
           {...criticalBanner}
@@ -656,6 +795,25 @@ export function Play({ sessionId, token }: Props) {
           {otherPending.length > 0
             ? `Waiting on ${otherPending.join(", ")}.`
             : "Waiting for the AI to respond."}
+        </div>
+      ) : showMidSessionJoinerChip ? (
+        // Issue #80 bonus: cue for a participant whose role was added
+        // mid-session. See ``isMidSessionJoiner`` for the predicate
+        // and the useEffect above for the breadcrumb log. The leading
+        // sky stripe + ⤴ glyph distinguish this from the "Submitted
+        // as …" banner above (UI/UX review: both used the same slate
+        // styling and were indistinguishable).
+        <div
+          role="status"
+          aria-live="polite"
+          data-testid="mid-session-joiner-chip"
+          className="border-l-4 border-sky-600 bg-slate-800 px-4 py-2 text-xs text-slate-200 shadow"
+        >
+          <span aria-hidden="true" className="mr-1.5 text-sky-400">
+            ⤴
+          </span>
+          Just joined? You'll be brought into the next turn — sit
+          tight, the current beat is finishing up.
         </div>
       ) : null}
       <div className="mx-auto grid w-full max-w-7xl flex-1 grid-cols-1 gap-4 p-4 lg:min-h-0 lg:grid-cols-[220px_1fr_280px] lg:overflow-hidden">
@@ -836,7 +994,37 @@ interface JoinIntroProps {
   /** Retry handler for the snapshot-error branch. */
   onRetry: () => void;
   onJoined: (name: string) => void;
+  /** Issue #76: the participant has submitted (or already had on the
+   *  server) a display name, so the name+Begin form is unnecessary.
+   *  When this is true AND the session is still SETUP/BRIEFING, we
+   *  swap the form for a "Waiting for the facilitator to start"
+   *  panel with a tip carousel. Otherwise it's the original form. */
+  hasName?: boolean;
+  /** Display name to show in the waiting-panel subhead. Only read
+   *  when ``hasName`` is true. */
+  joinedDisplayName?: string | null;
+  /** Number of *other* roles the WS layer has reported as connected.
+   *  Renders as "N seats joined" momentum cue in the waiting panel.
+   *  Sourced from the parent's presence Set so it auto-updates as
+   *  peers open their tabs. */
+  joinedSeatCount?: number;
 }
+
+/**
+ * Tip carousel content for the "joined, waiting for session to start"
+ * variant of JoinIntro (issue #76). Each tip is short — the panel is
+ * a wait state, not a tutorial — and rotates every ~7 seconds. Order
+ * is intentional: introduces the conversational tone first, then
+ * deepens into mechanics.
+ */
+const WAITING_TIPS: readonly string[] = [
+  "When the AI throws an inject, ask clarifying questions before committing to an action.",
+  "Want logs? Just ask — \"pull the auth logs\" or \"what does Defender show?\". The AI will produce realistic synthetic data.",
+  "Disagree with a teammate? Say so. The AI tracks decisions and dissents in the AAR.",
+  "Out of your lane? \"Loop in Legal\" or \"hand off to Comms\" — the AI will pivot the conversation.",
+  "Focus on your reasoning — the AAR captures decisions and rationale, not right-vs-wrong scoring.",
+];
+const WAITING_TIP_ROTATE_MS = 7000;
 
 /**
  * Replaces the prior tiny "what's your name?" dialog. The user reported
@@ -856,7 +1044,7 @@ interface JoinIntroProps {
  * ship the participant into the chat as fast as possible while still
  * giving them the prereq context.
  */
-function JoinIntro({
+export function JoinIntro({
   sessionId,
   token,
   roleLabel,
@@ -868,10 +1056,59 @@ function JoinIntro({
   snapshotError,
   onRetry,
   onJoined,
+  hasName = false,
+  joinedDisplayName = null,
+  joinedSeatCount = 0,
 }: JoinIntroProps) {
   const [name, setName] = useState(roleExistingDisplayName ?? "");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Tip carousel index for the waiting variant (issue #76). Lives at
+  // the top of the component (not inside a conditional) so React's
+  // hook order rule is respected when the user transitions from the
+  // form variant to the waiting variant inside a single mount.
+  const [tipIndex, setTipIndex] = useState(0);
+  const isWaitingVariant =
+    hasName && (sessionState === "SETUP" || sessionState === "BRIEFING");
+  // Log the variant so a "stuck on JoinIntro" report has a clear
+  // trail. ``console.debug`` (not info) so the breadcrumb doesn't
+  // crowd the production console — pair of enter+exit lines keyed
+  // on ``isWaitingVariant`` so the operator can see when the user
+  // *left* the waiting state, not just when they entered it.
+  useEffect(() => {
+    console.debug("[play] join-intro variant enter", {
+      session_id: sessionId,
+      session_state: sessionState,
+      has_name: hasName,
+      variant: isWaitingVariant ? "waiting" : "form",
+    });
+    return () => {
+      console.debug("[play] join-intro variant exit", {
+        session_id: sessionId,
+        was_variant: isWaitingVariant ? "waiting" : "form",
+      });
+    };
+  }, [sessionId, sessionState, hasName, isWaitingVariant]);
+  // Rotate the tip carousel only while the waiting variant is on
+  // screen. Cleared on unmount or variant flip so we don't churn
+  // setTimeout calls in the form variant. Per-tip dwell scales with
+  // tip length — UI/UX review flagged 7s as borderline for the
+  // longest tip; the divisor of 14 is "comfortable" reading speed
+  // (~14 chars/sec, accommodating non-native speakers and dyslexic
+  // readers — slower than the 200-250 wpm "fluent silent reading"
+  // benchmark on purpose). With a 7s floor and the current 5-tip
+  // array, dwell ranges 7–10s.
+  useEffect(() => {
+    if (!isWaitingVariant) return;
+    const dwellMs = Math.max(
+      WAITING_TIP_ROTATE_MS,
+      Math.ceil(WAITING_TIPS[tipIndex].length / 14) * 1000,
+    );
+    const id = setTimeout(() => {
+      setTipIndex((i) => (i + 1) % WAITING_TIPS.length);
+    }, dwellMs);
+    return () => clearTimeout(id);
+  }, [isWaitingVariant, tipIndex]);
 
   // Pre-fill the entered name from the snapshot when it lands (so a
   // returning player whose name is already on the server doesn't have
@@ -1075,64 +1312,143 @@ function JoinIntro({
           )}
         </section>
 
-        <form onSubmit={submit} className="flex flex-col gap-2">
-          <label
-            htmlFor="display-name"
-            className="text-xs uppercase tracking-widest text-slate-300"
+        {isWaitingVariant ? (
+          /* Issue #76: form is replaced by a waiting panel once the
+             user has a display name but the session hasn't started.
+             Pre-fix the participant was bumped to the main view with
+             a blank transcript and a disabled composer pinned at the
+             bottom. Now they stay on this page with a friendly
+             spinner, the role context they already have, and a
+             rotating tip carousel so they have something to read.
+
+             ARIA: ``role="status"`` lives on the section so AT
+             initially announces the variant, but ``aria-live`` is
+             scoped to the rotating tip element only (UI/UX review:
+             putting aria-live on the whole section caused the
+             headline + role + seat count to re-announce on every
+             7-10s tip rotation, which is noise). */
+          <section
+            aria-labelledby="waiting-heading"
+            data-testid="join-intro-waiting"
+            className="flex flex-col gap-3 rounded border border-emerald-700/40 bg-emerald-950/20 p-4"
+            role="status"
           >
-            Your display name (visible to the rest of the team)
-          </label>
-          {roleExistingDisplayName ? (
-            <p className="text-xs text-slate-400">
-              Welcome back — your saved name is pre-filled. Click Begin
-              to rejoin, or edit if you'd like to change it.
-            </p>
-          ) : null}
-          <input
-            id="display-name"
-            // ``autoFocus`` removed: screen-reader users would land
-            // mid-form and miss the heading + "How to play" guide
-            // (which is the whole point of this page). Sighted users
-            // can tab into the input in one keystroke.
-            // ``required`` removed: the JS guard + disabled-Begin
-            // button already cover empty submission, and the browser
-            // tooltip from native required would conflict with our
-            // own error surface.
-            // ``sessionEnded`` does NOT disable the input — the copy
-            // below tells the user they can still join in read-only
-            // mode after entering a name. Disabling the input made
-            // that promise impossible to keep for first-time joiners
-            // of an ENDED session.
-            disabled={submitting}
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            placeholder="e.g. Bridget"
-            maxLength={64}
-            className="rounded border border-slate-700 bg-slate-950 p-2 text-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-400 disabled:cursor-not-allowed disabled:opacity-60"
-          />
-          {error ? (
-            <p className="text-sm text-red-400" role="alert">
-              {error}
-            </p>
-          ) : null}
-          {sessionEnded ? (
-            <p className="text-sm text-amber-300" role="status">
-              This session has already ended. You can still join in
-              read-only mode after entering a name, but no new
-              responses will be accepted.
-            </p>
-          ) : null}
-          <button
-            type="submit"
-            disabled={submitting || !name.trim()}
-            // Full-width tap target on mobile (avoids cramped right-
-            // aligned button when the on-screen keyboard pushes the
-            // viewport up); right-aligned on sm+.
-            className="mt-2 self-stretch rounded bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-emerald-300 disabled:cursor-not-allowed disabled:opacity-60 sm:self-end"
-          >
-            {submitting ? "Joining…" : "Begin"}
-          </button>
-        </form>
+            <div className="flex items-center gap-3">
+              <span
+                aria-hidden="true"
+                className="inline-block h-4 w-4 shrink-0 animate-spin rounded-full border-2 border-emerald-400 border-t-transparent motion-reduce:animate-none"
+              />
+              <h2
+                id="waiting-heading"
+                className="text-sm font-semibold text-emerald-200"
+              >
+                {sessionState === "BRIEFING"
+                  ? "The AI is preparing the scenario brief…"
+                  : joinedDisplayName
+                    ? `Welcome, ${joinedDisplayName} — waiting for your facilitator to start the scenario…`
+                    : "Waiting for your facilitator to start the scenario…"}
+              </h2>
+            </div>
+            {roleLabel ? (
+              <p className="text-sm text-slate-200">
+                You're seated as{" "}
+                <span className="font-semibold">{roleLabel}</span>
+                {joinedDisplayName ? (
+                  <>
+                    {" "}
+                    <span className="text-slate-400">
+                      ({joinedDisplayName})
+                    </span>
+                  </>
+                ) : null}
+                . You'll be brought in automatically when it begins.
+              </p>
+            ) : null}
+            {joinedSeatCount > 0 ? (
+              <p className="text-xs text-slate-400">
+                {joinedSeatCount === 1
+                  ? "1 other seat is connected."
+                  : `${joinedSeatCount} other seats are connected.`}
+              </p>
+            ) : null}
+            <div
+              className="rounded border border-slate-700 bg-slate-950/40 p-3"
+              data-testid="join-intro-tip"
+            >
+              <p className="flex items-center justify-between text-[0.65rem] uppercase tracking-widest text-slate-400">
+                <span>While you wait</span>
+                <span aria-hidden="true">
+                  {tipIndex + 1} / {WAITING_TIPS.length}
+                </span>
+              </p>
+              <p
+                className="mt-1 text-sm leading-relaxed text-slate-200"
+                aria-live="polite"
+              >
+                {WAITING_TIPS[tipIndex]}
+              </p>
+            </div>
+          </section>
+        ) : (
+          <form onSubmit={submit} className="flex flex-col gap-2">
+            <label
+              htmlFor="display-name"
+              className="text-xs uppercase tracking-widest text-slate-300"
+            >
+              Your display name (visible to the rest of the team)
+            </label>
+            {roleExistingDisplayName ? (
+              <p className="text-xs text-slate-400">
+                Welcome back — your saved name is pre-filled. Click Begin
+                to rejoin, or edit if you'd like to change it.
+              </p>
+            ) : null}
+            <input
+              id="display-name"
+              // ``autoFocus`` removed: screen-reader users would land
+              // mid-form and miss the heading + "How to play" guide
+              // (which is the whole point of this page). Sighted users
+              // can tab into the input in one keystroke.
+              // ``required`` removed: the JS guard + disabled-Begin
+              // button already cover empty submission, and the browser
+              // tooltip from native required would conflict with our
+              // own error surface.
+              // ``sessionEnded`` does NOT disable the input — the copy
+              // below tells the user they can still join in read-only
+              // mode after entering a name. Disabling the input made
+              // that promise impossible to keep for first-time joiners
+              // of an ENDED session.
+              disabled={submitting}
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="e.g. Bridget"
+              maxLength={64}
+              className="rounded border border-slate-700 bg-slate-950 p-2 text-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-400 disabled:cursor-not-allowed disabled:opacity-60"
+            />
+            {error ? (
+              <p className="text-sm text-red-400" role="alert">
+                {error}
+              </p>
+            ) : null}
+            {sessionEnded ? (
+              <p className="text-sm text-amber-300" role="status">
+                This session has already ended. You can still join in
+                read-only mode after entering a name, but no new
+                responses will be accepted.
+              </p>
+            ) : null}
+            <button
+              type="submit"
+              disabled={submitting || !name.trim()}
+              // Full-width tap target on mobile (avoids cramped right-
+              // aligned button when the on-screen keyboard pushes the
+              // viewport up); right-aligned on sm+.
+              className="mt-2 self-stretch rounded bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-emerald-300 disabled:cursor-not-allowed disabled:opacity-60 sm:self-end"
+            >
+              {submitting ? "Joining…" : "Begin"}
+            </button>
+          </form>
+        )}
       </article>
     </main>
   );
