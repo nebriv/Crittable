@@ -749,7 +749,19 @@ def test_ws_rejects_bad_token_with_4401(client: TestClient) -> None:
 
     seats = _create_and_seat(client, role_count=2)
     sid = seats["session_id"]
-    bad = seats["creator_token"][:-1] + "X"
+    # Corrupt a character in the *middle* of the signature, not the
+    # final char. itsdangerous signs with HMAC-SHA256 (256 bits)
+    # encoded as 43 url-safe base64 chars — the trailing char only
+    # carries 4 meaningful bits, with 2 unused bits at the end. Each
+    # valid last-char has 3 base64 "siblings" that decode to the same
+    # signature, so swapping just ``token[-1]`` to ``"X"`` left the
+    # signature byte-identical ~6 % of the time (whenever the original
+    # ended in ``U``) and the test flaked with ``DID NOT RAISE``.
+    token = seats["creator_token"]
+    sig = token.rsplit(".", 1)[1]
+    mid = len(token) - len(sig) + len(sig) // 2
+    swap = "X" if token[mid] != "X" else "Y"
+    bad = token[:mid] + swap + token[mid + 1 :]
 
     with pytest.raises(WebSocketDisconnect) as exc_info:
         with client.websocket_connect(f"/ws/sessions/{sid}?token={bad}"):
