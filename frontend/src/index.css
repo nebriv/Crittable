@@ -177,3 +177,53 @@ html, body {
     animation: none !important;
   }
 }
+
+/*
+ * Brand scrollbars. The default WebKit / Firefox scrollbars read as
+ * chunky chrome-grey on the ink-900 surface — wrong both visually
+ * (clashes with the operator palette) and semantically (the rails
+ * should disappear into the chrome, the chat is the focus).
+ *
+ * Two layers:
+ *   - Firefox uses ``scrollbar-color`` + ``scrollbar-width: thin``;
+ *     we point the thumb at ``--ink-500`` and the track at the
+ *     enclosing surface so it blends in.
+ *   - WebKit / Blink get the per-shadow-part overrides; thumb is a
+ *     muted ink-500 that brightens to ink-400 on hover, track is
+ *     transparent (the parent surface shows through), 8 px wide,
+ *     2 px radius to match the rest of the brand. ``corner`` is the
+ *     bottom-right intersection when both axes are scrollable —
+ *     keep it transparent.
+ *
+ * Applied globally; component-level overrides (e.g. the chat scroll
+ * area and the right-rail Timeline) inherit naturally.
+ */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--ink-500) transparent;
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--ink-500);
+  border-radius: 2px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--ink-400);
+  background-clip: padding-box;
+}
+
+::-webkit-scrollbar-corner {
+  background: transparent;
+}

@@ -300,7 +300,7 @@ export function Landing(props: Props) {
             fontWeight: 600,
           }}
         >
-          CRITTABLE · TABLETOP · OPS
+          CRITTABLE
         </span>
         <span
           className="mono"
@@ -351,7 +351,7 @@ function Hero() {
           maxWidth: 480,
         }}
       >
-        <Eyebrow>tabletop · ops</Eyebrow>
+        <Eyebrow>roll · respond · review</Eyebrow>
         <h1
           className="sans"
           style={{

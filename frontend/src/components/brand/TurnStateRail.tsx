@@ -83,8 +83,15 @@ function TurnStateRow({ step, done, active }: RowProps) {
         {labels[step]}
       </span>
       {active ? (
+        // Indeterminate progress sweep — the engine doesn't yet expose
+        // a real "% of turn complete" signal (tracked in #TBD-issue),
+        // so we render a left-to-right gradient stream so the active
+        // step still reads as "the system is doing something" rather
+        // than a static stub. When the backend ships per-turn progress,
+        // swap this for a width-driven bar bound to that percentage.
         <div
           style={{
+            position: "relative",
             flex: 1,
             height: 2,
             background: "var(--ink-700)",
@@ -95,10 +102,13 @@ function TurnStateRow({ step, done, active }: RowProps) {
         >
           <div
             style={{
-              width: "60%",
-              height: "100%",
-              background: "var(--signal)",
-              animation: "tt-pulse 1.6s ease-in-out infinite",
+              position: "absolute",
+              top: 0,
+              bottom: 0,
+              width: "40%",
+              background:
+                "linear-gradient(90deg, transparent, var(--signal) 35%, var(--signal) 65%, transparent)",
+              animation: "tt-stream 1.8s ease-in-out infinite",
             }}
           />
         </div>

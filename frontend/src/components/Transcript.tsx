@@ -43,6 +43,15 @@ interface Props {
   /** role_ids of human players currently typing (excluding the local user). */
   typingRoleIds?: string[];
   /**
+   * Role-id of the local viewer. When set, the viewer's own player
+   * bubbles render with a `· YOU` mono suffix and a signal-tinted
+   * background mirroring the brand mock's <PlayerBubble you /> variant
+   * — easier to find your own posts when scanning a long transcript.
+   * Optional: callers that don't have a self-role concept (e.g. a
+   * read-only spectator) can omit it; the column simply won't appear.
+   */
+  selfRoleId?: string | null;
+  /**
    * When true, the most recent AI bubble is rendered with an amber
    * focus ring so a player who's now active can spot the message they
    * need to respond to without scrolling. Pairs with the
@@ -51,6 +60,20 @@ interface Props {
    * that they're being waited on.
    */
   highlightLastAi?: boolean;
+}
+
+/**
+ * Derive the short uppercase badge text for a role. The brand mock uses
+ * 3-4 char codes (CSM, CSE, IC, COM); this app stores arbitrary role
+ * labels (CISO, IR Lead, SOC Analyst, …). Take the first whitespace-
+ * separated token, uppercase it, and clamp to 4 chars so it fits the
+ * 36 px badge without wrapping. Multi-word labels collapse to the first
+ * word's prefix — readable at the cost of some specificity, which the
+ * full label in the bubble header restores.
+ */
+function roleCode(label: string): string {
+  const first = label.trim().split(/\s+/)[0] ?? "";
+  return first.toUpperCase().slice(0, 4) || "—";
 }
 
 /**
@@ -144,6 +167,7 @@ export function Transcript({
   aiStatusLabel,
   typingRoleIds,
   highlightLastAi,
+  selfRoleId,
 }: Props) {
   const roleById = new Map(roles.map((r) => [r.id, r]));
   // Find the index of the latest AI-authored bubble (ai_text or
@@ -191,51 +215,121 @@ export function Transcript({
     >
       {messages.map((m, idx) => {
         const role = m.role_id ? roleById.get(m.role_id) : undefined;
-        const actor = role
-          ? `${role.label}${role.display_name ? ` · ${role.display_name}` : ""}`
-          : m.kind.startsWith("ai")
-            ? "AI Facilitator"
-            : "System";
-        // Issue #78: out-of-turn interjections render in a quieter
-        // slate tone with a "Sidebar" badge so a real player can tell
-        // a turn answer apart from a comment posted while not active.
-        // (Pre-fix all PLAYER messages rendered identically and the
-        // user couldn't distinguish "answered the question" from "added
-        // a sidebar comment".)
-        const isInterjection = m.kind === "player" && m.is_interjection;
-        // AI bubbles get a signal-deep left edge mirror of the brand
-        // mock's <AIBubble>. Player bubbles get a signal-tinted body
-        // (or a quieter ink-800 when the post is an interjection).
-        // Critical-inject keeps a crit border to read as emergency.
-        const colour =
-          m.kind === "critical_inject"
-            ? "border border-crit bg-crit-bg"
-            : m.kind === "player"
-              ? isInterjection
-                ? "border border-ink-600 bg-ink-800"
-                : "border border-signal-deep bg-signal-tint"
-              : m.kind === "system"
-                ? "border border-ink-700 bg-ink-850 text-ink-400"
-                : "border border-ink-600 bg-ink-800 border-l-2 border-l-signal";
         const isAi = m.kind === "ai_text" || m.kind === "critical_inject";
+        const isCritical = m.kind === "critical_inject";
+        const isSystem = m.kind === "system";
+        const isPlayer = m.kind === "player";
+        const isInterjection = isPlayer && m.is_interjection;
+        const isSelf =
+          isPlayer && selfRoleId != null && m.role_id === selfRoleId;
+        // ``ring-warn`` highlight on the latest AI bubble when the viewer
+        // is the active responder. Critical injects already carry their
+        // own crit emphasis, so skip the ring there.
         const focusRing =
           highlightLastAi && idx === lastAiIndex && m.kind === "ai_text"
             ? "ring-2 ring-warn ring-offset-1 ring-offset-ink-900 shadow-[0_0_0_2px_color-mix(in_oklch,var(--warn)_15%,transparent)]"
             : "";
+        const ts = new Date(m.ts).toLocaleTimeString();
+
+        if (isSystem) {
+          // SystemBeat — center-aligned mono uppercase divider, lifted
+          // from app-screens.jsx <SystemBeat>.
+          return (
+            <article
+              key={m.id}
+              id={`msg-${m.id}`}
+              data-kind={m.kind}
+              data-message-id={m.id}
+              className="mono scroll-mt-24 select-text border-y border-dashed border-ink-600 px-2 py-1.5 text-center text-[10px] font-bold uppercase tracking-[0.16em] text-ink-400"
+            >
+              <span className="tabular-nums text-ink-500">
+                {ts}
+              </span>
+              <span className="mx-2 text-ink-600">·</span>
+              <span>{m.body}</span>
+            </article>
+          );
+        }
+
+        if (isAi) {
+          // AIBubble — left mark avatar (36 px square, signal-deep
+          // bordered) + right column with FACILITATOR · TURN N header
+          // and a signal-bordered body. Critical injects swap the signal
+          // border + dot for crit equivalents.
+          const dotColor = isCritical ? "bg-crit" : "bg-signal";
+          const labelColor = isCritical ? "text-crit" : "text-signal";
+          const borderClass = isCritical
+            ? "border border-crit border-l-2 bg-crit-bg"
+            : "border border-ink-600 border-l-2 border-l-signal bg-ink-800";
+          return (
+            <article
+              key={m.id}
+              id={`msg-${m.id}`}
+              data-kind={m.kind}
+              data-message-id={m.id}
+              className={`scroll-mt-24 flex min-w-0 gap-3 ${focusRing}`}
+            >
+              <div
+                aria-hidden="true"
+                className="flex h-9 w-9 shrink-0 items-center justify-center rounded-r-1 border border-signal-deep bg-ink-800"
+              >
+                <img
+                  src="/logo/svg/mark-encounter-01-dark.svg"
+                  alt=""
+                  width={26}
+                  height={26}
+                  className="block"
+                />
+              </div>
+              <div className="flex min-w-0 flex-1 flex-col gap-1.5">
+                <header className="mono flex items-baseline gap-2 text-[10px] font-bold uppercase tracking-[0.14em]">
+                  <span
+                    aria-hidden="true"
+                    className={`inline-block h-1.5 w-1.5 rounded-full ${dotColor}`}
+                  />
+                  <span className={`tracking-[0.16em] ${labelColor}`}>
+                    {isCritical ? "CRITICAL INJECT" : "AI FACILITATOR"}
+                  </span>
+                  <span className="ml-auto tabular-nums text-ink-500">
+                    {ts}
+                  </span>
+                </header>
+                <div
+                  className={`min-w-0 break-words rounded-r-2 px-4 py-3 text-ink-100 ${borderClass}`}
+                >
+                  <MarkdownBody body={m.body} />
+                  {m.tool_name ? (
+                    <p className="mono mt-2 text-[10px] uppercase tracking-[0.10em] text-ink-400">
+                      tool · {m.tool_name}
+                    </p>
+                  ) : null}
+                </div>
+              </div>
+            </article>
+          );
+        }
+
+        // PlayerBubble — right-aligned column with header
+        //   `[badge] · ROLE · NAME · YOU` + bubble + right role-code badge
+        // (see app-screens.jsx <PlayerBubble>). Self bubbles get the
+        // signal-tinted background; interjections get the SIDEBAR badge
+        // instead of ✓ SUBMITTED.
+        const roleLabel = role?.label ?? "—";
+        const code = roleCode(roleLabel);
+        const displayName = role?.display_name ?? "";
+        const bubbleColour = isSelf
+          ? "border border-signal-deep bg-signal-tint"
+          : "border border-ink-600 bg-ink-800";
         return (
           <article
             key={m.id}
             id={`msg-${m.id}`}
-            className={`scroll-mt-24 min-w-0 break-words rounded-r-2 p-3 ${colour} ${focusRing}`}
             data-kind={m.kind}
             data-message-id={m.id}
+            className="scroll-mt-24 flex min-w-0 gap-3 pl-6"
           >
-            <header className="mono mb-2 flex items-center justify-between gap-2 text-[10px] font-bold uppercase tracking-[0.14em] text-ink-300">
-              <span className="flex items-center gap-1.5">
-                {isAi ? (
-                  <span className="inline-block h-1.5 w-1.5 rounded-full bg-signal" aria-hidden="true" />
-                ) : null}
-                <span className={isAi ? "text-signal" : "text-ink-200"}>{actor}</span>
+            <div className="flex min-w-0 flex-1 flex-col items-end gap-1.5">
+              <header className="mono flex flex-wrap items-baseline justify-end gap-2 text-[10px] font-bold uppercase tracking-[0.14em]">
                 {isInterjection ? (
                   <span
                     className="mono rounded-r-1 border border-ink-500 bg-ink-700 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-[0.10em] leading-none text-ink-200"
@@ -243,18 +337,47 @@ export function Transcript({
                   >
                     SIDEBAR
                   </span>
+                ) : (
+                  <span className="text-signal tracking-[0.16em]">
+                    ✓ SUBMITTED
+                  </span>
+                )}
+                <span className="tracking-[0.10em] text-ink-100">
+                  {roleLabel}
+                </span>
+                {displayName ? (
+                  <span className="font-semibold tabular-nums text-ink-400">
+                    {displayName}
+                  </span>
                 ) : null}
-              </span>
-              <span className="tabular-nums text-ink-400">{new Date(m.ts).toLocaleTimeString()}</span>
-            </header>
-            {isAi ? (
-              <MarkdownBody body={m.body} />
-            ) : (
-              <p className="whitespace-pre-wrap text-sm leading-relaxed text-ink-100">{m.body}</p>
-            )}
-            {m.tool_name ? (
-              <p className="mono mt-2 text-[10px] uppercase tracking-[0.10em] text-ink-400">tool · {m.tool_name}</p>
-            ) : null}
+                {isSelf ? (
+                  <span className="text-signal tracking-[0.16em]">
+                    · YOU
+                  </span>
+                ) : null}
+                <span className="tabular-nums text-ink-500">{ts}</span>
+              </header>
+              <div
+                className={`min-w-0 break-words rounded-r-2 px-4 py-3 text-left text-sm leading-relaxed text-ink-100 ${bubbleColour}`}
+              >
+                <p className="whitespace-pre-wrap">{m.body}</p>
+                {m.tool_name ? (
+                  <p className="mono mt-2 text-[10px] uppercase tracking-[0.10em] text-ink-400">
+                    tool · {m.tool_name}
+                  </p>
+                ) : null}
+              </div>
+            </div>
+            <div
+              aria-hidden="true"
+              className={`mono flex h-9 min-w-[36px] shrink-0 items-center justify-center rounded-r-1 px-1 text-[11px] font-bold uppercase tracking-[0.06em] ${
+                isSelf
+                  ? "border border-signal-deep bg-signal-tint text-signal"
+                  : "border border-ink-500 bg-ink-700 text-ink-100"
+              }`}
+            >
+              {code}
+            </div>
           </article>
         );
       })}

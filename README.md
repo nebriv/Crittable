@@ -2,7 +2,7 @@
   <img src="./assets/brand/mark-animated-dark.gif" alt="Crittable mark — die rolling through six encounter states" width="180" />
 </p>
 <p align="center">
-  <img src="./assets/brand/lockup-crittable-dark.png" alt="CRITTABLE — TABLETOP · OPS" width="320" />
+  <img src="./assets/brand/lockup-crittable-dark.png" alt="CRITTABLE — ROLL · RESPOND · REVIEW" width="320" />
 </p>
 
 # Crittable

@@ -941,6 +941,7 @@ export function Play({ sessionId, token }: Props) {
               }
               typingRoleIds={Object.keys(typing).filter((rid) => rid !== selfRoleId)}
               highlightLastAi={isMyTurn}
+              selfRoleId={selfRoleId}
             />
           </div>
           {/* "New messages below" chip — appears when a message arrives

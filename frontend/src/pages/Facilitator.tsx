@@ -1111,6 +1111,9 @@ export function Facilitator() {
                 // flagged as a regression on the same screen as the
                 // scroll bug.
                 highlightLastAi={isMyTurn}
+                // Self-id so the creator's own player bubbles render
+                // with the signal-tinted "you" variant.
+                selfRoleId={state.creatorRoleId}
               />
             </>
           ) : null}
