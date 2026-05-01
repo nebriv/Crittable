@@ -1,5 +1,9 @@
 {
   "name": "ai-tabletop-facilitator",
+  // Use the prebuilt Python image instead of base+python-feature: bookworm only ships
+  // 3.11 in apt, so the python feature falls back to a from-source build that fetches
+  // the Python release-signing GPG key from public hkp keyservers. Codespaces egress
+  // can't reach those keyservers and the build hangs. See PR #100.
   "image": "mcr.microsoft.com/devcontainers/python:1-3.12-bookworm",
   "features": {
     "ghcr.io/devcontainers/features/node:1": {
