@@ -75,7 +75,15 @@ class AARGenerator:
         self._llm = llm
         self._audit = audit
 
-    async def generate(self, session: Session) -> str:
+    async def generate(self, session: Session) -> tuple[str, dict[str, Any]]:
+        """Run the AAR pipeline and return (markdown, structured_report).
+
+        Both forms come from the same single LLM call — the model emits
+        the structured report via the ``finalize_report`` tool, the
+        generator renders it to markdown, and now the structured form
+        is also returned so callers can persist it for the
+        ``/export.json`` endpoint without a re-parse.
+        """
         messages = [
             {
                 "role": "user",
@@ -91,7 +99,10 @@ class AARGenerator:
             session_id=session.id,
         )
         report = _extract_report(result.content)
-        return _render_markdown(session, report, audit_events=self._audit.dump(session.id))
+        markdown = _render_markdown(
+            session, report, audit_events=self._audit.dump(session.id)
+        )
+        return markdown, report
 
 
 def _user_payload(session: Session, audit: AuditLog) -> str:

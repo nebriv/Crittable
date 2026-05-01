@@ -3,12 +3,13 @@ import { describe, expect, it } from "vitest";
 import App from "../App";
 
 describe("App", () => {
-  it("renders the facilitator landing by default", () => {
+  it("renders the marketing home at /", () => {
     render(<App />);
-    // Post-redesign: the homepage is a brand-styled <Landing/> with the
-    // hero headline "Roll a tabletop in 5 minutes." (Inter h1).
+    // Post-redesign-round-3: `/` is a stateless marketing landing
+    // ("Tabletop exercises for security teams."). The "Roll new
+    // session" form moved to `/new` (Facilitator's intro phase).
     expect(
-      screen.getByRole("heading", { name: /Roll a tabletop in 5 minutes/i }),
+      screen.getByRole("heading", { name: /Tabletop exercises/i }),
     ).toBeInTheDocument();
   });
 });

@@ -1,7 +1,6 @@
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { TableScroll } from "../components/TableScroll";
 import {
   api,
   CostSnapshot,
@@ -10,11 +9,11 @@ import {
   ScenarioPlan,
   SessionSnapshot,
 } from "../api/client";
+import { AarReportView } from "../components/AarReport";
 import { Composer } from "../components/Composer";
 import { CriticalEventBanner } from "../components/CriticalEventBanner";
 import { DecisionLogPanel } from "../components/DecisionLogPanel";
 import { GodModePanel } from "../components/GodModePanel";
-import { Landing } from "../components/Landing";
 import { RightSidebar } from "../components/RightSidebar";
 import { RolesPanel } from "../components/RolesPanel";
 import { SessionActivityPanel } from "../components/SessionActivityPanel";
@@ -24,6 +23,7 @@ import { BottomActionBar } from "../components/brand/BottomActionBar";
 import { DieLoader } from "../components/brand/DieLoader";
 import { HudGauges } from "../components/brand/HudGauges";
 import { TurnStateRail } from "../components/brand/TurnStateRail";
+import { SetupWizard } from "../components/setup/SetupWizard";
 import { buildImpersonateOptions } from "../lib/proxy";
 import { useStickyScroll } from "../lib/useStickyScroll";
 import { ServerEvent, WsClient } from "../lib/ws";
@@ -865,27 +865,29 @@ export function Facilitator() {
   }
 
   // ----------------------------------------------------- render
-  if (phase === "intro") {
-    // Wrap setDevMode so toggling on prefills any blank scenario sections —
-    // preserves the pre-redesign behaviour (Issue #?? originally added
-    // the partial-prefill so testers could tweak one section and let the
-    // rest of the boilerplate fill).
-    const onToggleDevMode = (next: boolean) => {
-      setDevMode(next);
-      if (next) {
-        setSetupParts((cur) => ({
-          scenario: cur.scenario.trim() ? cur.scenario : DEV_SETUP_PREFILL.scenario,
-          team: cur.team.trim() ? cur.team : DEV_SETUP_PREFILL.team,
-          environment: cur.environment.trim() ? cur.environment : DEV_SETUP_PREFILL.environment,
-          constraints: cur.constraints.trim() ? cur.constraints : DEV_SETUP_PREFILL.constraints,
-        }));
-        if (!creatorDisplayName.trim()) {
-          setCreatorDisplayName("Dev Tester");
-        }
+  // Wrap setDevMode so toggling on prefills any blank scenario sections —
+  // preserves the pre-redesign behaviour (Issue #?? originally added the
+  // partial-prefill so testers could tweak one section and let the rest
+  // of the boilerplate fill).
+  const onToggleDevMode = (next: boolean) => {
+    setDevMode(next);
+    if (next) {
+      setSetupParts((cur) => ({
+        scenario: cur.scenario.trim() ? cur.scenario : DEV_SETUP_PREFILL.scenario,
+        team: cur.team.trim() ? cur.team : DEV_SETUP_PREFILL.team,
+        environment: cur.environment.trim() ? cur.environment : DEV_SETUP_PREFILL.environment,
+        constraints: cur.constraints.trim() ? cur.constraints : DEV_SETUP_PREFILL.constraints,
+      }));
+      if (!creatorDisplayName.trim()) {
+        setCreatorDisplayName("Dev Tester");
       }
-    };
+    }
+  };
+
+  if (phase === "intro") {
     return (
-      <Landing
+      <SetupWizard
+        phase="intro"
         setupParts={setupParts}
         setSetupParts={setSetupParts}
         creatorLabel={creatorLabel}
@@ -2074,46 +2076,12 @@ function AARPopup({
   token: string;
   onClose: () => void;
 }) {
-  const [body, setBody] = useState<string | null>(null);
-  const [err, setErr] = useState<string | null>(null);
   const dialogRef = useRef<HTMLDialogElement>(null);
+  const downloadMdHref = `/api/sessions/${sessionId}/export.md?token=${encodeURIComponent(token)}`;
+  const downloadJsonHref = `/api/sessions/${sessionId}/export.json?token=${encodeURIComponent(token)}`;
 
-  const downloadHref = `/api/sessions/${sessionId}/export.md?token=${encodeURIComponent(token)}`;
-
-  // Fetch the markdown body once when the popup mounts.
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const res = await fetch(downloadHref);
-        if (cancelled) return;
-        if (!res.ok) {
-          // 410 Gone = backend evicted the session after the retention
-          // window. Surface a plain-English message instead of "HTTP 410".
-          if (res.status === 410) {
-            setErr(
-              "This after-action report has expired and is no longer available — sessions are purged after the configured retention window.",
-            );
-          } else {
-            setErr(`HTTP ${res.status}`);
-          }
-          return;
-        }
-        const text = await res.text();
-        if (!cancelled) setBody(text);
-      } catch (e) {
-        if (!cancelled) setErr(e instanceof Error ? e.message : String(e));
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-    // downloadHref is derived from sessionId/token; safe to depend on them.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sessionId, token]);
-
-  // Use the native <dialog> element so we get focus-trap + Esc-to-close
-  // for free, matching God Mode's pattern.
+  // Use the native <dialog> for focus-trap + Esc-to-close. Matches the
+  // GodMode pattern.
   useEffect(() => {
     const dlg = dialogRef.current;
     if (!dlg) return;
@@ -2127,7 +2095,7 @@ function AARPopup({
     <dialog
       ref={dialogRef}
       onClose={onClose}
-      className="m-auto flex h-[90vh] w-[min(960px,95vw)] flex-col rounded-r-3 border border-ink-600 bg-ink-850 p-0 text-ink-100 backdrop:bg-black/60"
+      className="m-auto flex h-[90vh] w-[min(1080px,96vw)] flex-col rounded-r-3 border border-ink-600 bg-ink-850 p-0 text-ink-100 backdrop:bg-black/60"
       aria-labelledby="aar-popup-heading"
     >
       <div className="flex shrink-0 items-center justify-between gap-3 border-b border-ink-600 bg-ink-900 p-3">
@@ -2148,7 +2116,7 @@ function AARPopup({
         </div>
         <div className="flex items-center gap-2">
           <a
-            href={downloadHref}
+            href={downloadMdHref}
             rel="noopener"
             download
             className="mono rounded-r-1 bg-signal px-3 py-1 text-[10px] font-bold uppercase tracking-[0.16em] text-ink-900 hover:bg-signal-bright"
@@ -2164,115 +2132,21 @@ function AARPopup({
           </button>
         </div>
       </div>
-      <div className="min-h-0 flex-1 overflow-auto p-6 text-sm leading-relaxed">
-        {err ? (
-          <p className="mono rounded-r-1 border border-crit bg-crit-bg p-3 text-[12px] uppercase tracking-[0.04em] text-crit">
-            FAILED TO LOAD AAR: {err}
-          </p>
-        ) : body == null ? (
-          <div className="flex min-h-[40vh] items-center justify-center">
-            <DieLoader label="Drafting after-action report" size={84} />
-          </div>
-        ) : (
-          <article className="text-ink-100">
-            <ReactMarkdown
-              skipHtml
-              remarkPlugins={[remarkGfm]}
-              components={{
-                h1: ({ children }) => (
-                  <h1 className="mb-3 mt-4 text-2xl font-semibold tracking-[-0.02em] text-ink-050">{children}</h1>
-                ),
-                h2: ({ children }) => (
-                  <h2 className="mb-2 mt-6 text-lg font-semibold tracking-[-0.01em] text-ink-050">{children}</h2>
-                ),
-                h3: ({ children }) => (
-                  <h3 className="mono mb-2 mt-4 text-[11px] font-bold uppercase tracking-[0.22em] text-signal">{children}</h3>
-                ),
-                h4: ({ children }) => (
-                  <h4 className="mono mb-1 mt-3 text-[10px] font-bold uppercase tracking-[0.18em] text-signal">{children}</h4>
-                ),
-                p: ({ children }) => <p className="mb-3 whitespace-pre-wrap text-ink-100">{children}</p>,
-                ul: ({ children }) => <ul className="mb-3 ml-5 list-disc space-y-1 marker:text-ink-500">{children}</ul>,
-                ol: ({ children }) => <ol className="mb-3 ml-5 list-decimal space-y-1 marker:text-ink-500">{children}</ol>,
-                li: ({ children }) => <li className="leading-relaxed">{children}</li>,
-                strong: ({ children }) => <strong className="font-semibold text-ink-050">{children}</strong>,
-                em: ({ children }) => <em className="italic">{children}</em>,
-                blockquote: ({ children }) => (
-                  <blockquote className="mb-3 border-l-2 border-signal pl-3 italic text-ink-300">
-                    {children}
-                  </blockquote>
-                ),
-                code: ({ children }) => (
-                  <code className="mono rounded-r-1 bg-ink-900 px-1 py-0.5 text-[0.85em] text-signal">{children}</code>
-                ),
-                pre: ({ children }) => (
-                  <pre className="mono mb-3 overflow-auto rounded-r-2 border border-ink-600 bg-ink-950 p-3 text-[0.85em] text-ink-100">
-                    {children}
-                  </pre>
-                ),
-                hr: () => <hr className="my-4 border-dashed border-ink-600" />,
-                a: ({ href, children }) => (
-                  <a
-                    href={href}
-                    target="_blank"
-                    rel="noreferrer noopener"
-                    className="text-signal underline hover:text-signal-bright"
-                  >
-                    {children}
-                  </a>
-                ),
-                del: ({ children }) => (
-                  <del className="text-ink-400 line-through">{children}</del>
-                ),
-                table: ({ children }) => (
-                  <TableScroll>
-                    <table className="min-w-full border-collapse text-xs">{children}</table>
-                  </TableScroll>
-                ),
-                thead: ({ children }) => (
-                  <thead className="bg-ink-900">{children}</thead>
-                ),
-                tr: ({ children }) => (
-                  <tr className="border-b border-ink-700">{children}</tr>
-                ),
-                th: ({ children }) => (
-                  <th className="mono border border-ink-600 px-2 py-1 text-left text-[10px] font-bold uppercase tracking-[0.10em] text-ink-200">
-                    {children}
-                  </th>
-                ),
-                td: ({ children }) => (
-                  <td className="border border-ink-700 px-2 py-1 align-top">
-                    {children}
-                  </td>
-                ),
-              }}
-            >
-              {body}
-            </ReactMarkdown>
-          </article>
-        )}
+      <div className="min-h-0 flex-1 overflow-hidden p-5">
+        <AarReportView
+          sessionId={sessionId}
+          token={token}
+          downloadMdHref={downloadMdHref}
+          downloadJsonHref={downloadJsonHref}
+        />
       </div>
       <div className="flex shrink-0 items-center justify-between gap-2 border-t border-ink-600 bg-ink-900 p-3">
         <span className="mono text-[10px] uppercase tracking-[0.16em] text-ink-500">
           ROLL · RESPOND · REVIEW
         </span>
-        <div className="flex items-center gap-2">
-          <a
-            href={downloadHref}
-            rel="noopener"
-            download
-            className="mono rounded-r-1 bg-signal px-3 py-1 text-[10px] font-bold uppercase tracking-[0.16em] text-ink-900 hover:bg-signal-bright"
-          >
-            DOWNLOAD .MD
-          </a>
-          <button
-            type="button"
-            onClick={onClose}
-            className="mono rounded-r-1 border border-ink-500 px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-ink-200 hover:border-ink-400 hover:bg-ink-800"
-          >
-            CLOSE
-          </button>
-        </div>
+        <span className="mono text-[10px] uppercase tracking-[0.10em] text-ink-500 tabular-nums">
+          SESSION {sessionId.slice(0, 8)}
+        </span>
       </div>
     </dialog>
   );

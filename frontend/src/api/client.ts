@@ -278,6 +278,10 @@ export const api = {
     return `/api/sessions/${sessionId}/export.md?token=${encodeURIComponent(token)}`;
   },
 
+  exportJsonUrl(sessionId: string, token: string): string {
+    return `/api/sessions/${sessionId}/export.json?token=${encodeURIComponent(token)}`;
+  },
+
   async reissueRole(
     sessionId: string,
     creatorToken: string,

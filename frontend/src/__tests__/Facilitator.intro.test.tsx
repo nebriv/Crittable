@@ -4,9 +4,18 @@ import { Facilitator, TopBar } from "../pages/Facilitator";
 import { BottomActionBar } from "../components/brand/BottomActionBar";
 import { api } from "../api/client";
 
-// The intro page renders both an `<ol>` ("What to expect") and the chip
-// list in the fieldset, so a bare `getByRole("list")` is ambiguous.
-// Scope every chip-list query to the fieldset group via its legend.
+// Setup wizard splits the form across 3 steps (Scenario → Environment
+// → Roles). Roles live on step 3, so every Roles assertion needs the
+// wizard advanced two NEXT clicks. ``advanceToRoles`` runs the
+// navigation; the creator-label-collision test sets the label on
+// step 1 first, then advances.
+function advanceToRoles() {
+  fireEvent.click(
+    screen.getByRole("button", { name: /NEXT · ENVIRONMENT/i }),
+  );
+  fireEvent.click(screen.getByRole("button", { name: /NEXT · ROLES/i }));
+}
+
 function getChipList(): HTMLElement {
   const fieldset = screen.getByRole("group", { name: /Roles to invite/i });
   return within(fieldset).getByRole("list");
@@ -25,6 +34,7 @@ describe("Facilitator intro — Roles to invite (issue #61)", () => {
 
   it("seeds three default invitee chips", () => {
     render(<Facilitator />);
+    advanceToRoles();
     const list = getChipList();
     expect(within(list).getByText("IR Lead")).toBeInTheDocument();
     expect(within(list).getByText("Legal")).toBeInTheDocument();
@@ -33,6 +43,7 @@ describe("Facilitator intro — Roles to invite (issue #61)", () => {
 
   it("adds a new role via the Add role button", () => {
     render(<Facilitator />);
+    advanceToRoles();
     const draft = screen.getByLabelText("New role label") as HTMLInputElement;
     fireEvent.change(draft, { target: { value: "SOC Analyst" } });
     fireEvent.click(screen.getByRole("button", { name: "Add role" }));
@@ -43,6 +54,7 @@ describe("Facilitator intro — Roles to invite (issue #61)", () => {
   it("adds a new role via the Enter key without submitting the form", () => {
     const createSpy = vi.spyOn(api, "createSession");
     render(<Facilitator />);
+    advanceToRoles();
     const draft = screen.getByLabelText("New role label") as HTMLInputElement;
     fireEvent.change(draft, { target: { value: "Threat Intel" } });
     fireEvent.keyDown(draft, { key: "Enter" });
@@ -52,6 +64,7 @@ describe("Facilitator intro — Roles to invite (issue #61)", () => {
 
   it("rejects duplicates case-insensitively without altering the chip list", () => {
     render(<Facilitator />);
+    advanceToRoles();
     const draft = screen.getByLabelText("New role label") as HTMLInputElement;
     fireEvent.change(draft, { target: { value: "legal" } });
     fireEvent.click(screen.getByRole("button", { name: "Add role" }));
@@ -61,6 +74,7 @@ describe("Facilitator intro — Roles to invite (issue #61)", () => {
 
   it("ignores blank / whitespace-only role labels", () => {
     render(<Facilitator />);
+    advanceToRoles();
     const before = getChipList().children.length;
     const draft = screen.getByLabelText("New role label") as HTMLInputElement;
     const addButton = screen.getByRole("button", { name: "Add role" });
@@ -73,6 +87,7 @@ describe("Facilitator intro — Roles to invite (issue #61)", () => {
 
   it("removes a chip when the X button is clicked", () => {
     render(<Facilitator />);
+    advanceToRoles();
     fireEvent.click(screen.getByLabelText("Remove Legal"));
     const list = getChipList();
     expect(within(list).queryByText("Legal")).not.toBeInTheDocument();
@@ -81,6 +96,7 @@ describe("Facilitator intro — Roles to invite (issue #61)", () => {
 
   it("Clear all empties the chip list and shows the empty state", () => {
     render(<Facilitator />);
+    advanceToRoles();
     fireEvent.click(screen.getByRole("button", { name: "Clear all" }));
     const fieldset = screen.getByRole("group", { name: /Roles to invite/i });
     expect(within(fieldset).queryByRole("list")).not.toBeInTheDocument();
@@ -91,6 +107,7 @@ describe("Facilitator intro — Roles to invite (issue #61)", () => {
 
   it("Reset to defaults restores IR Lead/Legal/Comms after clearing", () => {
     render(<Facilitator />);
+    advanceToRoles();
     fireEvent.click(screen.getByRole("button", { name: "Clear all" }));
     fireEvent.click(screen.getByRole("button", { name: "Reset to defaults" }));
     const list = getChipList();
@@ -101,10 +118,13 @@ describe("Facilitator intro — Roles to invite (issue #61)", () => {
 
   it("warns when the creator label collides with an invitee chip", () => {
     render(<Facilitator />);
+    // Creator role lives on step 1; collision warning shows on step 3.
+    // Pre-fill the label, then advance to roles.
     const labelInput = screen.getByPlaceholderText(
       /Your role label/i,
     ) as HTMLInputElement;
     fireEvent.change(labelInput, { target: { value: "IR Lead" } });
+    advanceToRoles();
     expect(
       screen.getByText(/won't be auto-added as a separate invitee/i),
     ).toBeInTheDocument();
