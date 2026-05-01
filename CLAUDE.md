@@ -11,7 +11,7 @@ Authoritative design doc: [`docs/PLAN.md`](docs/PLAN.md). Architecture details (
 ## Branching
 
 - `main` — protected; PRs only.
-- `claude/ai-cybersecurity-chat-app-fEYFi` — primary development branch. **All Claude Code work happens here**, then opens a draft PR into `main`.
+- `claude/<task-name>-<session-id>` — Claude Code work happens on a session-specific branch the harness designates (e.g. `claude/redesign-english-interface-DKWnN`). The assistant pushes to that branch and opens a draft PR into `main`. Don't push directly to `main` and don't reuse another session's branch.
 
 ## Run / dev commands
 
@@ -317,7 +317,7 @@ This error wastes tokens and time.
 
 ## Always-do checklist (start of any task)
 
-1. `git fetch && git checkout claude/ai-cybersecurity-chat-app-fEYFi && git pull`
+1. `git fetch && git checkout "$(git rev-parse --abbrev-ref HEAD)" && git pull` — confirm you're on the session's `claude/...` branch the harness designated; never `git checkout main`.
 2. List current-phase open issues via `mcp__github__list_issues`.
 3. Pick or confirm the issue you're working on.
 4. Re-read [`docs/PLAN.md`](docs/PLAN.md) for the relevant section before making decisions that contradict it.

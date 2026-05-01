@@ -59,9 +59,16 @@ Or directly:
 ```bash
 docker run --rm -p 8000:8000 \
   -e ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY" \
-  ghcr.io/nebriv/ai-tabletop-facilitator:latest
+  ghcr.io/nebriv/crittable:latest
 ```
-<!-- TODO: rename to ghcr.io/nebriv/crittable when the image is republished. -->
+<!--
+The Docker workflow (.github/workflows/docker.yml) publishes to
+``ghcr.io/nebriv/crittable`` — derived from ``github.repository``
+lowercased. The next push to ``main`` (or a tagged release) will be
+the first one published under the new image name; before then, the
+last tag published under the old ``ai-tabletop-facilitator`` name is
+still pullable from GHCR if you have a pinned reference.
+-->
 
 ### Local development (no Docker)
 
