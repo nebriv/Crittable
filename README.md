@@ -136,4 +136,7 @@ Phase-2 acceptance gates are exercised by `backend/tests/test_e2e_session.py`
 
 ## License
 
-MIT — see [`LICENSE`](LICENSE).
+[Functional Source License, Version 1.1, ALv2 Future License](LICENSE)
+(FSL-1.1-ALv2). Free for any non-competing use — including self-hosting,
+internal use, education, and research. Each release converts to Apache
+License 2.0 on the second anniversary of its release date.

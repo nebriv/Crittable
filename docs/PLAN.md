@@ -461,7 +461,10 @@ OAuth/SSO authentication, persistent repository (SQLite then Postgres), tenant/o
 
 ## Open Items to Confirm at Approval
 
-- License (recommend MIT).
+- License: FSL-1.1-ALv2 (Functional Source License with Apache-2.0 future grant).
+  Free for any non-competing use; converts to Apache-2.0 two years after each
+  release. Chosen to preserve the option of running a hosted SaaS without
+  closing the source.
 - GHCR image name (`ghcr.io/nebriv/ai-tabletop-facilitator`?).
 - Whether to file the Phase 1/2/3 issue stubs immediately on plan approval, or as the first commit on the development branch.
 

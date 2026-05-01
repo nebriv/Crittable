@@ -7,7 +7,7 @@ name = "ai-tabletop-facilitator-backend"
 version = "0.0.1"
 description = "Backend for the AI Cybersecurity Tabletop Facilitator."
 requires-python = ">=3.12"
-license = { text = "MIT" }
+license = { text = "FSL-1.1-ALv2" }
 dependencies = [
     "fastapi>=0.115",
     "uvicorn[standard]>=0.30",

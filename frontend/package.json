@@ -2,6 +2,7 @@
   "name": "ai-tabletop-facilitator-frontend",
   "private": true,
   "version": "0.0.1",
+  "license": "SEE LICENSE IN ../LICENSE",
   "type": "module",
   "scripts": {
     "dev": "vite",
