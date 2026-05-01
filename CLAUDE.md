@@ -220,6 +220,19 @@ We have repeatedly hit "is the app stuck or working?" mysteries during manual te
 
 When a manual-test issue requires more telemetry than the current logs provide, **add the log line first** (so the next operator finds it), then fix the bug. Don't fix-and-forget — the log is the regression detector.
 
+## Stream Timeout Prevention
+
+This helps guard against the below error:
+`API Error: Stream idle timeout - partial response received`
+
+This error wastes tokens and time.
+
+1. Do each numbered task ONE AT A TIME. Complete one task fully, confirm it worked, then move to the next.
+2. Never write a file longer than ~150 lines in a single tool call. If a file will be longer, write it in multiple append/edit passes.
+3. Start a fresh session if the conversation gets long (20+ tool calls). The error gets worse as the session grows.
+4. Keep individual grep/search outputs short. Use flags like `--include` and `-l` (list files only) to limit output size.
+5. If you do hit the timeout, retry the same step in a shorter form. Don't repeat the entire task from scratch.
+
 ## Always-do checklist (start of any task)
 
 1. `git fetch && git checkout claude/ai-cybersecurity-chat-app-fEYFi && git pull`
