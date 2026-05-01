@@ -234,9 +234,11 @@ export function Composer({
       // Unmount cleanup — clear timers + send a final stop so
       // peers don't see a stuck "X is typing…" indicator for
       // the length of TYPING_VISIBLE_MS after we navigate away.
-      if (heartbeatTimer.current) clearInterval(heartbeatTimer.current);
-      if (idleTimer.current) clearTimeout(idleTimer.current);
-      if (pendingStartTimer.current) clearTimeout(pendingStartTimer.current);
+      // Use ``teardownTypingTimers`` rather than inline clears so
+      // every ref is nulled: a non-null but cancelled timer ID in
+      // ``pendingStartTimer.current`` would prevent future typing
+      // sessions from scheduling a new gate timer (issue #77).
+      teardownTypingTimers();
       if (isTyping.current && onTypingChange) {
         isTyping.current = false;
         onTypingChange(false);

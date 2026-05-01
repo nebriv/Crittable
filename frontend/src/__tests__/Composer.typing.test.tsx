@@ -307,4 +307,89 @@ describe("Composer typing indicator (issue #77, heartbeat mode)", () => {
     unmount();
     expect(onTypingChange).toHaveBeenLastCalledWith(false);
   });
+
+  it("after rerender with new onTypingChange ref, subsequent typing burst is not permanently locked out (issue #77 regression)", () => {
+    // Root-cause regression: Composer's ``useEffect([onTypingChange])``
+    // cleanup fires whenever ``onTypingChange`` changes identity. In
+    // Play/Facilitator the function was recreated on every render
+    // (WS events, presence pings, etc.), so the cleanup called
+    // clearTimeout(pendingStartTimer.current) without then setting the
+    // ref to null — leaving it as a stale truthy integer.  The gate
+    // check ``if (!pendingStartTimer.current)`` would always short-circuit
+    // after that, permanently blocking any new typing session.
+    //
+    // The fix is that teardownTypingTimers() *nulls* every ref after
+    // clearing.  The useEffect([onTypingChange]) cleanup still fires on
+    // identity change (which may emit typing_stop and discard mid-session
+    // timers), but crucially the refs are reset to null so the gate can
+    // re-engage on the next burst.
+    //
+    // This test verifies that *observable contract*: after a rerender
+    // with a new onTypingChange identity, a subsequent typing burst
+    // correctly fires typing_start on the new callback (no permanent
+    // lockout).  It does NOT assert that an in-flight session survives
+    // the rerender — that separate concern is addressed by the
+    // useCallback(fn, []) stabilisation in Play/Facilitator.
+    const onTypingChange1 = vi.fn();
+    const onSubmit = vi.fn();
+    const { rerender } = render(
+      <Composer
+        enabled={true}
+        placeholder="Type something"
+        label="Your message"
+        onSubmit={onSubmit}
+        onTypingChange={onTypingChange1}
+      />,
+    );
+    const textarea = screen.getByPlaceholderText("Type something") as HTMLTextAreaElement;
+
+    // First burst — 2+ keystrokes inside gate window.
+    fireEvent.change(textarea, { target: { value: "h" } });
+    fireEvent.change(textarea, { target: { value: "hi" } });
+    act(() => {
+      vi.advanceTimersByTime(START_DELAY_MS + 50);
+    });
+    expect(onTypingChange1).toHaveBeenLastCalledWith(true);
+
+    // Simulate a WS-event re-render with a *new* onTypingChange
+    // reference (this is what Play.tsx does on every state_changed /
+    // presence / ai_thinking event when handleTypingChange is NOT
+    // wrapped in useCallback).
+    const onTypingChange2 = vi.fn();
+    rerender(
+      <Composer
+        enabled={true}
+        placeholder="Type something"
+        label="Your message"
+        onSubmit={onSubmit}
+        onTypingChange={onTypingChange2}
+      />,
+    );
+    // Re-query after rerender so we have a live DOM element.
+    const textarea2 = screen.getByPlaceholderText("Type something") as HTMLTextAreaElement;
+
+    // The rerender triggers the useEffect([onTypingChange]) cleanup,
+    // which calls teardownTypingTimers(). The critical invariant is that
+    // teardownTypingTimers *nulls* every ref — particularly
+    // ``pendingStartTimer.current``. Without nulling (old bug: just
+    // ``clearTimeout`` without null-assignment), the ref held a stale
+    // truthy timer ID, so the gate check ``if (!pendingStartTimer.current)``
+    // would always short-circuit and no new typing session could ever start.
+    //
+    // Note: the rerender may also emit typing_stop on onTypingChange1 if
+    // isTyping.current is true at cleanup time; that side-effect is
+    // expected and not asserted here.
+    act(() => {
+      // Let the idle timer from the first burst expire (simulates
+      // a natural pause between sessions).
+      vi.advanceTimersByTime(STOP_AFTER_IDLE_MS + 100);
+    });
+    // Now type a second burst.
+    fireEvent.change(textarea2, { target: { value: "hello" } });
+    fireEvent.change(textarea2, { target: { value: "hello w" } });
+    act(() => {
+      vi.advanceTimersByTime(START_DELAY_MS + 50);
+    });
+    expect(onTypingChange2).toHaveBeenLastCalledWith(true);
+  });
 });
