@@ -30,14 +30,34 @@ Authoritative design doc: [`docs/PLAN.md`](docs/PLAN.md). Architecture details (
 
 All config is via environment variables. The full reference lives in [`docs/configuration.md`](docs/configuration.md). Required at minimum: `ANTHROPIC_API_KEY`. Hardening checklist before any non-toy deployment is also there (set `CORS_ORIGINS`, enable rate limit, set `SESSION_SECRET`, etc.).
 
+## Branding (read before any UI / copy work)
+
+The product is **Crittable** — tabletop exercises for security teams. Slogan `ROLL · RESPOND · REVIEW`. Operator voice, not marketer voice; the audience is incident responders mid-exercise. **Always read these before touching UI, page copy, marketing surfaces, or anything user-facing:**
+
+- [`design/handoff/BRAND.md`](design/handoff/BRAND.md) — the rules: mark, voice, color tokens (ink/paper/signal/crit/warn/info), type (JetBrains Mono + Inter, no third family), geometry (square-ish radii, no gradients), animations, photography policy ("there isn't any"). The "Don't" lists are load-bearing — no recoloring the mark, no marketing fluff, no stock photography, no emoji as decoration.
+- [`design/handoff/HANDOFF.md`](design/handoff/HANDOFF.md) — drop-in steps, the voice-rewrite checklist (`"Empower your team to respond"` → `"Run the inject. Ship the AAR."`), and the documented `.card` / `.pill` / `.btn` / divider patterns. Use these patterns verbatim; **don't re-derive**.
+- [`design/handoff/source/SOURCE.md`](design/handoff/source/SOURCE.md) — map of the JSX source. Specifically:
+  - [`design/handoff/source/app-screens.jsx`](design/handoff/source/app-screens.jsx) — the **canonical reference for product UI patterns** (`AppTacticalHUD`, `AppCreatorSetup`, `AppLobby`, `AppBriefing`, `AppAAR`). Lift component patterns from here, don't re-derive.
+  - `mark.jsx` / `artboards.jsx` — the brand-system reference compositions.
+- [`design/handoff/tokens.css`](design/handoff/tokens.css) — single source of truth for design tokens. The same content is mirrored into [`frontend/src/index.css`](frontend/src/index.css) so Vite serves it; keep them in sync if you touch tokens.
+
+**Implementation hooks** already wired in this repo:
+- Brand utility components: [`frontend/src/components/brand/`](frontend/src/components/brand/) — `<SiteHeader>`, `<StatusChip>`, `<RailHeader>`, `<Eyebrow>`, `<HudGauges>`, `<TurnStateRail>`, `<DieLoader>`, `<BottomActionBar>`. **Use these instead of building new chrome.** They're verbatim lifts from `app-screens.jsx`.
+- Brand assets: `frontend/public/logo/` (mark + lockup SVG/GIF), `frontend/public/favicon/` (full set wired into `index.html` per `HEAD-SNIPPET.html`), `frontend/public/og/og-image.gif` (OG / Twitter card), `assets/brand/` (README hero).
+- Bundled fonts: [`@fontsource-variable/inter`](https://fontsource.org/fonts/inter) + [`@fontsource-variable/jetbrains-mono`](https://fontsource.org/fonts/jetbrains-mono) imported in `frontend/src/index.css`. **Do not load fonts from Google Fonts CDN** — security-team deployments are often air-gapped / strict-CSP. Same rule for any other external runtime asset (icons, images).
+
+**Voice boundary**: operator-voice applies to **user-facing** copy (UI labels, banners, marketing pages, README, OG description, error messages). LLM system prompts are NOT user-facing — they describe the AI's role internally and use descriptive language ("AI cybersecurity tabletop facilitator") that's clearer for the model than the brand name. Don't rebrand the prompts as a part of a UI sweep — that's a model-behavior change, not a brand change. See [`docs/prompts.md`](docs/prompts.md) and the model-output-trust-boundary section below.
+
+**When the brand and a feature ask conflict**, prefer the brand and surface the conflict — `BRAND.md` explicitly lists "don't autoplay the animated mark on the product side; only on marketing" as one example. The current `<DieLoader>` is a documented exception (the user explicitly asked for the animated d6 as the loading icon — log the carve-out in the commit body when you do similar).
+
 ## Milestones
 
 Phase grouping is tracked via GitHub **milestones**, not labels. **Always list the current scope before starting work**:
 
 ```
-mcp__github__search_issues  query='repo:nebriv/ai-tabletop-facilitator is:issue is:open milestone:"Phase 1"'
-mcp__github__search_issues  query='repo:nebriv/ai-tabletop-facilitator is:issue is:open milestone:"Phase 2"'
-mcp__github__search_issues  query='repo:nebriv/ai-tabletop-facilitator is:issue is:open milestone:"Phase 3"'
+mcp__github__search_issues  query='repo:nebriv/Crittable is:issue is:open milestone:"Phase 1"'
+mcp__github__search_issues  query='repo:nebriv/Crittable is:issue is:open milestone:"Phase 2"'
+mcp__github__search_issues  query='repo:nebriv/Crittable is:issue is:open milestone:"Phase 3"'
 ```
 
 - **Phase 1 — Architecture & Bootstrap** (milestone #1): devcontainer, Docker, CI, docs, scaffolding. **Complete** — all 10 issues closed.
@@ -193,7 +213,7 @@ Does not close #63     ← still matches; "close #63" is enough
 
 **Never write a closing keyword adjacent to an issue number you don't actually want to close, including in negations or rhetorical questions.** PR #64 closed #63 because the body said "Closes #63? — No, …" — GitHub's parser saw the keyword and the issue number and acted on it; the surrounding "? — No" was invisible to it. If you need to *reference* an issue without closing it, never put a closing keyword anywhere near the number. Phrase it: `tracked separately as #63 (closing keywords intentionally omitted)`, or just `see issue #63`.
 
-A cross-repo close needs the full `owner/repo#N` form (`Closes nebriv/ai-tabletop-facilitator#52`). Auto-close only fires when the PR merges into the **default branch** (`main`); merging into a feature branch never closes anything via these keywords.
+A cross-repo close needs the full `owner/repo#N` form (`Closes nebriv/Crittable#52`). Auto-close only fires when the PR merges into the **default branch** (`main`); merging into a feature branch never closes anything via these keywords.
 
 If you forget and the PR is already merged, the cleanest recovery is to comment "Delivered in #PR — auto-close didn't fire because of comma-list keyword" on each issue and close it manually via `mcp__github__issue_write` with `state="closed"` and `state_reason="completed"`.
 

@@ -949,14 +949,15 @@ export function Play({ sessionId, token }: Props) {
               re-pins to the bottom. Mirrors the standard chat-app
               pattern (Slack / Discord) so an unpinned user knows
               there's content below without being yanked off whatever
-              they were reading. Solid sky/blue rather than amber:
-              the "Awaiting your response" banner directly below uses
-              amber, and an amber-on-slate chip blended into it. Sky
-              is the only saturated color not already in the palette
-              (amber=awaiting/critical, emerald=AI, red=critical,
-              slate=system, sky-700/30=player bubbles — but the chip
-              is solid sky-500 which reads as distinct from the
-              translucent player-bubble border). */}
+              they were reading. The chip uses ``bg-signal-bright``
+              (the brand accent's hover tier) so it reads as a
+              call-to-action distinct from the surrounding chat
+              tones — AI bubbles are signal-tinted left-bordered,
+              player bubbles are signal-tinted only when "you", and
+              the warn-toned "your turn" banner sits directly below
+              the composer. The bright signal tier is the only token
+              not already used in passive chrome at this density,
+              which keeps the chip legible during a busy turn. */}
           {hasUnreadBelow ? (
             // Live-region semantics live on the wrapper, not the
             // button. Per ARIA APG: live regions should be applied to

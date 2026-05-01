@@ -1532,11 +1532,12 @@ function ActiveRolesHint({
  * the actor we're blocked on so the screen doesn't look frozen, with a
  * smaller ``(N of M)`` tail for at-a-glance count.
  *
- * Issue #88: previously rendered amber-on-amber (read as "warning") and
- * exposed a per-role "Copy invite" button that duplicated the Copy link
- * affordance already in the Roles panel. The tone is now neutral slate
- * matching the rest of the awaiting-state banners; copy/issuing links is
- * handled exclusively by the Roles panel.
+ * Issue #88: previously rendered warn-tone-on-warn-tone (read as
+ * "warning") and exposed a per-role "Copy invite" button that
+ * duplicated the Copy link affordance already in the Roles panel.
+ * The tone is now neutral ink matching the rest of the
+ * awaiting-state banners; copy/issuing links is handled
+ * exclusively by the Roles panel.
  */
 export function WaitingChip({
   activeRoleIds,
