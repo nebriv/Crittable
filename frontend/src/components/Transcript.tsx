@@ -161,14 +161,27 @@ export function Transcript({
     const r = roleById.get(id);
     return r ? [`${r.label}${r.display_name ? ` · ${r.display_name}` : ""}`] : [];
   });
-  const typingLabel =
-    typing.length === 0
-      ? null
-      : typing.length === 1
-        ? `${typing[0]} is typing…`
-        : typing.length === 2
-          ? `${typing[0]} and ${typing[1]} are typing…`
-          : `${typing[0]}, ${typing[1]} and ${typing.length - 2} more are typing…`;
+  // Issue #77 multi-typer aggregation. Prior implementation
+  // collapsed everything ≥3 into "X, Y and N more"; the new spec
+  // names exactly three when there are three (avoids the awkward
+  // "X, Y and 1 more"), and at ≥4 collapses to a neutral catch-
+  // all so the indicator doesn't grow unboundedly during a
+  // synchronous flurry. The catch-all copy was originally
+  // "Everyone is hammering away at their keyboards…" per the
+  // issue body, but the User + UI/UX reviewers flagged it as
+  // tonally wrong for tense IR scenarios — switched to
+  // "All participants are responding…" which is neutral and
+  // safe to render mid-incident.
+  let typingLabel: string | null = null;
+  if (typing.length === 1) {
+    typingLabel = `${typing[0]} is typing…`;
+  } else if (typing.length === 2) {
+    typingLabel = `${typing[0]} and ${typing[1]} are typing…`;
+  } else if (typing.length === 3) {
+    typingLabel = `${typing[0]}, ${typing[1]} and ${typing[2]} are typing…`;
+  } else if (typing.length >= 4) {
+    typingLabel = "All participants are responding…";
+  }
   return (
     <div
       className="flex flex-col gap-3"
@@ -247,6 +260,10 @@ export function Transcript({
         );
       })}
       {aiThinking ? (
+        // ``silent`` because the wrapping <div role="log"
+        // aria-live="polite" aria-relevant="additions text"> already
+        // announces additions; nesting another aria-live region would
+        // double-announce on NVDA (UI/UX review HIGH H-1).
         <ChatIndicator
           label={
             aiStatusLabel
@@ -254,9 +271,12 @@ export function Transcript({
               : "AI Facilitator is typing…"
           }
           tone="ai"
+          silent
         />
       ) : null}
-      {typingLabel ? <ChatIndicator label={typingLabel} tone="player" /> : null}
+      {typingLabel ? (
+        <ChatIndicator label={typingLabel} tone="player" silent />
+      ) : null}
     </div>
   );
 }

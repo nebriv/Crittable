@@ -5,25 +5,37 @@
  * players ("Alice is typing…"). Keeps the visual language consistent so a
  * participant who sees the indicator instantly knows what it means
  * regardless of who is producing it.
+ *
+ * ``silent`` drops ``role="status"`` + ``aria-live="polite"`` from the
+ * wrapper. Used by callers that already nest the indicator inside an
+ * ARIA live region (e.g. Transcript's ``role="log"``); without this
+ * opt-out the nested live regions get double-announced by NVDA
+ * (UI/UX review HIGH H-1).
  */
 interface Props {
   label: string;
   tone?: "ai" | "player";
+  silent?: boolean;
 }
 
-export function ChatIndicator({ label, tone = "ai" }: Props) {
+export function ChatIndicator({ label, tone = "ai", silent = false }: Props) {
   const colour =
     tone === "ai"
       ? "border-emerald-700/40 bg-emerald-950/40 text-emerald-200"
       : "border-sky-700/40 bg-sky-950/40 text-sky-200";
   const dotColour = tone === "ai" ? "bg-emerald-400" : "bg-sky-400";
+  // ``max-w-full break-words`` so a long multi-typer label
+  // ("SOC Analyst · Bridget, Legal · Marcus and Comms · Pat are
+  //  typing…") wraps inside a narrow column instead of pushing
+  // the parent flex column wider and producing horizontal scroll
+  // on mobile (UI/UX review BLOCK B-2).
+  const ariaProps = silent ? {} : { role: "status", "aria-live": "polite" as const };
   return (
     <div
-      role="status"
-      aria-live="polite"
-      className={`inline-flex items-center gap-2 rounded-md border px-3 py-1.5 text-xs ${colour}`}
+      {...ariaProps}
+      className={`inline-flex max-w-full items-center gap-2 break-words rounded-md border px-3 py-1.5 text-xs ${colour}`}
     >
-      <span aria-hidden="true" className="inline-flex gap-0.5">
+      <span aria-hidden="true" className="inline-flex shrink-0 gap-0.5">
         <span
           className={`inline-block h-1.5 w-1.5 animate-bounce rounded-full ${dotColour}`}
           style={{ animationDelay: "0ms" }}

@@ -34,11 +34,12 @@ interface CreatorState {
 
 const NUDGE_PROPOSE = "I think we have enough context. Please draft the scenario plan now.";
 
-// Receiver-side typing indicator timings — kept in sync with Play.tsx.
-// See issue #53: the indicator should appear cleanly on a real typing
-// burst and persist for about three seconds, never flickering.
-const TYPING_VISIBLE_MS = 5000;
-const TYPING_FADE_HEAD_START_MS = TYPING_VISIBLE_MS - 1500;
+// Receiver-side typing indicator timings — kept in sync with
+// Play.tsx (see the long comment there). Issue #77 + UI/UX
+// review M-1: 4.5 s TTL + 0.5 s linger after explicit stop,
+// paired with the 1 Hz heartbeat sender in Composer.
+const TYPING_VISIBLE_MS = 4500;
+const TYPING_FADE_HEAD_START_MS = TYPING_VISIBLE_MS - 500;
 
 /**
  * Sample setup answers prefilled when the operator toggles "Dev mode" on
@@ -201,6 +202,9 @@ export function Facilitator() {
   const [connectionCount, setConnectionCount] = useState<number | null>(null);
   const wsRef = useRef<WsClient | null>(null);
   const forceAdvanceTimerRef = useRef<number | null>(null);
+  // Rate-limit the typing-send-dropped log to one line per WS
+  // state edge (issue #77 logging fix; see ``handleTypingChange``).
+  const typingSendErrLoggedRef = useRef(false);
   useEffect(() => {
     return () => {
       if (forceAdvanceTimerRef.current !== null) {
@@ -767,10 +771,35 @@ export function Facilitator() {
   }
 
   function handleTypingChange(typing: boolean) {
+    const ws = wsRef.current;
+    if (!ws) {
+      // WS ref is null (not yet connected, or torn down after
+      // creator-token revoke). Without an explicit check the
+      // optional-chain ``ws?.send(...)`` would silently no-op
+      // and the catch below would never fire — Copilot review
+      // on PR #99.
+      if (!typingSendErrLoggedRef.current) {
+        console.debug(
+          "[facilitator] typing send dropped (WS not connected)",
+          { typing },
+        );
+        typingSendErrLoggedRef.current = true;
+      }
+      return;
+    }
     try {
-      wsRef.current?.send({ type: typing ? "typing_start" : "typing_stop" });
-    } catch {
-      /* WS can be closed mid-typing; never throw out of this handler. */
+      ws.send({ type: typing ? "typing_start" : "typing_stop" });
+      typingSendErrLoggedRef.current = false;
+    } catch (err) {
+      // Rate-limited log per WS-state edge (issue #77 — 1 Hz
+      // heartbeat would otherwise produce ~60 logs/min through a
+      // closed WS during a typing burst).
+      if (!typingSendErrLoggedRef.current) {
+        console.debug("[facilitator] typing send dropped (WS likely closed)", {
+          message: err instanceof Error ? err.message : String(err),
+        });
+        typingSendErrLoggedRef.current = true;
+      }
     }
   }
 
