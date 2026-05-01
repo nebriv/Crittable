@@ -6,8 +6,13 @@ import { Transcript } from "../components/Transcript";
 // Issue #77 — Transcript multi-typer aggregation. Pre-fix any
 // 3+ typers collapsed to "X, Y and N more"; the new spec names
 // exactly three when there are three (avoiding the awkward
-// "X, Y and 1 more"), and at ≥4 collapses to a playful catch-
-// all so the indicator doesn't grow unboundedly.
+// "X, Y and 1 more"), and at ≥4 collapses to a neutral catch-
+// all ("All participants are responding…") so the indicator
+// doesn't grow unboundedly. The original issue body asked for
+// playful copy ("Everyone is hammering away at their
+// keyboards…") but the User + UI/UX reviewers + maintainer
+// agreed it reads as the app cracking a joke during tense
+// IR scenarios — swapped to neutral copy on the second commit.
 
 function role(id: string, label: string, displayName: string | null = null): RoleView {
   return {

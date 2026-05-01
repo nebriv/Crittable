@@ -392,8 +392,23 @@ export function Play({ sessionId, token }: Props) {
   // hot path — log once per state edge, not once per call.
   const typingSendErrLoggedRef = useRef(false);
   function handleTypingChange(t: boolean) {
+    const ws = wsRef.current;
+    if (!ws) {
+      // WS ref is null — the WS hasn't connected yet, or
+      // ConnectionManager torched it after a 4401 / spectator
+      // boundary. ``ws?.send(...)`` would silently no-op and the
+      // catch below would never fire (Copilot review on PR #99).
+      // Log the drop here on the false-true edge.
+      if (!typingSendErrLoggedRef.current) {
+        console.debug("[play] typing send dropped (WS not connected)", {
+          typing: t,
+        });
+        typingSendErrLoggedRef.current = true;
+      }
+      return;
+    }
     try {
-      wsRef.current?.send({ type: t ? "typing_start" : "typing_stop" });
+      ws.send({ type: t ? "typing_start" : "typing_stop" });
       typingSendErrLoggedRef.current = false;
     } catch (err) {
       if (!typingSendErrLoggedRef.current) {

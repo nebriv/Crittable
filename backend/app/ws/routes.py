@@ -291,13 +291,15 @@ async def _broadcast_typing(
     state events from the bounded buffer otherwise.
 
     Issue #77 sub-agent review (Security L2 + project logging policy):
-    a per-event log on this hot path is not viable (1 Hz/typer × N
-    sessions = noise), but a *complete-silence* relay leaves ops with
-    no signal if a malicious client floods or a flapping connection
-    causes the cadence to spike. We emit a single ``debug`` line at
-    the *transition edge* (typing flipping for a given role) rather
-    than per packet — gives operators a bisection breadcrumb without
-    drowning the log.
+    a *complete-silence* relay leaves ops with no signal if a
+    malicious client floods or a flapping connection causes the
+    cadence to spike. We emit a ``debug`` line per packet — yes,
+    that's once per heartbeat per typing user (~1 Hz × concurrent
+    typers), but at debug level it's filtered out in production by
+    default and gives operators a complete bisection trail when
+    investigating cadence anomalies. If volume becomes a concern,
+    swap to per-(session, role) edge-tracking with a TTL — sketch
+    in the Copilot-review thread on PR #99.
     """
 
     _logger.debug(

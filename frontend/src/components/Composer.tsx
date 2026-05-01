@@ -74,17 +74,20 @@ export function Composer({
   // after STOP_AFTER_IDLE_MS so the receiver doesn't have to
   // wait for the TTL sweep to evict.
   //
-  // ``pendingStartTimer`` (revived from pre-PR with a much shorter
-  // window) keeps a single fat-finger keystroke from broadcasting
-  // a ghost indicator: TYPING_START_DELAY_MS=500 means the
-  // receiver only sees us as typing after we've been at the
-  // keyboard for half a second. UI/UX review BLOCK B-1 — the
-  // immediate-fire path re-introduced the issue #53 flicker.
+  // ``pendingStartTimer`` keeps a single fat-finger keystroke from
+  // broadcasting a ghost indicator (UI/UX review BLOCK B-1; original
+  // issue #53). When it fires we count keystrokes-since-schedule:
+  // <2 means the user typed once and stopped (no broadcast); ≥2
+  // means they're really at the keyboard (start fires + heartbeat
+  // begins). Without the count gate the timer would still emit
+  // start for a single keystroke that didn't clear the textarea —
+  // Copilot review on PR #99.
   const heartbeatTimer = useRef<ReturnType<typeof setInterval> | null>(null);
   const idleTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pendingStartTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isTyping = useRef(false);
   const dirtySinceBeat = useRef(false);
+  const keystrokesInGate = useRef(0);
   const TYPING_START_DELAY_MS = 500;
   const HEARTBEAT_MS = 1000;
   const STOP_AFTER_IDLE_MS = 2500;
@@ -149,6 +152,7 @@ export function Composer({
       clearTimeout(pendingStartTimer.current);
       pendingStartTimer.current = null;
     }
+    keystrokesInGate.current = 0;
   }
 
   // Reasons logged at every emitTypingStop call site so a "stuck
@@ -176,19 +180,27 @@ export function Composer({
       return;
     }
     if (!isTyping.current) {
-      if (pendingStartTimer.current) {
-        // First keystroke already started the gate; subsequent
-        // keystrokes inside the start window let it fire on
-        // schedule (we don't reset the timer).
-      } else {
+      keystrokesInGate.current += 1;
+      if (!pendingStartTimer.current) {
         // First keystroke since silence: schedule a delayed
         // ``typing_start`` so a single fat-finger doesn't
         // surface a ghost indicator on every peer (UI/UX
-        // review BLOCK B-1; original issue #53). When the
-        // gate fires, kick off the 1 Hz heartbeat.
+        // review BLOCK B-1; original issue #53). The gate
+        // requires ≥2 keystrokes before firing — without that
+        // count check, a single keystroke that doesn't clear
+        // the textarea still emitted start when the timer
+        // fired (Copilot review on PR #99).
         pendingStartTimer.current = setTimeout(() => {
           pendingStartTimer.current = null;
+          const count = keystrokesInGate.current;
+          keystrokesInGate.current = 0;
           if (!enabled) return;
+          if (count < 2) {
+            // User typed once and stopped — don't broadcast.
+            // The idle timer (still scheduled) will tear down
+            // any state when STOP_AFTER_IDLE_MS elapses.
+            return;
+          }
           isTyping.current = true;
           dirtySinceBeat.current = false;
           onTypingChange?.(true);

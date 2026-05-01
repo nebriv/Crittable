@@ -771,8 +771,24 @@ export function Facilitator() {
   }
 
   function handleTypingChange(typing: boolean) {
+    const ws = wsRef.current;
+    if (!ws) {
+      // WS ref is null (not yet connected, or torn down after
+      // creator-token revoke). Without an explicit check the
+      // optional-chain ``ws?.send(...)`` would silently no-op
+      // and the catch below would never fire — Copilot review
+      // on PR #99.
+      if (!typingSendErrLoggedRef.current) {
+        console.debug(
+          "[facilitator] typing send dropped (WS not connected)",
+          { typing },
+        );
+        typingSendErrLoggedRef.current = true;
+      }
+      return;
+    }
     try {
-      wsRef.current?.send({ type: typing ? "typing_start" : "typing_stop" });
+      ws.send({ type: typing ? "typing_start" : "typing_stop" });
       typingSendErrLoggedRef.current = false;
     } catch (err) {
       // Rate-limited log per WS-state edge (issue #77 — 1 Hz

@@ -46,7 +46,7 @@ describe("Composer typing indicator (issue #77, heartbeat mode)", () => {
     vi.restoreAllMocks();
   });
 
-  it("does NOT broadcast typing on a single keystroke that stops within the start gate", () => {
+  it("does NOT broadcast typing on a single keystroke that's then cleared", () => {
     // UI/UX review BLOCK B-1 / issue #53: a single fat-finger
     // keystroke should not surface a ghost indicator on every
     // peer. The 500 ms gate gives the user time to abandon
@@ -68,9 +68,28 @@ describe("Composer typing indicator (issue #77, heartbeat mode)", () => {
     expect(falseCallCount(onTypingChange)).toBe(0);
   });
 
-  it("emits typing_start exactly once after the start-delay gate fires", () => {
+  it("does NOT broadcast typing on a single keystroke even if textarea is NOT cleared", () => {
+    // Copilot review on PR #99: pre-fix the gate-timer fired
+    // typing_start unconditionally after 500 ms regardless of
+    // whether the user kept typing. A single keystroke that
+    // sat in the textarea would still surface a ghost
+    // indicator. The fix counts keystrokes in the gate window
+    // and skips the broadcast if <2.
     const { textarea, onTypingChange } = setup();
     fireEvent.change(textarea, { target: { value: "h" } });
+    // Wait past the gate AND the idle window. No follow-up
+    // keystroke; textarea still has "h". Expect no broadcasts.
+    act(() => {
+      vi.advanceTimersByTime(START_DELAY_MS + STOP_AFTER_IDLE_MS + 100);
+    });
+    expect(trueCallCount(onTypingChange)).toBe(0);
+    expect(falseCallCount(onTypingChange)).toBe(0);
+  });
+
+  it("emits typing_start exactly once after ≥2 keystrokes inside the gate window", () => {
+    const { textarea, onTypingChange } = setup();
+    fireEvent.change(textarea, { target: { value: "h" } });
+    fireEvent.change(textarea, { target: { value: "hi" } });
     act(() => {
       vi.advanceTimersByTime(START_DELAY_MS + 50);
     });
@@ -79,8 +98,11 @@ describe("Composer typing indicator (issue #77, heartbeat mode)", () => {
 
   it("re-emits typing_start at the 1 Hz heartbeat cadence (exact lower + upper bound)", () => {
     const { textarea, onTypingChange } = setup();
-    // Start the gate.
+    // Two keystrokes inside the 500 ms gate window so the gate
+    // fires + emits start. One alone would fall below the ≥2
+    // threshold and not broadcast.
     fireEvent.change(textarea, { target: { value: "h" } });
+    fireEvent.change(textarea, { target: { value: "hi" } });
     act(() => {
       vi.advanceTimersByTime(START_DELAY_MS + 50);
     });
@@ -106,7 +128,9 @@ describe("Composer typing indicator (issue #77, heartbeat mode)", () => {
 
   it("skips the heartbeat tick when no keystroke happened since the last beat (dirtySinceBeat gate)", () => {
     const { textarea, onTypingChange } = setup();
+    // Two keystrokes to clear the ≥2-in-gate threshold.
     fireEvent.change(textarea, { target: { value: "h" } });
+    fireEvent.change(textarea, { target: { value: "hi" } });
     act(() => {
       vi.advanceTimersByTime(START_DELAY_MS + 50);
     });
@@ -126,6 +150,7 @@ describe("Composer typing indicator (issue #77, heartbeat mode)", () => {
     // through one beat (skipped) → keystroke → next beat fires.
     const { textarea, onTypingChange } = setup();
     fireEvent.change(textarea, { target: { value: "h" } });
+    fireEvent.change(textarea, { target: { value: "hi" } });
     act(() => {
       vi.advanceTimersByTime(START_DELAY_MS + 50);
     });
@@ -136,8 +161,10 @@ describe("Composer typing indicator (issue #77, heartbeat mode)", () => {
       vi.advanceTimersByTime(1100);
     });
     expect(trueCallCount(onTypingChange)).toBe(1);
-    // Resume typing — marks dirty.
-    fireEvent.change(textarea, { target: { value: "hi" } });
+    // Resume typing — marks dirty. Use a different value so
+    // React's setState bail-on-same-value doesn't skip the
+    // re-render (test was flaky when "hi" appeared twice).
+    fireEvent.change(textarea, { target: { value: "his" } });
     // Advance to the next heartbeat tick (~1000 ms later).
     act(() => {
       vi.advanceTimersByTime(1100);
@@ -155,14 +182,16 @@ describe("Composer typing indicator (issue #77, heartbeat mode)", () => {
     // start/stop pair.
     const { textarea, onTypingChange } = setup();
     fireEvent.change(textarea, { target: { value: "h" } });
-    // Pause 2.4 s from the keystroke. The 500 ms gate fires
-    // typing_start mid-pause; idle is scheduled for T+2500.
+    fireEvent.change(textarea, { target: { value: "hi" } });
+    // Pause 2.4 s from the last keystroke. The 500 ms gate
+    // fires typing_start mid-pause; idle is scheduled for the
+    // last-keystroke + 2500.
     act(() => {
       vi.advanceTimersByTime(2400);
     });
     expect(falseCallCount(onTypingChange)).toBe(0);
     // Resume typing — idle timer is refreshed.
-    fireEvent.change(textarea, { target: { value: "hi" } });
+    fireEvent.change(textarea, { target: { value: "hi!" } });
     act(() => {
       vi.advanceTimersByTime(100);
     });
@@ -171,7 +200,9 @@ describe("Composer typing indicator (issue #77, heartbeat mode)", () => {
 
   it("emits typing_stop after STOP_AFTER_IDLE_MS of idle", () => {
     const { textarea, onTypingChange } = setup();
-    fireEvent.change(textarea, { target: { value: "hello" } });
+    // Two keystrokes to clear the ≥2 gate threshold.
+    fireEvent.change(textarea, { target: { value: "h" } });
+    fireEvent.change(textarea, { target: { value: "he" } });
     act(() => {
       vi.advanceTimersByTime(START_DELAY_MS + STOP_AFTER_IDLE_MS + 100);
     });
@@ -180,13 +211,15 @@ describe("Composer typing indicator (issue #77, heartbeat mode)", () => {
 
   it("re-emits typing_start on the next keystroke after a stop (via the gate)", () => {
     const { textarea, onTypingChange } = setup();
+    fireEvent.change(textarea, { target: { value: "h" } });
     fireEvent.change(textarea, { target: { value: "hi" } });
     act(() => {
       vi.advanceTimersByTime(START_DELAY_MS + STOP_AFTER_IDLE_MS + 100);
     });
     expect(onTypingChange).toHaveBeenLastCalledWith(false);
-    fireEvent.change(textarea, { target: { value: "hi again" } });
-    // First keystroke after stop schedules the gate again.
+    fireEvent.change(textarea, { target: { value: "hi a" } });
+    fireEvent.change(textarea, { target: { value: "hi ag" } });
+    // ≥2 keystrokes inside the new gate window — start fires.
     act(() => {
       vi.advanceTimersByTime(START_DELAY_MS + 50);
     });
@@ -195,6 +228,7 @@ describe("Composer typing indicator (issue #77, heartbeat mode)", () => {
 
   it("emits typing_stop on submit AND a fresh keystroke afterward fires a new start", () => {
     const { textarea, onTypingChange, onSubmit } = setup();
+    fireEvent.change(textarea, { target: { value: "a" } });
     fireEvent.change(textarea, { target: { value: "answer" } });
     act(() => {
       vi.advanceTimersByTime(START_DELAY_MS + 50);
@@ -203,6 +237,7 @@ describe("Composer typing indicator (issue #77, heartbeat mode)", () => {
     expect(onSubmit).toHaveBeenCalledWith("answer", undefined);
     expect(onTypingChange).toHaveBeenLastCalledWith(false);
     // QA review MEDIUM: post-submit re-typing fires start again.
+    fireEvent.change(textarea, { target: { value: "n" } });
     fireEvent.change(textarea, { target: { value: "next" } });
     act(() => {
       vi.advanceTimersByTime(START_DELAY_MS + 50);
@@ -213,6 +248,7 @@ describe("Composer typing indicator (issue #77, heartbeat mode)", () => {
   it("Shift+Enter inserts a newline without submitting and counts as a keystroke", () => {
     // QA review MEDIUM: Shift+Enter newline path was untested.
     const { textarea, onTypingChange, onSubmit } = setup();
+    fireEvent.change(textarea, { target: { value: "f" } });
     fireEvent.change(textarea, { target: { value: "first" } });
     act(() => {
       vi.advanceTimersByTime(START_DELAY_MS + 50);
@@ -230,6 +266,7 @@ describe("Composer typing indicator (issue #77, heartbeat mode)", () => {
 
   it("emits typing_stop when the textarea is cleared mid-typing", () => {
     const { textarea, onTypingChange } = setup();
+    fireEvent.change(textarea, { target: { value: "h" } });
     fireEvent.change(textarea, { target: { value: "hi" } });
     act(() => {
       vi.advanceTimersByTime(START_DELAY_MS + 50);
@@ -241,6 +278,7 @@ describe("Composer typing indicator (issue #77, heartbeat mode)", () => {
 
   it("emits typing_stop when the composer becomes disabled mid-typing", () => {
     const { textarea, onTypingChange, rerender } = setup();
+    fireEvent.change(textarea, { target: { value: "h" } });
     fireEvent.change(textarea, { target: { value: "hi" } });
     act(() => {
       vi.advanceTimersByTime(START_DELAY_MS + 50);
@@ -260,6 +298,7 @@ describe("Composer typing indicator (issue #77, heartbeat mode)", () => {
 
   it("emits typing_stop on unmount", () => {
     const { textarea, onTypingChange, unmount } = setup();
+    fireEvent.change(textarea, { target: { value: "h" } });
     fireEvent.change(textarea, { target: { value: "hi" } });
     act(() => {
       vi.advanceTimersByTime(START_DELAY_MS + 50);
