@@ -21,8 +21,8 @@ const COMMON_PROPS = {
 
 describe("JoinIntro — issue #76 (joined, waiting for session start)", () => {
   beforeEach(() => {
-    // Tip rotation uses setInterval; fake timers let us assert the
-    // carousel advances without a 7s wall-clock wait.
+    // Tip rotation uses setTimeout (length-aware dwell); fake timers
+    // let us assert the carousel advances without a wall-clock wait.
     vi.useFakeTimers();
   });
 

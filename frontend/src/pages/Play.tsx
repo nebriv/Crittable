@@ -90,6 +90,11 @@ export function Play({ sessionId, token }: Props) {
   // ~4s on the first render of the main view after the transition.
   const [sessionStartedFlash, setSessionStartedFlash] = useState(false);
   const wasWaitingRef = useRef(false);
+  // Issue #80 bonus: tracks the previous value of the joiner-chip
+  // predicate so the boundary log only fires on the false→true edge.
+  // Pre-fix the log fired every time the WS replaced ``snapshot``
+  // (multiple times per turn) — too noisy in production.
+  const wasShowingMidSessionChipRef = useRef(false);
   const wsRef = useRef<WsClient | null>(null);
   const forceAdvanceTimerRef = useRef<number | null>(null);
 
@@ -474,24 +479,43 @@ export function Play({ sessionId, token }: Props) {
   // but shouldn't have" has no telemetry trail. Effect lives ABOVE
   // the early returns so the hook count is stable across renders;
   // the predicate guards on snapshot existing.
+  //
+  // The full ``snapshot`` object is in the dep array (it's a single
+  // reference that gets replaced on every WS event), but the log
+  // itself is gated on the previous-value ref so it only fires on
+  // the false→true edge — pre-fix it churned a line on every
+  // turn-message arrival even when the chip was already on screen.
+  // ``console.debug`` (not info) keeps this out of production
+  // console noise; the boundary log is for operators inspecting a
+  // stuck-chip report.
   useEffect(() => {
-    if (!snapshot || !selfRoleId) return;
-    const myRoleHere = snapshot.roles.find((r) => r.id === selfRoleId);
-    const activeIds = snapshot.current_turn?.active_role_ids ?? [];
-    const show = isMidSessionJoiner({
-      sessionState: snapshot.state,
-      iAmActive: activeIds.includes(selfRoleId),
-      messages: snapshot.messages,
-      selfRoleId,
-      selfRoleKind: myRoleHere?.kind,
-      selfIsCreator: myRoleHere?.is_creator ?? false,
-    });
-    if (!show) return;
-    console.info("[play] mid-session-joiner chip", {
-      session_id: sessionId,
-      role_id: selfRoleId,
-      session_state: snapshot.state,
-    });
+    let show = false;
+    if (snapshot && selfRoleId) {
+      const myRoleHere = snapshot.roles.find((r) => r.id === selfRoleId);
+      const activeIds = snapshot.current_turn?.active_role_ids ?? [];
+      show = isMidSessionJoiner({
+        sessionState: snapshot.state,
+        iAmActive: activeIds.includes(selfRoleId),
+        messages: snapshot.messages,
+        selfRoleId,
+        selfRoleKind: myRoleHere?.kind,
+        selfIsCreator: myRoleHere?.is_creator ?? false,
+      });
+    }
+    if (show && !wasShowingMidSessionChipRef.current) {
+      console.debug("[play] mid-session-joiner chip on", {
+        session_id: sessionId,
+        role_id: selfRoleId,
+        session_state: snapshot?.state,
+      });
+    } else if (!show && wasShowingMidSessionChipRef.current) {
+      console.debug("[play] mid-session-joiner chip off", {
+        session_id: sessionId,
+        role_id: selfRoleId,
+        session_state: snapshot?.state,
+      });
+    }
+    wasShowingMidSessionChipRef.current = show;
   }, [snapshot, selfRoleId, sessionId]);
 
   // Issue #76 transition cue: detect the SETUP/BRIEFING →
@@ -502,11 +526,15 @@ export function Play({ sessionId, token }: Props) {
   useEffect(() => {
     const isWaitingNow =
       snapshot?.state === "SETUP" || snapshot?.state === "BRIEFING";
-    if (
-      wasWaitingRef.current
-      && !isWaitingNow
-      && Boolean(effectiveDisplayName)
-    ) {
+    const wasWaiting = wasWaitingRef.current;
+    // Always update the ref before any conditional return — pre-fix
+    // the early `return` left ``wasWaitingRef.current`` stuck at
+    // ``true`` after the first flash, so a later state cycle (e.g.
+    // AWAITING_PLAYERS → AI_PROCESSING returning ``isWaitingNow ===
+    // false`` again) could re-trigger the banner. Update first,
+    // then decide whether to fire.
+    wasWaitingRef.current = isWaitingNow;
+    if (wasWaiting && !isWaitingNow && Boolean(effectiveDisplayName)) {
       console.info("[play] session started — exiting waiting variant", {
         session_id: sessionId,
         new_state: snapshot?.state,
@@ -515,7 +543,6 @@ export function Play({ sessionId, token }: Props) {
       const id = window.setTimeout(() => setSessionStartedFlash(false), 4000);
       return () => window.clearTimeout(id);
     }
-    wasWaitingRef.current = isWaitingNow;
     return undefined;
   }, [snapshot?.state, effectiveDisplayName, sessionId]);
 
@@ -1066,8 +1093,11 @@ export function JoinIntro({
   // screen. Cleared on unmount or variant flip so we don't churn
   // setTimeout calls in the form variant. Per-tip dwell scales with
   // tip length — UI/UX review flagged 7s as borderline for the
-  // longest tip; ~25 chars/sec at typical reading speed gives a
-  // floor of 7s and a ceiling of ~10s for the longest tips.
+  // longest tip; the divisor of 14 is "comfortable" reading speed
+  // (~14 chars/sec, accommodating non-native speakers and dyslexic
+  // readers — slower than the 200-250 wpm "fluent silent reading"
+  // benchmark on purpose). With a 7s floor and the current 5-tip
+  // array, dwell ranges 7–10s.
   useEffect(() => {
     if (!isWaitingVariant) return;
     const dwellMs = Math.max(

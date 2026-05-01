@@ -1,19 +1,10 @@
 import { FormEvent, KeyboardEvent, useEffect, useRef, useState } from "react";
+import type { ImpersonateOption } from "../lib/proxy";
 
-interface ImpersonateOption {
-  /** Role-id to submit as. */
-  id: string;
-  /** Visible label, e.g. "SOC Analyst". Bare role label only — no
-   *  decorations; the Composer adds them based on ``offTurn``. */
-  label: string;
-  /** ``true`` when the role isn't on the current turn's active set.
-   *  Submitting as them lands as an interjection (sidebar comment),
-   *  not a turn answer (issue #80). The dropdown row + the
-   *  "Submitting as …" banner change wording so a fast-typing
-   *  creator can't miss that this won't count as the role's turn
-   *  answer. */
-  offTurn?: boolean;
-}
+// ``ImpersonateOption`` lives in ``../lib/proxy`` so the helper that
+// builds the dropdown options and the consumer here can't drift on
+// the shape of ``offTurn`` (issue #80, Copilot review on PR #91).
+// See ``lib/proxy.ts`` for the field-by-field contract.
 
 interface Props {
   enabled: boolean;
