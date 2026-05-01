@@ -460,13 +460,27 @@ export function Play({ sessionId, token }: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [serverDisplayName, displayName, sessionId, token, myRoleFromSnapshot?.id]);
 
-  if (!effectiveDisplayName) {
+  // Issue #76: a participant who has submitted their display name but
+  // arrived while the creator is still drafting the plan was previously
+  // dropped onto the main page with a blank transcript and a disabled
+  // composer pinned to the bottom — "looks funny with a chat box and
+  // all the blank space" (issue comment). Hold them on JoinIntro
+  // instead, with the form swapped for a "Waiting for the facilitator
+  // to start" panel + tip carousel. Auto-resolves the moment the
+  // session transitions to AWAITING_PLAYERS / AI_PROCESSING / etc.
+  const isWaitingForSessionStart =
+    snapshot?.state === "SETUP" || snapshot?.state === "BRIEFING";
+
+  if (!effectiveDisplayName || isWaitingForSessionStart) {
     // Pre-fix this was a tiny "what's your name?" dialog that operators
     // routinely missed (the user's report — "I'm not sure if Bridget
     // was prompted to enter her name at all"). The intro page now
     // names the role, sets expectations for AI interaction, and
     // posts the entered name to the server so peers see it (was:
-    // localStorage-only, invisible to other clients).
+    // localStorage-only, invisible to other clients). When ``hasName``
+    // is true but the session hasn't started, the form is replaced by
+    // a spinner panel so the user has somewhere friendly to wait
+    // (issue #76).
     return (
       <JoinIntro
         sessionId={sessionId}
@@ -478,6 +492,9 @@ export function Play({ sessionId, token }: Props) {
         sessionState={snapshot?.state}
         snapshotLoaded={snapshot !== null}
         snapshotError={snapshot === null ? error : null}
+        hasName={Boolean(effectiveDisplayName)}
+        joinedDisplayName={effectiveDisplayName}
+        joinedSeatCount={presence.size}
         onRetry={() => {
           setError(null);
           refreshSnapshot();
@@ -836,7 +853,37 @@ interface JoinIntroProps {
   /** Retry handler for the snapshot-error branch. */
   onRetry: () => void;
   onJoined: (name: string) => void;
+  /** Issue #76: the participant has submitted (or already had on the
+   *  server) a display name, so the name+Begin form is unnecessary.
+   *  When this is true AND the session is still SETUP/BRIEFING, we
+   *  swap the form for a "Waiting for the facilitator to start"
+   *  panel with a tip carousel. Otherwise it's the original form. */
+  hasName?: boolean;
+  /** Display name to show in the waiting-panel subhead. Only read
+   *  when ``hasName`` is true. */
+  joinedDisplayName?: string | null;
+  /** Number of *other* roles the WS layer has reported as connected.
+   *  Renders as "N seats joined" momentum cue in the waiting panel.
+   *  Sourced from the parent's presence Set so it auto-updates as
+   *  peers open their tabs. */
+  joinedSeatCount?: number;
 }
+
+/**
+ * Tip carousel content for the "joined, waiting for session to start"
+ * variant of JoinIntro (issue #76). Each tip is short — the panel is
+ * a wait state, not a tutorial — and rotates every ~7 seconds. Order
+ * is intentional: introduces the conversational tone first, then
+ * deepens into mechanics.
+ */
+const WAITING_TIPS: readonly string[] = [
+  "When the AI throws an inject, ask clarifying questions before committing to an action.",
+  "Want logs? Just ask — \"pull the auth logs\" or \"what does Defender show?\". The AI will produce realistic synthetic data.",
+  "Disagree with a teammate? Say so. The AI tracks decisions and dissents in the AAR.",
+  "Out of your lane? \"Loop in Legal\" or \"hand off to Comms\" — the AI will pivot the conversation.",
+  "There's no scoring. The AAR captures decisions and rationale, not right-versus-wrong answers.",
+];
+const WAITING_TIP_ROTATE_MS = 7000;
 
 /**
  * Replaces the prior tiny "what's your name?" dialog. The user reported
@@ -856,7 +903,7 @@ interface JoinIntroProps {
  * ship the participant into the chat as fast as possible while still
  * giving them the prereq context.
  */
-function JoinIntro({
+export function JoinIntro({
   sessionId,
   token,
   roleLabel,
@@ -868,10 +915,41 @@ function JoinIntro({
   snapshotError,
   onRetry,
   onJoined,
+  hasName = false,
+  joinedDisplayName = null,
+  joinedSeatCount = 0,
 }: JoinIntroProps) {
   const [name, setName] = useState(roleExistingDisplayName ?? "");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Tip carousel index for the waiting variant (issue #76). Lives at
+  // the top of the component (not inside a conditional) so React's
+  // hook order rule is respected when the user transitions from the
+  // form variant to the waiting variant inside a single mount.
+  const [tipIndex, setTipIndex] = useState(0);
+  const isWaitingVariant =
+    hasName && (sessionState === "SETUP" || sessionState === "BRIEFING");
+  // Log the variant so a "stuck on JoinIntro" report has a clear trail
+  // — the gate decision lives in Play.tsx but it's the effective UI
+  // state here that the user reports.
+  useEffect(() => {
+    console.info("[play] join-intro variant", {
+      session_id: sessionId,
+      session_state: sessionState,
+      has_name: hasName,
+      variant: isWaitingVariant ? "waiting" : "form",
+    });
+  }, [sessionId, sessionState, hasName, isWaitingVariant]);
+  // Rotate the tip carousel only while the waiting variant is on
+  // screen. Cleared on unmount or variant flip so we don't churn
+  // setTimeout calls in the form variant.
+  useEffect(() => {
+    if (!isWaitingVariant) return;
+    const id = setInterval(() => {
+      setTipIndex((i) => (i + 1) % WAITING_TIPS.length);
+    }, WAITING_TIP_ROTATE_MS);
+    return () => clearInterval(id);
+  }, [isWaitingVariant]);
 
   // Pre-fill the entered name from the snapshot when it lands (so a
   // returning player whose name is already on the server doesn't have
@@ -1075,64 +1153,122 @@ function JoinIntro({
           )}
         </section>
 
-        <form onSubmit={submit} className="flex flex-col gap-2">
-          <label
-            htmlFor="display-name"
-            className="text-xs uppercase tracking-widest text-slate-300"
+        {isWaitingVariant ? (
+          /* Issue #76: form is replaced by a waiting panel once the
+             user has a display name but the session hasn't started.
+             Pre-fix the participant was bumped to the main view with
+             a blank transcript and a disabled composer pinned at the
+             bottom. Now they stay on this page with a friendly
+             spinner, the role context they already have, and a
+             rotating tip carousel so they have something to read. */
+          <section
+            aria-labelledby="waiting-heading"
+            data-testid="join-intro-waiting"
+            className="flex flex-col gap-3 rounded border border-emerald-700/40 bg-emerald-950/20 p-4"
+            role="status"
+            aria-live="polite"
           >
-            Your display name (visible to the rest of the team)
-          </label>
-          {roleExistingDisplayName ? (
-            <p className="text-xs text-slate-400">
-              Welcome back — your saved name is pre-filled. Click Begin
-              to rejoin, or edit if you'd like to change it.
-            </p>
-          ) : null}
-          <input
-            id="display-name"
-            // ``autoFocus`` removed: screen-reader users would land
-            // mid-form and miss the heading + "How to play" guide
-            // (which is the whole point of this page). Sighted users
-            // can tab into the input in one keystroke.
-            // ``required`` removed: the JS guard + disabled-Begin
-            // button already cover empty submission, and the browser
-            // tooltip from native required would conflict with our
-            // own error surface.
-            // ``sessionEnded`` does NOT disable the input — the copy
-            // below tells the user they can still join in read-only
-            // mode after entering a name. Disabling the input made
-            // that promise impossible to keep for first-time joiners
-            // of an ENDED session.
-            disabled={submitting}
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            placeholder="e.g. Bridget"
-            maxLength={64}
-            className="rounded border border-slate-700 bg-slate-950 p-2 text-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-400 disabled:cursor-not-allowed disabled:opacity-60"
-          />
-          {error ? (
-            <p className="text-sm text-red-400" role="alert">
-              {error}
-            </p>
-          ) : null}
-          {sessionEnded ? (
-            <p className="text-sm text-amber-300" role="status">
-              This session has already ended. You can still join in
-              read-only mode after entering a name, but no new
-              responses will be accepted.
-            </p>
-          ) : null}
-          <button
-            type="submit"
-            disabled={submitting || !name.trim()}
-            // Full-width tap target on mobile (avoids cramped right-
-            // aligned button when the on-screen keyboard pushes the
-            // viewport up); right-aligned on sm+.
-            className="mt-2 self-stretch rounded bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-emerald-300 disabled:cursor-not-allowed disabled:opacity-60 sm:self-end"
-          >
-            {submitting ? "Joining…" : "Begin"}
-          </button>
-        </form>
+            <div className="flex items-center gap-3">
+              <span
+                aria-hidden="true"
+                className="inline-block h-4 w-4 shrink-0 animate-spin rounded-full border-2 border-emerald-400 border-t-transparent"
+              />
+              <h2
+                id="waiting-heading"
+                className="text-sm font-semibold text-emerald-200"
+              >
+                {sessionState === "BRIEFING"
+                  ? "The AI is preparing the scenario brief…"
+                  : "Waiting for your facilitator to start the scenario…"}
+              </h2>
+            </div>
+            {roleLabel && joinedDisplayName ? (
+              <p className="text-sm text-slate-200">
+                You're seated as{" "}
+                <span className="font-semibold">{roleLabel}</span>{" "}
+                <span className="text-slate-400">({joinedDisplayName})</span>
+                . You'll be brought in automatically when it begins.
+              </p>
+            ) : null}
+            {joinedSeatCount > 0 ? (
+              <p className="text-xs text-slate-400">
+                {joinedSeatCount === 1
+                  ? "1 seat joined so far."
+                  : `${joinedSeatCount} seats joined so far.`}
+              </p>
+            ) : null}
+            <div
+              className="rounded border border-slate-700 bg-slate-950/40 p-3"
+              data-testid="join-intro-tip"
+            >
+              <p className="text-[0.65rem] uppercase tracking-widest text-slate-400">
+                While you wait
+              </p>
+              <p className="mt-1 text-sm leading-relaxed text-slate-200">
+                {WAITING_TIPS[tipIndex]}
+              </p>
+            </div>
+          </section>
+        ) : (
+          <form onSubmit={submit} className="flex flex-col gap-2">
+            <label
+              htmlFor="display-name"
+              className="text-xs uppercase tracking-widest text-slate-300"
+            >
+              Your display name (visible to the rest of the team)
+            </label>
+            {roleExistingDisplayName ? (
+              <p className="text-xs text-slate-400">
+                Welcome back — your saved name is pre-filled. Click Begin
+                to rejoin, or edit if you'd like to change it.
+              </p>
+            ) : null}
+            <input
+              id="display-name"
+              // ``autoFocus`` removed: screen-reader users would land
+              // mid-form and miss the heading + "How to play" guide
+              // (which is the whole point of this page). Sighted users
+              // can tab into the input in one keystroke.
+              // ``required`` removed: the JS guard + disabled-Begin
+              // button already cover empty submission, and the browser
+              // tooltip from native required would conflict with our
+              // own error surface.
+              // ``sessionEnded`` does NOT disable the input — the copy
+              // below tells the user they can still join in read-only
+              // mode after entering a name. Disabling the input made
+              // that promise impossible to keep for first-time joiners
+              // of an ENDED session.
+              disabled={submitting}
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="e.g. Bridget"
+              maxLength={64}
+              className="rounded border border-slate-700 bg-slate-950 p-2 text-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-400 disabled:cursor-not-allowed disabled:opacity-60"
+            />
+            {error ? (
+              <p className="text-sm text-red-400" role="alert">
+                {error}
+              </p>
+            ) : null}
+            {sessionEnded ? (
+              <p className="text-sm text-amber-300" role="status">
+                This session has already ended. You can still join in
+                read-only mode after entering a name, but no new
+                responses will be accepted.
+              </p>
+            ) : null}
+            <button
+              type="submit"
+              disabled={submitting || !name.trim()}
+              // Full-width tap target on mobile (avoids cramped right-
+              // aligned button when the on-screen keyboard pushes the
+              // viewport up); right-aligned on sm+.
+              className="mt-2 self-stretch rounded bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-emerald-300 disabled:cursor-not-allowed disabled:opacity-60 sm:self-end"
+            >
+              {submitting ? "Joining…" : "Begin"}
+            </button>
+          </form>
+        )}
       </article>
     </main>
   );
