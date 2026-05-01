@@ -307,4 +307,82 @@ describe("Composer typing indicator (issue #77, heartbeat mode)", () => {
     unmount();
     expect(onTypingChange).toHaveBeenLastCalledWith(false);
   });
+
+  it("rerender with new onTypingChange ref does NOT kill a live typing session (issue #77 regression)", () => {
+    // Root-cause regression: Composer's ``useEffect([onTypingChange])``
+    // cleanup fires whenever ``onTypingChange`` changes identity. In
+    // Play/Facilitator the function was recreated on every render
+    // (WS events, presence pings, etc.), so the cleanup cancelled
+    // ``pendingStartTimer`` mid-gate and left its ref as a stale
+    // truthy integer — permanently blocking new typing sessions.
+    //
+    // With the ``useCallback(fn, [])`` fix in Play/Facilitator the
+    // function reference is stable, so this effect never fires mid-
+    // session. The test verifies the *observable contract*: after a
+    // rerender with a new onTypingChange prop, the current typing
+    // session continues uninterrupted AND a second burst after the
+    // rerender fires its own start.
+    const onTypingChange1 = vi.fn();
+    const onSubmit = vi.fn();
+    const { rerender } = render(
+      <Composer
+        enabled={true}
+        placeholder="Type something"
+        label="Your message"
+        onSubmit={onSubmit}
+        onTypingChange={onTypingChange1}
+      />,
+    );
+    const textarea = screen.getByPlaceholderText("Type something") as HTMLTextAreaElement;
+
+    // First burst — 2+ keystrokes inside gate window.
+    fireEvent.change(textarea, { target: { value: "h" } });
+    fireEvent.change(textarea, { target: { value: "hi" } });
+    act(() => {
+      vi.advanceTimersByTime(START_DELAY_MS + 50);
+    });
+    expect(onTypingChange1).toHaveBeenLastCalledWith(true);
+
+    // Simulate a WS-event re-render with a *new* onTypingChange
+    // reference (this is what Play.tsx does on every state_changed /
+    // presence / ai_thinking event when handleTypingChange is NOT
+    // wrapped in useCallback).
+    const onTypingChange2 = vi.fn();
+    rerender(
+      <Composer
+        enabled={true}
+        placeholder="Type something"
+        label="Your message"
+        onSubmit={onSubmit}
+        onTypingChange={onTypingChange2}
+      />,
+    );
+    // Re-query after rerender so we have a live DOM element.
+    const textarea2 = screen.getByPlaceholderText("Type something") as HTMLTextAreaElement;
+
+    // The rerender might trigger the useEffect([onTypingChange]) cleanup,
+    // which calls teardownTypingTimers(). The critical invariant is that
+    // teardownTypingTimers *nulls* every ref — particularly
+    // ``pendingStartTimer.current``. Without nulling (old bug: just
+    // ``clearTimeout`` without null-assignment), the ref held a stale
+    // truthy timer ID, so the gate check ``if (!pendingStartTimer.current)``
+    // would always short-circuit and a new typing session could never start.
+
+    // After the rerender the user keeps typing. A second burst should
+    // fire typing_start on the new onTypingChange2 ref. (If the stale-
+    // timer bug is present, pendingStartTimer.current holds a cancelled-
+    // but-truthy ID and the gate never re-schedules.)
+    act(() => {
+      // Let the idle timer from the first burst expire (simulates
+      // a natural pause between sessions).
+      vi.advanceTimersByTime(STOP_AFTER_IDLE_MS + 100);
+    });
+    // Now type a second burst.
+    fireEvent.change(textarea2, { target: { value: "hello" } });
+    fireEvent.change(textarea2, { target: { value: "hello w" } });
+    act(() => {
+      vi.advanceTimersByTime(START_DELAY_MS + 50);
+    });
+    expect(onTypingChange2).toHaveBeenLastCalledWith(true);
+  });
 });

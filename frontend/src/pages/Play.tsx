@@ -1,4 +1,4 @@
-import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, SessionSnapshot } from "../api/client";
 import { Composer } from "../components/Composer";
 import { CriticalEventBanner } from "../components/CriticalEventBanner";
@@ -391,7 +391,13 @@ export function Play({ sessionId, token }: Props) {
   // QA logging review HIGH: silent swallows are bugs even on a
   // hot path — log once per state edge, not once per call.
   const typingSendErrLoggedRef = useRef(false);
-  function handleTypingChange(t: boolean) {
+  // ``useCallback(fn, [])`` gives ``handleTypingChange`` a stable identity
+  // across re-renders (Play re-renders on every WS event). Without it the
+  // ``useEffect([onTypingChange])`` cleanup in Composer fires on *every*
+  // re-render, cancelling the pending-start timer and leaving its ref as a
+  // stale truthy integer — which permanently blocks new typing sessions for
+  // the rest of the session (issue #77 regression).
+  const handleTypingChange = useCallback((t: boolean) => {
     const ws = wsRef.current;
     if (!ws) {
       // WS ref is null — the WS hasn't connected yet, or
@@ -418,7 +424,8 @@ export function Play({ sessionId, token }: Props) {
         typingSendErrLoggedRef.current = true;
       }
     }
-  }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   function handleForceAdvance() {
     if (forceAdvanceCooldown) {

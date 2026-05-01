@@ -1,4 +1,4 @@
-import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { TableScroll } from "../components/TableScroll";
@@ -770,7 +770,13 @@ export function Facilitator() {
     }
   }
 
-  function handleTypingChange(typing: boolean) {
+  // ``useCallback(fn, [])`` gives ``handleTypingChange`` a stable identity
+  // across re-renders (Facilitator re-renders on every WS event). Without it
+  // the ``useEffect([onTypingChange])`` cleanup in Composer fires on *every*
+  // re-render, cancelling the pending-start timer and leaving its ref as a
+  // stale truthy integer — which permanently blocks new typing sessions for
+  // the rest of the session (issue #77 regression).
+  const handleTypingChange = useCallback((typing: boolean) => {
     const ws = wsRef.current;
     if (!ws) {
       // WS ref is null (not yet connected, or torn down after
@@ -801,7 +807,8 @@ export function Facilitator() {
         typingSendErrLoggedRef.current = true;
       }
     }
-  }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   async function handleForceAdvance() {
     if (!state) return;
