@@ -308,20 +308,28 @@ describe("Composer typing indicator (issue #77, heartbeat mode)", () => {
     expect(onTypingChange).toHaveBeenLastCalledWith(false);
   });
 
-  it("rerender with new onTypingChange ref does NOT kill a live typing session (issue #77 regression)", () => {
+  it("after rerender with new onTypingChange ref, subsequent typing burst is not permanently locked out (issue #77 regression)", () => {
     // Root-cause regression: Composer's ``useEffect([onTypingChange])``
     // cleanup fires whenever ``onTypingChange`` changes identity. In
     // Play/Facilitator the function was recreated on every render
-    // (WS events, presence pings, etc.), so the cleanup cancelled
-    // ``pendingStartTimer`` mid-gate and left its ref as a stale
-    // truthy integer — permanently blocking new typing sessions.
+    // (WS events, presence pings, etc.), so the cleanup called
+    // clearTimeout(pendingStartTimer.current) without then setting the
+    // ref to null — leaving it as a stale truthy integer.  The gate
+    // check ``if (!pendingStartTimer.current)`` would always short-circuit
+    // after that, permanently blocking any new typing session.
     //
-    // With the ``useCallback(fn, [])`` fix in Play/Facilitator the
-    // function reference is stable, so this effect never fires mid-
-    // session. The test verifies the *observable contract*: after a
-    // rerender with a new onTypingChange prop, the current typing
-    // session continues uninterrupted AND a second burst after the
-    // rerender fires its own start.
+    // The fix is that teardownTypingTimers() *nulls* every ref after
+    // clearing.  The useEffect([onTypingChange]) cleanup still fires on
+    // identity change (which may emit typing_stop and discard mid-session
+    // timers), but crucially the refs are reset to null so the gate can
+    // re-engage on the next burst.
+    //
+    // This test verifies that *observable contract*: after a rerender
+    // with a new onTypingChange identity, a subsequent typing burst
+    // correctly fires typing_start on the new callback (no permanent
+    // lockout).  It does NOT assert that an in-flight session survives
+    // the rerender — that separate concern is addressed by the
+    // useCallback(fn, []) stabilisation in Play/Facilitator.
     const onTypingChange1 = vi.fn();
     const onSubmit = vi.fn();
     const { rerender } = render(
@@ -360,18 +368,17 @@ describe("Composer typing indicator (issue #77, heartbeat mode)", () => {
     // Re-query after rerender so we have a live DOM element.
     const textarea2 = screen.getByPlaceholderText("Type something") as HTMLTextAreaElement;
 
-    // The rerender might trigger the useEffect([onTypingChange]) cleanup,
+    // The rerender triggers the useEffect([onTypingChange]) cleanup,
     // which calls teardownTypingTimers(). The critical invariant is that
     // teardownTypingTimers *nulls* every ref — particularly
     // ``pendingStartTimer.current``. Without nulling (old bug: just
     // ``clearTimeout`` without null-assignment), the ref held a stale
     // truthy timer ID, so the gate check ``if (!pendingStartTimer.current)``
-    // would always short-circuit and a new typing session could never start.
-
-    // After the rerender the user keeps typing. A second burst should
-    // fire typing_start on the new onTypingChange2 ref. (If the stale-
-    // timer bug is present, pendingStartTimer.current holds a cancelled-
-    // but-truthy ID and the gate never re-schedules.)
+    // would always short-circuit and no new typing session could ever start.
+    //
+    // Note: the rerender may also emit typing_stop on onTypingChange1 if
+    // isTyping.current is true at cleanup time; that side-effect is
+    // expected and not asserted here.
     act(() => {
       // Let the idle timer from the first burst expire (simulates
       // a natural pause between sessions).
