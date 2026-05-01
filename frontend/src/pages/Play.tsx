@@ -5,6 +5,7 @@ import { CriticalEventBanner } from "../components/CriticalEventBanner";
 import { RightSidebar } from "../components/RightSidebar";
 import { RoleRoster } from "../components/RoleRoster";
 import { Transcript } from "../components/Transcript";
+import { isMidSessionJoiner } from "../lib/proxy";
 import { useStickyScroll } from "../lib/useStickyScroll";
 import { ServerEvent, WsClient } from "../lib/ws";
 
@@ -673,6 +674,24 @@ export function Play({ sessionId, token }: Props) {
           {otherPending.length > 0
             ? `Waiting on ${otherPending.join(", ")}.`
             : "Waiting for the AI to respond."}
+        </div>
+      ) : isMidSessionJoiner({
+        sessionState: snapshot.state,
+        iAmActive,
+        messages: snapshot.messages,
+        selfRoleId,
+      }) ? (
+        // Issue #80 bonus: cue for a participant whose role was added
+        // mid-session. See ``isMidSessionJoiner`` for the predicate;
+        // here we just render the chip when it's true.
+        <div
+          role="status"
+          aria-live="polite"
+          data-testid="mid-session-joiner-chip"
+          className="bg-slate-800 px-4 py-2 text-center text-xs text-slate-200 shadow"
+        >
+          Just joined? You'll be brought into the next turn — sit
+          tight, the current beat is finishing up.
         </div>
       ) : null}
       <div className="mx-auto grid w-full max-w-7xl flex-1 grid-cols-1 gap-4 p-4 lg:min-h-0 lg:grid-cols-[220px_1fr_280px] lg:overflow-hidden">

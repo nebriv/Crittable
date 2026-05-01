@@ -19,6 +19,7 @@ import { RolesPanel } from "../components/RolesPanel";
 import { SessionActivityPanel } from "../components/SessionActivityPanel";
 import { SetupChat } from "../components/SetupChat";
 import { Transcript } from "../components/Transcript";
+import { buildImpersonateOptions } from "../lib/proxy";
 import { useStickyScroll } from "../lib/useStickyScroll";
 import { ServerEvent, WsClient } from "../lib/ws";
 
@@ -1330,23 +1331,18 @@ export function Facilitator() {
                 />
               ) : null}
               {(() => {
-                // Creator-only "respond as" dropdown: list every active
-                // role except the creator's own seat. Lets a solo
-                // tester answer for SOC Analyst etc. without juggling
-                // browser tabs. Empty when no other seats need a voice.
-                const impersonateOptions = activeRoleIds
-                  .filter((rid) => rid !== state.creatorRoleId)
-                  .filter(
-                    (rid) =>
-                      !(snapshot.current_turn?.submitted_role_ids ?? []).includes(rid),
-                  )
-                  .map((rid) => {
-                    const r = snapshot.roles.find((x) => x.id === rid);
-                    return {
-                      id: rid,
-                      label: r ? r.label : rid,
-                    };
-                  });
+                // Creator-only "respond as" dropdown. See
+                // ``buildImpersonateOptions`` for the filter logic
+                // (issue #80 — sources from the full roster so a
+                // mid-session role-add appears immediately, with an
+                // "(off-turn)" suffix when the role isn't on the
+                // current turn's active set).
+                const impersonateOptions = buildImpersonateOptions({
+                  roles: snapshot.roles,
+                  activeRoleIds,
+                  submittedRoleIds:
+                    snapshot.current_turn?.submitted_role_ids ?? [],
+                });
                 const selfRole = snapshot.roles.find(
                   (r) => r.id === state.creatorRoleId,
                 );
