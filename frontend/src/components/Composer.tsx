@@ -3,8 +3,16 @@ import { FormEvent, KeyboardEvent, useEffect, useRef, useState } from "react";
 interface ImpersonateOption {
   /** Role-id to submit as. */
   id: string;
-  /** Visible label, e.g. "SOC Analyst". */
+  /** Visible label, e.g. "SOC Analyst". Bare role label only — no
+   *  decorations; the Composer adds them based on ``offTurn``. */
   label: string;
+  /** ``true`` when the role isn't on the current turn's active set.
+   *  Submitting as them lands as an interjection (sidebar comment),
+   *  not a turn answer (issue #80). The dropdown row + the
+   *  "Submitting as …" banner change wording so a fast-typing
+   *  creator can't miss that this won't count as the role's turn
+   *  answer. */
+  offTurn?: boolean;
 }
 
 interface Props {
@@ -230,41 +238,57 @@ export function Composer({
               <option value="">{selfLabel ?? "self"} (you)</option>
               {(impersonateOptions ?? []).map((o) => (
                 <option key={o.id} value={o.id}>
-                  {o.label} (proxy)
+                  {/* Off-turn proxy lands as an interjection (sidebar
+                      comment); call that out plainly so a creator
+                      doesn't think they're submitting a turn answer
+                      under the role's name. Issue #80. */}
+                  {o.label}
+                  {o.offTurn ? " — sidebar (off-turn)" : " (proxy)"}
                 </option>
               ))}
             </select>
           </label>
         ) : null}
       </div>
-      {asRoleId ? (
+      {asRoleId ? (() => {
         // Loud impersonation banner so a creator who picked "as: SOC" but
         // then types fast can't miss that they're about to post under
         // someone else's name. The submit button colour shifts to amber
         // for the same reason. The inline "back to me" button is the
         // user-agent's MEDIUM ask: switching out of proxy mode shouldn't
         // require reopening the dropdown.
-        <div
-          className="flex flex-wrap items-center justify-between gap-2 rounded border border-amber-600/60 bg-amber-950/40 px-2 py-1 text-xs text-amber-100"
-          role="status"
-          aria-live="polite"
-        >
-          <span>
-            Submitting as{" "}
-            <span className="font-semibold">
-              {(impersonateOptions ?? []).find((o) => o.id === asRoleId)?.label ?? asRoleId}
-            </span>{" "}
-            (proxy)
-          </span>
-          <button
-            type="button"
-            onClick={() => setAsRoleId("")}
-            className="rounded border border-amber-500/60 px-2 py-0.5 text-[11px] font-semibold text-amber-100 hover:bg-amber-900/40"
+        //
+        // Issue #80: when the selected role is off-turn the wording
+        // shifts from "(proxy)" to "(sidebar — not a turn answer)" so
+        // the creator knows the submission won't count as the role's
+        // turn answer.
+        const selected = (impersonateOptions ?? []).find(
+          (o) => o.id === asRoleId,
+        );
+        const offTurn = Boolean(selected?.offTurn);
+        return (
+          <div
+            className="flex flex-wrap items-center justify-between gap-2 rounded border border-amber-600/60 bg-amber-950/40 px-2 py-1 text-xs text-amber-100"
+            role="status"
+            aria-live="polite"
           >
-            Back to {selfLabel ?? "me"}
-          </button>
-        </div>
-      ) : null}
+            <span>
+              Submitting as{" "}
+              <span className="font-semibold">
+                {selected?.label ?? asRoleId}
+              </span>{" "}
+              {offTurn ? "(sidebar — not a turn answer)" : "(proxy)"}
+            </span>
+            <button
+              type="button"
+              onClick={() => setAsRoleId("")}
+              className="rounded border border-amber-500/60 px-2 py-0.5 text-[11px] font-semibold text-amber-100 hover:bg-amber-900/40"
+            >
+              Back to {selfLabel ?? "me"}
+            </button>
+          </div>
+        );
+      })() : null}
       <textarea
         id="composer"
         value={text}
@@ -294,7 +318,13 @@ export function Composer({
               : "bg-sky-600 hover:bg-sky-500 focus-visible:outline-sky-300"
           }`}
         >
-          Submit{asRoleId ? " (proxy)" : ""}
+          {(() => {
+            if (!asRoleId) return "Submit";
+            const selected = (impersonateOptions ?? []).find(
+              (o) => o.id === asRoleId,
+            );
+            return selected?.offTurn ? "Submit (sidebar)" : "Submit (proxy)";
+          })()}
         </button>
       </div>
     </form>

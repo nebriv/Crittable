@@ -1,4 +1,4 @@
-import { act, render, screen } from "@testing-library/react";
+import { act, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { JoinIntro } from "../pages/Play";
 
@@ -95,22 +95,25 @@ describe("JoinIntro — issue #76 (joined, waiting for session start)", () => {
     const initial = tipPanel.textContent;
     expect(initial).toBeTruthy();
 
-    // Advance past one rotation interval (carousel uses 7s).
+    // Carousel dwell scales with tip length (UI/UX review HIGH —
+    // 7s was borderline for the longest tips). 12s is enough for
+    // every tip in the array, including the longest at ~140 chars
+    // (which yields ~10s dwell).
     act(() => {
-      vi.advanceTimersByTime(7100);
+      vi.advanceTimersByTime(12_000);
     });
     const next = screen.getByTestId("join-intro-tip").textContent;
     expect(next).not.toBe(initial);
 
     // Another rotation lands on a different tip again (or wraps).
     act(() => {
-      vi.advanceTimersByTime(7100);
+      vi.advanceTimersByTime(12_000);
     });
     const third = screen.getByTestId("join-intro-tip").textContent;
     expect(third).not.toBe(next);
   });
 
-  it("joinedSeatCount>0 surfaces a 'N seats joined' momentum cue", () => {
+  it("joinedSeatCount>0 surfaces an 'N other seats are connected' momentum cue", () => {
     render(
       <JoinIntro
         {...COMMON_PROPS}
@@ -120,7 +123,12 @@ describe("JoinIntro — issue #76 (joined, waiting for session start)", () => {
         joinedSeatCount={3}
       />,
     );
-    expect(screen.getByText(/3 seats joined/i)).toBeInTheDocument();
+    // Copy shifted from "N seats joined" to "N other seats are
+    // connected" (UI/UX review: pre-fix included the local
+    // participant in the count, so "1 seat joined" was just *me*).
+    expect(
+      screen.getByText(/3 other seats are connected/i),
+    ).toBeInTheDocument();
   });
 
   it("joinedSeatCount=1 → singular form", () => {
@@ -133,10 +141,12 @@ describe("JoinIntro — issue #76 (joined, waiting for session start)", () => {
         joinedSeatCount={1}
       />,
     );
-    expect(screen.getByText(/1 seat joined/i)).toBeInTheDocument();
+    expect(
+      screen.getByText(/1 other seat is connected/i),
+    ).toBeInTheDocument();
   });
 
-  it("waiting panel exposes role=status with aria-live=polite", () => {
+  it("waiting panel exposes role=status; aria-live is scoped to the rotating tip only (UI/UX review)", () => {
     render(
       <JoinIntro
         {...COMMON_PROPS}
@@ -147,6 +157,97 @@ describe("JoinIntro — issue #76 (joined, waiting for session start)", () => {
     );
     const panel = screen.getByTestId("join-intro-waiting");
     expect(panel.getAttribute("role")).toBe("status");
-    expect(panel.getAttribute("aria-live")).toBe("polite");
+    // Pre-fix the whole panel had aria-live=polite; the tip
+    // rotation re-announced the headline + role + seat count
+    // every 7-10s. Now aria-live lives only on the tip <p>.
+    expect(panel.getAttribute("aria-live")).toBeNull();
+    const tipPanel = screen.getByTestId("join-intro-tip");
+    const liveTip = within(tipPanel).getByText(/.+/, {
+      selector: "p[aria-live='polite']",
+    });
+    expect(liveTip).toBeInTheDocument();
+  });
+
+  it("personalised welcome headline includes the joined display name", () => {
+    render(
+      <JoinIntro
+        {...COMMON_PROPS}
+        sessionState="SETUP"
+        hasName
+        joinedDisplayName="Bridget"
+      />,
+    );
+    // Scope to the waiting panel — the surrounding "How to play"
+    // section also has an h2.
+    const panel = screen.getByTestId("join-intro-waiting");
+    const heading = within(panel).getByRole("heading", { level: 2 });
+    expect(heading.textContent).toMatch(/Welcome, Bridget/);
+  });
+
+  it("auto-resolves when sessionState transitions out of SETUP/BRIEFING", () => {
+    const { rerender } = render(
+      <JoinIntro
+        {...COMMON_PROPS}
+        sessionState="SETUP"
+        hasName
+        joinedDisplayName="Bridget"
+      />,
+    );
+    expect(screen.getByTestId("join-intro-waiting")).toBeInTheDocument();
+
+    // Simulate the engine flipping to AWAITING_PLAYERS — JoinIntro
+    // should swap back to the form variant (the gate in Play.tsx
+    // would also unmount it; here we just confirm the variant
+    // flip logic is keyed correctly off ``sessionState``).
+    rerender(
+      <JoinIntro
+        {...COMMON_PROPS}
+        sessionState="AWAITING_PLAYERS"
+        hasName
+        joinedDisplayName="Bridget"
+      />,
+    );
+    expect(screen.queryByTestId("join-intro-waiting")).toBeNull();
+  });
+
+  it("tip carousel cycles through all WAITING_TIPS and wraps back", () => {
+    render(
+      <JoinIntro
+        {...COMMON_PROPS}
+        sessionState="SETUP"
+        hasName
+        joinedDisplayName="Bridget"
+      />,
+    );
+    const seen = new Set<string>();
+    seen.add(screen.getByTestId("join-intro-tip").textContent ?? "");
+    // Advance through enough rotations to see every tip + wrap.
+    // The carousel uses dwell scaled to length; advancing 12s per
+    // beat is enough to clear even the longest tip.
+    for (let i = 0; i < 8; i++) {
+      act(() => {
+        vi.advanceTimersByTime(12_000);
+      });
+      seen.add(screen.getByTestId("join-intro-tip").textContent ?? "");
+    }
+    // We've seen at least 4 distinct tip texts (5 tips total; the
+    // textContent includes the "1 / 5" indicator so the strings
+    // differ even if the carousel re-emits the same body text on
+    // wrap).
+    expect(seen.size).toBeGreaterThanOrEqual(4);
+  });
+
+  it("tip indicator shows current/total position", () => {
+    render(
+      <JoinIntro
+        {...COMMON_PROPS}
+        sessionState="SETUP"
+        hasName
+        joinedDisplayName="Bridget"
+      />,
+    );
+    const tipPanel = screen.getByTestId("join-intro-tip");
+    // Initial tip is index 0 → "1 / N"
+    expect(tipPanel.textContent).toMatch(/1\s*\/\s*\d+/);
   });
 });

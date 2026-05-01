@@ -82,6 +82,14 @@ export function Play({ sessionId, token }: Props) {
   // backend in-flight gate. Prevents the triple-banner cascade from a
   // double/triple click (issue #63).
   const [forceAdvanceCooldown, setForceAdvanceCooldown] = useState(false);
+  // Issue #76 transition cue: when the participant exits the JoinIntro
+  // waiting variant (state goes SETUP/BRIEFING → AWAITING_PLAYERS) the
+  // page used to hard-cut to the chat layout, leaving a screen-reader
+  // user with no signal that the screen they were on is gone. This
+  // flag drives a transient "Session has started" banner shown for
+  // ~4s on the first render of the main view after the transition.
+  const [sessionStartedFlash, setSessionStartedFlash] = useState(false);
+  const wasWaitingRef = useRef(false);
   const wsRef = useRef<WsClient | null>(null);
   const forceAdvanceTimerRef = useRef<number | null>(null);
 
@@ -461,6 +469,56 @@ export function Play({ sessionId, token }: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [serverDisplayName, displayName, sessionId, token, myRoleFromSnapshot?.id]);
 
+  // Issue #80 bonus: log when the mid-session-joiner chip is on
+  // screen. Pure boundary log — without it, "Bridget got the chip
+  // but shouldn't have" has no telemetry trail. Effect lives ABOVE
+  // the early returns so the hook count is stable across renders;
+  // the predicate guards on snapshot existing.
+  useEffect(() => {
+    if (!snapshot || !selfRoleId) return;
+    const myRoleHere = snapshot.roles.find((r) => r.id === selfRoleId);
+    const activeIds = snapshot.current_turn?.active_role_ids ?? [];
+    const show = isMidSessionJoiner({
+      sessionState: snapshot.state,
+      iAmActive: activeIds.includes(selfRoleId),
+      messages: snapshot.messages,
+      selfRoleId,
+      selfRoleKind: myRoleHere?.kind,
+      selfIsCreator: myRoleHere?.is_creator ?? false,
+    });
+    if (!show) return;
+    console.info("[play] mid-session-joiner chip", {
+      session_id: sessionId,
+      role_id: selfRoleId,
+      session_state: snapshot.state,
+    });
+  }, [snapshot, selfRoleId, sessionId]);
+
+  // Issue #76 transition cue: detect the SETUP/BRIEFING →
+  // AWAITING_PLAYERS flip and surface a transient "Session started"
+  // banner so the participant has an explicit acknowledgement that
+  // their JoinIntro screen was replaced (UI/UX review HIGH: pre-fix
+  // the page hard-cut and a screen-reader user had no signal).
+  useEffect(() => {
+    const isWaitingNow =
+      snapshot?.state === "SETUP" || snapshot?.state === "BRIEFING";
+    if (
+      wasWaitingRef.current
+      && !isWaitingNow
+      && Boolean(effectiveDisplayName)
+    ) {
+      console.info("[play] session started — exiting waiting variant", {
+        session_id: sessionId,
+        new_state: snapshot?.state,
+      });
+      setSessionStartedFlash(true);
+      const id = window.setTimeout(() => setSessionStartedFlash(false), 4000);
+      return () => window.clearTimeout(id);
+    }
+    wasWaitingRef.current = isWaitingNow;
+    return undefined;
+  }, [snapshot?.state, effectiveDisplayName, sessionId]);
+
   // Issue #76: a participant who has submitted their display name but
   // arrived while the creator is still drafting the plan was previously
   // dropped onto the main page with a blank transcript and a disabled
@@ -495,7 +553,14 @@ export function Play({ sessionId, token }: Props) {
         snapshotError={snapshot === null ? error : null}
         hasName={Boolean(effectiveDisplayName)}
         joinedDisplayName={effectiveDisplayName}
-        joinedSeatCount={presence.size}
+        // Subtract the local participant from the count — UI/UX
+        // review: pre-fix "1 seat joined" was just *me*, which read
+        // as lonely on a cue meant to signal "the room is filling
+        // up". Floor at 0 in case presence hasn't yet seen self.
+        joinedSeatCount={Math.max(
+          0,
+          presence.size - (selfRoleId && presence.has(selfRoleId) ? 1 : 0),
+        )}
         onRetry={() => {
           setError(null);
           refreshSnapshot();
@@ -603,6 +668,20 @@ export function Play({ sessionId, token }: Props) {
       : composerEnabled
         ? "Add a comment"
         : "Your message";
+  // Issue #80 bonus: re-derive the mid-session-joiner chip flag for
+  // the render block. The predicate's log breadcrumb fires from a
+  // hook declared *above* the early returns (so the hook count is
+  // stable across renders) — this re-compute is a cheap pure call
+  // that the React reconciler memo-deduplicates.
+  const showMidSessionJoinerChip = isMidSessionJoiner({
+    sessionState: snapshot.state,
+    iAmActive,
+    messages: snapshot.messages,
+    selfRoleId,
+    selfRoleKind: myRole?.kind,
+    selfIsCreator: myRole?.is_creator ?? false,
+  });
+
   // Plain-English placeholder copy — the user-persona review flagged
   // "interject" as jargon that reads as rude. We surface the
   // distinction (counts vs. sidebar) in the label + the post-submit
@@ -623,6 +702,21 @@ export function Play({ sessionId, token }: Props) {
 
   return (
     <main className="flex min-h-screen flex-col lg:h-screen lg:min-h-0 lg:overflow-hidden">
+      {sessionStartedFlash ? (
+        // Issue #76 transition cue (UI/UX review HIGH): the screen
+        // the participant was on (JoinIntro waiting variant) just
+        // unmounted; without this banner SR users had no signal.
+        // ``aria-live="assertive"`` because this announcement
+        // supersedes any ongoing tip-rotation announcement.
+        <div
+          role="status"
+          aria-live="assertive"
+          data-testid="session-started-flash"
+          className="bg-emerald-700 px-4 py-2 text-center text-sm font-semibold text-white shadow-lg"
+        >
+          Session started — you're in.
+        </div>
+      ) : null}
       {criticalBanner ? (
         <CriticalEventBanner
           {...criticalBanner}
@@ -675,21 +769,22 @@ export function Play({ sessionId, token }: Props) {
             ? `Waiting on ${otherPending.join(", ")}.`
             : "Waiting for the AI to respond."}
         </div>
-      ) : isMidSessionJoiner({
-        sessionState: snapshot.state,
-        iAmActive,
-        messages: snapshot.messages,
-        selfRoleId,
-      }) ? (
+      ) : showMidSessionJoinerChip ? (
         // Issue #80 bonus: cue for a participant whose role was added
-        // mid-session. See ``isMidSessionJoiner`` for the predicate;
-        // here we just render the chip when it's true.
+        // mid-session. See ``isMidSessionJoiner`` for the predicate
+        // and the useEffect above for the breadcrumb log. The leading
+        // sky stripe + ⤴ glyph distinguish this from the "Submitted
+        // as …" banner above (UI/UX review: both used the same slate
+        // styling and were indistinguishable).
         <div
           role="status"
           aria-live="polite"
           data-testid="mid-session-joiner-chip"
-          className="bg-slate-800 px-4 py-2 text-center text-xs text-slate-200 shadow"
+          className="border-l-4 border-sky-600 bg-slate-800 px-4 py-2 text-xs text-slate-200 shadow"
         >
+          <span aria-hidden="true" className="mr-1.5 text-sky-400">
+            ⤴
+          </span>
           Just joined? You'll be brought into the next turn — sit
           tight, the current beat is finishing up.
         </div>
@@ -900,7 +995,7 @@ const WAITING_TIPS: readonly string[] = [
   "Want logs? Just ask — \"pull the auth logs\" or \"what does Defender show?\". The AI will produce realistic synthetic data.",
   "Disagree with a teammate? Say so. The AI tracks decisions and dissents in the AAR.",
   "Out of your lane? \"Loop in Legal\" or \"hand off to Comms\" — the AI will pivot the conversation.",
-  "There's no scoring. The AAR captures decisions and rationale, not right-versus-wrong answers.",
+  "Focus on your reasoning — the AAR captures decisions and rationale, not right-vs-wrong scoring.",
 ];
 const WAITING_TIP_ROTATE_MS = 7000;
 
@@ -948,27 +1043,42 @@ export function JoinIntro({
   const [tipIndex, setTipIndex] = useState(0);
   const isWaitingVariant =
     hasName && (sessionState === "SETUP" || sessionState === "BRIEFING");
-  // Log the variant so a "stuck on JoinIntro" report has a clear trail
-  // — the gate decision lives in Play.tsx but it's the effective UI
-  // state here that the user reports.
+  // Log the variant so a "stuck on JoinIntro" report has a clear
+  // trail. ``console.debug`` (not info) so the breadcrumb doesn't
+  // crowd the production console — pair of enter+exit lines keyed
+  // on ``isWaitingVariant`` so the operator can see when the user
+  // *left* the waiting state, not just when they entered it.
   useEffect(() => {
-    console.info("[play] join-intro variant", {
+    console.debug("[play] join-intro variant enter", {
       session_id: sessionId,
       session_state: sessionState,
       has_name: hasName,
       variant: isWaitingVariant ? "waiting" : "form",
     });
+    return () => {
+      console.debug("[play] join-intro variant exit", {
+        session_id: sessionId,
+        was_variant: isWaitingVariant ? "waiting" : "form",
+      });
+    };
   }, [sessionId, sessionState, hasName, isWaitingVariant]);
   // Rotate the tip carousel only while the waiting variant is on
   // screen. Cleared on unmount or variant flip so we don't churn
-  // setTimeout calls in the form variant.
+  // setTimeout calls in the form variant. Per-tip dwell scales with
+  // tip length — UI/UX review flagged 7s as borderline for the
+  // longest tip; ~25 chars/sec at typical reading speed gives a
+  // floor of 7s and a ceiling of ~10s for the longest tips.
   useEffect(() => {
     if (!isWaitingVariant) return;
-    const id = setInterval(() => {
+    const dwellMs = Math.max(
+      WAITING_TIP_ROTATE_MS,
+      Math.ceil(WAITING_TIPS[tipIndex].length / 14) * 1000,
+    );
+    const id = setTimeout(() => {
       setTipIndex((i) => (i + 1) % WAITING_TIPS.length);
-    }, WAITING_TIP_ROTATE_MS);
-    return () => clearInterval(id);
-  }, [isWaitingVariant]);
+    }, dwellMs);
+    return () => clearTimeout(id);
+  }, [isWaitingVariant, tipIndex]);
 
   // Pre-fill the entered name from the snapshot when it lands (so a
   // returning player whose name is already on the server doesn't have
@@ -1179,18 +1289,24 @@ export function JoinIntro({
              a blank transcript and a disabled composer pinned at the
              bottom. Now they stay on this page with a friendly
              spinner, the role context they already have, and a
-             rotating tip carousel so they have something to read. */
+             rotating tip carousel so they have something to read.
+
+             ARIA: ``role="status"`` lives on the section so AT
+             initially announces the variant, but ``aria-live`` is
+             scoped to the rotating tip element only (UI/UX review:
+             putting aria-live on the whole section caused the
+             headline + role + seat count to re-announce on every
+             7-10s tip rotation, which is noise). */
           <section
             aria-labelledby="waiting-heading"
             data-testid="join-intro-waiting"
             className="flex flex-col gap-3 rounded border border-emerald-700/40 bg-emerald-950/20 p-4"
             role="status"
-            aria-live="polite"
           >
             <div className="flex items-center gap-3">
               <span
                 aria-hidden="true"
-                className="inline-block h-4 w-4 shrink-0 animate-spin rounded-full border-2 border-emerald-400 border-t-transparent"
+                className="inline-block h-4 w-4 shrink-0 animate-spin rounded-full border-2 border-emerald-400 border-t-transparent motion-reduce:animate-none"
               />
               <h2
                 id="waiting-heading"
@@ -1198,32 +1314,47 @@ export function JoinIntro({
               >
                 {sessionState === "BRIEFING"
                   ? "The AI is preparing the scenario brief…"
-                  : "Waiting for your facilitator to start the scenario…"}
+                  : joinedDisplayName
+                    ? `Welcome, ${joinedDisplayName} — waiting for your facilitator to start the scenario…`
+                    : "Waiting for your facilitator to start the scenario…"}
               </h2>
             </div>
-            {roleLabel && joinedDisplayName ? (
+            {roleLabel ? (
               <p className="text-sm text-slate-200">
                 You're seated as{" "}
-                <span className="font-semibold">{roleLabel}</span>{" "}
-                <span className="text-slate-400">({joinedDisplayName})</span>
+                <span className="font-semibold">{roleLabel}</span>
+                {joinedDisplayName ? (
+                  <>
+                    {" "}
+                    <span className="text-slate-400">
+                      ({joinedDisplayName})
+                    </span>
+                  </>
+                ) : null}
                 . You'll be brought in automatically when it begins.
               </p>
             ) : null}
             {joinedSeatCount > 0 ? (
               <p className="text-xs text-slate-400">
                 {joinedSeatCount === 1
-                  ? "1 seat joined so far."
-                  : `${joinedSeatCount} seats joined so far.`}
+                  ? "1 other seat is connected."
+                  : `${joinedSeatCount} other seats are connected.`}
               </p>
             ) : null}
             <div
               className="rounded border border-slate-700 bg-slate-950/40 p-3"
               data-testid="join-intro-tip"
             >
-              <p className="text-[0.65rem] uppercase tracking-widest text-slate-400">
-                While you wait
+              <p className="flex items-center justify-between text-[0.65rem] uppercase tracking-widest text-slate-400">
+                <span>While you wait</span>
+                <span aria-hidden="true">
+                  {tipIndex + 1} / {WAITING_TIPS.length}
+                </span>
               </p>
-              <p className="mt-1 text-sm leading-relaxed text-slate-200">
+              <p
+                className="mt-1 text-sm leading-relaxed text-slate-200"
+                aria-live="polite"
+              >
                 {WAITING_TIPS[tipIndex]}
               </p>
             </div>

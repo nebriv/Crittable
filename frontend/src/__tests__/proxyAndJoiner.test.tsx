@@ -10,12 +10,16 @@ import type { RoleView } from "../api/client";
 function role(
   id: string,
   label: string,
-  opts: { is_creator?: boolean; display_name?: string | null } = {},
+  opts: {
+    is_creator?: boolean;
+    display_name?: string | null;
+    kind?: "player" | "spectator";
+  } = {},
 ): RoleView {
   return {
     id,
     label,
-    kind: "player",
+    kind: opts.kind ?? "player",
     is_creator: opts.is_creator ?? false,
     display_name: opts.display_name ?? null,
   } as RoleView;
@@ -35,6 +39,20 @@ describe("buildImpersonateOptions — issue #80 (dropdown roster source)", () =>
     expect(options.map((o) => o.id)).toEqual(["r-soc"]);
   });
 
+  it("excludes spectators (backend rejects spectator proxy submits)", () => {
+    const roles = [
+      role("r-creator", "Facilitator", { is_creator: true }),
+      role("r-soc", "SOC Analyst"),
+      role("r-watcher", "Auditor", { kind: "spectator" }),
+    ];
+    const options = buildImpersonateOptions({
+      roles,
+      activeRoleIds: ["r-soc", "r-watcher"],
+      submittedRoleIds: [],
+    });
+    expect(options.map((o) => o.id)).toEqual(["r-soc"]);
+  });
+
   it("excludes roles that already submitted on the current turn", () => {
     const roles = [
       role("r-creator", "Facilitator", { is_creator: true }),
@@ -49,7 +67,7 @@ describe("buildImpersonateOptions — issue #80 (dropdown roster source)", () =>
     expect(options.map((o) => o.id)).toEqual(["r-legal"]);
   });
 
-  it("on-turn roles render with their plain label", () => {
+  it("on-turn roles return offTurn=false with a plain label", () => {
     const roles = [
       role("r-creator", "Facilitator", { is_creator: true }),
       role("r-soc", "SOC Analyst"),
@@ -59,13 +77,18 @@ describe("buildImpersonateOptions — issue #80 (dropdown roster source)", () =>
       activeRoleIds: ["r-soc"],
       submittedRoleIds: [],
     });
-    expect(options).toEqual([{ id: "r-soc", label: "SOC Analyst" }]);
+    expect(options).toEqual([
+      { id: "r-soc", label: "SOC Analyst", offTurn: false },
+    ]);
   });
 
-  it("off-turn roles get the '(off-turn)' suffix", () => {
-    // Issue #80 core scenario: "Legal" was added mid-turn, isn't on
-    // the running turn's active_role_ids, but should still surface
-    // in the dropdown so the creator can post on their behalf.
+  it("off-turn roles return offTurn=true with the bare label", () => {
+    // Issue #80 core scenario: "Legal" added mid-turn, isn't on the
+    // running turn's active_role_ids, but should surface in the
+    // dropdown. The Composer renders the (sidebar) suffix from the
+    // structured ``offTurn`` flag — pre-fix the suffix was inlined
+    // into the label and collided with Composer's own " (proxy)"
+    // append, producing "Legal (off-turn) (proxy)".
     const roles = [
       role("r-creator", "Facilitator", { is_creator: true }),
       role("r-soc", "SOC Analyst"),
@@ -77,8 +100,8 @@ describe("buildImpersonateOptions — issue #80 (dropdown roster source)", () =>
       submittedRoleIds: [],
     });
     expect(options).toEqual([
-      { id: "r-soc", label: "SOC Analyst" },
-      { id: "r-legal", label: "Legal (off-turn)" },
+      { id: "r-soc", label: "SOC Analyst", offTurn: false },
+      { id: "r-legal", label: "Legal", offTurn: true },
     ]);
   });
 
@@ -103,6 +126,20 @@ describe("buildImpersonateOptions — issue #80 (dropdown roster source)", () =>
       buildImpersonateOptions({
         roles,
         activeRoleIds: ["r-creator"],
+        submittedRoleIds: [],
+      }),
+    ).toEqual([]);
+  });
+
+  it("returns an empty array when the only non-creator is a spectator", () => {
+    const roles = [
+      role("r-creator", "Facilitator", { is_creator: true }),
+      role("r-watcher", "Auditor", { kind: "spectator" }),
+    ];
+    expect(
+      buildImpersonateOptions({
+        roles,
+        activeRoleIds: ["r-watcher"],
         submittedRoleIds: [],
       }),
     ).toEqual([]);
@@ -196,5 +233,44 @@ describe("isMidSessionJoiner — issue #80 bonus chip predicate", () => {
         selfRoleId: null,
       }),
     ).toBe(false);
+  });
+
+  it("false for spectators (chip would be a false promise — engine never adds them)", () => {
+    expect(
+      isMidSessionJoiner({
+        sessionState: "AI_PROCESSING",
+        iAmActive: false,
+        messages: baseMessages,
+        selfRoleId: "r-watcher",
+        selfRoleKind: "spectator",
+      }),
+    ).toBe(false);
+  });
+
+  it("false for the creator's own seat (creator authored the session)", () => {
+    expect(
+      isMidSessionJoiner({
+        sessionState: "AI_PROCESSING",
+        iAmActive: false,
+        messages: baseMessages,
+        selfRoleId: "r-creator",
+        selfRoleKind: "player",
+        selfIsCreator: true,
+      }),
+    ).toBe(false);
+  });
+
+  it("still true for a player non-creator with no selfRoleKind passed (back-compat)", () => {
+    // Defensive: callers that don't yet pass selfRoleKind/selfIsCreator
+    // (older test scaffolds) should still get the historical truth
+    // table. Both new gates are opt-in, false-only-when-set.
+    expect(
+      isMidSessionJoiner({
+        sessionState: "AI_PROCESSING",
+        iAmActive: false,
+        messages: baseMessages,
+        selfRoleId: "r-legal",
+      }),
+    ).toBe(true);
   });
 });
