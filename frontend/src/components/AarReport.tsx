@@ -163,37 +163,40 @@ export function AarReportView({
 }
 
 /**
- * Map a 0-100 sub-score to a letter grade. Bands match common school
- * conventions so the result is readable to a non-numeric eye:
- *   90+ A   85-89 A-   80-84 B+   75-79 B   70-74 B-
- *   65-69 C+   60-64 C   55-59 C-   50-54 D+   45-49 D   <45 F
+ * Map a 0-5 sub-score (the rubric in the AAR system prompt:
+ * 1=critically-off, 2=below-bar, 3=at-bar, 4=above-bar, 5=exemplary,
+ * 0=no-score) to a letter grade. The letters intentionally collapse
+ * the 5-point rubric onto a 5-point grade scale 1:1 — half-grades
+ * (A-, B+) would imply finer resolution than the rubric supports
+ * and tempt the model to bunch at the modifiers.
+ *
+ * Averages of multiple sub-scores fall on non-integer values; round
+ * to the nearest grade band before lookup.
  */
 function gradeForScore(score: number): string {
-  const s = Math.max(0, Math.min(100, Math.round(score)));
-  if (s >= 90) return "A";
-  if (s >= 85) return "A-";
-  if (s >= 80) return "B+";
-  if (s >= 75) return "B";
-  if (s >= 70) return "B-";
-  if (s >= 65) return "C+";
-  if (s >= 60) return "C";
-  if (s >= 55) return "C-";
-  if (s >= 50) return "D+";
-  if (s >= 45) return "D";
-  return "F";
+  if (!Number.isFinite(score)) return "—";
+  const s = Math.round(Math.max(0, Math.min(5, score)));
+  if (s === 5) return "A";
+  if (s === 4) return "B";
+  if (s === 3) return "C";
+  if (s === 2) return "D";
+  if (s === 1) return "F";
+  return "—";
 }
 
 /**
- * Map the same 0-100 sub-score to a brand status tone:
- *   80+ signal (green-ish on-brand "good")
- *   60-79 warn (operator yellow "watch this")
- *   <60 crit (red "this needs attention")
+ * Brand status tone for the same 0-5 score:
+ *   ≥4   signal (above bar)
+ *   ≈3   warn   (at-or-around bar)
+ *   <3   crit   (below bar — this is what the AAR is for)
+ *   0    crit   (no score / phantom data)
  */
 function toneForScore(
   score: number,
 ): "signal" | "warn" | "crit" {
-  if (score >= 80) return "signal";
-  if (score >= 60) return "warn";
+  if (!Number.isFinite(score) || score <= 0) return "crit";
+  if (score >= 3.75) return "signal";
+  if (score >= 2.75) return "warn";
   return "crit";
 }
 
@@ -310,18 +313,23 @@ function LeftColumn({ report }: { report: AarReport }) {
 }
 
 function ScoreCard({ label, score }: { label: string; score: number }) {
+  // "—" (no data) renders in neutral ink so the empty state doesn't
+  // read as a failing grade. F still gets crit treatment.
+  const grade = gradeForScore(score);
+  const isEmpty = grade === "—";
   const tone = toneForScore(score);
   const t = toneClass(tone);
-  const grade = gradeForScore(score);
+  const borderClass = isEmpty ? "border-ink-600" : t.border;
+  const textClass = isEmpty ? "text-ink-500" : t.text;
   return (
     <div
-      className={`flex flex-col gap-1 rounded-r-3 border bg-ink-850 p-4 ${t.border}`}
+      className={`flex flex-col gap-1 rounded-r-3 border bg-ink-850 p-4 ${borderClass}`}
     >
       <p className="mono text-[9px] font-bold uppercase tracking-[0.20em] text-ink-300">
         {label}
       </p>
       <p
-        className={`mono text-4xl font-bold leading-none tabular-nums ${t.text}`}
+        className={`mono text-4xl font-bold leading-none tabular-nums ${textClass}`}
       >
         {grade}
       </p>
@@ -357,8 +365,10 @@ function RightColumn({
             (s.display_name ?? fromMeta?.display_name) ?? null;
           const overall = (s.decision_quality + s.communication + s.speed) / 3;
           const grade = gradeForScore(overall);
+          const isEmpty = grade === "—";
           const tone = toneForScore(overall);
           const tc = toneClass(tone);
+          const gradeColor = isEmpty ? "text-ink-500" : tc.text;
           return (
             <li
               key={`${s.role_id}-${label}`}
@@ -380,7 +390,7 @@ function RightColumn({
                 {s.decisions} {s.decisions === 1 ? "DECISION" : "DECISIONS"}
               </span>
               <span
-                className={`mono w-7 text-right text-[16px] font-bold tabular-nums ${tc.text}`}
+                className={`mono w-7 text-right text-[16px] font-bold tabular-nums ${gradeColor}`}
               >
                 {grade}
               </span>

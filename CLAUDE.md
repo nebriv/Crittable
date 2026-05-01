@@ -94,6 +94,68 @@ Adding a new tier or tool: update `phase_policy.POLICIES`, add `ALLOWED_*_TOOL_N
 2. The consistency test pulls names directly from those arrays — no test edit needed for additions.
 3. If the tool's input schema introduces a new field name that appears in prompt copy (e.g. `share_data`'s `label` field), add the field name to `_NON_TOOL_ALLOWLIST` in the test file.
 
+## Model-output trust boundary (read before touching any LLM call site)
+
+Treat every LLM response as **untrusted input** with one well-defined
+sanitisation point per call site. After that point, the rest of the system
+reads the result as ground truth and does **no further coercion or
+identity correction**. Two principles drive this:
+
+1. **One boundary per call.** Validation, coercion, and identity resolution
+   live in the function that pulls the tool input out of the response —
+   `_extract_report` for AAR, dispatcher pre-checks for play tools,
+   plan-extraction in setup. Defensive coercion in a downstream route
+   handler (or worse, the frontend) is a **monkey patch**, not a fix:
+   it diverges the on-disk shape from the rendered shape, multiplies the
+   places a future bug can hide, and makes the storage layer untrustworthy.
+   When you catch yourself writing `if isinstance(value, str): value = [value]`
+   in a route or React component, stop and push it down to the extractor.
+
+2. **Identity is OURS, not the model's.** Role IDs, session IDs, turn
+   indices, message IDs — anything that names a row in our own state — must
+   come from our state, never from a model field. If the model has to refer
+   to an entity (e.g. "score this role"), pass the canonical IDs into the
+   prompt and **validate every echoed ID at the extractor**: drop the entry
+   if it doesn't match a real row, log the drop count so a prompt
+   regression is observable, and never let an invented ID become a "name"
+   we render to the user. If the model needs to talk about a thing, we
+   pass it the thing's id and we look the thing up. This applies to every
+   tier (setup, play, AAR, guardrail) and every tool that takes a
+   role/turn/message/session reference.
+
+The 2026-05-01 AAR fixes (PR #110) are the canonical example of getting
+this wrong, then right:
+
+- **Wrong (monkey patch).** `_str_list` was added to the JSON-export route
+  to coerce string-blob bullets into `[string]`; role-id ↔ label
+  resolution was also added in the route. The on-disk `aar_report` stayed
+  malformed; only the JSON view looked correct, the markdown view kept
+  rendering character-per-bullet.
+- **Right (boundary fix).** Both coercions moved to `_extract_report` in
+  `app/llm/export.py`. The roster is now passed to the model in the AAR
+  system prompt as a `## Roster (canonical IDs)` block; entries with
+  unknown role_ids are dropped with a `aar_per_role_scores_dropped` warning
+  carrying `dropped_count`, `kept_count`, and the rejected ids. Sub-scores
+  are clamped to 0–5 (the rubric's actual range) instead of trusting
+  whatever int the model emitted. The route handler reverts to plain dict
+  access on `session.aar_report`.
+
+When adding a new LLM-driven feature, the checklist is:
+
+- [ ] Pass identity (role/turn/session ids) into the prompt as a
+      canonical-IDs block. Be explicit: "Use only these ids; any other
+      value is dropped."
+- [ ] Validate echoed identity at the extractor. Drop, don't repair.
+- [ ] Coerce schema-shape drift at the extractor (e.g. string → `[string]`
+      for `array<string>` fields). Don't trust `tool_use` validation alone.
+- [ ] Clamp numeric fields to the documented range. Out-of-band → safe
+      default, not "whatever the model said."
+- [ ] Log drops + coercions at WARNING with enough context to debug a
+      prompt regression from the audit log alone.
+
+**`backend/app/llm/export.py::_extract_report`** is the reference shape.
+Read it before adding a new structured-output tool.
+
 ## Coding conventions
 
 - Python: `ruff` (config in `backend/pyproject.toml`), `mypy --strict`. No `print` or stdlib `logging` in business code — use `structlog`.
