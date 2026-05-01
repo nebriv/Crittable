@@ -34,10 +34,11 @@ interface CreatorState {
 
 const NUDGE_PROPOSE = "I think we have enough context. Please draft the scenario plan now.";
 
-// Receiver-side typing indicator timings — kept in sync with Play.tsx.
-// See issue #53: the indicator should appear cleanly on a real typing
-// burst and persist for about three seconds, never flickering.
-const TYPING_VISIBLE_MS = 5000;
+// Receiver-side typing indicator timings — kept in sync with
+// Play.tsx (see the long comment there). Issue #77: 3.5 s TTL +
+// 1.5 s head start on stop, paired with the 1 Hz heartbeat sender
+// in Composer. Tolerates one dropped beat without flicker.
+const TYPING_VISIBLE_MS = 3500;
 const TYPING_FADE_HEAD_START_MS = TYPING_VISIBLE_MS - 1500;
 
 /**

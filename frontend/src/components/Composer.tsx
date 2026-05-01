@@ -55,19 +55,30 @@ export function Composer({
   // Empty string == speak as the local participant. Anything else is a
   // role_id passed up to the parent for proxy submission.
   const [asRoleId, setAsRoleId] = useState<string>("");
-  // Idle timer fires ``typing_stop`` after the user has been idle long
-  // enough that the indicator should disappear. Pending-start timer waits
-  // until the user has been typing continuously for a couple of seconds
-  // before announcing — without the delay the indicator flashes on every
-  // single keystroke and creates the "blinking screen" pattern reported
-  // in issue #53.
+  // Heartbeat-based typing indicator (issue #77). Pre-fix the
+  // sender emitted exactly one ``typing_start`` after a 1.5 s
+  // continuous-typing gate and one ``typing_stop`` after 3.5 s of
+  // idle. If either packet was dropped, or the user paused briefly
+  // and the receiver TTL fired before they resumed, the indicator
+  // vanished mid-typing and didn't come back. Switching to a
+  // 1 Hz heartbeat: while the user is actively typing AND has hit
+  // a key since the last beat, we re-emit ``typing_start`` every
+  // ~1 s, which refreshes the receiver-side TTL. ``typing_stop``
+  // still fires on idle / submit / disable / unmount.
+  //
+  // ``dirtySinceBeat`` is the gate — without it, the heartbeat
+  // would keep firing across long pauses (defeating the point).
+  // We mark dirty on every keystroke, clear on every beat, and
+  // skip the beat send when not dirty. The idle timer (separate
+  // from the heartbeat interval) still fires the explicit stop
+  // after STOP_AFTER_IDLE_MS so the receiver doesn't have to
+  // wait for the TTL sweep to evict.
+  const heartbeatTimer = useRef<ReturnType<typeof setInterval> | null>(null);
   const idleTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const pendingStartTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isTyping = useRef(false);
-  // Debounce config. The thresholds are intentionally separated so a
-  // user who pauses to think briefly (~1s) doesn't churn start/stop.
-  const TYPING_START_DELAY_MS = 1500;
-  const TYPING_IDLE_MS = 3500;
+  const dirtySinceBeat = useRef(false);
+  const HEARTBEAT_MS = 1000;
+  const STOP_AFTER_IDLE_MS = 2500;
   // Last text the user attempted to submit. Held outside React state
   // so we can restore it without an extra render on the success path.
   const lastAttemptedRef = useRef<string>("");
@@ -87,18 +98,10 @@ export function Composer({
     // doesn't accidentally post under the previous proxy role. Sticky
     // proxy mode was a real footgun in solo testing.
     setAsRoleId("");
-    if (pendingStartTimer.current) {
-      clearTimeout(pendingStartTimer.current);
-      pendingStartTimer.current = null;
-    }
-    if (idleTimer.current) {
-      clearTimeout(idleTimer.current);
-      idleTimer.current = null;
-    }
-    if (isTyping.current) {
-      isTyping.current = false;
-      onTypingChange?.(false);
-    }
+    // Tear down the heartbeat + idle timers and emit a final
+    // typing_stop so peers don't keep showing us as typing for
+    // the length of TYPING_VISIBLE_MS after we just submitted.
+    emitTypingStop();
   }
 
   // Restore the last-attempted text when the parent signals a submit
@@ -124,59 +127,68 @@ export function Composer({
     handle(e as unknown as FormEvent);
   }
 
+  function teardownTypingTimers() {
+    if (heartbeatTimer.current) {
+      clearInterval(heartbeatTimer.current);
+      heartbeatTimer.current = null;
+    }
+    if (idleTimer.current) {
+      clearTimeout(idleTimer.current);
+      idleTimer.current = null;
+    }
+  }
+
+  function emitTypingStop() {
+    teardownTypingTimers();
+    if (isTyping.current) {
+      isTyping.current = false;
+      dirtySinceBeat.current = false;
+      onTypingChange?.(false);
+    }
+  }
+
   function handleChange(value: string) {
     setText(value);
     if (!enabled || !onTypingChange) return;
-    // If the textarea is now empty (e.g. user cleared with backspace),
-    // tear down the timers and emit a stop if needed. Holding "typing"
-    // on an empty composer is misleading.
+    // If the textarea is now empty (e.g. user cleared with
+    // backspace), tear down the heartbeat + emit stop. Holding
+    // "typing" on an empty composer is misleading.
     if (!value.trim()) {
-      if (pendingStartTimer.current) {
-        clearTimeout(pendingStartTimer.current);
-        pendingStartTimer.current = null;
-      }
-      if (idleTimer.current) {
-        clearTimeout(idleTimer.current);
-        idleTimer.current = null;
-      }
-      if (isTyping.current) {
-        isTyping.current = false;
-        onTypingChange(false);
-      }
+      emitTypingStop();
       return;
     }
-    // Start path: don't broadcast immediately. Schedule a delayed
-    // ``typing_start`` so a user who types one character and stops
-    // never lights up the indicator.
-    if (!isTyping.current && !pendingStartTimer.current) {
-      pendingStartTimer.current = setTimeout(() => {
-        pendingStartTimer.current = null;
-        // Re-check enabled — the turn may have flipped while we waited.
-        if (!enabled) return;
-        isTyping.current = true;
+    if (!isTyping.current) {
+      // First keystroke since silence: emit start immediately
+      // (receiver TTL handles flicker). Begin the heartbeat
+      // interval; mark not-dirty because we just sent a beat.
+      isTyping.current = true;
+      dirtySinceBeat.current = false;
+      onTypingChange(true);
+      if (heartbeatTimer.current) clearInterval(heartbeatTimer.current);
+      heartbeatTimer.current = setInterval(() => {
+        // Re-check enabled in case the turn flipped between beats.
+        if (!enabled || !isTyping.current) return;
+        if (!dirtySinceBeat.current) return;
         onTypingChange?.(true);
-      }, TYPING_START_DELAY_MS);
+        dirtySinceBeat.current = false;
+      }, HEARTBEAT_MS);
+    } else {
+      // Already typing — just mark dirty so the next heartbeat
+      // tick sends a refresh.
+      dirtySinceBeat.current = true;
     }
-    // Refresh the idle timer on every keystroke. When it fires we emit
-    // ``typing_stop`` and cancel any pending start so a buffered start
-    // can't sneak through after we've already gone quiet.
+    // Refresh the idle timer on every keystroke. When it fires
+    // we emit ``typing_stop`` and clear the heartbeat.
     if (idleTimer.current) clearTimeout(idleTimer.current);
-    idleTimer.current = setTimeout(() => {
-      idleTimer.current = null;
-      if (pendingStartTimer.current) {
-        clearTimeout(pendingStartTimer.current);
-        pendingStartTimer.current = null;
-      }
-      if (isTyping.current) {
-        isTyping.current = false;
-        onTypingChange?.(false);
-      }
-    }, TYPING_IDLE_MS);
+    idleTimer.current = setTimeout(emitTypingStop, STOP_AFTER_IDLE_MS);
   }
 
   useEffect(() => {
     return () => {
-      if (pendingStartTimer.current) clearTimeout(pendingStartTimer.current);
+      // Unmount cleanup — clear timers + send a final stop so
+      // peers don't see a stuck "X is typing…" indicator for
+      // the length of TYPING_VISIBLE_MS after we navigate away.
+      if (heartbeatTimer.current) clearInterval(heartbeatTimer.current);
       if (idleTimer.current) clearTimeout(idleTimer.current);
       if (isTyping.current && onTypingChange) {
         isTyping.current = false;
@@ -185,25 +197,19 @@ export function Composer({
     };
   }, [onTypingChange]);
 
-  // When the turn ends mid-typing burst the composer goes ``disabled``
-  // but the timers are still in flight. Without this hook the indicator
-  // would linger on other clients for up to TYPING_IDLE_MS after the
-  // turn flipped, falsely suggesting we're still composing.
+  // When the turn ends mid-typing burst the composer goes
+  // ``disabled`` but the timers are still in flight. Without this
+  // hook the indicator would linger on other clients for the
+  // remaining TTL window after the turn flipped, falsely
+  // suggesting we're still composing.
   useEffect(() => {
     if (enabled) return;
-    if (pendingStartTimer.current) {
-      clearTimeout(pendingStartTimer.current);
-      pendingStartTimer.current = null;
-    }
-    if (idleTimer.current) {
-      clearTimeout(idleTimer.current);
-      idleTimer.current = null;
-    }
-    if (isTyping.current) {
-      isTyping.current = false;
-      onTypingChange?.(false);
-    }
-  }, [enabled, onTypingChange]);
+    emitTypingStop();
+    // emitTypingStop is stable per render; only re-run when
+    // ``enabled`` flips so we don't churn on onTypingChange
+    // identity changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [enabled]);
 
   const hasImpersonate = (impersonateOptions?.length ?? 0) > 0;
 

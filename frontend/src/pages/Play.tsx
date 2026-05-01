@@ -16,14 +16,20 @@ interface Props {
 
 const DISPLAY_NAME_KEY = "atf-display-name";
 
-// Receiver-side typing config. ``TYPING_VISIBLE_MS`` is how long an
-// indicator survives after the most recent ``typing_start`` arrival
-// before the cutoff sweep evicts it. ``TYPING_FADE_HEAD_START_MS`` is
-// the head start applied when ``typing_stop`` arrives — i.e. how long
-// we keep the chip visible after the sender goes quiet. Together they
-// keep the indicator on screen for ~3 seconds of actual conversation
-// and prevent the on/off flash reported in issue #53.
-const TYPING_VISIBLE_MS = 5000;
+// Receiver-side typing config. ``TYPING_VISIBLE_MS`` is how long
+// an indicator survives after the most recent ``typing_start``
+// arrival before the cutoff sweep evicts it. ``TYPING_FADE_HEAD_START_MS``
+// is the head start applied when ``typing_stop`` arrives — i.e.
+// how long we keep the chip visible after the sender goes quiet.
+//
+// Issue #77: now that the sender heart-beats at 1 Hz (see
+// ``HEARTBEAT_MS`` in Composer.tsx) we can run the TTL much
+// tighter. 3.5 s tolerates exactly one dropped heartbeat
+// without flicker; two consecutive drops fade the indicator —
+// the right tradeoff between "stuck-on after disconnect" and
+// "flicker on a single dropped packet". The 1.5 s head start on
+// stop is unchanged so an explicit stop still lingers ~2 s.
+const TYPING_VISIBLE_MS = 3500;
 const TYPING_FADE_HEAD_START_MS = TYPING_VISIBLE_MS - 1500;
 
 export function Play({ sessionId, token }: Props) {

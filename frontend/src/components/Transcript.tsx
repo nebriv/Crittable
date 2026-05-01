@@ -161,14 +161,22 @@ export function Transcript({
     const r = roleById.get(id);
     return r ? [`${r.label}${r.display_name ? ` · ${r.display_name}` : ""}`] : [];
   });
-  const typingLabel =
-    typing.length === 0
-      ? null
-      : typing.length === 1
-        ? `${typing[0]} is typing…`
-        : typing.length === 2
-          ? `${typing[0]} and ${typing[1]} are typing…`
-          : `${typing[0]}, ${typing[1]} and ${typing.length - 2} more are typing…`;
+  // Issue #77 multi-typer aggregation. Prior implementation
+  // collapsed everything ≥3 into "X, Y and N more"; the new spec
+  // names exactly three when there are three (avoids the awkward
+  // "X, Y and 1 more"), and at ≥4 collapses to a playful catch-
+  // all so the indicator doesn't grow unboundedly during a
+  // synchronous flurry.
+  let typingLabel: string | null = null;
+  if (typing.length === 1) {
+    typingLabel = `${typing[0]} is typing…`;
+  } else if (typing.length === 2) {
+    typingLabel = `${typing[0]} and ${typing[1]} are typing…`;
+  } else if (typing.length === 3) {
+    typingLabel = `${typing[0]}, ${typing[1]} and ${typing[2]} are typing…`;
+  } else if (typing.length >= 4) {
+    typingLabel = "Everyone is hammering away at their keyboards…";
+  }
   return (
     <div
       className="flex flex-col gap-3"
