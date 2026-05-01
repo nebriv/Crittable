@@ -1012,11 +1012,17 @@ def register_api_routes(app: FastAPI) -> None:
                     decisions_by_role.get(msg.role_id, 0) + 1
                 )
 
+        # Per-role rationale is visible to ALL participants — same
+        # policy as the markdown export. ``strip_creator_only`` only
+        # touches Appendix E (the AI decision-rationale log, issue
+        # #55); the per-role-scores table renders rationale for
+        # everyone. Copilot review on PR #110 caught a regression
+        # where this endpoint was stripping rationale for non-creators
+        # but the markdown wasn't, creating two divergent AAR views
+        # depending on which export the user fetched.
         scores: list[dict[str, Any]] = []
         for s in list(session.aar_report.get("per_role_scores") or []):
             entry = dict(s)
-            if not is_creator:
-                entry.pop("rationale", None)
             entry["decisions"] = decisions_by_role.get(
                 entry.get("role_id", ""), 0
             )

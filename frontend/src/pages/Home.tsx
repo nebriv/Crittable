@@ -8,15 +8,42 @@ import { useEffect } from "react";
  * Facilitator state machine.
  */
 export function Home() {
-  // Wire history navigation so the CTA hands off without a hard reload —
-  // the browser still gets a real URL change so back-button works.
+  // Wire history navigation so the CTA hands off without a hard
+  // reload — the browser still gets a real URL change so back-button
+  // works. Bails out for every case where the browser's default
+  // behaviour is the right answer:
+  //   - modified clicks (cmd/ctrl/shift/alt) → "open in new tab"
+  //   - non-primary buttons (middle-click is always button=1) →
+  //     "open in new tab" / "paste in browser bar"
+  //   - default-prevented events → another handler already claimed it
+  //   - non-Element targets (Text node, document) → can't .closest()
+  //   - links with target=_blank, download, or non-http(s) hrefs
+  //     (mailto:, tel:, in-page hash anchors) → keep native behaviour
   useEffect(() => {
     const onClick = (e: MouseEvent) => {
-      const target = e.target as HTMLElement | null;
-      const link = target?.closest("a[data-spa-nav]");
-      if (!link) return;
+      if (e.defaultPrevented) return;
+      if (e.button !== 0) return;
+      if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+      if (!(e.target instanceof Element)) return;
+      const link = e.target.closest("a[data-spa-nav]");
+      if (!(link instanceof HTMLAnchorElement)) return;
+      // Native attributes that should keep default behaviour.
+      if (link.target && link.target !== "_self") return;
+      if (link.hasAttribute("download")) return;
       const href = link.getAttribute("href");
-      if (!href || href.startsWith("http") || href.startsWith("//")) return;
+      if (!href) return;
+      // Same-document hashes are a browser concern, not ours.
+      if (href.startsWith("#")) return;
+      // Only intercept same-origin http(s) paths. Reject mailto:,
+      // tel:, javascript:, blob:, etc. — anything that's not a
+      // path-relative app URL.
+      if (
+        href.startsWith("http://") ||
+        href.startsWith("https://") ||
+        href.startsWith("//")
+      ) {
+        return;
+      }
       e.preventDefault();
       window.history.pushState({}, "", href);
       window.dispatchEvent(new PopStateEvent("popstate"));
