@@ -1008,12 +1008,31 @@ def register_api_routes(app: FastAPI) -> None:
                 decisions_by_role[msg.role_id] = decisions_by_role.get(msg.role_id, 0) + 1
 
         scores: list[dict[str, Any]] = []
+        roles_by_id = {r.id: r for r in session.roles}
+        # Best-effort label-as-id matcher. The AI prompt asks for the
+        # canonical role_id but in practice it sometimes echoes the
+        # role *label* instead. Try the canonical id first, then a
+        # case-insensitive label match, then leave the raw id as the
+        # display label so we never render a UUID prefix to the user.
+        roles_by_label_lower = {r.label.lower(): r for r in session.roles}
         for s in list(session.aar_report.get("per_role_scores", []) or []):
             entry = dict(s)
             if not is_creator:
                 entry.pop("rationale", None)
-            rid = entry.get("role_id", "")
-            entry["decisions"] = decisions_by_role.get(rid, 0)
+            rid = str(entry.get("role_id", "") or "")
+            role = roles_by_id.get(rid) or roles_by_label_lower.get(rid.lower())
+            if role is not None:
+                entry["role_id"] = role.id
+                entry["label"] = role.label
+                entry["display_name"] = role.display_name
+            else:
+                # Don't leak the raw id (often a UUID prefix) into the
+                # UI as a "role name". Empty-string is the AI's literal
+                # output; render an em-dash instead so the row reads as
+                # "score for an unidentified role" rather than blank.
+                entry["label"] = rid if rid else "—"
+                entry["display_name"] = None
+            entry["decisions"] = decisions_by_role.get(entry.get("role_id", ""), 0)
             scores.append(entry)
 
         # Build a lookup so the frontend can render role labels +
@@ -1039,12 +1058,28 @@ def register_api_routes(app: FastAPI) -> None:
         # header ("0 stuck" reads cleanly; "3 stuck" reads as a warning).
         stuck = sum(1 for t in session.turns if getattr(t, "status", None) == "errored")
 
+        # Defensive coercion: the AI is *supposed* to emit these as
+        # ``array<string>`` per the AAR_TOOL schema, but in practice it
+        # occasionally returns a single string blob. Calling ``list()``
+        # on a string splits it into characters, which then renders as
+        # a bullet per character ("F • a • c • i • l • i • t • a • t").
+        # Wrap a string in a single-element list so the renderer stays
+        # well-formed regardless of which shape the AI returned.
+        def _str_list(value: Any) -> list[str]:
+            if value is None:
+                return []
+            if isinstance(value, str):
+                return [value] if value.strip() else []
+            if isinstance(value, list):
+                return [str(item) for item in value if item is not None and str(item).strip()]
+            return []
+
         body: dict[str, Any] = {
             "executive_summary": session.aar_report.get("executive_summary", ""),
             "narrative": session.aar_report.get("narrative", ""),
-            "what_went_well": list(session.aar_report.get("what_went_well") or []),
-            "gaps": list(session.aar_report.get("gaps") or []),
-            "recommendations": list(session.aar_report.get("recommendations") or []),
+            "what_went_well": _str_list(session.aar_report.get("what_went_well")),
+            "gaps": _str_list(session.aar_report.get("gaps")),
+            "recommendations": _str_list(session.aar_report.get("recommendations")),
             "per_role_scores": scores,
             "overall_score": session.aar_report.get("overall_score", 0),
             "overall_rationale": session.aar_report.get("overall_rationale", ""),

@@ -29,6 +29,12 @@ interface PerRoleScore {
   speed: number;
   decisions: number;
   rationale?: string;
+  /** Backend-resolved short label (e.g. "CISO", "IR Lead"). The AI
+   *  occasionally emits unrecognised role_ids; the route handler
+   *  falls back to label-as-id matching, then to the raw value, so
+   *  the UI never has to render a UUID prefix. */
+  label?: string;
+  display_name?: string | null;
 }
 
 interface AarMeta {
@@ -134,9 +140,16 @@ export function AarReportView({
   }
 
   const { report } = state;
+  // The dialog body is a tall fixed box (`h-[90vh]`). Each column has
+  // its own scroll region so they don't stretch to match each other —
+  // the right column is naturally short (per-role rows + 5 export
+  // pills) and would otherwise leave a 600 px void below EXPORT.
+  // `align-items: start` on the grid keeps each column at content
+  // height; per-column overflow lets long brief blocks scroll on the
+  // left without dragging the right column with them.
   return (
     <div
-      className="grid h-full min-h-0 grid-cols-1 gap-6 lg:grid-cols-[1.2fr_1fr]"
+      className="grid h-full min-h-0 grid-cols-1 items-start gap-6 lg:grid-cols-[1.2fr_1fr]"
       style={{ overflow: "hidden" }}
     >
       <LeftColumn report={report} />
@@ -229,7 +242,7 @@ function LeftColumn({ report }: { report: AarReport }) {
   const headerTitle =
     (meta.title?.trim() || "Cybersecurity tabletop exercise") + " · debrief";
   return (
-    <section className="flex min-h-0 flex-col gap-4 overflow-y-auto pr-2">
+    <section className="flex max-h-full min-h-0 flex-col gap-4 overflow-y-auto pr-2">
       <header className="flex flex-col gap-1">
         <p className="mono text-[11px] font-bold uppercase tracking-[0.22em] text-signal">
           AFTER-ACTION REPORT
@@ -328,28 +341,40 @@ function RightColumn({
   const { meta, per_role_scores } = report;
   const labelById = new Map(meta.roles.map((r) => [r.id, r] as const));
   return (
-    <section className="flex min-h-0 flex-col gap-4 overflow-y-auto rounded-r-3 border border-ink-600 bg-ink-850 p-4">
+    <section className="flex max-h-full flex-col gap-4 overflow-y-auto rounded-r-3 border border-ink-600 bg-ink-850 p-4">
       <p className="mono text-[10px] font-bold uppercase tracking-[0.22em] text-ink-300">
         PER-ROLE SCORING
       </p>
       <ul className="flex flex-col gap-2">
         {per_role_scores.map((s) => {
-          const role = labelById.get(s.role_id);
+          // Prefer the backend-resolved label/display_name (which
+          // already handles AI emitting label-as-id, unknown ids,
+          // etc.); fall back to a roster-side lookup for older AAR
+          // payloads that pre-date the resolver.
+          const fromMeta = labelById.get(s.role_id);
+          const label = s.label ?? fromMeta?.label ?? "—";
+          const displayName =
+            (s.display_name ?? fromMeta?.display_name) ?? null;
           const overall = (s.decision_quality + s.communication + s.speed) / 3;
           const grade = gradeForScore(overall);
           const tone = toneForScore(overall);
           const tc = toneClass(tone);
           return (
             <li
-              key={s.role_id}
+              key={`${s.role_id}-${label}`}
               className="flex items-center gap-3 rounded-r-1 border border-ink-600 bg-ink-800 px-3 py-2"
               title={s.rationale ?? undefined}
             >
-              <span className="mono w-12 truncate text-[11px] font-bold uppercase tracking-[0.10em] text-ink-100">
-                {role?.label ?? s.role_id.slice(0, 4)}
+              <span
+                className="mono shrink-0 truncate text-[11px] font-bold uppercase tracking-[0.10em] text-ink-100"
+                style={{ minWidth: 56, maxWidth: 96 }}
+              >
+                {label}
               </span>
               <span className="sans flex-1 truncate text-[13px] text-ink-200">
-                {role?.display_name ?? "—"}
+                {displayName ?? (
+                  <span className="text-ink-500">— not joined —</span>
+                )}
               </span>
               <span className="mono text-[10px] uppercase tracking-[0.10em] text-ink-400 tabular-nums">
                 {s.decisions} {s.decisions === 1 ? "DECISION" : "DECISIONS"}
@@ -391,14 +416,9 @@ function RightColumn({
         </div>
       </div>
 
-      <div className="mt-auto border-t border-dashed border-ink-600 pt-3">
-        <p className="mono text-[9px] uppercase tracking-[0.16em] text-ink-500">
-          SESSION{" "}
-          <span className="text-ink-400 tabular-nums">
-            {meta.session_id}
-          </span>
-        </p>
-      </div>
+      {/* The dialog footer already shows the truncated session id —
+          no need to repeat it inline; we just take the spare height
+          so the column doesn't visually trail off. */}
     </section>
   );
 }
@@ -446,10 +466,11 @@ function BriefBlock({
       <ul className="flex list-none flex-col gap-1.5 pl-0 text-sm leading-relaxed text-ink-100">
         {items.map((it, i) => (
           <li key={i} className="flex gap-2">
-            <span aria-hidden="true" className="mt-1 text-ink-500">
-              ●
-            </span>
-            <span className="whitespace-pre-wrap">{it}</span>
+            <span
+              aria-hidden="true"
+              className="mt-2 inline-block h-1 w-1 shrink-0 rounded-full bg-ink-500"
+            />
+            <span className="min-w-0 whitespace-pre-wrap break-words">{it}</span>
           </li>
         ))}
       </ul>
