@@ -781,9 +781,9 @@ export function Play({ sessionId, token }: Props) {
       <header
         role="banner"
         className="border-b border-ink-600 bg-ink-850 px-5"
-        style={{ minHeight: 56 }}
+        style={{ minHeight: 48 }}
       >
-        <div className="mx-auto flex w-full max-w-7xl flex-wrap items-center gap-3 py-3">
+        <div className="mx-auto flex w-full max-w-7xl flex-wrap items-center gap-3 py-2">
           <a
             href="/"
             aria-label="Crittable home"
@@ -886,8 +886,8 @@ export function Play({ sessionId, token }: Props) {
           tight, the current beat is finishing up.
         </div>
       ) : null}
-      <div className="mx-auto grid w-full max-w-7xl flex-1 grid-cols-1 gap-4 p-4 lg:min-h-0 lg:grid-cols-[240px_1fr_300px] lg:overflow-hidden">
-        <aside className="flex flex-col gap-4 lg:min-h-0 lg:overflow-y-auto lg:pr-1">
+      <div className="mx-auto grid w-full max-w-7xl flex-1 grid-cols-1 gap-3 p-3 lg:min-h-0 lg:grid-cols-[220px_1fr_280px] lg:overflow-hidden">
+        <aside className="flex flex-col gap-3 lg:min-h-0 lg:overflow-y-auto lg:pr-1">
           <RoleRoster
             roles={snapshot.roles}
             activeRoleIds={activeRoleIds}
@@ -918,7 +918,7 @@ export function Play({ sessionId, token }: Props) {
             ) : null}
           </div>
         </aside>
-        <section className="flex min-w-0 flex-col gap-3 lg:min-h-0 lg:overflow-hidden">
+        <section className="flex min-w-0 flex-col gap-2 lg:min-h-0 lg:overflow-hidden">
           {/*
             On desktop the Composer must stay pinned at the bottom of the
             section regardless of how long the transcript grows — issue #56
@@ -1029,7 +1029,7 @@ export function Play({ sessionId, token }: Props) {
             {error ? <p className="text-sm text-crit" role="alert">{error}</p> : null}
           </div>
         </section>
-        <aside className="flex flex-col gap-4 lg:min-h-0 lg:overflow-y-auto lg:pr-1">
+        <aside className="flex flex-col gap-3 lg:min-h-0 lg:overflow-y-auto lg:pr-1">
           <div className="rounded-r-3 border border-ink-600 bg-ink-850">
             <HudGauges />
           </div>

@@ -330,13 +330,19 @@ function Hero() {
         flexWrap: "wrap",
       }}
     >
+      {/* Animated mark hero. Earlier rounds tried the SMIL-driven SVG
+          variant — it loops in Chromium but Firefox / Safari either
+          freeze on the first frame or refuse SMIL outright. The brand
+          designer ships a GIF render specifically so we don't have to
+          care; the sized variants live under /logo/gif/. The static
+          encounter-01 SVG is the prefers-reduced-motion fallback. */}
       <picture>
         <source
           media="(prefers-reduced-motion: reduce)"
           srcSet="/logo/svg/mark-encounter-01-dark.svg"
         />
         <img
-          src="/logo/svg/mark-animated-dark.svg"
+          src="/logo/gif/mark-animated-256-dark.gif"
           alt=""
           width={220}
           height={220}

@@ -954,8 +954,8 @@ export function Facilitator() {
           return Array.from(seen).sort();
         })()}
       />
-      <div className="mx-auto grid w-full max-w-7xl flex-1 grid-cols-1 gap-4 p-4 lg:min-h-0 lg:grid-cols-[280px_1fr_300px] lg:overflow-hidden">
-        <aside className="flex flex-col gap-4 lg:min-h-0 lg:overflow-y-auto lg:pr-1">
+      <div className="mx-auto grid w-full max-w-7xl flex-1 grid-cols-1 gap-3 p-3 lg:min-h-0 lg:grid-cols-[260px_1fr_280px] lg:overflow-hidden">
+        <aside className="flex flex-col gap-3 lg:min-h-0 lg:overflow-y-auto lg:pr-1">
           <RolesPanel
             sessionId={state.sessionId}
             creatorToken={state.token}
@@ -985,7 +985,7 @@ export function Facilitator() {
           <DecisionLogPanel entries={decisionLog} />
         </aside>
 
-        <section className="flex min-w-0 flex-col gap-3 lg:min-h-0 lg:overflow-hidden">
+        <section className="flex min-w-0 flex-col gap-2 lg:min-h-0 lg:overflow-hidden">
           {/*
             Every phase view (setup / ready / ended / play) renders inside the
             same scrollable region. Pre-fix the wrapping ``<div>`` only
@@ -1236,7 +1236,7 @@ export function Facilitator() {
           ) : null}
         </section>
 
-        <aside className="flex flex-col gap-4 lg:min-h-0 lg:overflow-y-auto lg:pr-1">
+        <aside className="flex flex-col gap-3 lg:min-h-0 lg:overflow-y-auto lg:pr-1">
           <div className="rounded-r-3 border border-ink-600 bg-ink-850">
             <HudGauges />
           </div>
@@ -1381,9 +1381,9 @@ export function TopBar(props: {
     <header
       role="banner"
       className="border-b border-ink-600 bg-ink-850 px-5"
-      style={{ minHeight: 56 }}
+      style={{ minHeight: 48 }}
     >
-      <div className="mx-auto flex w-full max-w-7xl flex-wrap items-center gap-3 py-3">
+      <div className="mx-auto flex w-full max-w-7xl flex-wrap items-center gap-3 py-2">
         <a
           href="/"
           aria-label="Crittable home"

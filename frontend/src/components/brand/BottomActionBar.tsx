@@ -86,8 +86,8 @@ export function BottomActionBar(props: Props) {
       style={{
         background: "var(--ink-950)",
         borderTop: "1px solid var(--ink-600)",
-        padding: "8px 16px",
-        minHeight: 48,
+        padding: "6px 16px",
+        minHeight: 40,
         boxSizing: "border-box",
         display: "flex",
         alignItems: "center",

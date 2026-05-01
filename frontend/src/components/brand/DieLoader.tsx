@@ -37,13 +37,23 @@ export function DieLoader({ size = 96, label = "Loading…", className, style }:
         ...style,
       }}
     >
+      {/* GIF rather than SMIL-driven SVG — Firefox + Safari don't loop
+          the SVG variant reliably. Pick the smallest GIF that beats
+          ``size`` so the rendered pixels are crisp without paying for
+          the 1024 px tier on every loading screen. */}
       <picture>
         <source
           media="(prefers-reduced-motion: reduce)"
           srcSet="/logo/svg/mark-encounter-01-dark.svg"
         />
         <img
-          src="/logo/svg/mark-animated-dark.svg"
+          src={
+            size <= 96
+              ? "/logo/gif/mark-animated-128-dark.gif"
+              : size <= 192
+                ? "/logo/gif/mark-animated-256-dark.gif"
+                : "/logo/gif/mark-animated-512-dark.gif"
+          }
           alt=""
           width={size}
           height={size}

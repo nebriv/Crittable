@@ -368,9 +368,12 @@ export function Transcript({
                 ) : null}
               </div>
             </div>
+            {/* Role-code avatar — fixed 36×36 circle. Distinct geometry
+                from the rectangular bubble + ink-700 chips so it reads
+                as identity, not a continuation of the message body. */}
             <div
               aria-hidden="true"
-              className={`mono flex h-9 min-w-[36px] shrink-0 items-center justify-center rounded-r-1 px-1 text-[11px] font-bold uppercase tracking-[0.06em] ${
+              className={`mono flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-[10px] font-bold uppercase leading-none tracking-[0.04em] ${
                 isSelf
                   ? "border border-signal-deep bg-signal-tint text-signal"
                   : "border border-ink-500 bg-ink-700 text-ink-100"
