@@ -7,6 +7,18 @@
    the Vite build serves the variables to every component.
 */
 
+/* Bundled brand fonts (no CDN dependency). The variable-font
+   packages ship a single woff2 per language subset that covers
+   every weight from 100 to 900 — drastically smaller than loading
+   four discrete weights from Google Fonts and self-contained for
+   air-gapped / strict-CSP deployments common in security work.
+   ``wght.css`` covers all language subsets; the browser only
+   downloads the ones it needs (Latin in the common case). See
+   --font-sans / --font-mono below for the ``Variable`` family
+   names registered by these packages. */
+@import "@fontsource-variable/inter/wght.css";
+@import "@fontsource-variable/jetbrains-mono/wght.css";
+
 :root {
   /* Ink — the operator surface. Cooler than the Tailwind slate
      in the source app; tuned for long sessions in dim rooms. */
@@ -50,9 +62,13 @@
   --grid:        rgba(255, 255, 255, 0.035);
   --grid-strong: rgba(255, 255, 255, 0.07);
 
-  /* Type */
-  --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
-  --font-sans: 'Inter', -apple-system, system-ui, sans-serif;
+  /* Type. Variable-font names come from the @fontsource-variable
+     packages we bundle; system fallbacks render acceptably until the
+     ~50 kB woff2 lands. Bundled (not loaded from Google Fonts CDN) so
+     the app works on air-gapped / strict-CSP deployments — the target
+     audience here is security teams. See PR #110 review thread. */
+  --font-mono: 'JetBrains Mono Variable', ui-monospace, SFMono-Regular, Menlo, monospace;
+  --font-sans: 'Inter Variable', -apple-system, system-ui, sans-serif;
 
   --t-12: 12px; --t-13: 13px; --t-14: 14px; --t-16: 16px;
   --t-18: 18px; --t-22: 22px; --t-28: 28px; --t-36: 36px;

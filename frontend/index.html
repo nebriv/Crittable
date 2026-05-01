@@ -18,15 +18,11 @@
     <meta name="theme-color" content="#0A0D13" />
     <link rel="shortcut icon" href="/favicon/favicon.ico" />
 
-    <!-- Brand fonts: Inter for prose, JetBrains Mono for chrome / IDs / timestamps.
-         Loaded via Google Fonts CDN with display=swap so the page renders
-         immediately with system fallbacks while the brand fonts arrive. -->
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link
-      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap"
-      rel="stylesheet"
-    />
+    <!-- Brand fonts: Inter (sans) + JetBrains Mono (mono) are
+         bundled via the @fontsource-variable packages — see
+         src/index.css. No external CDN; works offline / in
+         strict-CSP / air-gapped deployments. System fallbacks
+         render until the bundled woff2 lands. -->
   </head>
   <body class="min-h-screen bg-ink-900 text-ink-100 font-sans">
     <div id="root"></div>

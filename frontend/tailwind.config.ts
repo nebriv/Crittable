@@ -49,15 +49,18 @@ const config: Config = {
         },
       },
       fontFamily: {
+        // Variable-font names come from the @fontsource-variable
+        // packages bundled in src/index.css (no Google Fonts CDN).
+        // System fallbacks render until the woff2 lands.
         mono: [
-          "JetBrains Mono",
+          "JetBrains Mono Variable",
           "ui-monospace",
           "SFMono-Regular",
           "Menlo",
           "monospace",
         ],
         sans: [
-          "Inter",
+          "Inter Variable",
           "-apple-system",
           "system-ui",
           "sans-serif",
