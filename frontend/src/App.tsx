@@ -25,7 +25,7 @@ export default function App() {
   }, []);
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100">
+    <div className="min-h-screen bg-ink-900 text-ink-100 font-sans">
       {route.kind === "facilitator" ? <Facilitator /> : <Play sessionId={route.sessionId} token={route.token} />}
     </div>
   );

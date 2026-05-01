@@ -120,8 +120,10 @@ describe("Transcript", () => {
     const m3 = container.querySelector("#msg-m3");
     expect(m1).not.toBeNull();
     expect(m3).not.toBeNull();
-    // Tailwind ring class names — m3 has them, m1 doesn't.
-    expect(m1?.className).not.toContain("ring-amber");
-    expect(m3?.className).toContain("ring-amber");
+    // Tailwind ring class names — m3 has them, m1 doesn't. Post-redesign
+    // the ring color is `--warn` (was amber) — same semantic ("you owe a
+    // response"), brand-aligned token.
+    expect(m1?.className).not.toContain("ring-warn");
+    expect(m3?.className).toContain("ring-warn");
   });
 });

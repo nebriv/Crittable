@@ -1,6 +1,7 @@
 import { fireEvent, render, screen, within } from "@testing-library/react";
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import { Facilitator, TopBar } from "../pages/Facilitator";
+import { BottomActionBar } from "../components/brand/BottomActionBar";
 import { api } from "../api/client";
 
 // The intro page renders both an `<ol>` ("What to expect") and the chip
@@ -110,32 +111,38 @@ describe("Facilitator intro — Roles to invite (issue #61)", () => {
   });
 });
 
-describe("TopBar (issue #62)", () => {
-  const baseProps = {
-    onStart: vi.fn(),
-    onForceAdvance: vi.fn(),
-    onEnd: vi.fn(),
-    onNewSession: vi.fn(),
-    onViewAar: vi.fn(),
-    onToggleGodMode: vi.fn(),
-    busy: false,
-    backendState: "READY",
-    wsStatus: "open" as const,
-    godMode: false,
-    // Round 3 telemetry props.
-    turnIndex: null,
-    rationaleCount: 0,
-    connectionCount: null,
-    lastEventAt: null,
-    cost: null,
-    messageCount: 0,
-    // Round 4 — LLM tier chip (#9).
-    activeTiers: [] as string[],
-  };
+// Post-redesign: most operator telemetry + phase CTAs moved out of
+// the top bar (which is now brand chrome) into a sticky bottom action
+// bar. The TopBar still renders STATE/PHASE/PLAYERS/AAR-status pills;
+// every "Start session", "End session", "View AAR" button + every
+// dense telemetry chip (T#, msgs, rationale, tabs, last event, LLM,
+// cost, build SHA, God Mode, "+ NEW SESSION") lives in BottomActionBar.
+const baseProps = {
+  onStart: vi.fn(),
+  onForceAdvance: vi.fn(),
+  onEnd: vi.fn(),
+  onNewSession: vi.fn(),
+  onViewAar: vi.fn(),
+  onToggleGodMode: vi.fn(),
+  busy: false,
+  backendState: "READY",
+  wsStatus: "open" as const,
+  godMode: false,
+  turnIndex: null,
+  rationaleCount: 0,
+  connectionCount: null,
+  lastEventAt: null,
+  cost: null,
+  messageCount: 0,
+  activeTiers: [] as string[],
+  buildSha: "abcdef0",
+  buildTs: "2026-05-01T00:00:00Z",
+};
 
-  it("renders Start session disabled when plan not finalized", () => {
+describe("BottomActionBar — phase CTAs (issue #62)", () => {
+  it("renders START SESSION disabled when plan not finalized", () => {
     render(
-      <TopBar
+      <BottomActionBar
         {...baseProps}
         phase="setup"
         playerCount={3}
@@ -143,13 +150,13 @@ describe("TopBar (issue #62)", () => {
         aarStatus={null}
       />,
     );
-    const btn = screen.getByRole("button", { name: "Start session" });
+    const btn = screen.getByRole("button", { name: /START SESSION/i });
     expect(btn).toBeDisabled();
   });
 
-  it("renders Start session disabled when fewer than 2 players", () => {
+  it("renders START SESSION disabled when fewer than 2 players", () => {
     render(
-      <TopBar
+      <BottomActionBar
         {...baseProps}
         phase="ready"
         playerCount={1}
@@ -157,12 +164,14 @@ describe("TopBar (issue #62)", () => {
         aarStatus={null}
       />,
     );
-    expect(screen.getByRole("button", { name: "Start session" })).toBeDisabled();
+    expect(
+      screen.getByRole("button", { name: /START SESSION/i }),
+    ).toBeDisabled();
   });
 
-  it("enables Start session when plan finalized and ≥2 players", () => {
+  it("enables START SESSION when plan finalized and ≥2 players", () => {
     render(
-      <TopBar
+      <BottomActionBar
         {...baseProps}
         phase="ready"
         playerCount={2}
@@ -170,15 +179,15 @@ describe("TopBar (issue #62)", () => {
         aarStatus={null}
       />,
     );
-    const btn = screen.getByRole("button", { name: "Start session" });
+    const btn = screen.getByRole("button", { name: /START SESSION/i });
     expect(btn).not.toBeDisabled();
     fireEvent.click(btn);
     expect(baseProps.onStart).toHaveBeenCalled();
   });
 
-  it("renders force-advance + end buttons during play", () => {
+  it("renders FORCE-ADVANCE + END SESSION buttons during play", () => {
     render(
-      <TopBar
+      <BottomActionBar
         {...baseProps}
         phase="play"
         playerCount={3}
@@ -187,19 +196,19 @@ describe("TopBar (issue #62)", () => {
       />,
     );
     expect(
-      screen.getByRole("button", { name: "AI: take next beat" }),
+      screen.getByRole("button", { name: /FORCE-ADVANCE/i }),
     ).toBeInTheDocument();
     expect(
-      screen.getByRole("button", { name: "End session" }),
+      screen.getByRole("button", { name: /END SESSION/i }),
     ).toBeInTheDocument();
     expect(
-      screen.queryByRole("button", { name: "Start session" }),
+      screen.queryByRole("button", { name: /START SESSION/i }),
     ).not.toBeInTheDocument();
   });
 
-  it("renders View AAR when ended phase + AAR ready", () => {
+  it("renders VIEW AAR when ended phase + AAR ready", () => {
     render(
-      <TopBar
+      <BottomActionBar
         {...baseProps}
         phase="ended"
         playerCount={3}
@@ -208,29 +217,13 @@ describe("TopBar (issue #62)", () => {
       />,
     );
     expect(
-      screen.getByRole("button", { name: "View AAR" }),
+      screen.getByRole("button", { name: /VIEW AAR/i }),
     ).toBeInTheDocument();
-  });
-
-  it("renders AAR generating status when ended phase + AAR pending", () => {
-    render(
-      <TopBar
-        {...baseProps}
-        phase="ended"
-        playerCount={3}
-        hasFinalizedPlan={true}
-        aarStatus="pending"
-      />,
-    );
-    expect(screen.getByText(/AAR generating/i)).toBeInTheDocument();
-    expect(
-      screen.queryByRole("button", { name: "View AAR" }),
-    ).not.toBeInTheDocument();
   });
 
   it("surfaces turn / message / rationale / tabs / cost telemetry chips", () => {
     render(
-      <TopBar
+      <BottomActionBar
         {...baseProps}
         phase="play"
         playerCount={3}
@@ -258,7 +251,7 @@ describe("TopBar (issue #62)", () => {
 
   it("renders dash placeholders when telemetry is null", () => {
     render(
-      <TopBar
+      <BottomActionBar
         {...baseProps}
         phase="setup"
         playerCount={1}
@@ -269,13 +262,13 @@ describe("TopBar (issue #62)", () => {
     expect(screen.getByText("T#—")).toBeInTheDocument();
     expect(screen.getByText("Tabs: —")).toBeInTheDocument();
     expect(screen.getByText("Cost: $—")).toBeInTheDocument();
-    expect(screen.getByText("Last: —")).toBeInTheDocument();
+    expect(screen.getByText(/Last: —/)).toBeInTheDocument();
   });
 
-  it("renders 'Last: <Ns ago' once a lastEventAt timestamp is set", () => {
+  it("renders 'Last: <Ns' once a lastEventAt timestamp is set", () => {
     const fiveSecondsAgo = Date.now() - 5_500;
     render(
-      <TopBar
+      <BottomActionBar
         {...baseProps}
         phase="play"
         playerCount={2}
@@ -284,12 +277,12 @@ describe("TopBar (issue #62)", () => {
         lastEventAt={fiveSecondsAgo}
       />,
     );
-    expect(screen.getByText(/Last: 5s ago/)).toBeInTheDocument();
+    expect(screen.getByText(/Last: 5s/)).toBeInTheDocument();
   });
 
   it("renders 'LLM: idle' when no LLM calls are in flight", () => {
     render(
-      <TopBar
+      <BottomActionBar
         {...baseProps}
         phase="play"
         playerCount={2}
@@ -302,7 +295,7 @@ describe("TopBar (issue #62)", () => {
 
   it("renders 'LLM: <tier>' when a single tier is active", () => {
     render(
-      <TopBar
+      <BottomActionBar
         {...baseProps}
         phase="play"
         playerCount={2}
@@ -317,7 +310,7 @@ describe("TopBar (issue #62)", () => {
 
   it("joins multiple concurrent tiers with '+' (e.g. guardrail + play)", () => {
     render(
-      <TopBar
+      <BottomActionBar
         {...baseProps}
         phase="play"
         playerCount={2}
@@ -331,7 +324,7 @@ describe("TopBar (issue #62)", () => {
 
   it("expands the cost chip to show the token breakdown", () => {
     render(
-      <TopBar
+      <BottomActionBar
         {...baseProps}
         phase="play"
         playerCount={2}
@@ -353,10 +346,10 @@ describe("TopBar (issue #62)", () => {
     expect(screen.getByText("6,789")).toBeInTheDocument();
   });
 
-  it("always renders 'Start a new session' regardless of phase", () => {
+  it("always renders '+ NEW SESSION' regardless of phase", () => {
     for (const phase of ["setup", "ready", "play", "ended"] as const) {
       const { unmount } = render(
-        <TopBar
+        <BottomActionBar
           {...baseProps}
           phase={phase}
           playerCount={2}
@@ -365,9 +358,44 @@ describe("TopBar (issue #62)", () => {
         />,
       );
       expect(
-        screen.getByRole("button", { name: "Start a new session" }),
+        screen.getByRole("button", { name: /NEW SESSION/i }),
       ).toBeInTheDocument();
       unmount();
     }
+  });
+});
+
+describe("TopBar — brand chrome (post-redesign)", () => {
+  const minimalProps = { ...baseProps };
+
+  it("renders the AAR-generating status when ended phase + AAR pending", () => {
+    render(
+      <TopBar
+        {...minimalProps}
+        phase="ended"
+        playerCount={3}
+        hasFinalizedPlan={true}
+        aarStatus="pending"
+      />,
+    );
+    expect(screen.getByText(/AAR GENERATING/i)).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /VIEW AAR/i }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("renders the VIEW AAR button when ended phase + AAR ready", () => {
+    render(
+      <TopBar
+        {...minimalProps}
+        phase="ended"
+        playerCount={3}
+        hasFinalizedPlan={true}
+        aarStatus="ready"
+      />,
+    );
+    expect(
+      screen.getByRole("button", { name: /VIEW AAR/i }),
+    ).toBeInTheDocument();
   });
 });

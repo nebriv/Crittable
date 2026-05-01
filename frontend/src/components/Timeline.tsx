@@ -75,7 +75,7 @@ export function Timeline({ messages, roles: _roles }: Props) {
         tag: "Critical",
         title: headline || "Critical event",
         body: m.body,
-        tone: "border-red-500/60 bg-red-950/40",
+        tone: "border-crit bg-crit-bg",
       });
       continue;
     }
@@ -90,7 +90,7 @@ export function Timeline({ messages, roles: _roles }: Props) {
         tag: "Pinned",
         title: title || "Pinned moment",
         body: m.body,
-        tone: "border-violet-600/50 bg-violet-950/30",
+        tone: "border-info bg-info-bg",
       });
       continue;
     }
@@ -107,7 +107,7 @@ export function Timeline({ messages, roles: _roles }: Props) {
         tag: "Decision",
         title: roleLabel + (question || "Decision point"),
         body: m.body,
-        tone: "border-amber-500/50 bg-amber-950/30",
+        tone: "border-warn bg-warn-bg",
       });
       continue;
     }
@@ -138,7 +138,7 @@ export function Timeline({ messages, roles: _roles }: Props) {
             tag: "Beat",
             title: line || `${match[1][0].toUpperCase()}${match[1].slice(1).toLowerCase()} ${idx}`,
             body: m.body,
-            tone: "border-emerald-600/50 bg-emerald-950/30",
+            tone: "border-signal-deep bg-signal-tint",
           });
           continue;
         }
@@ -154,7 +154,7 @@ export function Timeline({ messages, roles: _roles }: Props) {
         tag: "Data brief",
         title: label || "Data shared",
         body: m.body,
-        tone: "border-sky-600/50 bg-sky-950/30",
+        tone: "border-info bg-info-bg",
       });
       continue;
     }
@@ -176,7 +176,7 @@ export function Timeline({ messages, roles: _roles }: Props) {
               ? "Force-advanced"
               : "Session started",
           body: m.body,
-          tone: "border-slate-600 bg-slate-950",
+          tone: "border-ink-600 bg-ink-850",
         });
       }
     }
@@ -204,34 +204,36 @@ export function Timeline({ messages, roles: _roles }: Props) {
   return (
     <section
       aria-labelledby="timeline-heading"
-      className="flex min-h-0 flex-col gap-2 rounded border border-slate-700 bg-slate-900 p-3 text-sm"
+      className="flex min-h-0 flex-col gap-2 rounded-r-3 border border-ink-600 bg-ink-850 p-3 text-sm"
     >
-      <h3 id="timeline-heading" className="text-xs uppercase tracking-widest text-slate-300">
-        Timeline
+      <h3
+        id="timeline-heading"
+        className="mono text-[10px] font-bold uppercase tracking-[0.22em] text-ink-300"
+      >
+        TIMELINE · {items.length} {items.length === 1 ? "EVENT" : "EVENTS"}
       </h3>
       {items.length === 0 ? (
-        <p className="text-xs text-slate-400">
-          Key beats will appear here automatically — critical injects, decision
-          points, major data shares, and session lifecycle.
+        <p className="mono text-[10px] uppercase tracking-[0.04em] text-ink-400">
+          Key beats appear here as the AI logs them.
         </p>
       ) : (
         <ol className="flex flex-col gap-2 overflow-y-auto pr-1">
           {items.map((it) => (
-            <li key={it.id} className={`rounded border ${it.tone}`}>
+            <li key={it.id} className={`rounded-r-1 border ${it.tone}`}>
               <button
                 type="button"
                 onClick={() => scrollTo(it.id)}
                 aria-label={`Jump to ${it.title} in the transcript`}
-                className="flex w-full flex-col gap-0.5 px-2 py-1.5 text-left hover:bg-slate-800/40 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-amber-300"
+                className="flex w-full flex-col gap-0.5 px-2 py-1.5 text-left hover:bg-ink-750 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-signal"
                 title="Click to scroll the transcript to this moment."
               >
-                <header className="flex items-center justify-between text-[10px] uppercase tracking-widest text-slate-300">
+                <header className="mono flex items-center justify-between text-[10px] uppercase tracking-[0.16em] text-ink-300">
                   <span>{it.tag}</span>
-                  <span>{it.ts}</span>
+                  <span className="tabular-nums text-ink-400">{it.ts}</span>
                 </header>
-                <p className="text-xs font-semibold text-slate-50">{it.title}</p>
+                <p className="text-xs font-semibold text-ink-050">{it.title}</p>
                 {it.body && it.body !== it.title ? (
-                  <p className="line-clamp-2 text-[11px] text-slate-300">{it.body}</p>
+                  <p className="line-clamp-2 text-[11px] text-ink-300">{it.body}</p>
                 ) : null}
               </button>
             </li>

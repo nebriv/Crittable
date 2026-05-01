@@ -130,51 +130,51 @@ export function SessionActivityPanel({
   return (
     <section
       aria-labelledby="activity-heading"
-      className="flex flex-col gap-2 rounded border border-slate-700 bg-slate-900 p-3 text-sm"
+      className="flex flex-col gap-2 rounded border border-ink-600 bg-ink-850 p-3 text-sm"
     >
       <header className="flex items-baseline justify-between gap-2">
-        <h3 id="activity-heading" className="text-xs uppercase tracking-widest text-slate-300">
+        <h3 id="activity-heading" className="text-xs uppercase tracking-widest text-ink-300">
           Backend activity
         </h3>
         <span className="flex items-center gap-1">
           {now - fetchedAt.current > pollMs * 2 ? (
-            <span className="rounded bg-amber-900/40 px-1.5 py-0.5 text-[10px] text-amber-200">
+            <span className="rounded bg-warn/40 px-1.5 py-0.5 text-[10px] text-warn">
               stale {Math.floor((now - fetchedAt.current) / 1000)}s
             </span>
           ) : null}
-          <span className="rounded bg-purple-900/40 px-1.5 py-0.5 text-[10px] text-purple-200">
+          <span className="rounded bg-info/40 px-1.5 py-0.5 text-[10px] text-info">
             creator only
           </span>
         </span>
       </header>
 
       {!data ? (
-        <p className="text-xs text-slate-400">Loading…</p>
+        <p className="text-xs text-ink-400">Loading…</p>
       ) : (
         <>
-          <p className="text-xs text-slate-300">
+          <p className="text-xs text-ink-300">
             Turn{" "}
-            <span className="font-semibold text-slate-100">
+            <span className="font-semibold text-ink-100">
               {data.turn ? data.turn.index + 1 : 0}
             </span>{" "}
             · status{" "}
-            <span className="font-semibold text-slate-100">
+            <span className="font-semibold text-ink-100">
               {data.turn?.status ?? "—"}
             </span>
           </p>
           {data.turn?.waiting_on_role_ids?.length ? (
-            <p className="text-xs text-amber-300">
+            <p className="text-xs text-warn">
               Waiting on:{" "}
               {data.turn.waiting_on_role_ids.map(roleLabel).join(", ")}
             </p>
           ) : data.turn?.active_role_ids?.length ? (
-            <p className="text-xs text-emerald-300">
+            <p className="text-xs text-signal">
               All active roles have submitted.
             </p>
           ) : null}
           {data.turn?.error_reason ? (
-            <div className="flex flex-col gap-1 rounded border border-red-700/40 bg-red-950/30 p-2">
-              <p className="text-xs text-red-200">
+            <div className="flex flex-col gap-1 rounded border border-crit/40 bg-crit/30 p-2">
+              <p className="text-xs text-crit">
                 Error: {data.turn.error_reason}
                 {data.turn.retried_with_strict ? " (after strict retry)" : ""}
               </p>
@@ -184,7 +184,7 @@ export function SessionActivityPanel({
                   onClick={onForceAdvance}
                   disabled={busy}
                   aria-disabled={busy}
-                  className="self-start rounded border border-amber-500 px-2 py-0.5 text-xs font-semibold text-amber-200 hover:bg-amber-900/30 disabled:cursor-not-allowed disabled:opacity-50"
+                  className="self-start rounded border border-warn px-2 py-0.5 text-xs font-semibold text-warn hover:bg-warn/30 disabled:cursor-not-allowed disabled:opacity-50"
                   title="Skip the stuck AI turn and let the engine advance."
                 >
                   Force-advance turn
@@ -205,66 +205,66 @@ export function SessionActivityPanel({
                 const drift = Math.max(0, Math.min(pollMs * 2, now - fetchedAt.current));
                 const seconds = ((c.elapsed_ms + drift) / 1000).toFixed(1);
                 return (
-                  <li key={idx} className="rounded bg-slate-950 px-2 py-1 text-xs">
-                    <span className="font-semibold text-emerald-300">AI {c.tier}</span>
-                    <span className="ml-1 text-slate-400">{c.model}</span>
-                    <span className="ml-1 text-slate-500">{c.stream ? "stream" : "rpc"}</span>
-                    <span className="ml-2 text-slate-200">{seconds}s</span>
+                  <li key={idx} className="rounded bg-ink-900 px-2 py-1 text-xs">
+                    <span className="font-semibold text-signal">AI {c.tier}</span>
+                    <span className="ml-1 text-ink-400">{c.model}</span>
+                    <span className="ml-1 text-ink-500">{c.stream ? "stream" : "rpc"}</span>
+                    <span className="ml-2 text-ink-200">{seconds}s</span>
                   </li>
                 );
               })}
             </ul>
           ) : (
-            <p className="text-xs text-slate-500">No in-flight LLM calls.</p>
+            <p className="text-xs text-ink-500">No in-flight LLM calls.</p>
           )}
 
-          <p className="text-xs text-slate-300">
+          <p className="text-xs text-ink-300">
             AAR:{" "}
             <span
               className={
                 data.aar_status === "ready"
-                  ? "text-emerald-300"
+                  ? "text-signal"
                   : data.aar_status === "failed"
-                    ? "text-red-300"
+                    ? "text-crit"
                     : data.aar_status === "generating"
-                      ? "text-amber-300"
-                      : "text-slate-400"
+                      ? "text-warn"
+                      : "text-ink-400"
               }
             >
               {data.aar_status}
             </span>
           </p>
           {data.aar_error ? (
-            <p className="text-[10px] text-red-300">{data.aar_error}</p>
+            <p className="text-[10px] text-crit">{data.aar_error}</p>
           ) : null}
 
-          <p className="text-[10px] text-slate-500">
+          <p className="text-[10px] text-ink-500">
             {data.turn_count} turns · {data.message_count} msgs · {data.setup_note_count} setup notes
           </p>
 
           {data.recent_diagnostics && data.recent_diagnostics.length > 0 ? (
-            <details className="rounded border border-amber-700/40 bg-amber-950/20 p-1.5 text-xs">
-              <summary className="cursor-pointer text-amber-200">
+            <details className="rounded border border-warn bg-warn/20 p-1.5 text-xs">
+              <summary className="cursor-pointer text-warn">
                 Recent backend diagnostics ({data.recent_diagnostics.length})
               </summary>
               <ul className="mt-1 flex flex-col gap-1">
                 {data.recent_diagnostics.map((diag, idx) => (
                   <li
                     key={`${diag.ts}-${idx}`}
-                    className="rounded bg-slate-950 px-2 py-1 text-[11px] text-slate-200"
+                    className="rounded bg-ink-900 px-2 py-1 text-[11px] text-ink-200"
                   >
-                    <span className="font-semibold text-amber-200">{diag.kind}</span>
+                    <span className="font-semibold text-warn">{diag.kind}</span>
                     {diag.tier ? (
-                      <span className="ml-1 text-slate-400">[{diag.tier}]</span>
+                      <span className="ml-1 text-ink-400">[{diag.tier}]</span>
                     ) : null}
                     {diag.name ? (
-                      <span className="ml-1 text-slate-300">{diag.name}</span>
+                      <span className="ml-1 text-ink-300">{diag.name}</span>
                     ) : null}
                     {diag.reason ? (
-                      <p className="text-slate-300">{diag.reason}</p>
+                      <p className="text-ink-300">{diag.reason}</p>
                     ) : null}
                     {diag.hint ? (
-                      <p className="text-emerald-300">→ {diag.hint}</p>
+                      <p className="text-signal">→ {diag.hint}</p>
                     ) : null}
                   </li>
                 ))}
@@ -274,7 +274,7 @@ export function SessionActivityPanel({
         </>
       )}
 
-      {error ? <p className="text-[10px] text-red-300">poll: {error}</p> : null}
+      {error ? <p className="text-[10px] text-crit">poll: {error}</p> : null}
     </section>
   );
 }

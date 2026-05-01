@@ -26,13 +26,13 @@ export function RightSidebar({ messages, roles, notesStorageKey }: Props) {
         {notesStorageKey ? <NotesPanel storageKey={notesStorageKey} /> : null}
       </aside>
       <details
-        className="rounded border border-slate-700 bg-slate-900 lg:hidden"
+        className="rounded-r-3 border border-ink-600 bg-ink-850 lg:hidden"
         // Closed by default on mobile; players open when they want the sidebar.
       >
-        <summary className="cursor-pointer px-3 py-2 text-xs uppercase tracking-widest text-slate-300">
-          Timeline &amp; notes
+        <summary className="mono cursor-pointer px-3 py-2 text-[10px] font-bold uppercase tracking-[0.22em] text-ink-300">
+          TIMELINE &amp; NOTES
         </summary>
-        <div className="flex flex-col gap-3 border-t border-slate-700 p-3">
+        <div className="flex flex-col gap-3 border-t border-dashed border-ink-600 p-3">
           <Timeline messages={messages} roles={roles} />
           {notesStorageKey ? <NotesPanel storageKey={notesStorageKey} /> : null}
         </div>

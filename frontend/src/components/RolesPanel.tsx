@@ -213,10 +213,12 @@ export function RolesPanel({
   }
 
   return (
-    <div className="flex min-w-0 flex-col gap-3 rounded border border-slate-700 bg-slate-900 p-3 text-sm">
+    <div className="flex min-w-0 flex-col gap-3 rounded-r-3 border border-ink-600 bg-ink-850 p-3 text-sm">
       <div className="flex items-center justify-between gap-2">
-        <h3 className="text-xs uppercase tracking-widest text-slate-300">Roles</h3>
-        <span className="text-xs text-slate-400">
+        <h3 className="mono text-[10px] font-bold uppercase tracking-[0.22em] text-ink-300">
+          ROLES
+        </h3>
+        <span className="mono text-[10px] uppercase tracking-[0.04em] text-ink-400 tabular-nums">
           {roles.length} seated
           {connectedRoleIds
             ? ` · ${
@@ -227,15 +229,15 @@ export function RolesPanel({
       </div>
       {connectedRoleIds ? (
         <p
-          className="flex flex-wrap items-center gap-2 text-[11px] text-slate-400"
+          className="mono flex flex-wrap items-center gap-2 text-[10px] uppercase tracking-[0.06em] text-ink-400"
           aria-hidden="true"
         >
           <span className="inline-flex items-center gap-1">
-            <span className="inline-block h-2 w-2 rounded-full bg-emerald-400" />
+            <span className="inline-block h-2 w-2 rounded-full bg-signal" />
             joined
           </span>
           <span className="inline-flex items-center gap-1">
-            <span className="inline-block h-2 w-2 rounded-full bg-slate-500" />
+            <span className="inline-block h-2 w-2 rounded-full bg-ink-500" />
             link not opened yet
           </span>
         </p>
@@ -247,7 +249,7 @@ export function RolesPanel({
           return (
           <li
             key={r.id}
-            className="flex flex-col gap-1 rounded border border-slate-700 bg-slate-950 p-2"
+            className="flex flex-col gap-1 rounded-r-1 border border-ink-600 bg-ink-800 p-2"
           >
             <div className="flex items-baseline justify-between gap-2">
               <div className="flex items-baseline gap-2">
@@ -257,21 +259,21 @@ export function RolesPanel({
                     title={isOnline ? "Joined" : "Hasn’t opened the join link yet"}
                     className={
                       "inline-block h-2 w-2 shrink-0 self-center rounded-full " +
-                      (isOnline ? "bg-emerald-400" : "bg-slate-500")
+                      (isOnline ? "bg-signal" : "bg-ink-500")
                     }
                   />
                 ) : null}
-                <span className="font-semibold">{r.label}</span>
+                <span className="mono font-bold uppercase tracking-[0.06em] text-ink-100">{r.label}</span>
                 {r.display_name ? (
-                  <span className="text-xs text-slate-300">{r.display_name}</span>
+                  <span className="text-xs text-ink-200">{r.display_name}</span>
                 ) : null}
                 {r.is_creator ? (
-                  <span className="text-xs text-amber-300" title="Creator">
+                  <span className="text-xs text-warn" title="Creator">
                     ★
                   </span>
                 ) : null}
                 {connectedRoleIds && !isOnline && !r.is_creator ? (
-                  <span className="text-[11px] text-slate-500">not joined</span>
+                  <span className="mono text-[10px] uppercase text-ink-500">not joined</span>
                 ) : null}
                 {connectedRoleIds ? (
                   <span className="sr-only">
@@ -287,39 +289,34 @@ export function RolesPanel({
                     disabled={busy}
                     aria-label="Copy join link"
                     className={
-                      "rounded border px-2 py-0.5 text-xs focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-400 disabled:opacity-50 " +
+                      "mono rounded-r-1 border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.10em] focus-visible:outline focus-visible:outline-2 focus-visible:outline-signal disabled:opacity-50 " +
                       (copiedRoleIds.has(r.id)
-                        ? "border-emerald-500 bg-emerald-900/40 text-emerald-100"
-                        : "border-slate-700 text-slate-200 hover:bg-slate-800")
+                        ? "border-signal bg-signal-tint text-signal"
+                        : "border-ink-500 text-ink-200 hover:border-signal hover:text-signal")
                     }
                     title="Re-mint and copy the join link without invalidating any existing tabs."
                   >
-                    {/* Visual flash only — accessible name stays
-                        "Copy join link" via aria-label so screen
-                        readers don't double-announce when the label
-                        flips for 2s. The audible confirmation comes
-                        from the panel-level live region below. */}
                     <span aria-hidden="true">
-                      {copiedRoleIds.has(r.id) ? "Copied!" : "Copy link"}
+                      {copiedRoleIds.has(r.id) ? "COPIED!" : "COPY LINK"}
                     </span>
                   </button>
                   <button
                     type="button"
                     onClick={() => kick(r.id, r.label)}
                     disabled={busy}
-                    className="rounded border border-amber-600 px-2 py-0.5 text-xs text-amber-300 hover:bg-amber-900/30 focus-visible:outline focus-visible:outline-2 focus-visible:outline-amber-300 disabled:opacity-50"
+                    className="mono rounded-r-1 border border-warn px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.10em] text-warn hover:bg-warn-bg focus-visible:outline focus-visible:outline-2 focus-visible:outline-warn disabled:opacity-50"
                     title="Disconnect anyone using the current link and issue a new link."
                   >
-                    Kick &amp; reissue
+                    KICK
                   </button>
                   <button
                     type="button"
                     onClick={() => remove(r.id, r.label)}
                     disabled={busy}
-                    className="rounded border border-red-600 px-2 py-0.5 text-xs text-red-300 hover:bg-red-900/30 focus-visible:outline focus-visible:outline-2 focus-visible:outline-red-300 disabled:opacity-50"
+                    className="mono rounded-r-1 border border-crit px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.10em] text-crit hover:bg-crit-bg focus-visible:outline focus-visible:outline-2 focus-visible:outline-crit disabled:opacity-50"
                     title="Remove this role from the session."
                   >
-                    Remove
+                    REMOVE
                   </button>
                 </div>
               ) : null}
@@ -329,30 +326,30 @@ export function RolesPanel({
         })}
       </ul>
 
-      <form onSubmit={add} className="flex flex-col gap-2 border-t border-slate-700 pt-3">
-        <label className="text-xs uppercase tracking-widest text-slate-300">Add role</label>
+      <form onSubmit={add} className="flex flex-col gap-2 border-t border-dashed border-ink-600 pt-3">
+        <label className="mono text-[10px] font-bold uppercase tracking-[0.20em] text-signal">+ ADD ROLE</label>
         <input
           value={newRole}
           onChange={(e) => setNewRole(e.target.value)}
           placeholder="IR Lead"
-          className="w-full rounded border border-slate-700 bg-slate-950 p-1 text-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-400"
+          className="w-full rounded-r-1 border border-ink-600 bg-ink-900 p-2 text-sm text-ink-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-signal-deep focus:border-signal-deep"
         />
         <button
           type="submit"
           disabled={busy || !newRole.trim()}
-          className="rounded bg-sky-600 px-2 py-1 text-xs font-semibold text-white hover:bg-sky-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-300 disabled:opacity-50"
+          className="mono rounded-r-1 bg-signal px-3 py-1.5 text-[10px] font-bold uppercase tracking-[0.16em] text-ink-900 hover:bg-signal-bright focus-visible:outline focus-visible:outline-2 focus-visible:outline-signal-bright disabled:cursor-not-allowed disabled:opacity-50"
         >
-          Add role
+          ADD ROLE →
         </button>
       </form>
 
       {hint ? (
-        <p className="text-xs text-emerald-300" data-testid="roles-panel-hint">
+        <p className="mono text-[10px] uppercase tracking-[0.06em] text-signal" data-testid="roles-panel-hint">
           {hint}
         </p>
       ) : null}
       {errorHint ? (
-        <p className="text-xs text-red-300" data-testid="roles-panel-error">
+        <p className="mono text-[10px] uppercase tracking-[0.06em] text-crit" data-testid="roles-panel-error">
           {errorHint}
         </p>
       ) : null}
