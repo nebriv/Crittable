@@ -427,9 +427,6 @@ export function Play({ sessionId, token }: Props) {
   // Empty deps array is intentional: ``wsRef`` and ``typingSendErrLoggedRef``
   // are React refs (stable identity across renders) — accessing ``.current``
   // inside the callback reads the latest value without needing them as deps.
-  // Listing them would cause the lint rule to flag them anyway since refs
-  // are excluded from exhaustive-deps by convention.
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   function handleForceAdvance() {
