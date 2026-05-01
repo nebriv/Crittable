@@ -19,18 +19,19 @@ const DISPLAY_NAME_KEY = "atf-display-name";
 // Receiver-side typing config. ``TYPING_VISIBLE_MS`` is how long
 // an indicator survives after the most recent ``typing_start``
 // arrival before the cutoff sweep evicts it. ``TYPING_FADE_HEAD_START_MS``
-// is the head start applied when ``typing_stop`` arrives — i.e.
-// how long we keep the chip visible after the sender goes quiet.
+// is the head start applied when ``typing_stop`` arrives —
+// linger after explicit stop = ``TYPING_VISIBLE_MS - TYPING_FADE_HEAD_START_MS``.
 //
-// Issue #77: now that the sender heart-beats at 1 Hz (see
-// ``HEARTBEAT_MS`` in Composer.tsx) we can run the TTL much
-// tighter. 3.5 s tolerates exactly one dropped heartbeat
-// without flicker; two consecutive drops fade the indicator —
-// the right tradeoff between "stuck-on after disconnect" and
-// "flicker on a single dropped packet". The 1.5 s head start on
-// stop is unchanged so an explicit stop still lingers ~2 s.
-const TYPING_VISIBLE_MS = 3500;
-const TYPING_FADE_HEAD_START_MS = TYPING_VISIBLE_MS - 1500;
+// Issue #77 + UI/UX review M-1: 4.5 s TTL paired with the 1 Hz
+// sender heartbeat tolerates two dropped beats without flicker
+// (was 3.5 s = one drop). Important on flaky cellular where
+// 2-packet bursts of loss are common. Head start 4 s leaves a
+// 0.5 s linger after explicit stop; combined with the sender's
+// 2.5 s idle window that gives ~3 s wall-clock from last
+// keystroke to chip removal — within the user's "2-3 seconds
+// after they stop typing" ask in the issue body.
+const TYPING_VISIBLE_MS = 4500;
+const TYPING_FADE_HEAD_START_MS = TYPING_VISIBLE_MS - 500;
 
 export function Play({ sessionId, token }: Props) {
   const [displayName, setDisplayName] = useState<string | null>(
@@ -383,11 +384,24 @@ export function Play({ sessionId, token }: Props) {
     }
   }
 
+  // Rate-limit the "send dropped" log to once per WS-state
+  // transition: with the 1 Hz heartbeat (issue #77) a closed WS
+  // could otherwise produce ~60 logs/min during a typing burst,
+  // which is the noise the prior silent-catch was avoiding.
+  // QA logging review HIGH: silent swallows are bugs even on a
+  // hot path — log once per state edge, not once per call.
+  const typingSendErrLoggedRef = useRef(false);
   function handleTypingChange(t: boolean) {
     try {
       wsRef.current?.send({ type: t ? "typing_start" : "typing_stop" });
-    } catch {
-      /* ignore — WS may have closed mid-typing. */
+      typingSendErrLoggedRef.current = false;
+    } catch (err) {
+      if (!typingSendErrLoggedRef.current) {
+        console.debug("[play] typing send dropped (WS likely closed)", {
+          message: err instanceof Error ? err.message : String(err),
+        });
+        typingSendErrLoggedRef.current = true;
+      }
     }
   }
 

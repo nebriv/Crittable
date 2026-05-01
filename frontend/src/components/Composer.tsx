@@ -73,10 +73,19 @@ export function Composer({
   // from the heartbeat interval) still fires the explicit stop
   // after STOP_AFTER_IDLE_MS so the receiver doesn't have to
   // wait for the TTL sweep to evict.
+  //
+  // ``pendingStartTimer`` (revived from pre-PR with a much shorter
+  // window) keeps a single fat-finger keystroke from broadcasting
+  // a ghost indicator: TYPING_START_DELAY_MS=500 means the
+  // receiver only sees us as typing after we've been at the
+  // keyboard for half a second. UI/UX review BLOCK B-1 — the
+  // immediate-fire path re-introduced the issue #53 flicker.
   const heartbeatTimer = useRef<ReturnType<typeof setInterval> | null>(null);
   const idleTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pendingStartTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isTyping = useRef(false);
   const dirtySinceBeat = useRef(false);
+  const TYPING_START_DELAY_MS = 500;
   const HEARTBEAT_MS = 1000;
   const STOP_AFTER_IDLE_MS = 2500;
   // Last text the user attempted to submit. Held outside React state
@@ -101,7 +110,7 @@ export function Composer({
     // Tear down the heartbeat + idle timers and emit a final
     // typing_stop so peers don't keep showing us as typing for
     // the length of TYPING_VISIBLE_MS after we just submitted.
-    emitTypingStop();
+    emitTypingStop("submit");
   }
 
   // Restore the last-attempted text when the parent signals a submit
@@ -136,14 +145,23 @@ export function Composer({
       clearTimeout(idleTimer.current);
       idleTimer.current = null;
     }
+    if (pendingStartTimer.current) {
+      clearTimeout(pendingStartTimer.current);
+      pendingStartTimer.current = null;
+    }
   }
 
-  function emitTypingStop() {
+  // Reasons logged at every emitTypingStop call site so a "stuck
+  // typing indicator in production" report has a breadcrumb to
+  // bisect the cause (idle / submit / clear / disable / unmount).
+  // Per CLAUDE.md logging-and-debuggability policy.
+  function emitTypingStop(reason: string) {
     teardownTypingTimers();
     if (isTyping.current) {
       isTyping.current = false;
       dirtySinceBeat.current = false;
       onTypingChange?.(false);
+      console.debug("[composer] typing_stop", { reason });
     }
   }
 
@@ -154,24 +172,37 @@ export function Composer({
     // backspace), tear down the heartbeat + emit stop. Holding
     // "typing" on an empty composer is misleading.
     if (!value.trim()) {
-      emitTypingStop();
+      emitTypingStop("textarea cleared");
       return;
     }
     if (!isTyping.current) {
-      // First keystroke since silence: emit start immediately
-      // (receiver TTL handles flicker). Begin the heartbeat
-      // interval; mark not-dirty because we just sent a beat.
-      isTyping.current = true;
-      dirtySinceBeat.current = false;
-      onTypingChange(true);
-      if (heartbeatTimer.current) clearInterval(heartbeatTimer.current);
-      heartbeatTimer.current = setInterval(() => {
-        // Re-check enabled in case the turn flipped between beats.
-        if (!enabled || !isTyping.current) return;
-        if (!dirtySinceBeat.current) return;
-        onTypingChange?.(true);
-        dirtySinceBeat.current = false;
-      }, HEARTBEAT_MS);
+      if (pendingStartTimer.current) {
+        // First keystroke already started the gate; subsequent
+        // keystrokes inside the start window let it fire on
+        // schedule (we don't reset the timer).
+      } else {
+        // First keystroke since silence: schedule a delayed
+        // ``typing_start`` so a single fat-finger doesn't
+        // surface a ghost indicator on every peer (UI/UX
+        // review BLOCK B-1; original issue #53). When the
+        // gate fires, kick off the 1 Hz heartbeat.
+        pendingStartTimer.current = setTimeout(() => {
+          pendingStartTimer.current = null;
+          if (!enabled) return;
+          isTyping.current = true;
+          dirtySinceBeat.current = false;
+          onTypingChange?.(true);
+          if (heartbeatTimer.current) clearInterval(heartbeatTimer.current);
+          heartbeatTimer.current = setInterval(() => {
+            // Re-check enabled in case the turn flipped between
+            // beats.
+            if (!enabled || !isTyping.current) return;
+            if (!dirtySinceBeat.current) return;
+            onTypingChange?.(true);
+            dirtySinceBeat.current = false;
+          }, HEARTBEAT_MS);
+        }, TYPING_START_DELAY_MS);
+      }
     } else {
       // Already typing — just mark dirty so the next heartbeat
       // tick sends a refresh.
@@ -180,7 +211,10 @@ export function Composer({
     // Refresh the idle timer on every keystroke. When it fires
     // we emit ``typing_stop`` and clear the heartbeat.
     if (idleTimer.current) clearTimeout(idleTimer.current);
-    idleTimer.current = setTimeout(emitTypingStop, STOP_AFTER_IDLE_MS);
+    idleTimer.current = setTimeout(
+      () => emitTypingStop("idle"),
+      STOP_AFTER_IDLE_MS,
+    );
   }
 
   useEffect(() => {
@@ -190,9 +224,11 @@ export function Composer({
       // the length of TYPING_VISIBLE_MS after we navigate away.
       if (heartbeatTimer.current) clearInterval(heartbeatTimer.current);
       if (idleTimer.current) clearTimeout(idleTimer.current);
+      if (pendingStartTimer.current) clearTimeout(pendingStartTimer.current);
       if (isTyping.current && onTypingChange) {
         isTyping.current = false;
         onTypingChange(false);
+        console.debug("[composer] typing_stop", { reason: "unmount" });
       }
     };
   }, [onTypingChange]);
@@ -204,7 +240,7 @@ export function Composer({
   // suggesting we're still composing.
   useEffect(() => {
     if (enabled) return;
-    emitTypingStop();
+    emitTypingStop("disabled");
     // emitTypingStop is stable per render; only re-run when
     // ``enabled`` flips so we don't churn on onTypingChange
     // identity changes.

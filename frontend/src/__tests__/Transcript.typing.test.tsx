@@ -34,7 +34,7 @@ describe("Transcript typing label (issue #77)", () => {
     );
     expect(screen.queryByText(/typing…/i)).toBeNull();
     expect(
-      screen.queryByText(/Everyone is hammering/i),
+      screen.queryByText(/All participants are responding/i),
     ).toBeNull();
   });
 
@@ -81,7 +81,7 @@ describe("Transcript typing label (issue #77)", () => {
     ).toBeInTheDocument();
   });
 
-  it("≥4 typers → 'Everyone is hammering away at their keyboards…'", () => {
+  it("≥4 typers → 'All participants are responding…' (neutral catch-all)", () => {
     render(
       <Transcript
         messages={[]}
@@ -90,7 +90,7 @@ describe("Transcript typing label (issue #77)", () => {
       />,
     );
     expect(
-      screen.getByText(/Everyone is hammering away at their keyboards…/),
+      screen.getByText(/All participants are responding…/),
     ).toBeInTheDocument();
     // Plain "X is typing" / "X and Y are typing" must NOT also
     // render — the catch-all replaces, doesn't supplement.
@@ -112,5 +112,75 @@ describe("Transcript typing label (issue #77)", () => {
       screen.getByText(/SOC Analyst · Bridget is typing…/),
     ).toBeInTheDocument();
     expect(screen.queryByText(/r-ghost/)).toBeNull();
+  });
+
+  it("typing chip renders after the message list (chronological ordering)", () => {
+    // QA review MEDIUM: the chip should be the *last* visible
+    // entry in the transcript region so it reads as "what's
+    // happening right now" rather than appearing between past
+    // messages.
+    const messages = [
+      {
+        id: "m1",
+        kind: "player" as const,
+        role_id: "r-soc",
+        body: "First message body",
+        ts: "2026-05-01T00:00:00Z",
+        tool_name: null,
+        tool_args: null,
+      },
+      {
+        id: "m2",
+        kind: "ai_text" as const,
+        role_id: null,
+        body: "AI response body",
+        ts: "2026-05-01T00:00:01Z",
+        tool_name: null,
+        tool_args: null,
+      },
+    ];
+    const { container } = render(
+      <Transcript
+        messages={messages}
+        roles={FOUR_ROLES}
+        typingRoleIds={["r-soc"]}
+      />,
+    );
+    // Get all article (message bubble) + the typing chip in DOM
+    // order. The typing label text should appear *after* both
+    // message bodies in the rendered tree.
+    const text = container.textContent ?? "";
+    const firstMsgIdx = text.indexOf("First message body");
+    const aiMsgIdx = text.indexOf("AI response body");
+    // ``is typing…`` is a substring unique to the typing chip
+    // (message bubbles include the role label "SOC Analyst" too,
+    // so searching for that finds the message header first).
+    const typingIdx = text.indexOf("is typing…");
+    expect(firstMsgIdx).toBeGreaterThanOrEqual(0);
+    expect(aiMsgIdx).toBeGreaterThan(firstMsgIdx);
+    expect(typingIdx).toBeGreaterThan(aiMsgIdx);
+  });
+
+  it("typing indicator is silent inside the role=log live region (no nested aria-live)", () => {
+    // UI/UX review HIGH H-1: nesting a role=status aria-live
+    // element inside the role=log aria-live wrapper made NVDA
+    // double-announce. Transcript passes ``silent`` to the
+    // ChatIndicator children so the inner element is plain.
+    const { container } = render(
+      <Transcript
+        messages={[]}
+        roles={FOUR_ROLES}
+        typingRoleIds={["r-soc"]}
+      />,
+    );
+    // Outer log region is the live region.
+    const log = container.querySelector('[role="log"]');
+    expect(log?.getAttribute("aria-live")).toBe("polite");
+    // No inner role=status / aria-live elements.
+    expect(container.querySelectorAll('[role="status"]').length).toBe(0);
+    const inner = container.querySelectorAll("[aria-live]");
+    // Only the outer log, no inner duplicates.
+    expect(inner.length).toBe(1);
+    expect(inner[0]).toBe(log);
   });
 });

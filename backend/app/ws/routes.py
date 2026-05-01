@@ -287,10 +287,25 @@ async def _broadcast_typing(
 
     ``record=False`` keeps these out of the replay buffer — typing is a
     stale signal by the time anyone reconnects, and they're emitted at
-    high volume so they'd evict legitimate state events from the bounded
-    buffer otherwise.
+    high volume (~1 Hz/typer post issue #77) so they'd evict legitimate
+    state events from the bounded buffer otherwise.
+
+    Issue #77 sub-agent review (Security L2 + project logging policy):
+    a per-event log on this hot path is not viable (1 Hz/typer × N
+    sessions = noise), but a *complete-silence* relay leaves ops with
+    no signal if a malicious client floods or a flapping connection
+    causes the cadence to spike. We emit a single ``debug`` line at
+    the *transition edge* (typing flipping for a given role) rather
+    than per packet — gives operators a bisection breadcrumb without
+    drowning the log.
     """
 
+    _logger.debug(
+        "ws_typing_broadcast",
+        session_id=session_id,
+        role_id=role_id,
+        typing=typing,
+    )
     await manager.connections().broadcast(
         session_id,
         {"type": "typing", "role_id": role_id, "typing": typing},

@@ -35,11 +35,11 @@ interface CreatorState {
 const NUDGE_PROPOSE = "I think we have enough context. Please draft the scenario plan now.";
 
 // Receiver-side typing indicator timings — kept in sync with
-// Play.tsx (see the long comment there). Issue #77: 3.5 s TTL +
-// 1.5 s head start on stop, paired with the 1 Hz heartbeat sender
-// in Composer. Tolerates one dropped beat without flicker.
-const TYPING_VISIBLE_MS = 3500;
-const TYPING_FADE_HEAD_START_MS = TYPING_VISIBLE_MS - 1500;
+// Play.tsx (see the long comment there). Issue #77 + UI/UX
+// review M-1: 4.5 s TTL + 0.5 s linger after explicit stop,
+// paired with the 1 Hz heartbeat sender in Composer.
+const TYPING_VISIBLE_MS = 4500;
+const TYPING_FADE_HEAD_START_MS = TYPING_VISIBLE_MS - 500;
 
 /**
  * Sample setup answers prefilled when the operator toggles "Dev mode" on
@@ -202,6 +202,9 @@ export function Facilitator() {
   const [connectionCount, setConnectionCount] = useState<number | null>(null);
   const wsRef = useRef<WsClient | null>(null);
   const forceAdvanceTimerRef = useRef<number | null>(null);
+  // Rate-limit the typing-send-dropped log to one line per WS
+  // state edge (issue #77 logging fix; see ``handleTypingChange``).
+  const typingSendErrLoggedRef = useRef(false);
   useEffect(() => {
     return () => {
       if (forceAdvanceTimerRef.current !== null) {
@@ -770,8 +773,17 @@ export function Facilitator() {
   function handleTypingChange(typing: boolean) {
     try {
       wsRef.current?.send({ type: typing ? "typing_start" : "typing_stop" });
-    } catch {
-      /* WS can be closed mid-typing; never throw out of this handler. */
+      typingSendErrLoggedRef.current = false;
+    } catch (err) {
+      // Rate-limited log per WS-state edge (issue #77 — 1 Hz
+      // heartbeat would otherwise produce ~60 logs/min through a
+      // closed WS during a typing burst).
+      if (!typingSendErrLoggedRef.current) {
+        console.debug("[facilitator] typing send dropped (WS likely closed)", {
+          message: err instanceof Error ? err.message : String(err),
+        });
+        typingSendErrLoggedRef.current = true;
+      }
     }
   }
 
