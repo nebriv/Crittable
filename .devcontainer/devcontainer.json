@@ -4,7 +4,13 @@
   // 3.11 in apt, so the python feature falls back to a from-source build that fetches
   // the Python release-signing GPG key from public hkp keyservers. Codespaces egress
   // can't reach those keyservers and the build hangs. See PR #100.
-  "image": "mcr.microsoft.com/devcontainers/python:1-3.12-bookworm",
+  //
+  // We extend the image via Dockerfile to drop a stale Yarn apt source whose key was
+  // rotated (NO_PUBKEY 62D54FD4003F6525); without that, any feature running apt-get
+  // update (e.g. docker-in-docker) fails. See .devcontainer/Dockerfile.
+  "build": {
+    "dockerfile": "Dockerfile"
+  },
   "features": {
     "ghcr.io/devcontainers/features/node:1": {
       "version": "20"
