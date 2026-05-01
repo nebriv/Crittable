@@ -482,6 +482,8 @@ async def _client_pump(
                     # silent swallow can't mask a stuck-session report.
                     _logger.warning(
                         "ws_end_session_rejected",
+                        session_id=session_id,
+                        event_type=event_type,
                         by_role_id=role_id,
                         reason=str(exc),
                     )

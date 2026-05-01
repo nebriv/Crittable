@@ -58,7 +58,19 @@ export function RolesPanel({
   // is now a *visual* affordance: the button keeps the static
   // accessible name "Copy link" so screen readers don't double-
   // announce when the label flips for two seconds.
-  const [announcement, setAnnouncement] = useState("");
+  //
+  // ``epoch`` increments on every announce(). Same-string assignments
+  // would be a React no-op and screen readers wouldn't re-fire — the
+  // counter is keyed onto the live-region span so React remounts it
+  // each time, making AT treat each copy as a fresh announcement
+  // even when the user copies the same role twice in a row.
+  const [announcement, setAnnouncement] = useState<{ epoch: number; text: string }>(
+    () => ({ epoch: 0, text: "" }),
+  );
+
+  function announce(text: string) {
+    setAnnouncement((prev) => ({ epoch: prev.epoch + 1, text }));
+  }
   const origin = window.location.origin;
 
   function flash(message: string) {
@@ -83,7 +95,7 @@ export function RolesPanel({
       next.add(roleId);
       return next;
     });
-    setAnnouncement(`Join link for ${label} copied to clipboard.`);
+    announce(`Join link for ${label} copied to clipboard.`);
     setTimeout(() => {
       setCopiedRoleIds((prev) => {
         if (!prev.has(roleId)) return prev;
@@ -95,8 +107,21 @@ export function RolesPanel({
   }
 
   async function writeUrl(url: string): Promise<boolean> {
+    // Optional chaining on `navigator.clipboard?.writeText` resolves
+    // to `undefined` on browsers/contexts without the Clipboard API
+    // (insecure contexts, older browsers, some embedded webviews).
+    // Without an explicit availability check, the await would succeed
+    // and we'd flash a false "Copied!" while the URL was never
+    // actually written. Explicit check + return false routes through
+    // the existing inline-error path.
+    if (typeof navigator.clipboard?.writeText !== "function") {
+      console.warn(
+        "[RolesPanel] clipboard API unavailable (insecure context or unsupported browser)",
+      );
+      return false;
+    }
     try {
-      await navigator.clipboard?.writeText(url);
+      await navigator.clipboard.writeText(url);
       return true;
     } catch (err) {
       console.warn("[RolesPanel] clipboard write failed", err);
@@ -334,9 +359,17 @@ export function RolesPanel({
       {/* Visually-hidden live region for assistive tech. The in-button
           "Copied!" flash is purely visual; accessible-name double-
           announce was the bug — this is the single source of audible
-          confirmation. */}
-      <span className="sr-only" role="status" aria-live="polite">
-        {announcement}
+          confirmation. ``key={epoch}`` forces React to remount on
+          every announce() so AT re-fires even when the user copies
+          the same role twice in a row (a same-string state set is a
+          React no-op and screen readers wouldn't otherwise notice). */}
+      <span
+        key={announcement.epoch}
+        className="sr-only"
+        role="status"
+        aria-live="polite"
+      >
+        {announcement.text}
       </span>
     </div>
   );
