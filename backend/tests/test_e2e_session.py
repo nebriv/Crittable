@@ -477,8 +477,14 @@ def test_force_advance_from_any_participant(client: TestClient) -> None:
     assert r.status_code == 200, r.text
 
 
-def test_end_session_from_any_participant(client: TestClient) -> None:
-    """Acceptance gate: any seated participant can end the session."""
+def test_end_session_creator_only(client: TestClient) -> None:
+    """Issue #81: only the creator can end the session.
+
+    Pre-fix any seated participant could call /end and tear the
+    exercise down for everyone. The creator-only gate now lives in
+    ``manager.end_session``; both REST and WS call sites surface
+    the rejection.
+    """
 
     seats = _create_and_seat(client, role_count=2)
     _install_mock_and_drive(
@@ -491,10 +497,63 @@ def test_end_session_from_any_participant(client: TestClient) -> None:
     client.post(f"/api/sessions/{sid}/setup/skip?token={cr}")
     client.post(f"/api/sessions/{sid}/start?token={cr}")
 
+    # Non-creator end is rejected with 409 (IllegalTransitionError).
     r = client.post(f"/api/sessions/{sid}/end?token={other}", json={})
+    assert r.status_code == 409, r.text
+    assert "only the creator can end the session" in r.text.lower()
+
+    # Session state is unchanged (still PLAY/AWAITING_PLAYERS).
+    snap = client.get(f"/api/sessions/{sid}?token={cr}").json()
+    assert snap["state"] != "ENDED"
+
+    # Creator end succeeds.
+    r = client.post(f"/api/sessions/{sid}/end?token={cr}", json={})
     assert r.status_code == 200, r.text
     snap = client.get(f"/api/sessions/{sid}?token={cr}").json()
     assert snap["state"] == "ENDED"
+
+
+def test_ws_request_end_session_rejected_for_non_creator(
+    client: TestClient,
+) -> None:
+    """Issue #81 WS path: a non-creator tab firing request_end_session
+    over WebSocket gets a typed error event back, and the session is
+    untouched. Mirrors the REST test above for the parallel call site
+    in backend/app/ws/routes.py.
+    """
+
+    seats = _create_and_seat(client, role_count=2)
+    _install_mock_and_drive(
+        client, role_ids=seats["role_ids"], extension="lookup_threat_intel"
+    )
+    sid = seats["session_id"]
+    cr = seats["creator_token"]
+    other = seats["role_tokens"][seats["role_ids"][1]]
+
+    client.post(f"/api/sessions/{sid}/setup/skip?token={cr}")
+    client.post(f"/api/sessions/{sid}/start?token={cr}")
+
+    with client.websocket_connect(
+        f"/ws/sessions/{sid}?token={other}"
+    ) as ws:
+        ws.send_json({"type": "request_end_session", "reason": "spite"})
+        saw_rejection = False
+        for _ in range(64):
+            try:
+                evt = ws.receive_json()
+            except Exception:
+                break
+            if (
+                evt.get("type") == "error"
+                and evt.get("scope") == "end_session"
+                and "creator" in str(evt.get("message", "")).lower()
+            ):
+                saw_rejection = True
+                break
+        assert saw_rejection, "expected end_session rejection error event"
+
+    snap = client.get(f"/api/sessions/{sid}?token={cr}").json()
+    assert snap["state"] != "ENDED"
 
 
 def test_ws_replay_buffer_rehydrates_on_reconnect(client: TestClient) -> None:

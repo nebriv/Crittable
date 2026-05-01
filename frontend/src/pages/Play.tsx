@@ -397,7 +397,17 @@ export function Play({ sessionId, token }: Props) {
   }
 
   function handleEnd() {
-    wsRef.current?.send({ type: "request_end_session", reason: "ended by participant" });
+    // Issue #81: button is rendered only when the local participant is
+    // the creator. Backend manager.end_session also gates by creator
+    // role; this guard is just early UX. Left intact (rather than
+    // inlined into the JSX onClick) so a future "request that the
+    // creator end" flow can re-wire the same handler.
+    try {
+      wsRef.current?.send({ type: "request_end_session", reason: "ended by creator" });
+    } catch (err) {
+      console.warn("[play] end-session send failed", err);
+      setError(err instanceof Error ? err.message : String(err));
+    }
   }
 
   const myRoleFromSnapshot = snapshot?.roles.find((r) => r.id === selfRoleId);
@@ -548,6 +558,11 @@ export function Play({ sessionId, token }: Props) {
   // The backend WS gate still rejects, but disabling here keeps the
   // loud red error banner off the screen during the brief gap.
   const isPlayer = !!myRole && myRole.kind !== "spectator";
+  // Issue #81: only the creator gets the End-session affordance. Any
+  // participant pressing it would have torn the exercise down for
+  // everyone — backend now rejects that path too, but the button
+  // shouldn't even render for non-creators.
+  const isSelfCreator = myRole?.is_creator ?? false;
   const otherPending = activeRoleIds
     .filter((id) => id !== selfRoleId && !submittedRoleIds.includes(id))
     .map((id) => snapshot.roles.find((r) => r.id === id)?.label ?? id);
@@ -662,12 +677,14 @@ export function Play({ sessionId, token }: Props) {
                 ? "Force-advance turn (cooling down)"
                 : "Force-advance turn"}
             </button>
-            <button
-              onClick={handleEnd}
-              className="rounded border border-red-500 px-2 py-1 font-semibold text-red-300 hover:bg-red-900/30"
-            >
-              End session
-            </button>
+            {isSelfCreator ? (
+              <button
+                onClick={handleEnd}
+                className="rounded border border-red-500 px-2 py-1 font-semibold text-red-300 hover:bg-red-900/30"
+              >
+                End session
+              </button>
+            ) : null}
           </div>
         </aside>
         <section className="flex min-w-0 flex-col gap-3 lg:min-h-0 lg:overflow-hidden">

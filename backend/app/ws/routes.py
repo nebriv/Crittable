@@ -471,9 +471,22 @@ async def _client_pump(
                     await manager.end_session(
                         session_id=session_id,
                         by_role_id=role_id,
-                        reason=str(payload.get("reason") or "ended by participant"),
+                        reason=str(payload.get("reason") or "ended by creator"),
                     )
                 except IllegalTransitionError as exc:
+                    # Surface the rejection to the operator's logs as
+                    # well as to the client. Manager-level log already
+                    # fires for the creator-only gate (issue #81); this
+                    # second line captures other transition errors
+                    # (e.g. already-ended) that arrive over WS so a
+                    # silent swallow can't mask a stuck-session report.
+                    _logger.warning(
+                        "ws_end_session_rejected",
+                        session_id=session_id,
+                        event_type=event_type,
+                        by_role_id=role_id,
+                        reason=str(exc),
+                    )
                     await websocket.send_json(
                         {"type": "error", "scope": "end_session", "message": str(exc)}
                     )
