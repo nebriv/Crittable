@@ -1298,6 +1298,12 @@ export function Facilitator() {
                   }
                   isCreator={true}
                   sessionStartedAt={snapshot.created_at}
+                  selfRoleId={state.creatorRoleId}
+                  selfDisplayName={
+                    snapshot.roles.find((r) => r.id === state.creatorRoleId)?.display_name ??
+                    snapshot.roles.find((r) => r.id === state.creatorRoleId)?.label ??
+                    "(creator)"
+                  }
                 />
               ) : null
             }

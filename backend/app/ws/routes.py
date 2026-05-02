@@ -340,6 +340,43 @@ async def _handle_notepad_event(
         NotepadRoleNotAllowedError,
     )
 
+    # Awareness updates (cursor presence, role names) are pure relay —
+    # they don't touch the canonical Doc, don't take the session lock,
+    # and aren't recorded in the replay buffer. The y-protocols
+    # ``Awareness`` API encodes one client's caret position + user
+    # metadata as a small binary payload; we forward it to every other
+    # connection so live cursors render in their editors. Awareness
+    # updates that originate from a non-roster role never reach this
+    # branch because the require_participant gate already filters them
+    # at the dispatch level.
+    if event_type == "notepad_awareness":
+        awareness_b64 = payload.get("awareness")
+        if not isinstance(awareness_b64, str):
+            await websocket.send_json(
+                {"type": "error", "scope": "notepad", "message": "missing awareness"}
+            )
+            return
+        # Length cap (16KB is generous for a y-protocols awareness frame).
+        if len(awareness_b64) > 16 * 1024:
+            await websocket.send_json(
+                {
+                    "type": "error",
+                    "scope": "notepad",
+                    "message": "awareness frame too large",
+                }
+            )
+            return
+        await manager.connections().broadcast(
+            session_id,
+            {
+                "type": "notepad_awareness",
+                "awareness": awareness_b64,
+                "origin_role_id": role_id,
+            },
+            record=False,
+        )
+        return
+
     notepad = manager.notepad()
     async with await manager.with_lock(session_id):
         session = await manager.get_session(session_id)
@@ -484,6 +521,7 @@ async def _client_pump(
                 # subsequently re-serialize and push via /snapshot.
                 "notepad_sync_request",
                 "notepad_update",
+                "notepad_awareness",
             ):
                 try:
                     require_participant(token_payload)
@@ -631,7 +669,11 @@ async def _client_pump(
                     role_id=role_id,
                     typing=event_type == "typing_start",
                 )
-            elif event_type in ("notepad_sync_request", "notepad_update"):
+            elif event_type in (
+                "notepad_sync_request",
+                "notepad_update",
+                "notepad_awareness",
+            ):
                 # Shared markdown notepad (issue #98). The notepad service
                 # acts as an opaque CRDT relay (path C of the approved plan):
                 # the server applies binary updates without parsing them and

@@ -12,10 +12,12 @@
  *   first-time-user persona-review must-fix.
  */
 import Collaboration from "@tiptap/extension-collaboration";
+import CollaborationCaret from "@tiptap/extension-collaboration-caret";
 import StarterKit from "@tiptap/starter-kit";
 import { EditorContent, useEditor } from "@tiptap/react";
 import type { Editor, Extension } from "@tiptap/core";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { Awareness, applyAwarenessUpdate, encodeAwarenessUpdate } from "y-protocols/awareness";
 import * as Y from "yjs";
 
 import { RailHeader } from "./brand/RailHeader";
@@ -40,6 +42,29 @@ interface Props {
   initiallyExpanded?: boolean;
   /** Session start time (ISO) — used to render T+MM:SS timestamps. */
   sessionStartedAt: string;
+  /** Caller's role id — used for ``CollaborationCaret`` user identity. */
+  selfRoleId: string;
+  /** Display name shown above the remote caret. Falls back to the role label. */
+  selfDisplayName: string;
+}
+
+/** Stable hashed colour for a role id, drawn from the brand palette so
+ * role names + carets render in consistent colours across tabs. */
+function roleColor(roleId: string): string {
+  // 5 deliberate ink-tinted accents — brand-safe; no neon. Hash the
+  // role id so the same role always renders the same colour.
+  const palette = [
+    "#7CC4FF", // signal
+    "#E59B00", // warn
+    "#9DD49B", // info
+    "#D38BFF", // accent
+    "#F08A8A", // crit (muted)
+  ];
+  let h = 0;
+  for (let i = 0; i < roleId.length; i++) {
+    h = (h * 31 + roleId.charCodeAt(i)) >>> 0;
+  }
+  return palette[h % palette.length];
 }
 
 /**
@@ -58,10 +83,14 @@ interface Props {
 class WsYjsProvider {
   private unsub: (() => void) | null = null;
   private yObserver: ((u: Uint8Array, origin: unknown) => void) | null = null;
+  private awarenessObserver:
+    | ((args: { added: number[]; updated: number[]; removed: number[] }, origin: unknown) => void)
+    | null = null;
   private isOriginRemote = Symbol("notepad-remote");
 
   constructor(
     public readonly doc: Y.Doc,
+    public readonly awareness: Awareness,
     private readonly ws: WsClient,
     private readonly subscribe: Props["subscribe"],
     public readonly onLocked: () => void,
@@ -80,15 +109,32 @@ class WsYjsProvider {
     };
     this.doc.on("update", this.yObserver);
 
+    this.awarenessObserver = (
+      { added, updated, removed }: { added: number[]; updated: number[]; removed: number[] },
+      origin: unknown,
+    ) => {
+      if (origin === this.isOriginRemote) return;
+      const changed = added.concat(updated, removed);
+      if (changed.length === 0) return;
+      try {
+        const update = encodeAwarenessUpdate(this.awareness, changed);
+        this.ws.send({
+          type: "notepad_awareness",
+          awareness: bytesToBase64(update),
+        });
+      } catch (err) {
+        console.warn("[notepad] awareness send failed", err);
+      }
+    };
+    this.awareness.on("update", this.awarenessObserver);
+
     this.unsub = this.subscribe((evt) => this.handle(evt));
 
     // Send initial sync request. The WS may not be open yet — guard.
     try {
       this.ws.send({ type: "notepad_sync_request" });
     } catch {
-      // Will retry on the next open via the page-level reconnect logic
-      // (the editor falls back to its empty state until the server
-      // responds with notepad_sync_response).
+      // Will retry on the next open via the page-level reconnect logic.
     }
   }
 
@@ -97,6 +143,12 @@ class WsYjsProvider {
       this.doc.off("update", this.yObserver);
       this.yObserver = null;
     }
+    if (this.awarenessObserver) {
+      this.awareness.off("update", this.awarenessObserver);
+      this.awarenessObserver = null;
+    }
+    // Drop our awareness state cleanly so other clients see us go offline.
+    this.awareness.setLocalState(null);
     if (this.unsub) {
       this.unsub();
       this.unsub = null;
@@ -126,6 +178,18 @@ class WsYjsProvider {
           );
         } catch (err) {
           console.warn("[notepad] remote update apply failed", err);
+        }
+        break;
+      }
+      case "notepad_awareness": {
+        try {
+          applyAwarenessUpdate(
+            this.awareness,
+            base64ToBytes(evt.awareness),
+            this.isOriginRemote,
+          );
+        } catch (err) {
+          console.warn("[notepad] awareness apply failed", err);
         }
         break;
       }
@@ -198,9 +262,13 @@ export function SharedNotepad({
   isCreator,
   initiallyExpanded,
   sessionStartedAt,
+  selfRoleId,
+  selfDisplayName,
 }: Props) {
   const ydoc = useMemo(() => new Y.Doc(), []);
   const xmlFragment = useMemo(() => ydoc.getXmlFragment("body"), [ydoc]);
+  const awareness = useMemo(() => new Awareness(ydoc), [ydoc]);
+  const myColor = useMemo(() => roleColor(selfRoleId), [selfRoleId]);
 
   const [expanded, setExpanded] = useState(() => {
     if (initiallyExpanded !== undefined) return initiallyExpanded;
@@ -225,6 +293,14 @@ export function SharedNotepad({
           undoRedo: false, // collaboration owns undo/redo (Yjs UndoManager)
         }),
         Collaboration.configure({ fragment: xmlFragment }),
+        // Live cursor presence (issue #98 follow-up): renders other
+        // editors' carets with their role colour + display name. The
+        // y-protocols Awareness object is bridged to the existing WS
+        // channel via WsYjsProvider — no separate y-websocket server.
+        CollaborationCaret.configure({
+          provider: { awareness },
+          user: { name: selfDisplayName, color: myColor },
+        }),
         timestampHotkeyExtension(sessionStartedAt),
       ],
       editable: !locked,
@@ -244,6 +320,7 @@ export function SharedNotepad({
     if (!editor) return;
     const provider = new WsYjsProvider(
       ydoc,
+      awareness,
       ws,
       subscribe,
       () => setLocked(true),
@@ -252,7 +329,7 @@ export function SharedNotepad({
     );
     provider.start();
     return () => provider.stop();
-  }, [editor, ydoc, ws, subscribe]);
+  }, [editor, ydoc, awareness, ws, subscribe]);
 
   // Reflect the lock flag onto the editor's editable state.
   useEffect(() => {

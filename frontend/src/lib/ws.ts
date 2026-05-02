@@ -103,6 +103,14 @@ export type ServerEvent =
       source_message_id: string | null;
       by_role_id: string;
     }
+  | {
+      // Live cursor presence (y-protocols Awareness update). record=False
+      // server-side; relayed to all peers except the sender. ``origin_role_id``
+      // lets the receiver tag the rendered cursor.
+      type: "notepad_awareness";
+      awareness: string;
+      origin_role_id: string;
+    }
   | { type: "notepad_lock_pending"; locks_in_seconds: number }
   | { type: "notepad_locked"; locked_at: string | null }
   | { type: "error"; scope: string; message: string };
@@ -116,7 +124,8 @@ export type ClientEvent =
   | { type: "heartbeat" }
   // Shared markdown notepad (issue #98).
   | { type: "notepad_sync_request" }
-  | { type: "notepad_update"; update: string };
+  | { type: "notepad_update"; update: string }
+  | { type: "notepad_awareness"; awareness: string };
 
 export interface WsClientOptions {
   sessionId: string;

@@ -1057,6 +1057,12 @@ export function Play({ sessionId, token }: Props) {
                     snapshot.roles.find((r) => r.id === selfRoleId)?.is_creator ?? false
                   }
                   sessionStartedAt={snapshot.created_at}
+                  selfRoleId={selfRoleId}
+                  selfDisplayName={
+                    snapshot.roles.find((r) => r.id === selfRoleId)?.display_name ??
+                    snapshot.roles.find((r) => r.id === selfRoleId)?.label ??
+                    "(unknown)"
+                  }
                 />
               ) : null
             }

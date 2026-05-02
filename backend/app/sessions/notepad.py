@@ -187,7 +187,11 @@ class NotepadService:
         """Store a client-pushed markdown serialization of the notepad.
 
         This is the AAR's source of truth — the server never parses Yjs
-        XmlFragments. Path C of the approved plan.
+        XmlFragments. Path C of the approved plan. Rate-limited per
+        role on the same bucket as ``apply_update`` because clients
+        push a snapshot on every meaningful edit (debounced ~1s on the
+        frontend) — a misbehaving client could otherwise hammer this
+        endpoint at HTTP-handler speed.
         """
         self._ensure_unlocked(session.notepad)
         self._ensure_role_allowed(session, role_id)
@@ -195,6 +199,13 @@ class NotepadService:
             raise NotepadOversizedError(
                 f"markdown snapshot exceeds {_MAX_MARKDOWN_BYTES}B"
             )
+        entry = self._docs.get(session.id) or _DocEntry(doc=Doc())
+        if session.id not in self._docs:
+            self._docs[session.id] = entry
+        # Same per-role bucket as apply_update — both endpoints are
+        # client-driven on every edit; a runaway client should hit
+        # the same ceiling regardless of which path it spams.
+        self._ensure_rate(entry, role_id, bucket="update")
         session.notepad.markdown_snapshot = markdown
         session.notepad.snapshot_updated_at = datetime.now(UTC)
         if role_id not in session.notepad.contributor_role_ids:

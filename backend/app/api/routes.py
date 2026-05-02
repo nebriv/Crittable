@@ -875,6 +875,7 @@ def register_api_routes(app: FastAPI) -> None:
         from ..sessions.notepad import (
             NotepadLockedError,
             NotepadOversizedError,
+            NotepadRateLimitedError,
             NotepadRoleNotAllowedError,
         )
 
@@ -892,6 +893,10 @@ def register_api_routes(app: FastAPI) -> None:
                 notepad.set_markdown_snapshot(session, token["role_id"], body.markdown)
             except NotepadLockedError as exc:
                 raise HTTPException(status.HTTP_409_CONFLICT, "notepad is locked") from exc
+            except NotepadRateLimitedError as exc:
+                raise HTTPException(
+                    status.HTTP_429_TOO_MANY_REQUESTS, "rate limited"
+                ) from exc
             except NotepadOversizedError as exc:
                 raise HTTPException(status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, str(exc)) from exc
             except NotepadRoleNotAllowedError as exc:
