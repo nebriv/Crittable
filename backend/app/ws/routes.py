@@ -184,6 +184,7 @@ def register_ws_routes(app: FastAPI) -> None:
         # event after the player has actually disconnected would be
         # misleading. See issue #52.
         connected = await connections.connected_role_ids(session_id)
+        focused = await connections.focused_role_ids(session_id)
         # Total open WS tabs (distinct from ``connected`` role count). The
         # creator's top bar surfaces this so they can see at a glance how
         # many participant tabs are watching the session — useful when
@@ -193,6 +194,7 @@ def register_ws_routes(app: FastAPI) -> None:
             {
                 "type": "presence_snapshot",
                 "role_ids": connected,
+                "focused_role_ids": focused,
                 "connection_count": conn_count,
             }
         )
@@ -202,6 +204,7 @@ def register_ws_routes(app: FastAPI) -> None:
                 "type": "presence",
                 "role_id": payload["role_id"],
                 "active": True,
+                "focused": True,
                 "connection_count": conn_count,
             },
             record=False,
@@ -214,6 +217,8 @@ def register_ws_routes(app: FastAPI) -> None:
                 session_id=session_id,
                 role_id=payload["role_id"],
                 kind=payload["kind"],
+                conn=conn,
+                connections=connections,
             )
         )
         send_task = asyncio.create_task(_server_pump(websocket, conn, connections))
@@ -252,6 +257,7 @@ def register_ws_routes(app: FastAPI) -> None:
                         "type": "presence",
                         "role_id": payload["role_id"],
                         "active": False,
+                        "focused": False,
                         "connection_count": conn_count,
                     },
                     record=False,
@@ -259,12 +265,19 @@ def register_ws_routes(app: FastAPI) -> None:
             else:
                 # Role still has other tabs — but the tab count changed,
                 # so emit a count-only update for the top-bar chip.
+                # ``focused`` reflects whether *any* remaining tab is in
+                # the foreground; if all surviving tabs are background,
+                # the role drops to "joined but not active".
+                role_focused = await connections.role_has_focused_connection(
+                    session_id, payload["role_id"]
+                )
                 await connections.broadcast(
                     session_id,
                     {
                         "type": "presence",
                         "role_id": payload["role_id"],
                         "active": True,
+                        "focused": role_focused,
                         "connection_count": conn_count,
                     },
                     record=False,
@@ -334,6 +347,8 @@ async def _client_pump(
     session_id: str,
     role_id: str,
     kind: ParticipantKindLiteral,
+    conn: Any,
+    connections: ConnectionManager,
 ) -> None:
     # Mutating-event gate: spectators can connect (read-only fan-out) but
     # cannot submit, force-advance, or end the session. The REST layer enforces
@@ -358,6 +373,49 @@ async def _client_pump(
                 return
             event_type = payload.get("type")
             if event_type == "heartbeat":
+                continue
+            if event_type == "tab_focus":
+                # Per-tab visibility signal. Updates this connection's
+                # ``focused`` flag; broadcasts a ``presence`` frame with
+                # the role-level aggregate so the creator's RolesPanel
+                # can paint blue (any tab focused) vs yellow (all tabs
+                # backgrounded) vs grey (no tabs). ``record=False``
+                # because focus state is live signal, not history.
+                #
+                # Spectators are allowed to send this — they're already
+                # connected and the focus signal is purely informational
+                # (no mutation, no fan-out amplification beyond the one
+                # ``presence`` frame this triggers).
+                focused_in = bool(payload.get("focused", False))
+                changed = await connections.set_focus(conn, focused_in)
+                # Debug-level boundary log so an operator investigating
+                # "did the tab actually report blurred?" can grep the
+                # bisection trail without prod-log spam. Logged on every
+                # event (incl. no-op duplicates) so a flapping client
+                # is visible too.
+                _logger.debug(
+                    "ws_tab_focus",
+                    session_id=session_id,
+                    role_id=role_id,
+                    focused=focused_in,
+                    changed=changed,
+                )
+                if changed:
+                    role_focused = await connections.role_has_focused_connection(
+                        session_id, role_id
+                    )
+                    conn_count = await connections.connection_count(session_id)
+                    await connections.broadcast(
+                        session_id,
+                        {
+                            "type": "presence",
+                            "role_id": role_id,
+                            "active": True,
+                            "focused": role_focused,
+                            "connection_count": conn_count,
+                        },
+                        record=False,
+                    )
                 continue
             # Mutating + presence events are participant-only. Spectators can
             # connect (read-only fan-out) but cannot emit typing indicators or

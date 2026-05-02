@@ -608,6 +608,121 @@ def test_ws_replay_buffer_rehydrates_on_reconnect(client: TestClient) -> None:
     asyncio.run(_check())
 
 
+def test_ws_tab_focus_event_emits_presence_with_focused_field(
+    client: TestClient,
+) -> None:
+    """A participant's ``tab_focus`` over WS produces a ``presence``
+    frame whose ``focused`` field reflects the role-level aggregate.
+    The frame is broadcast to all session connections, so the sender
+    sees its own update arrive too — that's the cheapest way to assert
+    server behaviour without juggling nested ``websocket_connect``
+    contexts (which serialize on TestClient's portal thread).
+
+    We don't drain initial frames — that would risk blocking on an
+    empty queue once the replay buffer dries up. Instead we scan a
+    bounded number of frames per assertion and look for the specific
+    presence frame triggered by our own send. The on-connect
+    ``presence`` frame DOES carry ``focused=True`` (the new
+    server default), so the focused=False assertion correctly skips
+    it; the focused=True assertion guards against catching the
+    on-connect frame instead of the post-tab_focus one by anchoring
+    on ``active=True`` plus ``focused=True`` *after* a deliberate
+    blur→focus toggle.
+    """
+
+    seats = _create_and_seat(client, role_count=2)
+    sid = seats["session_id"]
+    other_id = seats["role_ids"][1]
+    other_token = seats["role_tokens"][other_id]
+
+    with client.websocket_connect(
+        f"/ws/sessions/{sid}?token={other_token}"
+    ) as p_ws:
+        # Background the tab → server should broadcast a presence
+        # frame with focused=False.
+        p_ws.send_json({"type": "tab_focus", "focused": False})
+        saw_blurred = False
+        for _ in range(32):
+            try:
+                evt = p_ws.receive_json()
+            except Exception:
+                break
+            if (
+                evt.get("type") == "presence"
+                and evt.get("role_id") == other_id
+                and evt.get("active") is True
+                and evt.get("focused") is False
+            ):
+                saw_blurred = True
+                break
+        assert saw_blurred, (
+            "tab_focus(false) must produce a presence frame with "
+            "active=True, focused=False"
+        )
+
+        # Refocus → presence frame with focused=True.
+        p_ws.send_json({"type": "tab_focus", "focused": True})
+        saw_refocused = False
+        for _ in range(32):
+            try:
+                evt = p_ws.receive_json()
+            except Exception:
+                break
+            if (
+                evt.get("type") == "presence"
+                and evt.get("role_id") == other_id
+                and evt.get("active") is True
+                and evt.get("focused") is True
+            ):
+                saw_refocused = True
+                break
+        assert saw_refocused, "tab_focus(true) must restore focused=True"
+        # The no-op case (duplicate tab_focus(true)) is covered by
+        # ``test_connection_manager_focus.py::test_set_focus_returns_*``;
+        # asserting absence-of-broadcast over the WS would require a
+        # timeout-receive primitive that the Starlette TestClient
+        # doesn't expose.
+
+
+def test_ws_presence_snapshot_includes_focused_role_ids(
+    client: TestClient,
+) -> None:
+    """A fresh ``presence_snapshot`` frame includes a
+    ``focused_role_ids`` array so a reconnecting client paints the
+    tri-state status dot accurately without waiting for a
+    ``tab_focus`` event.
+    """
+
+    seats = _create_and_seat(client, role_count=2)
+    sid = seats["session_id"]
+    other_token = seats["role_tokens"][seats["role_ids"][1]]
+
+    with client.websocket_connect(
+        f"/ws/sessions/{sid}?token={other_token}"
+    ) as ws:
+        snap_evt: dict[str, Any] | None = None
+        for _ in range(8):
+            try:
+                evt = ws.receive_json()
+            except Exception:
+                break
+            if evt.get("type") == "presence_snapshot":
+                snap_evt = evt
+                break
+        assert snap_evt is not None, "expected a presence_snapshot on connect"
+        assert "focused_role_ids" in snap_evt, (
+            "presence_snapshot must include focused_role_ids field"
+        )
+        # The connecting role itself should be in both arrays — fresh
+        # connections default to focused.
+        assert (
+            seats["role_ids"][1] in snap_evt.get("role_ids", [])
+        ), "connecting role should be in role_ids"
+        assert (
+            seats["role_ids"][1] in snap_evt.get("focused_role_ids", [])
+        ), "fresh connection defaults to focused"
+
+
 def test_plan_content_not_in_ws_replay_buffer(client: TestClient) -> None:
     """Regression for the security review CRITICAL.
 

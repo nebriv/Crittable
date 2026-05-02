@@ -24,6 +24,13 @@ class _Connection:
     role_id: str
     is_creator: bool
     queue: asyncio.Queue[dict[str, Any]]
+    # Whether this specific tab is currently the foreground / visible
+    # tab on the user's machine. Defaults to True on register; the
+    # client refines via ``tab_focus`` events as ``visibilitychange``
+    # / ``focus`` / ``blur`` fire. A *role* is considered focused if
+    # at least one of its open connections has ``focused=True`` —
+    # see ``role_has_focused_connection``.
+    focused: bool = True
 
 
 class ConnectionManager:
@@ -143,6 +150,50 @@ class ConnectionManager:
                 if c.role_id == role_id:
                     return True
             return False
+
+    async def role_has_focused_connection(
+        self, session_id: str, role_id: str, *, exclude: _Connection | None = None
+    ) -> bool:
+        """Return True if any open connection for (session, role) currently
+        has its tab focused / visible. A user with two tabs counts as
+        focused even if only one of them is in the foreground.
+
+        ``exclude`` lets the disconnect path compute the aggregate as
+        though the closing connection were already gone — used to broadcast
+        the post-disconnect focused state without a TOCTOU window.
+        """
+
+        async with self._lock:
+            for c in self._connections.get(session_id, ()):
+                if c is exclude:
+                    continue
+                if c.role_id == role_id and c.focused:
+                    return True
+            return False
+
+    async def focused_role_ids(self, session_id: str) -> list[str]:
+        """Snapshot of role_ids that currently have at least one focused
+        / visible tab open on this session. A subset of
+        ``connected_role_ids``.
+        """
+
+        async with self._lock:
+            seen: dict[str, bool] = {}
+            for c in self._connections.get(session_id, ()):
+                if c.focused:
+                    seen[c.role_id] = True
+            return list(seen.keys())
+
+    async def set_focus(self, conn: _Connection, focused: bool) -> bool:
+        """Update the focused flag on a connection. Returns True if the
+        flag actually changed (so the caller knows whether to broadcast).
+        """
+
+        async with self._lock:
+            if conn.focused == focused:
+                return False
+            conn.focused = focused
+            return True
 
     # -------------------------------------------------------- internals
     async def _enqueue(self, conn: _Connection, event: dict[str, Any]) -> None:

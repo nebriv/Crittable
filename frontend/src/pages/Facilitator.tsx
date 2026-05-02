@@ -21,6 +21,7 @@ import { SetupChat } from "../components/SetupChat";
 import { Transcript } from "../components/Transcript";
 import { buildImpersonateOptions } from "../lib/proxy";
 import { useStickyScroll } from "../lib/useStickyScroll";
+import { useTabFocusReporter } from "../lib/useTabFocusReporter";
 import { ServerEvent, WsClient } from "../lib/ws";
 
 export type Phase = "intro" | "setup" | "ready" | "play" | "ended";
@@ -159,6 +160,16 @@ export function Facilitator() {
   // creator needs to know which invites have actually been opened
   // before kicking off the exercise.
   const [presence, setPresence] = useState<Set<string>>(() => new Set());
+  // Subset of ``presence`` whose tabs are currently *focused* (foreground
+  // visible). Drives the tri-state status dot in RolesPanel:
+  //   grey   = not in presence (no tabs open)
+  //   yellow = in presence but not in focused (joined but tabbed away)
+  //   blue   = in both (joined and on the exercise)
+  // Server-pushed via the ``focused`` field on ``presence`` /
+  // ``focused_role_ids`` on ``presence_snapshot``.
+  const [focusedRoleIds, setFocusedRoleIds] = useState<Set<string>>(
+    () => new Set(),
+  );
   // Real-time AI-thinking tracking — same shape as Play.tsx. ``aiCalls``
   // maps in-flight LLM ``call_id`` → tier (``setup`` / ``play`` / ``aar``
   // / ``guardrail`` / ``interject``) from ``ai_thinking`` boundary
@@ -366,6 +377,12 @@ export function Facilitator() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state?.sessionId, state?.token]);
 
+  // Report this tab's focus state to the server so the creator's own
+  // row in the roster shows blue (active here) vs yellow (alt-tabbed
+  // away). Same hook drives the equivalent send from Play.tsx so player
+  // tabs paint the same way in this panel.
+  useTabFocusReporter(wsRef, Boolean(state), wsStatus);
+
   function handleEvent(evt: ServerEvent) {
     // Top-bar "Last: Xs ago" — bump on every frame regardless of type.
     // We *don't* try to filter to "interesting" events here because the
@@ -472,12 +489,43 @@ export function Facilitator() {
           else next.delete(evt.role_id);
           return next;
         });
+        // Mirror the focus aggregate. ``focused === undefined`` means
+        // the backend didn't include the field (older deploy) — keep
+        // previous focus state untouched in that case so we don't
+        // accidentally drop everyone to "tabbed away".
+        if (typeof evt.focused === "boolean") {
+          setFocusedRoleIds((prev) => {
+            const next = new Set(prev);
+            // A role can only be focused if it's also active — the
+            // ``active=false`` branch must guarantee removal even if
+            // the server (incorrectly) sent ``focused=true`` alongside.
+            if (evt.active && evt.focused) next.add(evt.role_id);
+            else next.delete(evt.role_id);
+            return next;
+          });
+        } else if (!evt.active) {
+          // Defensive: if the server omits ``focused`` but says the
+          // role disconnected, drop them from the focused set too.
+          setFocusedRoleIds((prev) => {
+            if (!prev.has(evt.role_id)) return prev;
+            const next = new Set(prev);
+            next.delete(evt.role_id);
+            return next;
+          });
+        }
         if (typeof evt.connection_count === "number") {
           setConnectionCount(evt.connection_count);
         }
         break;
       case "presence_snapshot":
         setPresence(new Set(evt.role_ids));
+        if (Array.isArray(evt.focused_role_ids)) {
+          setFocusedRoleIds(new Set(evt.focused_role_ids));
+        } else {
+          // Old backend — assume every connected role is focused so
+          // the UI doesn't paint everyone yellow on first load.
+          setFocusedRoleIds(new Set(evt.role_ids));
+        }
         if (typeof evt.connection_count === "number") {
           setConnectionCount(evt.connection_count);
         }
@@ -1174,6 +1222,7 @@ export function Facilitator() {
             onRoleChanged={refreshSnapshot}
             onError={setError}
             connectedRoleIds={presence}
+            focusedRoleIds={focusedRoleIds}
           />
           {snapshot.current_turn?.active_role_ids?.length ? (
             <ActiveRolesHint
