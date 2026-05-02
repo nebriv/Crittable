@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Chat-declutter mockups</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body class="text-slate-200">
+<div class="mx-auto max-w-5xl p-8">
+  <header class="mb-8">
+    <h1 class="text-2xl font-bold text-slate-100">Chat-declutter mockups</h1>
+    <p class="mt-2 text-sm text-slate-400">
+      Four directions for handling chaos when multiple parallel issues + multiple
+      participants are in the same chat. Same chaos scenario in each one
+      (mid-incident ransomware, three parallel tracks, two SOC analysts on
+      separate problems, two press injects, manager trying to follow along).
+    </p>
+    <p class="mt-2 text-xs text-slate-500">
+      <strong>Try this in each mockup:</strong> use the <em>Viewing as</em>
+      switcher in the top-right to flip between CISO / Legal / SOC Alex /
+      etc. and watch where the @-mention amber highlight appears. The
+      message data is identical across all four — only the chrome changes.
+    </p>
+  </header>
+
+  <div class="grid gap-4 md:grid-cols-2">
+
+    <a href="a-filter-rails.html" class="block rounded-lg border border-slate-700 bg-slate-900/60 p-5 hover:border-sky-500">
+      <div class="mb-2 flex items-center justify-between">
+        <h2 class="text-lg font-semibold text-slate-100">A · Filter chips + side rails</h2>
+        <span class="rounded bg-sky-900/60 px-2 py-0.5 text-[10px] font-semibold text-sky-200">CONSENSUS PICK</span>
+      </div>
+      <p class="text-sm text-slate-400">
+        Flat chat stays linear. Top filter chips for All / @Me / Critical /
+        Decisions / Track. Right rail auto-pins Artifacts, Decisions, Critical
+        injects from existing tool calls. Zero clicks for @me, ≤2 clicks for
+        everything else. AAR transcript still reads top-to-bottom.
+      </p>
+      <p class="mt-3 text-[11px] text-slate-500">Pros: lightweight, no schema change, defensible record. Cons: still one stream during peak chaos.</p>
+    </a>
+
+    <a href="b-threads.html" class="block rounded-lg border border-slate-700 bg-slate-900/60 p-5 hover:border-sky-500">
+      <div class="mb-2 flex items-center justify-between">
+        <h2 class="text-lg font-semibold text-slate-100">B · Slack-style threads</h2>
+        <span class="rounded bg-amber-900/60 px-2 py-0.5 text-[10px] font-semibold text-amber-200">FOCUS-GROUP REJECTED v1</span>
+      </div>
+      <p class="text-sm text-slate-400">
+        Replies tucked into a "N replies" chip; click to expand right pane.
+        Main channel quiets dramatically — but Legal/IR-Lead flagged it
+        fragments the timeline they need for the AAR. Mocked up so we can
+        confirm the rejection on actual UI, not in the abstract.
+      </p>
+      <p class="mt-3 text-[11px] text-slate-500">Pros: less scroll. Cons: hides timeline, fragments AAR record, "addressed to me" more painful to spot.</p>
+    </a>
+
+    <a href="c-lanes.html" class="block rounded-lg border border-slate-700 bg-slate-900/60 p-5 hover:border-sky-500">
+      <div class="mb-2 flex items-center justify-between">
+        <h2 class="text-lg font-semibold text-slate-100">C · Multi-track lanes</h2>
+        <span class="rounded bg-purple-900/60 px-2 py-0.5 text-[10px] font-semibold text-purple-200">EXPERIMENTAL</span>
+      </div>
+      <p class="text-sm text-slate-400">
+        Three parallel column lanes (Containment / Disclosure / Comms /
+        Lateral) plus a top "Main" lane for facilitator + injects. Each
+        message lives in exactly one lane. Cross-lane @-mentions surface as
+        amber dots on the foreign lane's header.
+      </p>
+      <p class="mt-3 text-[11px] text-slate-500">Pros: visual parallelism matches the actual work. Cons: 4 columns at once is a lot; doesn't survive mobile or 1080p well.</p>
+    </a>
+
+    <a href="d-tags.html" class="block rounded-lg border border-slate-700 bg-slate-900/60 p-5 hover:border-sky-500">
+      <div class="mb-2 flex items-center justify-between">
+        <h2 class="text-lg font-semibold text-slate-100">D · Tag tabs (lightweight)</h2>
+        <span class="rounded bg-emerald-900/60 px-2 py-0.5 text-[10px] font-semibold text-emerald-200">SIMPLEST</span>
+      </div>
+      <p class="text-sm text-slate-400">
+        One stream, every message tagged (#containment, #disclosure, …),
+        top tab bar for filtering. Functionally a subset of A — no side rails.
+        The bare minimum that addresses the cluttered-chat complaint without
+        introducing new state machines.
+      </p>
+      <p class="mt-3 text-[11px] text-slate-500">Pros: cheapest to build, can ship in a day. Cons: no pinned artifacts/decisions, fewer affordances during chaos.</p>
+    </a>
+  </div>
+
+  <section class="mt-10 rounded-lg border border-slate-800 bg-slate-900/40 p-5">
+    <h2 class="text-lg font-semibold text-slate-100">Sample data baked in</h2>
+    <p class="mt-2 text-sm text-slate-400">
+      All four mockups share the same 37 messages over a 14:30–14:41 window:
+    </p>
+    <ul class="mt-2 list-disc space-y-1 pl-6 text-sm text-slate-400">
+      <li>SOC Alex isolating <code>X-prod-04</code> while SOC Jordan chases lateral movement on a separate problem</li>
+      <li>Legal racing the HIPAA + state notification clock once HR data is found on FS-CORP-07</li>
+      <li>Comms drafting a holding statement, then revising under a second press inject</li>
+      <li>CISO trying to keep all three tracks coordinated with @-mentions to Legal, Comms, IR Lead</li>
+      <li>Two CRITICAL INJECTs from press, plus six DECISIONs flagged by Legal</li>
+    </ul>
+    <p class="mt-3 text-xs text-slate-500">
+      Filtering / pinning / threading is interactive. The composer fields and
+      the Send buttons are decorative — no backend wired up.
+    </p>
+  </section>
+</div>
+</body>
+</html>

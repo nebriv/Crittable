@@ -1,0 +1,166 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Mockup C · Multi-track lanes</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body class="text-slate-200">
+<div class="flex h-screen flex-col">
+
+<header class="flex items-center justify-between border-b border-slate-800 bg-slate-900/60 px-4 py-2">
+  <div class="flex items-center gap-3">
+    <span class="text-sm font-semibold text-slate-100">Crittable · Tabletop in progress</span>
+    <span class="text-xs text-slate-400">Ransomware · turn 7/12</span>
+  </div>
+  <div class="flex items-center gap-3 text-xs">
+    <span class="text-slate-400">Viewing as</span>
+    <select id="viewer-switcher" class="rounded border border-slate-700 bg-slate-800 px-2 py-1 text-slate-100"></select>
+    <a href="index.html" class="text-sky-400 hover:underline">← all mockups</a>
+  </div>
+</header>
+
+<div class="flex flex-1 min-h-0 flex-col gap-2 p-2">
+  <!-- "Main" lane — facilitator + injects, full width -->
+  <section class="lane track-main flex-shrink-0" style="max-height:30%">
+    <header class="lane-header">
+      <span class="flex items-center gap-2">
+        <span class="track-chip track-main">Main · injects + facilitator</span>
+        <span class="text-[11px] font-normal text-slate-400" id="cnt-main"></span>
+      </span>
+      <span class="text-[11px] font-normal text-slate-500">Everyone sees this</span>
+    </header>
+    <div class="lane-body" id="lane-main"></div>
+  </section>
+
+  <!-- Three working-track lanes side by side -->
+  <section class="grid flex-1 min-h-0 grid-cols-1 gap-2 lg:grid-cols-4">
+    <div class="lane track-containment">
+      <header class="lane-header">
+        <span class="flex items-center gap-2">
+          <span class="track-chip track-containment">Containment</span>
+          <span class="text-[11px] font-normal text-slate-400" id="cnt-containment"></span>
+        </span>
+        <span class="text-[10px] font-normal text-slate-500">Lead: SOC · Alex</span>
+      </header>
+      <div class="lane-body" id="lane-containment"></div>
+    </div>
+    <div class="lane track-disclosure">
+      <header class="lane-header">
+        <span class="flex items-center gap-2">
+          <span class="track-chip track-disclosure">Disclosure</span>
+          <span class="text-[11px] font-normal text-slate-400" id="cnt-disclosure"></span>
+        </span>
+        <span class="text-[10px] font-normal text-slate-500">Lead: Legal · Diana</span>
+      </header>
+      <div class="lane-body" id="lane-disclosure"></div>
+    </div>
+    <div class="lane track-comms">
+      <header class="lane-header">
+        <span class="flex items-center gap-2">
+          <span class="track-chip track-comms">Comms</span>
+          <span class="text-[11px] font-normal text-slate-400" id="cnt-comms"></span>
+        </span>
+        <span class="text-[10px] font-normal text-slate-500">Lead: Comms · Tom</span>
+      </header>
+      <div class="lane-body" id="lane-comms"></div>
+    </div>
+    <div class="lane track-lateral">
+      <header class="lane-header">
+        <span class="flex items-center gap-2">
+          <span class="track-chip track-lateral">Lateral movement</span>
+          <span class="text-[11px] font-normal text-slate-400" id="cnt-lateral"></span>
+        </span>
+        <span class="text-[10px] font-normal text-slate-500">Lead: SOC · Jordan</span>
+      </header>
+      <div class="lane-body" id="lane-lateral"></div>
+    </div>
+  </section>
+
+  <!-- Composer w/ track selector -->
+  <div class="flex flex-shrink-0 items-center gap-2 rounded border border-slate-800 bg-slate-900/60 p-2">
+    <select id="post-track" class="rounded border border-slate-700 bg-slate-800 px-2 py-1 text-xs text-slate-100">
+      <option value="main">→ Main</option>
+      <option value="containment">→ Containment</option>
+      <option value="disclosure">→ Disclosure</option>
+      <option value="comms">→ Comms</option>
+      <option value="lateral">→ Lateral</option>
+    </select>
+    <input class="flex-1 rounded border border-slate-700 bg-slate-800 px-3 py-2 text-sm placeholder-slate-500" placeholder="Post into selected lane… use @CISO etc to ping across lanes">
+    <button class="rounded bg-sky-600 px-4 py-2 text-sm font-medium text-white hover:bg-sky-500">Send</button>
+  </div>
+</div>
+</div>
+
+<script src="data.js"></script>
+<script src="shared.js"></script>
+<script>
+function laneItem(m) {
+  const role = byRole(m.from) || { label: "System", color: "slate" };
+  const [bg, bd, tx] = tailwindColor(role.color);
+  const isMe = isAddressedToMe(m, VIEWER);
+  const isCritical = m.kind === "critical";
+  const isDecision = m.is_decision;
+  const ringCls = isMe && (m.kind === "ai_text" || isCritical) ? "awaiting-me" : "";
+  const critCls = isCritical ? "border-red-500/60 bg-red-950/40" : "border-slate-800/60 bg-slate-900/40";
+  const meBadge = isMe ? `<span class="ml-1 rounded bg-amber-500/20 px-1 py-0.5 text-[9px] font-semibold text-amber-200">@you</span>` : "";
+  const decBadge = isDecision ? `<span class="ml-1 rounded border border-violet-500/60 bg-violet-900/40 px-1 py-0.5 text-[9px] font-semibold text-violet-200">DEC</span>` : "";
+  const critBadge = isCritical ? `<span class="ml-1 rounded border border-red-500/60 bg-red-900/40 px-1 py-0.5 text-[9px] font-semibold text-red-200">INJECT</span>` : "";
+  // Cross-lane @-mention banner: if a message in this lane @s a viewer whose role-lead is in another lane
+  return `
+    <article id="msg-${m.id}-l" class="mb-2 flex gap-2 rounded border ${critCls} ${ringCls} p-2"
+      data-mid="${m.id}">
+      <div class="avatar ${bg} ${bd} ${tx} border" style="width:22px;height:22px;font-size:9px">${initials(role)}</div>
+      <div class="min-w-0 flex-1">
+        <header class="flex items-center justify-between gap-2 text-[10px] uppercase tracking-wide text-slate-400">
+          <span class="flex items-center gap-1">
+            <span class="font-semibold text-slate-200">${actorShort(role)}</span>
+            ${meBadge}${decBadge}${critBadge}
+          </span>
+          <span>${m.ts}</span>
+        </header>
+        <p class="mt-0.5 whitespace-pre-wrap text-[12.5px] leading-snug">${renderBody(m, VIEWER)}</p>
+      </div>
+    </article>`;
+}
+
+function renderLanes() {
+  const buckets = { main: [], containment: [], disclosure: [], comms: [], lateral: [] };
+  for (const m of MESSAGES) (buckets[m.track] || buckets.main).push(m);
+
+  for (const k of Object.keys(buckets)) {
+    document.getElementById("lane-" + k).innerHTML = buckets[k].map(laneItem).join("") || `<div class="text-xs text-slate-500 p-2">Quiet for now.</div>`;
+    document.getElementById("cnt-" + k).textContent = `${buckets[k].length} msg`;
+  }
+}
+
+// Cross-lane mention indicator: if the current viewer is mentioned in a lane
+// they don't lead, flash a tiny dot on that lane's header.
+function annotateMentions() {
+  const viewerRole = byRole(VIEWER);
+  if (!viewerRole) return;
+  const mentioned = { containment: false, disclosure: false, comms: false, lateral: false, main: false };
+  for (const m of MESSAGES) {
+    if (isAddressedToMe(m, VIEWER)) mentioned[m.track] = true;
+  }
+  // Decorate count text with @-dot
+  for (const k of Object.keys(mentioned)) {
+    if (mentioned[k]) {
+      const el = document.getElementById("cnt-" + k);
+      el.innerHTML += ` <span class="ml-1 inline-block h-2 w-2 rounded-full bg-amber-400" title="You're mentioned in this lane"></span>`;
+    }
+  }
+}
+
+function rerender() { renderLanes(); annotateMentions(); }
+
+renderViewerSwitcher();
+rerender();
+// Auto-scroll each lane to bottom
+setTimeout(() => {
+  document.querySelectorAll(".lane-body").forEach((el) => el.scrollTop = el.scrollHeight);
+}, 50);
+</script>
+</body>
+</html>

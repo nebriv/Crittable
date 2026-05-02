@@ -1,0 +1,228 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Mockup A · Filter chips + side rails</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body class="text-slate-200">
+<div class="flex h-screen flex-col">
+
+<!-- Top bar -->
+<header class="flex items-center justify-between border-b border-slate-800 bg-slate-900/60 px-4 py-2">
+  <div class="flex items-center gap-3">
+    <span class="text-sm font-semibold text-slate-100">Crittable · Tabletop in progress</span>
+    <span class="text-xs text-slate-400">Ransomware · turn 7/12</span>
+  </div>
+  <div class="flex items-center gap-3 text-xs">
+    <span class="text-slate-400">Viewing as</span>
+    <select id="viewer-switcher" class="rounded border border-slate-700 bg-slate-800 px-2 py-1 text-slate-100"></select>
+    <a href="index.html" class="text-sky-400 hover:underline">← all mockups</a>
+  </div>
+</header>
+
+<div class="flex flex-1 min-h-0">
+
+  <!-- Roles rail (left) -->
+  <aside class="hidden w-44 flex-shrink-0 border-r border-slate-800 bg-slate-900/40 p-2 md:block">
+    <div class="px-2 py-1 text-[10px] uppercase tracking-wide text-slate-500">Roster</div>
+    <ul id="roster-list" class="space-y-1"></ul>
+  </aside>
+
+  <!-- Center column: filters + chat -->
+  <main class="flex flex-1 min-w-0 flex-col">
+    <!-- Filter pills -->
+    <div class="flex flex-wrap items-center gap-2 border-b border-slate-800 bg-slate-900/40 px-3 py-2">
+      <span class="text-[11px] uppercase tracking-wide text-slate-500">Show</span>
+      <button class="pill" data-filter="all" data-active="1">All <span class="count" id="cnt-all"></span></button>
+      <button class="pill" data-filter="me">@Me <span class="count" id="cnt-me"></span></button>
+      <button class="pill" data-filter="critical">Critical <span class="count" id="cnt-critical"></span></button>
+      <button class="pill" data-filter="decisions">Decisions <span class="count" id="cnt-decisions"></span></button>
+      <span class="mx-2 h-4 w-px bg-slate-700"></span>
+      <span class="text-[11px] uppercase tracking-wide text-slate-500">Track</span>
+      <button class="pill" data-track="containment"><span style="color:#f43f5e">●</span> Containment</button>
+      <button class="pill" data-track="disclosure"><span style="color:#f59e0b">●</span> Disclosure</button>
+      <button class="pill" data-track="comms"><span style="color:#ec4899">●</span> Comms</button>
+      <button class="pill" data-track="lateral"><span style="color:#14b8a6">●</span> Lateral</button>
+    </div>
+
+    <!-- Chat scroll -->
+    <div id="chat" class="flex-1 min-h-0 overflow-y-auto px-3 py-3 space-y-2"></div>
+
+    <!-- Composer -->
+    <div class="border-t border-slate-800 bg-slate-900/40 p-3">
+      <div class="flex gap-2">
+        <input class="flex-1 rounded border border-slate-700 bg-slate-800 px-3 py-2 text-sm placeholder-slate-500" placeholder="Type a reply… use @CISO, @Legal, @Tom to address">
+        <button class="rounded bg-sky-600 px-4 text-sm font-medium text-white hover:bg-sky-500">Send</button>
+      </div>
+    </div>
+  </main>
+
+  <!-- Right rail: pinned cards -->
+  <aside class="w-80 flex-shrink-0 border-l border-slate-800 bg-slate-900/30 flex flex-col min-h-0">
+    <div class="flex border-b border-slate-800 text-xs">
+      <button class="rail-tab flex-1 px-3 py-2 font-semibold text-slate-100 border-b-2 border-sky-500" data-rail="artifacts">Artifacts</button>
+      <button class="rail-tab flex-1 px-3 py-2 text-slate-400 hover:text-slate-200" data-rail="decisions">Decisions</button>
+      <button class="rail-tab flex-1 px-3 py-2 text-slate-400 hover:text-slate-200" data-rail="critical">Critical</button>
+    </div>
+    <div id="rail-body" class="flex-1 min-h-0 overflow-y-auto p-3 space-y-2"></div>
+  </aside>
+</div>
+</div>
+
+<script src="data.js"></script>
+<script src="shared.js"></script>
+<script>
+let state = { filter: "all", trackFilter: null, rail: "artifacts" };
+
+function chatItem(m) {
+  const role = byRole(m.from) || { label: "System", color: "slate" };
+  const [bg, bd, tx] = tailwindColor(role.color);
+  const trackHex = trackColorHex(m.track);
+  const isMe = isAddressedToMe(m, VIEWER);
+  const isCritical = m.kind === "critical";
+  const isDecision = m.is_decision;
+  const ringCls = isMe && (m.kind === "ai_text" || isCritical) ? "awaiting-me" : "";
+  const critCls = isCritical ? "border-red-500/60 bg-red-950/40" : "border-slate-800 bg-slate-900/40";
+  const decBadge = isDecision ? `<span class="ml-2 rounded border border-violet-500/60 bg-violet-900/40 px-1.5 py-0.5 text-[10px] font-semibold text-violet-200">DECISION</span>` : "";
+  const meBadge = isMe ? `<span class="ml-2 rounded bg-amber-500/20 px-1.5 py-0.5 text-[10px] font-semibold text-amber-200">@you</span>` : "";
+  const critBadge = isCritical ? `<span class="ml-2 rounded border border-red-500/60 bg-red-900/40 px-1.5 py-0.5 text-[10px] font-semibold text-red-200">INJECT</span>` : "";
+  return `
+    <article id="msg-${m.id}" class="flex gap-3 rounded border ${critCls} ${ringCls} p-3"
+      data-mid="${m.id}" data-track="${m.track}" data-me="${isMe?1:0}"
+      data-critical="${isCritical?1:0}" data-decision="${isDecision?1:0}">
+      <div class="track-bar" style="background:${trackHex}"></div>
+      <div class="avatar ${bg} ${bd} ${tx} border">${initials(role)}</div>
+      <div class="min-w-0 flex-1">
+        <header class="flex items-center justify-between gap-2 text-[11px] uppercase tracking-wide text-slate-400">
+          <span class="flex items-center gap-2">
+            <span class="font-semibold text-slate-200">${actorLabel(role)}</span>
+            <span class="track-chip track-${m.track}">${trackInfo(m.track).label}</span>
+            ${meBadge}${decBadge}${critBadge}
+          </span>
+          <span>${m.ts}</span>
+        </header>
+        <p class="mt-1 whitespace-pre-wrap text-sm leading-relaxed">${renderBody(m, VIEWER)}</p>
+      </div>
+    </article>`;
+}
+
+function rosterItem(r) {
+  const [bg, bd, tx] = tailwindColor(r.color);
+  return `<li class="flex items-center gap-2 rounded px-2 py-1 hover:bg-slate-800">
+    <span class="avatar ${bg} ${bd} ${tx} border" style="width:22px;height:22px;font-size:9px">${initials(r)}</span>
+    <span class="min-w-0 truncate text-xs">
+      <span class="font-medium text-slate-200">${r.label}</span>
+      ${r.name ? `<span class="block text-[10px] text-slate-400">${r.name}</span>` : ""}
+    </span>
+  </li>`;
+}
+
+function renderRoster() {
+  document.getElementById("roster-list").innerHTML = ROLES.filter(r => r.id !== "ai").map(rosterItem).join("");
+}
+
+function renderChat() {
+  const html = MESSAGES.map(chatItem).join("");
+  document.getElementById("chat").innerHTML = html;
+  applyFilters();
+}
+
+function applyFilters() {
+  const items = document.querySelectorAll("#chat > article");
+  let cAll = 0, cMe = 0, cCrit = 0, cDec = 0;
+  items.forEach((el) => {
+    const me = el.dataset.me === "1";
+    const crit = el.dataset.critical === "1";
+    const dec = el.dataset.decision === "1";
+    const trk = el.dataset.track;
+    cAll++; if (me) cMe++; if (crit) cCrit++; if (dec) cDec++;
+    let show = true;
+    if (state.filter === "me" && !me) show = false;
+    if (state.filter === "critical" && !crit) show = false;
+    if (state.filter === "decisions" && !dec) show = false;
+    if (state.trackFilter && trk !== state.trackFilter) show = false;
+    el.classList.toggle("hidden-by-filter", !show);
+  });
+  document.getElementById("cnt-all").textContent = cAll;
+  document.getElementById("cnt-me").textContent = cMe;
+  document.getElementById("cnt-critical").textContent = cCrit;
+  document.getElementById("cnt-decisions").textContent = cDec;
+}
+
+function renderRail() {
+  let cards;
+  const railBody = document.getElementById("rail-body");
+  if (state.rail === "artifacts") {
+    cards = pinnedCards().map((c) => `
+      <div class="rail-card cursor-pointer" onclick="scrollToMsg('${c.msgId}')">
+        <div class="track-bar" style="background:${trackColorHex(c.track)}"></div>
+        <div class="min-w-0 flex-1">
+          <div class="text-[11px] uppercase tracking-wide text-slate-400">${c.kind}</div>
+          <div class="text-sm font-semibold text-slate-100">${c.title}</div>
+          <div class="mt-1 text-xs text-slate-300">${c.body}</div>
+          <div class="mt-1 text-[10px] text-slate-500">${c.ts} · jump to message →</div>
+        </div>
+      </div>`).join("");
+  } else if (state.rail === "decisions") {
+    cards = decisionList().map((d) => {
+      const r = byRole(d.from);
+      return `<div class="rail-card cursor-pointer" onclick="scrollToMsg('${d.msgId}')">
+        <div class="track-bar" style="background:${trackColorHex(d.track)}"></div>
+        <div class="min-w-0 flex-1">
+          <div class="text-[11px] uppercase tracking-wide text-violet-300">decision</div>
+          <div class="text-sm text-slate-100">${d.body}</div>
+          <div class="mt-1 text-[10px] text-slate-500">${d.ts} · ${r ? r.label : "?"} · jump →</div>
+        </div>
+      </div>`;
+    }).join("");
+  } else {
+    cards = criticalList().map((c) => `
+      <div class="rail-card cursor-pointer border-red-500/40" onclick="scrollToMsg('${c.msgId}')">
+        <div class="track-bar" style="background:#ef4444"></div>
+        <div class="min-w-0 flex-1">
+          <div class="text-[11px] uppercase tracking-wide text-red-300">inject</div>
+          <div class="text-sm text-slate-100">${c.body}</div>
+          <div class="mt-1 text-[10px] text-slate-500">${c.ts} · jump →</div>
+        </div>
+      </div>`).join("");
+  }
+  railBody.innerHTML = cards || `<div class="text-xs text-slate-500">Nothing yet.</div>`;
+}
+
+function rerender() { renderRoster(); renderChat(); renderRail(); }
+
+document.querySelectorAll(".pill[data-filter]").forEach((b) => {
+  b.addEventListener("click", () => {
+    document.querySelectorAll(".pill[data-filter]").forEach((x) => x.dataset.active = "0");
+    b.dataset.active = "1";
+    state.filter = b.dataset.filter;
+    applyFilters();
+  });
+});
+document.querySelectorAll(".pill[data-track]").forEach((b) => {
+  b.addEventListener("click", () => {
+    const t = b.dataset.track;
+    if (state.trackFilter === t) { state.trackFilter = null; b.dataset.active = "0"; }
+    else { state.trackFilter = t; document.querySelectorAll(".pill[data-track]").forEach((x) => x.dataset.active = "0"); b.dataset.active = "1"; }
+    applyFilters();
+  });
+});
+document.querySelectorAll(".rail-tab").forEach((b) => {
+  b.addEventListener("click", () => {
+    document.querySelectorAll(".rail-tab").forEach((x) => { x.classList.remove("text-slate-100","border-b-2","border-sky-500"); x.classList.add("text-slate-400"); });
+    b.classList.add("text-slate-100", "border-b-2", "border-sky-500");
+    b.classList.remove("text-slate-400");
+    state.rail = b.dataset.rail;
+    renderRail();
+  });
+});
+
+renderViewerSwitcher();
+rerender();
+// Auto-scroll the chat to the latest message on load
+setTimeout(() => { const c = document.getElementById("chat"); c.scrollTop = c.scrollHeight; }, 50);
+</script>
+</body>
+</html>

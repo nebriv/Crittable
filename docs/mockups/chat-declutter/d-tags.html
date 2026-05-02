@@ -1,0 +1,157 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Mockup D · Tag tabs (lightweight)</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body class="text-slate-200">
+<div class="flex h-screen flex-col">
+
+<header class="flex items-center justify-between border-b border-slate-800 bg-slate-900/60 px-4 py-2">
+  <div class="flex items-center gap-3">
+    <span class="text-sm font-semibold text-slate-100">Crittable · Tabletop in progress</span>
+    <span class="text-xs text-slate-400">Ransomware · turn 7/12</span>
+  </div>
+  <div class="flex items-center gap-3 text-xs">
+    <span class="text-slate-400">Viewing as</span>
+    <select id="viewer-switcher" class="rounded border border-slate-700 bg-slate-800 px-2 py-1 text-slate-100"></select>
+    <a href="index.html" class="text-sky-400 hover:underline">← all mockups</a>
+  </div>
+</header>
+
+<!-- Tabs -->
+<nav class="flex flex-wrap items-center gap-1 border-b border-slate-800 bg-slate-900/40 px-3 py-1">
+  <button class="tab" data-tab="all" data-active="1">All <span class="count" id="tcnt-all"></span></button>
+  <button class="tab" data-tab="me">@Me <span class="count" id="tcnt-me"></span></button>
+  <span class="mx-1 h-4 w-px bg-slate-700"></span>
+  <button class="tab" data-tab="containment"><span style="color:#f43f5e">●</span> Containment <span class="count" id="tcnt-containment"></span></button>
+  <button class="tab" data-tab="disclosure"><span style="color:#f59e0b">●</span> Disclosure <span class="count" id="tcnt-disclosure"></span></button>
+  <button class="tab" data-tab="comms"><span style="color:#ec4899">●</span> Comms <span class="count" id="tcnt-comms"></span></button>
+  <button class="tab" data-tab="lateral"><span style="color:#14b8a6">●</span> Lateral <span class="count" id="tcnt-lateral"></span></button>
+  <span class="mx-1 h-4 w-px bg-slate-700"></span>
+  <button class="tab" data-tab="critical">Critical <span class="count" id="tcnt-critical"></span></button>
+  <button class="tab" data-tab="decisions">Decisions <span class="count" id="tcnt-decisions"></span></button>
+</nav>
+
+<style>
+.tab {
+  padding: 6px 12px; border-bottom: 2px solid transparent;
+  font-size: 12px; color: #94a3b8; background: transparent; border-radius: 0;
+  cursor: pointer; user-select: none;
+  display: inline-flex; align-items: center; gap: 6px;
+}
+.tab:hover { color: #e2e8f0; }
+.tab[data-active="1"] { color: #e2e8f0; border-bottom-color: #38bdf8; }
+.tab .count { background: #1e293b; padding: 0 6px; border-radius: 999px; font-size: 10px; }
+</style>
+
+<!-- Chat body -->
+<main class="flex flex-1 min-w-0 flex-col">
+  <div id="chat" class="flex-1 min-h-0 overflow-y-auto px-3 py-3 space-y-2"></div>
+
+  <!-- Composer with tag selector -->
+  <div class="border-t border-slate-800 bg-slate-900/40 p-3">
+    <div class="flex gap-2">
+      <select id="post-tag" class="rounded border border-slate-700 bg-slate-800 px-2 py-1 text-xs text-slate-100">
+        <option value="main">tag → main</option>
+        <option value="containment">tag → #containment</option>
+        <option value="disclosure">tag → #disclosure</option>
+        <option value="comms">tag → #comms</option>
+        <option value="lateral">tag → #lateral</option>
+      </select>
+      <input class="flex-1 rounded border border-slate-700 bg-slate-800 px-3 py-2 text-sm placeholder-slate-500" placeholder="Type a message… tag is appended automatically. Use @Role to ping.">
+      <button class="rounded bg-sky-600 px-4 text-sm font-medium text-white hover:bg-sky-500">Send</button>
+    </div>
+    <p class="mt-2 text-[11px] text-slate-500">Lightweight: every message keeps a tag, but the conversation stays linear. Tap a tab to filter without losing the timeline.</p>
+  </div>
+</main>
+</div>
+
+<script src="data.js"></script>
+<script src="shared.js"></script>
+<script>
+let state = { tab: "all" };
+
+function tagPill(trackId) {
+  return `<span class="tag-chip" style="background:${trackColorHex(trackId)}22;color:${trackColorHex(trackId)};border:1px solid ${trackColorHex(trackId)}55">#${trackId}</span>`;
+}
+
+function chatItem(m) {
+  const role = byRole(m.from) || { label: "System", color: "slate" };
+  const [bg, bd, tx] = tailwindColor(role.color);
+  const isMe = isAddressedToMe(m, VIEWER);
+  const isCritical = m.kind === "critical";
+  const isDecision = m.is_decision;
+  const ringCls = isMe && (m.kind === "ai_text" || isCritical) ? "awaiting-me" : "";
+  const critCls = isCritical ? "border-red-500/60 bg-red-950/40" : "border-slate-800 bg-slate-900/40";
+  const meBadge = isMe ? `<span class="ml-2 rounded bg-amber-500/20 px-1.5 py-0.5 text-[10px] font-semibold text-amber-200">@you</span>` : "";
+  const decBadge = isDecision ? `<span class="ml-2 rounded border border-violet-500/60 bg-violet-900/40 px-1.5 py-0.5 text-[10px] font-semibold text-violet-200">DECISION</span>` : "";
+  const critBadge = isCritical ? `<span class="ml-2 rounded border border-red-500/60 bg-red-900/40 px-1.5 py-0.5 text-[10px] font-semibold text-red-200">INJECT</span>` : "";
+  return `
+    <article id="msg-${m.id}-d" class="flex gap-3 rounded border ${critCls} ${ringCls} p-3"
+      data-mid="${m.id}" data-track="${m.track}" data-me="${isMe?1:0}"
+      data-critical="${isCritical?1:0}" data-decision="${isDecision?1:0}">
+      <div class="avatar ${bg} ${bd} ${tx} border">${initials(role)}</div>
+      <div class="min-w-0 flex-1">
+        <header class="flex flex-wrap items-center justify-between gap-2 text-[11px] uppercase tracking-wide text-slate-400">
+          <span class="flex flex-wrap items-center gap-2">
+            <span class="font-semibold text-slate-200">${actorLabel(role)}</span>
+            ${tagPill(m.track)}
+            ${meBadge}${decBadge}${critBadge}
+          </span>
+          <span>${m.ts}</span>
+        </header>
+        <p class="mt-1 whitespace-pre-wrap text-sm leading-relaxed">${renderBody(m, VIEWER)}</p>
+      </div>
+    </article>`;
+}
+
+function renderChat() {
+  document.getElementById("chat").innerHTML = MESSAGES.map(chatItem).join("");
+  applyTab();
+}
+
+function applyTab() {
+  const items = document.querySelectorAll("#chat > article");
+  const counts = { all: 0, me: 0, containment: 0, disclosure: 0, comms: 0, lateral: 0, critical: 0, decisions: 0 };
+  items.forEach((el) => {
+    const me = el.dataset.me === "1";
+    const crit = el.dataset.critical === "1";
+    const dec = el.dataset.decision === "1";
+    const trk = el.dataset.track;
+    counts.all++;
+    if (me) counts.me++;
+    if (crit) counts.critical++;
+    if (dec) counts.decisions++;
+    if (counts[trk] !== undefined) counts[trk]++;
+    let show = true;
+    if (state.tab === "me") show = me;
+    else if (state.tab === "critical") show = crit;
+    else if (state.tab === "decisions") show = dec;
+    else if (state.tab !== "all") show = trk === state.tab;
+    el.classList.toggle("hidden-by-filter", !show);
+  });
+  for (const k of Object.keys(counts)) {
+    const el = document.getElementById("tcnt-" + k);
+    if (el) el.textContent = counts[k];
+  }
+}
+
+document.querySelectorAll(".tab").forEach((b) => {
+  b.addEventListener("click", () => {
+    document.querySelectorAll(".tab").forEach((x) => x.dataset.active = "0");
+    b.dataset.active = "1";
+    state.tab = b.dataset.tab;
+    applyTab();
+  });
+});
+
+function rerender() { renderChat(); }
+renderViewerSwitcher();
+rerender();
+setTimeout(() => { const c = document.getElementById("chat"); c.scrollTop = c.scrollHeight; }, 50);
+</script>
+</body>
+</html>

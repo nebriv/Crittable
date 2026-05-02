@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Mockup B · Slack-style threads</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body class="text-slate-200">
+<div class="flex h-screen flex-col">
+
+<header class="flex items-center justify-between border-b border-slate-800 bg-slate-900/60 px-4 py-2">
+  <div class="flex items-center gap-3">
+    <span class="text-sm font-semibold text-slate-100">Crittable · Tabletop in progress</span>
+    <span class="text-xs text-slate-400">Ransomware · turn 7/12</span>
+  </div>
+  <div class="flex items-center gap-3 text-xs">
+    <span class="text-slate-400">Viewing as</span>
+    <select id="viewer-switcher" class="rounded border border-slate-700 bg-slate-800 px-2 py-1 text-slate-100"></select>
+    <a href="index.html" class="text-sky-400 hover:underline">← all mockups</a>
+  </div>
+</header>
+
+<div class="flex flex-1 min-h-0">
+
+  <!-- Center: main chat (parents only) -->
+  <main class="flex flex-1 min-w-0 flex-col">
+    <div class="flex items-center gap-2 border-b border-slate-800 bg-slate-900/40 px-3 py-2 text-xs text-slate-400">
+      <span class="text-[11px] uppercase tracking-wide text-slate-500">Main channel</span>
+      <span class="text-slate-600">·</span>
+      <span>Replies are tucked into threads — click <kbd class="rounded bg-slate-800 px-1 text-[10px] text-slate-300">N replies</kbd> to expand on the right.</span>
+    </div>
+    <div id="chat" class="flex-1 min-h-0 overflow-y-auto px-3 py-3 space-y-2"></div>
+    <div class="border-t border-slate-800 bg-slate-900/40 p-3">
+      <div class="flex gap-2">
+        <input class="flex-1 rounded border border-slate-700 bg-slate-800 px-3 py-2 text-sm placeholder-slate-500" placeholder="Reply in main channel… (or click 'N replies' to thread)">
+        <button class="rounded bg-sky-600 px-4 text-sm font-medium text-white hover:bg-sky-500">Send</button>
+      </div>
+    </div>
+  </main>
+
+  <!-- Right pane: open thread -->
+  <aside id="thread-pane" class="w-96 flex-shrink-0 border-l border-slate-800 bg-slate-900/40 hidden flex-col min-h-0">
+    <header class="flex items-center justify-between border-b border-slate-800 px-3 py-2">
+      <span class="text-sm font-semibold text-slate-100">Thread</span>
+      <button id="close-thread" class="text-slate-400 hover:text-slate-100">×</button>
+    </header>
+    <div id="thread-body" class="flex-1 min-h-0 overflow-y-auto px-3 py-3 space-y-2"></div>
+    <div class="border-t border-slate-800 p-3">
+      <div class="flex gap-2">
+        <input class="flex-1 rounded border border-slate-700 bg-slate-800 px-3 py-2 text-sm placeholder-slate-500" placeholder="Reply in thread…">
+        <button class="rounded bg-sky-600 px-4 text-sm font-medium text-white hover:bg-sky-500">Send</button>
+      </div>
+      <label class="mt-2 flex items-center gap-2 text-xs text-slate-400">
+        <input type="checkbox" class="rounded">
+        Also send to main channel
+      </label>
+    </div>
+  </aside>
+</div>
+</div>
+
+<script src="data.js"></script>
+<script src="shared.js"></script>
+<script>
+let state = { openThread: null };
+
+function bubble(m, isThreadView) {
+  const role = byRole(m.from) || { label: "System", color: "slate" };
+  const [bg, bd, tx] = tailwindColor(role.color);
+  const isMe = isAddressedToMe(m, VIEWER);
+  const isCritical = m.kind === "critical";
+  const isDecision = m.is_decision;
+  const ringCls = isMe && (m.kind === "ai_text" || isCritical) ? "awaiting-me" : "";
+  const critCls = isCritical ? "border-red-500/60 bg-red-950/40" : "border-slate-800 bg-slate-900/40";
+  const meBadge = isMe ? `<span class="ml-2 rounded bg-amber-500/20 px-1.5 py-0.5 text-[10px] font-semibold text-amber-200">@you</span>` : "";
+  const decBadge = isDecision ? `<span class="ml-2 rounded border border-violet-500/60 bg-violet-900/40 px-1.5 py-0.5 text-[10px] font-semibold text-violet-200">DECISION</span>` : "";
+  const critBadge = isCritical ? `<span class="ml-2 rounded border border-red-500/60 bg-red-900/40 px-1.5 py-0.5 text-[10px] font-semibold text-red-200">INJECT</span>` : "";
+  return `
+    <article id="msg-${m.id}${isThreadView?'-t':''}" class="flex gap-3 rounded border ${critCls} ${ringCls} p-3"
+      data-mid="${m.id}">
+      <div class="avatar ${bg} ${bd} ${tx} border">${initials(role)}</div>
+      <div class="min-w-0 flex-1">
+        <header class="flex items-center justify-between gap-2 text-[11px] uppercase tracking-wide text-slate-400">
+          <span class="flex items-center gap-2">
+            <span class="font-semibold text-slate-200">${actorLabel(role)}</span>
+            ${meBadge}${decBadge}${critBadge}
+          </span>
+          <span>${m.ts}</span>
+        </header>
+        <p class="mt-1 whitespace-pre-wrap text-sm leading-relaxed">${renderBody(m, VIEWER)}</p>
+      </div>
+    </article>`;
+}
+
+function renderChat() {
+  const { roots, childrenOf } = buildThreadTree();
+  const html = roots.map((m) => {
+    const kids = childrenOf[m.id] || [];
+    const replyCount = kids.length;
+    let pill = "";
+    if (replyCount > 0) {
+      // Compute participant avatars + last reply timestamp
+      const participants = [...new Set(kids.map((k) => MESSAGES.find((x) => x.id === k).from))];
+      const last = MESSAGES.find((x) => x.id === kids[kids.length - 1]).ts;
+      // Has unread @me?
+      const hasMe = kids.some((k) => isAddressedToMe(MESSAGES.find((x) => x.id === k), VIEWER));
+      const meDot = hasMe ? `<span class="ml-1 inline-block h-2 w-2 rounded-full bg-amber-400" title="You're mentioned"></span>` : "";
+      const avs = participants.slice(0, 3).map((pid) => {
+        const r = byRole(pid); if (!r) return "";
+        const [b, d, t] = tailwindColor(r.color);
+        return `<span class="avatar ${b} ${d} ${t} border" style="width:18px;height:18px;font-size:9px">${initials(r)}</span>`;
+      }).join("");
+      pill = `<button class="thread-chip mt-2" onclick="openThread('${m.id}')">
+        <span class="flex -space-x-2">${avs}</span>
+        ${replyCount} ${replyCount === 1 ? "reply" : "replies"} · last ${last}${meDot}
+      </button>`;
+    }
+    return bubble(m, false).replace("</article>", pill + "</article>");
+  }).join("");
+  document.getElementById("chat").innerHTML = html;
+}
+
+function openThread(parentId) {
+  state.openThread = parentId;
+  const pane = document.getElementById("thread-pane");
+  pane.classList.remove("hidden");
+  pane.classList.add("flex");
+  const { childrenOf } = buildThreadTree();
+  const parent = MESSAGES.find((x) => x.id === parentId);
+  const kids = (childrenOf[parentId] || []).map((id) => MESSAGES.find((x) => x.id === id));
+  const html = `
+    <div class="rounded border border-sky-700/40 bg-sky-950/20 p-2 text-[11px] uppercase tracking-wide text-sky-300">Parent message</div>
+    ${bubble(parent, true)}
+    <div class="my-2 flex items-center gap-2 text-[11px] uppercase tracking-wide text-slate-500">
+      <span class="h-px flex-1 bg-slate-700"></span>
+      <span>${kids.length} ${kids.length === 1 ? "reply" : "replies"}</span>
+      <span class="h-px flex-1 bg-slate-700"></span>
+    </div>
+    ${kids.map((k) => bubble(k, true)).join("")}
+  `;
+  document.getElementById("thread-body").innerHTML = html;
+}
+
+function closeThread() {
+  state.openThread = null;
+  const pane = document.getElementById("thread-pane");
+  pane.classList.add("hidden");
+  pane.classList.remove("flex");
+}
+
+function rerender() { renderChat(); if (state.openThread) openThread(state.openThread); }
+
+document.getElementById("close-thread").addEventListener("click", closeThread);
+window.openThread = openThread;
+renderViewerSwitcher();
+rerender();
+setTimeout(() => { const c = document.getElementById("chat"); c.scrollTop = c.scrollHeight; }, 50);
+</script>
+</body>
+</html>
