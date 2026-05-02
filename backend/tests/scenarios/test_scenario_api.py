@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
@@ -112,27 +113,87 @@ def test_list_scenarios_returns_fixture(client: TestClient) -> None:
     assert fix["skip_setup"] is True
 
 
-def test_play_requires_token(client: TestClient) -> None:
-    """Auth gate on /play: even with DEV_TOOLS_ENABLED, an unauth'd
-    caller cannot mint sessions / harvest tokens. Closes Security H1."""
+def test_play_no_token_required_when_dev_tools_enabled(
+    client: TestClient,
+) -> None:
+    """``DEV_TOOLS_ENABLED=true`` is an explicit dev opt-in. The
+    wizard's "replay scenario" path on the home screen has no token
+    to present yet; requiring one would block the most common dev
+    use case. The dev-tools gate itself is the security boundary
+    for this environment.
+    """
 
+    client.app.state.llm.set_transport(MockAnthropic({}).messages)
     resp = client.post("/api/dev/scenarios/fixture/play")
-    assert resp.status_code == 401
+    assert resp.status_code == 200, resp.text
+
+
+def test_play_requires_token_in_test_mode_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When only ``TEST_MODE=true`` is set (CI / preview deploy),
+    ``/play`` MUST still require a valid token — preview environments
+    are sometimes network-reachable and we don't want an unauth'd
+    caller harvesting tokens. Closes Security H1 for that environment.
+    """
+
+    monkeypatch.setenv("DEV_TOOLS_ENABLED", "false")
+    monkeypatch.setenv("TEST_MODE", "true")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+    reset_settings_cache()
+    from app.main import create_app
+
+    app = create_app()
+    with TestClient(app) as c:
+        resp = c.post("/api/dev/scenarios/fixture/play")
+        assert resp.status_code == 401
 
 
 def test_play_unknown_scenario_404(client: TestClient) -> None:
-    token = _bootstrap_token(client)
-    resp = client.post(f"/api/dev/scenarios/does-not-exist/play?token={token}")
+    resp = client.post("/api/dev/scenarios/does-not-exist/play")
     assert resp.status_code == 404
+
+
+def _wait_for_state(
+    client: TestClient,
+    session_id: str,
+    token: str,
+    target: str,
+    *,
+    attempts: int = 50,
+) -> dict[str, Any] | None:
+    """Poll the snapshot until ``state`` matches ``target``.
+
+    Used by the API tests because /play is now async — the runner
+    runs in a background task on the TestClient's event loop and we
+    can't ``asyncio.run()`` the manager's own ``flush_background_tasks``
+    from outside that loop. Polling the public snapshot is the same
+    pattern a real client (the wizard's auto-open new tab) uses.
+    """
+
+    import time
+
+    for _ in range(attempts):
+        snap = client.get(
+            f"/api/sessions/{session_id}?token={token}"
+        ).json()
+        if snap.get("state") == target:
+            return snap
+        time.sleep(0.05)
+    return None
 
 
 def test_play_drives_session_to_end(client: TestClient) -> None:
     """Hitting the play endpoint should walk the fixture scenario to ENDED
-    and return the new session_id + role tokens."""
+    and return the new session_id + role tokens.
+
+    /play is now async: the response returns AFTER ``prepare()`` (session
+    + roster + plan finalised) but BEFORE ``play_phase`` finishes. The
+    background runner drives play to completion; the test polls.
+    """
 
     client.app.state.llm.set_transport(MockAnthropic({}).messages)
-    token = _bootstrap_token(client)
-    resp = client.post(f"/api/dev/scenarios/fixture/play?token={token}")
+    resp = client.post("/api/dev/scenarios/fixture/play")
     assert resp.status_code == 200, resp.text
     body = resp.json()
     assert body["ok"] is True, body
@@ -140,13 +201,9 @@ def test_play_drives_session_to_end(client: TestClient) -> None:
     assert "creator" in body["role_label_to_id"]
     assert "CISO" in body["role_label_to_id"]
     assert "SOC" in body["role_label_to_id"]
-    # The new session should actually be in ENDED state. Without this
-    # the runner could silently skip end_phase and the test would still
-    # pass on body["ok"] alone (QA review HIGH-3).
-    snap = client.get(
-        f"/api/sessions/{body['session_id']}?token={body['role_tokens'][body['role_label_to_id']['creator']]}",
-    ).json()
-    assert snap["state"] == "ENDED"
+    creator_token = body["role_tokens"][body["role_label_to_id"]["creator"]]
+    snap = _wait_for_state(client, body["session_id"], creator_token, "ENDED")
+    assert snap is not None, "background runner did not reach ENDED in time"
 
 
 def test_record_creates_replayable_scenario(client: TestClient) -> None:
@@ -155,13 +212,13 @@ def test_record_creates_replayable_scenario(client: TestClient) -> None:
     from the live session state."""
 
     client.app.state.llm.set_transport(MockAnthropic({}).messages)
-    token = _bootstrap_token(client)
-    play_resp = client.post(
-        f"/api/dev/scenarios/fixture/play?token={token}"
-    ).json()
+    play_resp = client.post("/api/dev/scenarios/fixture/play").json()
     session_id = play_resp["session_id"]
     creator_id = play_resp["role_label_to_id"]["creator"]
     creator_token = play_resp["role_tokens"][creator_id]
+    # Wait for the background runner to finish so the recorded session
+    # has its full transcript captured.
+    _wait_for_state(client, session_id, creator_token, "ENDED")
 
     rec = client.post(
         f"/api/dev/sessions/{session_id}/record?token={creator_token}",
@@ -181,10 +238,7 @@ def test_record_requires_creator_token(client: TestClient) -> None:
     """A non-creator (or absent) token must not be able to dump session
     state via /record."""
 
-    token = _bootstrap_token(client)
-    play_resp = client.post(
-        f"/api/dev/scenarios/fixture/play?token={token}"
-    ).json()
+    play_resp = client.post("/api/dev/scenarios/fixture/play").json()
     session_id = play_resp["session_id"]
     # Absent token → 401
     rec = client.post(

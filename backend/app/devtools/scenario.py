@@ -65,11 +65,19 @@ class PlayStep(BaseModel):
     ``content`` is what the player would type into the composer; the
     runner posts it via WebSocket ``submit_response`` (matches the
     real player path, including guardrail + dedupe).
+
+    ``ts`` is the wall-clock time of the original event when the
+    scenario was recorded (ISO 8601 string). The deterministic
+    runner uses the inter-event delta to pace replay so a connected
+    dev tab sees messages appear at the same cadence the real
+    session did. ``None`` for hand-authored scenarios — the runner
+    falls back to a fixed-pace default in that case.
     """
 
     model_config = ConfigDict(extra="forbid")
     role_label: str = Field(min_length=1)
     content: str = Field(min_length=1, max_length=4000)
+    ts: str | None = None
 
 
 class RecordedMessage(BaseModel):
@@ -113,6 +121,10 @@ class RecordedMessage(BaseModel):
     # have. The recorder uses ``"all"`` by default — supporting
     # role-scoped visibility round-trips is tracked as follow-up.
     visibility: list[str] | Literal["all"] = "all"
+    # Wall-clock timestamp of the original event (ISO 8601). Drives
+    # the deterministic runner's playback pacing so the replay
+    # matches the real session's cadence — see ``PlayStep.ts``.
+    ts: str | None = None
 
 
 class PlayTurn(BaseModel):

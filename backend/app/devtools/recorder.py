@@ -138,7 +138,11 @@ class SessionRecorder:
                     # replay against a role that's gone.
                     continue
                 player_steps[turn_id].append(
-                    PlayStep(role_label=label, content=msg.body or "")
+                    PlayStep(
+                        role_label=label,
+                        content=msg.body or "",
+                        ts=msg.ts.isoformat() if msg.ts else None,
+                    )
                 )
             elif msg.kind == MessageKind.PLAYER and msg.is_interjection:
                 # Out-of-turn interjection: a player message posted
@@ -219,6 +223,7 @@ def _to_recorded(
         # messages it can't resolve. Per-role visibility round-trip
         # is tracked as follow-up.
         visibility="all",
+        ts=msg.ts.isoformat() if msg.ts else None,
     )
 
 

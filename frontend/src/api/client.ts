@@ -376,18 +376,23 @@ export const api = {
   },
 
   /**
-   * Dev-tools: replay a scenario in a NEW session. Returns the new
-   * session id + per-role tokens so the dev can open each role's tab
-   * via ``/play/{token}`` and watch the replay unfold.
+   * Dev-tools: replay a scenario in a NEW session.
    *
-   * Pass any valid token (creator-typically). The backend doesn't
-   * bind the token to the new session — it only verifies the caller
-   * is authenticated to *some* session, which closes the
-   * ``DEV_TOOLS_ENABLED + unauth'd ingress`` exposure.
+   * The backend returns the new session id + tokens IMMEDIATELY
+   * (after setup) and runs the play/end/AAR phases in the
+   * background, broadcasting ``message_complete`` events at the
+   * recording's original timestamp cadence so a connected tab
+   * watches the replay unfold live.
+   *
+   * Token is optional: when ``DEV_TOOLS_ENABLED=true`` the backend
+   * accepts unauthenticated calls (so the wizard can replay a
+   * scenario without first creating a placeholder session). When
+   * only ``TEST_MODE=true`` is set, a token is still required to
+   * avoid leaking session minting on preview/CI deploys.
    */
   async playScenario(
     scenarioId: string,
-    token: string,
+    token?: string,
   ): Promise<{
     ok: boolean;
     session_id: string | null;
@@ -396,10 +401,10 @@ export const api = {
     role_tokens: Record<string, string>;
     role_label_to_id: Record<string, string>;
   }> {
-    return request(
-      "POST",
-      `/api/dev/scenarios/${encodeURIComponent(scenarioId)}/play?token=${encodeURIComponent(token)}`,
-    );
+    const url = token
+      ? `/api/dev/scenarios/${encodeURIComponent(scenarioId)}/play?token=${encodeURIComponent(token)}`
+      : `/api/dev/scenarios/${encodeURIComponent(scenarioId)}/play`;
+    return request("POST", url);
   },
 
   /**

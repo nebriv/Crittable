@@ -193,44 +193,76 @@ def register_devtools_routes(app: FastAPI) -> None:
 
     @router.post("/scenarios/{scenario_id}/play")
     async def play_scenario(scenario_id: str, request: Request) -> dict[str, Any]:
-        """Replay a scenario in a NEW session.
+        """Replay a scenario in a NEW session — async-then-poll pattern.
 
-        Returns the new session id, the creator's join token, and the
-        per-role join URLs so the dev can open each role's tab in
-        parallel and watch the run unfold. The runner is awaited
-        synchronously — a 5-minute scenario will hold the request that
-        long, which is fine for solo-dev work but would be bad for
-        production. The dev-tools gate keeps this safe.
+        Creates the session + roster + finalised plan synchronously
+        (~100 ms), spawns the play / end / AAR phases as a background
+        task, and returns the join tokens immediately. The dev's
+        new-tab opener lands on a session that's about to start
+        playing — every WS-connected client sees ``message_complete``
+        events broadcast at the recording's original cadence.
 
-        Auth: requires a valid signed token (any role, any session).
-        Combined with ``DEV_TOOLS_ENABLED``, this stops an unauth'd
-        caller on a misconfigured ``TEST_MODE=true`` instance from
-        spinning up sessions and harvesting role tokens. The token is
-        not bound to the *new* session (one is being created); we
-        only check that the caller already has a valid token
-        somewhere on this instance.
+        Auth model:
+
+        * ``DEV_TOOLS_ENABLED=true`` is an explicit dev opt-in. With
+          that flag set, no token is required — the wizard's
+          "replay scenario" path on the home screen has no token
+          to present yet, and requiring one would block the most
+          common dev use case.
+        * ``TEST_MODE=true`` (CI / preview) STILL requires a valid
+          token. CI environments are sometimes network-reachable
+          (e.g. PR preview deploys) and we don't want an unauth'd
+          caller harvesting tokens there. Closes Security review H1
+          for that environment specifically.
+        * Production (neither flag) → 404 from ``_require_dev_tools``
+          before this branch is reached.
         """
 
         _require_dev_tools(request)
-        token = request.query_params.get("token")
-        if not token:
-            raise HTTPException(status.HTTP_401_UNAUTHORIZED, "token required")
-        try:
-            _authn(request).verify(token)
-        except InvalidTokenError as exc:
-            raise HTTPException(status.HTTP_401_UNAUTHORIZED, str(exc)) from exc
+        s = _settings(request)
+        if not s.dev_tools_enabled:
+            # ``test_mode``-only path: token still required.
+            token = request.query_params.get("token")
+            if not token:
+                raise HTTPException(
+                    status.HTTP_401_UNAUTHORIZED, "token required"
+                )
+            try:
+                _authn(request).verify(token)
+            except InvalidTokenError as exc:
+                raise HTTPException(
+                    status.HTTP_401_UNAUTHORIZED, str(exc)
+                ) from exc
         scenarios = _safe_load_scenarios(request)
         scenario = scenarios.get(scenario_id)
         if scenario is None:
             raise HTTPException(
                 status.HTTP_404_NOT_FOUND, f"unknown scenario {scenario_id!r}"
             )
-        runner = ScenarioRunner(_manager(request), scenario)
-        progress = await runner.run()
+        manager = _manager(request)
+        runner = ScenarioRunner(manager, scenario)
+        # Synchronous: create session + roster + finalise plan. Fast.
+        progress = await runner.prepare()
+        if progress.error is not None:
+            # ``prepare`` couldn't even create the session — nothing
+            # to background-spawn. Surface the error directly.
+            return {
+                "ok": False,
+                "session_id": progress.session_id,
+                "error": progress.error,
+                "log": progress.log,
+                "role_tokens": runner.role_tokens,
+                "role_label_to_id": runner.role_label_to_id,
+            }
+        # Spawn the play/end/AAR phases in the background. The runner's
+        # ``continue_run`` swallows + logs its own errors so the
+        # supervisor task stays clean. ``manager._spawn_bg`` adds the
+        # task to the manager's tracked set so app shutdown cancels it.
+        manager._spawn_bg(runner.continue_run())
         return {
-            "ok": progress.error is None,
+            "ok": True,
             "session_id": progress.session_id,
-            "error": progress.error,
+            "error": None,
             "log": progress.log,
             "role_tokens": runner.role_tokens,
             "role_label_to_id": runner.role_label_to_id,

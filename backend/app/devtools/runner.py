@@ -71,16 +71,72 @@ class ScenarioRunner:
         self._scenario = scenario
         self._role_ids: dict[str, str] = {}
         self._role_tokens: dict[str, str] = {}
+        # Wall-clock timestamp of the last played event, used to
+        # compute inter-event delays from recorded ``ts`` deltas. Set
+        # to ``None`` until the first event with a timestamp fires.
+        self._last_event_ts: str | None = None
         self.progress = RunnerProgress(
             total_play_turns=len(scenario.play_turns),
         )
 
     # ----------------------------------------------------- public API
+    async def prepare(self) -> RunnerProgress:
+        """Fast path: create the session + roster, finalise the plan
+        (skip-setup or scripted setup), so callers have valid join
+        tokens to hand back. Stops BEFORE ``start_phase`` — useful
+        for the live-playback flow where the API handler wants to
+        return tokens immediately and let the long-running play /
+        end / AAR phases run in the background.
+        """
+
+        try:
+            await self.create_session()
+            if self._scenario.skip_setup or not self._scenario.setup_replies:
+                await self._skip_setup()
+            else:
+                await self.setup_phase()
+        except Exception as exc:
+            _logger.exception(
+                "scenario_runner_prepare_failed",
+                scenario_name=self._scenario.meta.name,
+                session_id=self.progress.session_id,
+            )
+            self.progress.error = f"{type(exc).__name__}: {exc}"
+            self.progress.finished = True
+        return self.progress
+
+    async def continue_run(self) -> RunnerProgress:
+        """Slow path: start_phase + play_phase + end_phase. Designed
+        to be spawned as a background task after ``prepare()`` returns.
+
+        Errors are logged + recorded in ``progress.error``; the
+        background task itself does not raise so the supervisor task
+        stays clean.
+        """
+
+        try:
+            await self.start_phase()
+            await self.play_phase()
+            await self.end_phase()
+        except Exception as exc:
+            _logger.exception(
+                "scenario_runner_continue_failed",
+                scenario_name=self._scenario.meta.name,
+                session_id=self.progress.session_id,
+            )
+            self.progress.error = f"{type(exc).__name__}: {exc}"
+        finally:
+            self.progress.finished = True
+        return self.progress
+
     async def run(self) -> RunnerProgress:
-        """Play the scenario end-to-end. Best-effort: on a hard error
-        the runner stops, sets ``progress.error``, and returns the
-        partial progress object. The session is left in whatever state
-        the engine reached so the dev can inspect it via God Mode."""
+        """Synchronous end-to-end run, retained for pytest + CLI
+        callers that don't need the live-playback split.
+
+        The HTTP ``/api/dev/scenarios/{id}/play`` endpoint uses
+        ``prepare()`` + a backgrounded ``continue_run()`` instead so
+        the response returns within ~100 ms with valid join tokens.
+        """
 
         try:
             await self.create_session()
@@ -281,16 +337,58 @@ class ScenarioRunner:
                     session=session, turn=session.current_turn
                 )
 
+    # Caps on inter-event sleep durations. Recorded sessions can have
+    # multi-minute idle gaps (real dev typing pauses, lunch breaks
+    # mid-exercise, etc.) — replaying those verbatim would feel
+    # broken. Floor stops a 100ms-spaced LLM token storm from
+    # rendering as instant; ceiling stops a 5-minute thinking pause
+    # from making the dev think the replay is hung. Tuned for "feels
+    # like watching someone else play" on real recordings.
+    _PACE_FLOOR_S = 0.15
+    _PACE_CEILING_S = 5.0
+    # Hand-authored scenarios (no ``ts`` on events) fall back to a
+    # fixed cadence — same shape as before timestamps shipped, just
+    # used as the default rather than the only path.
+    _PACE_FALLBACK_S = 0.5
+
+    async def _pace_from_ts(
+        self, current_ts: str | None, prev_ts: str | None
+    ) -> None:
+        """Sleep for the inter-event delta when both timestamps are
+        present, falling back to ``_PACE_FALLBACK_S`` when either is
+        missing (hand-authored scenarios) or negative (clock skew).
+
+        Sleeps are clamped between ``_PACE_FLOOR_S`` and
+        ``_PACE_CEILING_S`` so neither sub-100ms storms nor
+        multi-minute idle gaps make the replay unwatchable.
+        """
+
+        from datetime import datetime
+
+        if not current_ts or not prev_ts:
+            await asyncio.sleep(self._PACE_FALLBACK_S)
+            return
+        try:
+            now = datetime.fromisoformat(current_ts)
+            then = datetime.fromisoformat(prev_ts)
+        except ValueError:
+            await asyncio.sleep(self._PACE_FALLBACK_S)
+            return
+        delta = (now - then).total_seconds()
+        clamped = max(self._PACE_FLOOR_S, min(self._PACE_CEILING_S, delta))
+        await asyncio.sleep(clamped)
+
     async def _drive_turn_deterministic(
         self, *, turn: Any, next_turn: Any | None
     ) -> None:
         """Deterministic-mode driver.
 
         Order matters and mirrors the engine's own contract:
-          1. Send any scripted player submissions for this turn.
+          1. Send any scripted player submissions for this turn (paced
+             from recorded ``ts`` deltas, clamped).
           2. Inject the recorded AI fallout (text, tool calls, broadcasts,
              critical injects, system messages) so the UI sees the
-             same transcript it did during recording.
+             same transcript it did during recording (also paced).
           3. If a ``next_turn`` exists, open it with the role-set that
              turn expects. The session stays in AI_PROCESSING after
              step 2 (because we never called ``run_play_turn``); this
@@ -303,6 +401,8 @@ class ScenarioRunner:
 
         sid = self._must_session_id()
         for step in turn.submissions:
+            await self._pace_from_ts(step.ts, self._last_event_ts)
+            self._last_event_ts = step.ts or self._last_event_ts
             role_id = self._resolve_role(step.role_label)
             session = await self._manager.get_session(sid)
             if session.state == SessionState.ENDED:
@@ -362,6 +462,8 @@ class ScenarioRunner:
             return
         sid = self._must_session_id()
         for record in ai_messages:
+            await self._pace_from_ts(record.ts, self._last_event_ts)
+            self._last_event_ts = record.ts or self._last_event_ts
             kind = MessageKind(record.kind)
             role_id: str | None = None
             if record.role_label:

@@ -104,6 +104,28 @@ export function ScenarioPanel({
       const body = await api.playScenario(selected, creatorToken);
       setResult(body);
       console.info("[scenarios] play complete", body.session_id, body.error);
+      // Auto-open the creator view of the spawned session in a new
+      // tab. Without this, the replay finishes invisibly to the
+      // operator — the result block surfaces the new session id but
+      // a dev who isn't watching for it has no way to know what to
+      // click. The pop-up may be blocked the first time the dev
+      // hits Play (browsers block window.open from non-direct
+      // gestures); the result block below still has the link as a
+      // fallback. See "User CRITICAL #2" in the review pipeline.
+      if (body.ok && body.session_id) {
+        const creatorRoleId = body.role_label_to_id["creator"];
+        const creatorToken = creatorRoleId
+          ? body.role_tokens[creatorRoleId]
+          : undefined;
+        if (creatorToken) {
+          const newTab = window.open(`/play/${creatorToken}`, "_blank");
+          if (!newTab) {
+            console.info(
+              "[scenarios] auto-open blocked by browser; use the link in the result block",
+            );
+          }
+        }
+      }
     } catch (err) {
       const text = err instanceof Error ? err.message : String(err);
       setError(text);
@@ -226,6 +248,81 @@ export function ScenarioPanel({
           {scenarios.length} available
         </span>
       </header>
+      <p className="text-[11px] text-ink-300">
+        Replay creates a <strong className="text-ink-100">new session</strong>{" "}
+        — your current view stays put. The replay opens in a new tab when it
+        finishes. (Pop-up blocked? Use the per-role link in the result block
+        below.)
+      </p>
+
+      {/* Result block surfaces the spawned session id + creator link AT
+          THE TOP of the panel, not at the bottom — pre-fix it was
+          buried under the dropdown / record sections and a dev who
+          clicked Play would never know where the replayed session
+          went. The big "Open creator view" link is the primary
+          affordance after a successful replay. */}
+      {result ? (
+        <div
+          className={
+            result.ok
+              ? "rounded border border-info bg-info/15 p-2 text-xs"
+              : "rounded border border-crit bg-crit/15 p-2 text-xs"
+          }
+        >
+          <p className="font-semibold text-ink-100">
+            {result.ok
+              ? "Replay finished — new session is ready."
+              : "Replay failed."}
+          </p>
+          {result.session_id && result.ok ? (
+            <p className="mt-1 text-ink-200">
+              <a
+                href={`/play/${result.role_tokens[result.role_label_to_id["creator"]]}`}
+                target="_blank"
+                rel="noreferrer"
+                className="text-info underline"
+              >
+                Open creator view of{" "}
+                <code className="font-mono">{result.session_id.slice(0, 8)}</code>{" "}
+                (new tab) →
+              </a>
+            </p>
+          ) : null}
+          {result.error ? (
+            <p className="mt-1 text-crit">{result.error}</p>
+          ) : null}
+          {Object.keys(result.role_tokens).length > 0 && result.ok ? (
+            <details className="mt-1">
+              <summary className="cursor-pointer text-ink-300">
+                Per-role join URLs ({Object.keys(result.role_tokens).length})
+              </summary>
+              <ul className="mt-1 space-y-0.5">
+                {Object.entries(result.role_tokens).map(([roleId, token]) => {
+                  const label =
+                    Object.entries(result.role_label_to_id).find(
+                      ([, id]) => id === roleId,
+                    )?.[0] ?? roleId.slice(0, 8);
+                  return (
+                    <li key={roleId}>
+                      <a
+                        href={`/play/${token}`}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="text-info underline"
+                      >
+                        {label}{" "}
+                        <code className="text-[10px] text-ink-400">
+                          {roleId.slice(0, 6)}
+                        </code>
+                      </a>
+                    </li>
+                  );
+                })}
+              </ul>
+            </details>
+          ) : null}
+        </div>
+      ) : null}
 
       <div className="flex flex-col gap-2">
         <label className="text-xs text-ink-200">
@@ -298,49 +395,6 @@ export function ScenarioPanel({
         <p role="alert" className="text-xs text-crit">
           {error}
         </p>
-      ) : null}
-
-      {result ? (
-        <div className="rounded border border-ink-700 bg-ink-850 p-2 text-[11px]">
-          <p className="font-semibold text-ink-100">
-            {result.ok ? "Replay finished." : "Replay failed."}
-          </p>
-          {result.session_id ? (
-            <p className="mt-1 text-ink-200">
-              New session: <code>{result.session_id}</code>
-            </p>
-          ) : null}
-          {result.error ? (
-            <p className="mt-1 text-crit">{result.error}</p>
-          ) : null}
-          {Object.keys(result.role_tokens).length > 0 ? (
-            <details className="mt-1">
-              <summary className="cursor-pointer text-ink-300">
-                Per-role join URLs
-              </summary>
-              <ul className="mt-1 space-y-0.5">
-                {Object.entries(result.role_tokens).map(([roleId, token]) => {
-                  const label =
-                    Object.entries(result.role_label_to_id).find(
-                      ([, id]) => id === roleId,
-                    )?.[0] ?? roleId.slice(0, 8);
-                  return (
-                    <li key={roleId}>
-                      <a
-                        href={`/play/${token}`}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="text-info underline"
-                      >
-                        {label}
-                      </a>
-                    </li>
-                  );
-                })}
-              </ul>
-            </details>
-          ) : null}
-        </div>
       ) : null}
     </section>
   );
