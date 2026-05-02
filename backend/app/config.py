@@ -298,12 +298,15 @@ class Settings(BaseSettings):
     # implies this. **Never set this in production.**
     dev_tools_enabled: bool = Field(default=False, alias="DEV_TOOLS_ENABLED")
     # Filesystem path the dev-tools scenario loader scans for ``*.json``
-    # files. Defaults to ``backend/scenarios/`` relative to the working
-    # directory; operators running from a different cwd should set this
-    # explicitly so the picker doesn't show an empty list.
-    dev_scenarios_path: str = Field(
-        default="backend/scenarios", alias="DEV_SCENARIOS_PATH"
-    )
+    # files. The empty-string default means "auto-detect" — the
+    # ``resolved_dev_scenarios_path()`` helper computes the
+    # repo-root-relative path from this module's __file__ so the
+    # loader works regardless of which cwd uvicorn was started from
+    # (running `cd backend && uvicorn ...` would otherwise resolve a
+    # cwd-relative `"backend/scenarios"` to `backend/backend/scenarios`
+    # and silently show an empty picker). Operators with scenarios
+    # checked in elsewhere can still override.
+    dev_scenarios_path: str = Field(default="", alias="DEV_SCENARIOS_PATH")
 
     # ---- Extensions ----------------------------------------------------
     extensions_tools_json: str | None = Field(default=None, alias="EXTENSIONS_TOOLS_JSON")
@@ -324,6 +327,30 @@ class Settings(BaseSettings):
         return v
 
     # ---- Resolved properties ------------------------------------------
+
+    def resolved_dev_scenarios_path(self) -> str:
+        """Return the dev-scenarios directory as an absolute path.
+
+        Empty string ``DEV_SCENARIOS_PATH`` (the default) auto-detects:
+        we walk up from this module's ``__file__`` to find the repo
+        root and return ``<repo_root>/backend/scenarios``. This makes
+        the default scenarios-dir cwd-independent — the previous
+        cwd-relative default silently rendered an empty picker when
+        uvicorn was started from inside ``backend/``.
+
+        A non-empty operator override is returned as-is (still
+        ``Path.resolve()``-d at use time by the loader so symlink
+        defences fire).
+        """
+
+        from pathlib import Path
+
+        if self.dev_scenarios_path:
+            return self.dev_scenarios_path
+        # backend/app/config.py → backend/app → backend → <repo_root>
+        repo_root = Path(__file__).resolve().parent.parent.parent
+        return str(repo_root / "backend" / "scenarios")
+
     def model_for(self, tier: ModelTier) -> str:
         """Resolve a model id for the given tier.
 

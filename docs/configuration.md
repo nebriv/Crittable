@@ -65,6 +65,8 @@ rationale for each default lives in `backend/app/config.py`
 | `WS_HEARTBEAT_S` | `20` | WebSocket heartbeat interval |
 | `INPUT_GUARDRAIL_ENABLED` | `true` | Toggle the Haiku off-topic pre-classifier |
 | `DEV_FAST_SETUP` | `false` | Dev/testing only: skip the AI setup dialogue at session creation, drop a generic default plan, and land in `READY`. **Never enable in production.** A creator can also trigger this mid-flow via `POST /api/sessions/{id}/setup/skip`. |
+| `DEV_TOOLS_ENABLED` | `false` | Dev/testing only: expose the `/api/dev/scenarios/...` endpoints (scenario list / play / record). Required for the "Scenarios" panel inside God Mode to load — without this flag the panel renders a "Scenarios — disabled" empty state. `TEST_MODE=true` also implies this. **Never enable in production**: a leaked creator token plus this flag would let an attacker spawn arbitrary sessions and read their join links. See `backend/scenarios/README.md` and the "Scenario replay" section in `CLAUDE.md`. |
+| `DEV_SCENARIOS_PATH` | `backend/scenarios` | Filesystem path the dev-tools scenario loader scans for `*.json` files. Resolved at request time via `realpath`; symlinks escaping the resolved root and files >1 MB are skipped (with a `WARNING` audit line). Defaults to a path relative to the working directory — operators running from elsewhere should set this explicitly. |
 
 ### Shared notepad (issue #98)
 

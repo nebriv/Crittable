@@ -135,7 +135,36 @@ export function Facilitator() {
   // Dev-mode toggle on the intro page: prefills a known scenario + creator
   // identity, and on submit auto-skips the AI setup dialogue so testers
   // bypass the 5–30 s setup loop. Use only for local QA.
+  //
+  // Default flips ON when the backend has ``DEV_TOOLS_ENABLED=true``
+  // (or ``TEST_MODE=true``) — operators running with the dev-tools
+  // flag almost always want the dev shortcuts too. The mount-time
+  // probe is a single GET /api/dev/scenarios; a 404 (gate closed)
+  // leaves the toggle unchecked, a 200 flips it on. Operator can
+  // still uncheck it for any individual session.
   const [devMode, setDevMode] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const body = await api.listScenarios();
+        if (!cancelled && !body.disabled) {
+          setDevMode(true);
+          console.info(
+            "[facilitator] DEV_TOOLS_ENABLED detected on backend — defaulting devMode to true",
+          );
+        }
+      } catch {
+        // Network error / unexpected status — leave devMode at false;
+        // listScenarios already swallows the 404 path so anything
+        // landing here is genuinely surprising and not actionable
+        // from the toggle.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
   const [setupReply, setSetupReply] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);

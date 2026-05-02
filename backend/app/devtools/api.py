@@ -113,7 +113,7 @@ def register_devtools_routes(app: FastAPI) -> None:
         can't turn the loader into an arbitrary-file-read primitive.
         """
 
-        return Path(_settings(req).dev_scenarios_path).resolve()
+        return Path(_settings(req).resolved_dev_scenarios_path()).resolve()
 
     def _safe_load_scenarios(req: Request) -> dict[str, Any]:
         """Load scenarios from the resolved path with two defences:
