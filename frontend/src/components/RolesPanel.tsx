@@ -11,12 +11,43 @@ interface Props {
   onError: (msg: string) => void;
   /**
    * Server-reported set of role_ids whose tabs are currently connected
-   * via WebSocket. Surfaces as a green/grey dot per row so the creator
-   * can tell whether an invited player has actually opened the link.
-   * See issue #52.
+   * via WebSocket. Surfaces as a tri-state dot per row so the creator
+   * can tell whether an invited player has actually opened the link
+   * (vs. opened but tabbed away). See issue #52.
    */
-  connectedRoleIds?: ReadonlySet<string>;
+  connectedRoleIds: ReadonlySet<string>;
+  /**
+   * Subset of ``connectedRoleIds`` whose tabs are currently focused /
+   * visible. Drives the blue (active) vs yellow (joined but tabbed
+   * away) colour of the status dot. A role in ``connectedRoleIds`` but
+   * not in this set is shown as joined-but-idle.
+   */
+  focusedRoleIds: ReadonlySet<string>;
 }
+
+type RoleStatus = "not_joined" | "joined_active" | "joined_idle";
+
+function computeStatus(
+  roleId: string,
+  connected: ReadonlySet<string>,
+  focused: ReadonlySet<string>,
+): RoleStatus {
+  if (!connected.has(roleId)) return "not_joined";
+  if (focused.has(roleId)) return "joined_active";
+  return "joined_idle";
+}
+
+const STATUS_DOT_CLASS: Record<RoleStatus, string> = {
+  not_joined: "bg-ink-500",
+  joined_active: "bg-signal",
+  joined_idle: "bg-warn",
+};
+
+const STATUS_LABEL: Record<RoleStatus, string> = {
+  not_joined: "Not joined",
+  joined_active: "Active",
+  joined_idle: "Joined, tab not active",
+};
 
 /**
  * Creator-only role manager: add a role, copy a role's join link, kick
@@ -36,6 +67,7 @@ export function RolesPanel({
   onRoleChanged,
   onError,
   connectedRoleIds,
+  focusedRoleIds,
 }: Props) {
   const [newRole, setNewRole] = useState("");
   // Set of role_ids whose Copy/Add/Kick button is currently flashing
@@ -219,55 +251,60 @@ export function RolesPanel({
           ROLES
         </h3>
         <span className="mono text-[10px] uppercase tracking-[0.04em] text-ink-400 tabular-nums">
-          {roles.length} seated
-          {connectedRoleIds
-            ? ` · ${
-                roles.filter((r) => connectedRoleIds.has(r.id)).length
-              } joined`
-            : null}
+          {(() => {
+            const joined = roles.filter((r) => connectedRoleIds.has(r.id)).length;
+            const active = roles.filter((r) => focusedRoleIds.has(r.id)).length;
+            return `${roles.length} seated · ${joined} joined · ${active} active`;
+          })()}
         </span>
       </div>
-      {connectedRoleIds ? (
-        <p
-          className="mono flex flex-wrap items-center gap-2 text-[10px] uppercase tracking-[0.06em] text-ink-400"
-          aria-hidden="true"
-        >
-          <span className="inline-flex items-center gap-1">
-            <span className="inline-block h-2 w-2 rounded-full bg-signal" />
-            joined
-          </span>
-          <span className="inline-flex items-center gap-1">
-            <span className="inline-block h-2 w-2 rounded-full bg-ink-500" />
-            link not opened yet
-          </span>
-        </p>
-      ) : null}
+      {/* Legend is in the accessibility tree (so a screen-reader user
+          gets the colour↔meaning mapping the sighted user just saw);
+          only the inert colour swatches are ``aria-hidden``. */}
+      <p className="mono flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px] uppercase tracking-[0.06em] text-ink-400">
+        <span className="inline-flex items-center gap-1">
+          <span
+            aria-hidden="true"
+            className="inline-block h-2 w-2 rounded-full bg-signal"
+          />
+          active
+        </span>
+        <span className="inline-flex items-center gap-1">
+          <span
+            aria-hidden="true"
+            className="inline-block h-2 w-2 rounded-full bg-warn"
+          />
+          tab not active
+        </span>
+        <span className="inline-flex items-center gap-1">
+          <span
+            aria-hidden="true"
+            className="inline-block h-2 w-2 rounded-full bg-ink-500"
+          />
+          not joined
+        </span>
+      </p>
 
       <ul className="flex flex-col gap-2">
         {roles.map((r) => {
-          const isOnline = connectedRoleIds?.has(r.id) ?? false;
+          const status = computeStatus(r.id, connectedRoleIds, focusedRoleIds);
+          const dotClass = STATUS_DOT_CLASS[status];
+          const dotTitle = STATUS_LABEL[status];
           return (
           <li
             key={r.id}
-            className="flex flex-col gap-1 rounded-r-1 border border-ink-600 bg-ink-800 p-2"
+            className="flex flex-col gap-2 rounded-r-1 border border-ink-600 bg-ink-800 p-2"
           >
-            {/* Issue #105: row laid out as a flex-wrap header (so the
-                three action buttons drop onto a second line on the
-                narrow 260px creator rail) plus min-w-0 + break-words on
-                the label half, so long role labels can shrink/wrap
-                instead of pushing the buttons off the right edge. */}
-            <div className="flex flex-wrap items-baseline justify-between gap-x-2 gap-y-1">
-              <div className="flex min-w-0 flex-1 flex-wrap items-baseline gap-x-2 gap-y-0.5">
-                {connectedRoleIds ? (
-                  <span
-                    aria-hidden="true"
-                    title={isOnline ? "Joined" : "Hasn’t opened the join link yet"}
-                    className={
-                      "inline-block h-2 w-2 shrink-0 self-center rounded-full " +
-                      (isOnline ? "bg-signal" : "bg-ink-500")
-                    }
-                  />
-                ) : null}
+            {/* Top row: name + display_name + creator star on the
+                left; tri-state status dot pinned to the top-right
+                corner. The pre-redesign layout collided the action
+                buttons with the role name when the panel was narrow —
+                the buttons wrapped over the label and the user
+                couldn't read who the row belonged to. Buttons now
+                live on their own row below (centered) so this row is
+                always legible. */}
+            <div className="flex items-start justify-between gap-2">
+              <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-0.5">
                 <span className="mono break-words font-bold uppercase tracking-[0.06em] text-ink-100">
                   {r.label}
                 </span>
@@ -281,55 +318,65 @@ export function RolesPanel({
                     ★
                   </span>
                 ) : null}
-                {connectedRoleIds && !isOnline && !r.is_creator ? (
-                  <span className="mono text-[10px] uppercase text-ink-500">not joined</span>
-                ) : null}
-                {connectedRoleIds ? (
-                  <span className="sr-only">
-                    {isOnline ? "online" : "offline"}
-                  </span>
-                ) : null}
               </div>
-              {!r.is_creator ? (
-                <div className="flex shrink-0 flex-wrap gap-1">
-                  <button
-                    type="button"
-                    onClick={() => copyExistingLink(r.id, r.label)}
-                    disabled={busy}
-                    aria-label="Copy join link"
-                    className={
-                      "mono rounded-r-1 border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.10em] focus-visible:outline focus-visible:outline-2 focus-visible:outline-signal disabled:opacity-50 " +
-                      (copiedRoleIds.has(r.id)
-                        ? "border-signal bg-signal-tint text-signal"
-                        : "border-ink-500 text-ink-200 hover:border-signal hover:text-signal")
-                    }
-                    title="Re-mint and copy the join link without invalidating any existing tabs."
-                  >
-                    <span aria-hidden="true">
-                      {copiedRoleIds.has(r.id) ? "COPIED!" : "COPY LINK"}
-                    </span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => kick(r.id, r.label)}
-                    disabled={busy}
-                    className="mono rounded-r-1 border border-warn px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.10em] text-warn hover:bg-warn-bg focus-visible:outline focus-visible:outline-2 focus-visible:outline-warn disabled:opacity-50"
-                    title="Disconnect anyone using the current link and issue a new link."
-                  >
-                    KICK
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => remove(r.id, r.label)}
-                    disabled={busy}
-                    className="mono rounded-r-1 border border-crit px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.10em] text-crit hover:bg-crit-bg focus-visible:outline focus-visible:outline-2 focus-visible:outline-crit disabled:opacity-50"
-                    title="Remove this role from the session."
-                  >
-                    REMOVE
-                  </button>
-                </div>
-              ) : null}
+              <span
+                aria-hidden="true"
+                title={dotTitle}
+                className={
+                  "mt-1 inline-block h-3 w-3 shrink-0 rounded-full ring-1 ring-ink-900 " +
+                  dotClass
+                }
+              />
+              {/* ``Status: Active`` reads coherently in a screen
+                  reader's role-card walk; bare "Active" without the
+                  ``Status:`` prefix collapsed into the role label
+                  ("SOC Analyst Active") with no semantic separation. */}
+              <span className="sr-only">{`Status: ${dotTitle}`}</span>
             </div>
+            {!r.is_creator ? (
+              <div className="flex flex-wrap items-center justify-center gap-1">
+                <button
+                  type="button"
+                  onClick={() => copyExistingLink(r.id, r.label)}
+                  disabled={busy}
+                  aria-label="Copy join link"
+                  className={
+                    "mono rounded-r-1 border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.10em] focus-visible:outline focus-visible:outline-2 focus-visible:outline-signal disabled:opacity-50 " +
+                    (copiedRoleIds.has(r.id)
+                      ? "border-signal bg-signal-tint text-signal"
+                      : "border-ink-500 text-ink-200 hover:border-signal hover:text-signal")
+                  }
+                  title="Re-mint and copy the join link without invalidating any existing tabs."
+                >
+                  {/* Visual flash only — accessible name stays
+                      "Copy join link" via aria-label so screen
+                      readers don't double-announce when the label
+                      flips for 2s. The audible confirmation comes
+                      from the panel-level live region below. */}
+                  <span aria-hidden="true">
+                    {copiedRoleIds.has(r.id) ? "COPIED!" : "COPY LINK"}
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => kick(r.id, r.label)}
+                  disabled={busy}
+                  className="mono rounded-r-1 border border-warn px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.10em] text-warn hover:bg-warn-bg focus-visible:outline focus-visible:outline-2 focus-visible:outline-warn disabled:opacity-50"
+                  title="Disconnect anyone using the current link and issue a new link."
+                >
+                  KICK
+                </button>
+                <button
+                  type="button"
+                  onClick={() => remove(r.id, r.label)}
+                  disabled={busy}
+                  className="mono rounded-r-1 border border-crit px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.10em] text-crit hover:bg-crit-bg focus-visible:outline focus-visible:outline-2 focus-visible:outline-crit disabled:opacity-50"
+                  title="Remove this role from the session."
+                >
+                  REMOVE
+                </button>
+              </div>
+            ) : null}
           </li>
           );
         })}

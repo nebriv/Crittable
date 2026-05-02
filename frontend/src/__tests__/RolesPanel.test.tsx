@@ -67,6 +67,8 @@ describe("RolesPanel — issue #82 (no on-screen tokens)", () => {
         onRoleAdded={vi.fn()}
         onRoleChanged={vi.fn()}
         onError={vi.fn()}
+        connectedRoleIds={new Set()}
+        focusedRoleIds={new Set()}
       />,
     );
 
@@ -132,6 +134,8 @@ describe("RolesPanel — issue #82 (no on-screen tokens)", () => {
         onRoleAdded={onRoleAdded}
         onRoleChanged={vi.fn()}
         onError={vi.fn()}
+        connectedRoleIds={new Set()}
+        focusedRoleIds={new Set()}
       />,
     );
 
@@ -176,6 +180,8 @@ describe("RolesPanel — issue #82 (no on-screen tokens)", () => {
         onRoleAdded={vi.fn()}
         onRoleChanged={onRoleChanged}
         onError={vi.fn()}
+        connectedRoleIds={new Set()}
+        focusedRoleIds={new Set()}
       />,
     );
 
@@ -205,6 +211,77 @@ describe("RolesPanel — issue #82 (no on-screen tokens)", () => {
     );
   });
 
+  it("renders tri-state status dot per role: blue (active), yellow (joined+idle), grey (not joined)", () => {
+    const roles: RoleView[] = [
+      {
+        id: "role-creator",
+        label: "Facilitator",
+        kind: "player",
+        is_creator: true,
+        display_name: "Owner",
+      } as RoleView,
+      {
+        id: "role-active",
+        label: "SOC Analyst",
+        kind: "player",
+        is_creator: false,
+        display_name: "Ben",
+      } as RoleView,
+      {
+        id: "role-idle",
+        label: "Legal",
+        kind: "player",
+        is_creator: false,
+        display_name: "Sam",
+      } as RoleView,
+      {
+        id: "role-not-joined",
+        label: "TEST",
+        kind: "player",
+        is_creator: false,
+        display_name: null,
+      } as RoleView,
+    ];
+
+    render(
+      <RolesPanel
+        sessionId={SESSION_ID}
+        creatorToken={CREATOR_TOKEN}
+        roles={roles}
+        busy={false}
+        onRoleAdded={vi.fn()}
+        onRoleChanged={vi.fn()}
+        onError={vi.fn()}
+        connectedRoleIds={
+          new Set(["role-creator", "role-active", "role-idle"])
+        }
+        focusedRoleIds={new Set(["role-creator", "role-active"])}
+      />,
+    );
+
+    // Title attribute carries the human-readable status; it's the
+    // most stable selector since the colour class lives on the dot
+    // span sibling and Testing Library doesn't expose accessible
+    // names for ``aria-hidden`` elements.
+    expect(screen.getAllByTitle("Active").length).toBe(2); // creator + active
+    expect(screen.getAllByTitle("Joined, tab not active").length).toBe(1);
+    expect(screen.getAllByTitle("Not joined").length).toBe(1);
+
+    // Buttons live below the name — no longer inline with it. The
+    // pre-redesign layout overlapped buttons across the role label.
+    const remove = screen.getAllByRole("button", { name: /remove/i });
+    expect(remove.length).toBe(3); // 3 non-creator roles
+
+    // The per-role lowercase "not joined" caption that appeared
+    // inline with the role name pre-redesign is now gone — the
+    // colour-coded dot already conveys it. We do still emit the
+    // capital-N "Not joined" string into a screen-reader-only span
+    // so AT users get the same signal, so the assertion is
+    // case-sensitive on the visible-style lowercase form.
+    const list = screen.getByRole("list");
+    expect(list.textContent ?? "").not.toMatch(/not joined/);
+  });
+
   it("Copy link surfaces an inline error when clipboard write fails (not bubbled to onError)", async () => {
     vi.spyOn(api, "reissueRole").mockResolvedValue({
       token: "secret-token-do-not-show",
@@ -222,6 +299,8 @@ describe("RolesPanel — issue #82 (no on-screen tokens)", () => {
         onRoleAdded={vi.fn()}
         onRoleChanged={vi.fn()}
         onError={onError}
+        connectedRoleIds={new Set()}
+        focusedRoleIds={new Set()}
       />,
     );
 

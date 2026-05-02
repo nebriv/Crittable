@@ -60,14 +60,22 @@ export type ServerEvent =
       type: "presence";
       role_id: string;
       active: boolean;
+      /** Whether the role currently has at least one *focused / visible*
+       *  tab. Drives the tri-state dot in the creator's RolesPanel:
+       *  active=true & focused=true → blue (engaged), active=true &
+       *  focused=false → yellow (joined but tabbed away),
+       *  active=false → grey (not joined). */
+      focused: boolean;
       /** Total open WS tabs on this session, used for the top-bar
-       *  "Tabs: N" chip. May be undefined when received from an older
-       *  backend; treat as "unknown". */
+       *  "Tabs: N" chip. */
       connection_count?: number;
     }
   | {
       type: "presence_snapshot";
       role_ids: string[];
+      /** Subset of ``role_ids`` whose tabs are currently focused /
+       *  visible. */
+      focused_role_ids: string[];
       connection_count?: number;
     }
   | {
@@ -128,6 +136,12 @@ export type ClientEvent =
   | { type: "typing_start" }
   | { type: "typing_stop" }
   | { type: "heartbeat" }
+  // Per-tab visibility signal — fired on ``visibilitychange`` /
+  // ``focus`` / ``blur`` so the creator's RolesPanel can show a
+  // tri-state status dot (joined+focused / joined+backgrounded /
+  // not joined). The server aggregates per-role: a role is
+  // "focused" if at least one of its open tabs is focused.
+  | { type: "tab_focus"; focused: boolean }
   // Shared markdown notepad (issue #98).
   | { type: "notepad_sync_request" }
   | { type: "notepad_update"; update: string }
@@ -256,10 +270,12 @@ export class WsClient {
           case "presence":
             safe.role_id = parsed.role_id;
             safe.active = parsed.active;
+            safe.focused = parsed.focused;
             safe.connection_count = parsed.connection_count;
             break;
           case "presence_snapshot":
             safe.role_count = parsed.role_ids?.length ?? 0;
+            safe.focused_count = parsed.focused_role_ids?.length ?? 0;
             safe.connection_count = parsed.connection_count;
             break;
           case "decision_logged":

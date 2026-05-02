@@ -12,6 +12,7 @@ import { HudGauges } from "../components/brand/HudGauges";
 import { confirmLeaveSession } from "../lib/leaveGuard";
 import { isMidSessionJoiner } from "../lib/proxy";
 import { useStickyScroll } from "../lib/useStickyScroll";
+import { useTabFocusReporter } from "../lib/useTabFocusReporter";
 import { ServerEvent, WsClient } from "../lib/ws";
 
 interface Props {
@@ -144,6 +145,15 @@ export function Play({ sessionId, token }: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId, token]);
 
+  // WS lifecycle status. Mirrored to ``useTabFocusReporter`` so the
+  // current focus state is re-pushed on every (re)connect — the server
+  // assumes a fresh connection is focused, so a tab that was
+  // backgrounded before a transient disconnect would otherwise show as
+  // active in the creator's roster after reconnect.
+  const [wsStatus, setWsStatus] = useState<
+    "connecting" | "open" | "closed" | "error"
+  >("connecting");
+
   // WebSocket is gated on displayName because we want the intro page
   // to be a clean read-only landing — opening the WS before the user
   // has acknowledged the role brief produces "Player joined" pings
@@ -155,6 +165,7 @@ export function Play({ sessionId, token }: Props) {
       sessionId,
       token,
       onEvent: (evt) => handleEvent(evt),
+      onStatus: (s) => setWsStatus(s),
     });
     ws.connect();
     wsRef.current = ws;
@@ -165,6 +176,12 @@ export function Play({ sessionId, token }: Props) {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [displayName, sessionId, token]);
+
+  // Report this tab's focus / visibility state so the creator's
+  // RolesPanel can show this player as engaged (blue) vs tabbed away
+  // (yellow). Gated on ``displayName`` because the WS itself is — no
+  // point firing focus events into a closed socket.
+  useTabFocusReporter(wsRef, Boolean(displayName), wsStatus);
 
   function handleEvent(evt: ServerEvent) {
     switch (evt.type) {

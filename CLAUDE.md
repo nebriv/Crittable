@@ -2,6 +2,28 @@
 
 Long-term memory for Claude Code sessions on this repo. Read this first.
 
+> # ⚠️ NO BACKWARDS COMPATIBILITY
+>
+> **This app is not deployed and has zero users in the wild.** Do not write
+> backwards-compat shims, optional fields "for old clients", graceful
+> fallbacks for older backends, deprecation warnings, version-flag branches,
+> or rollout-safe migrations. Just change the schema/contract on both sides
+> and delete the old code.
+>
+> **No `field?: T` "for older deploys" anywhere.** If you add a wire field,
+> make it required. If you rename a field, rename it everywhere — don't
+> alias. If you remove a tool / event / endpoint, delete it; don't leave a
+> stub that returns 410. Tests should assert the *new* contract; do not
+> add a "fallback when X is undefined" test branch.
+>
+> The cost of carrying compat code is paid forever; the benefit (smooth
+> upgrade for absent users) is exactly zero. If you find yourself writing
+> "this is optional in case the backend hasn't shipped yet" — stop, ship
+> the backend change in the same PR, and make the field required.
+>
+> Sub-agents reviewing PRs should flag any back-compat shim as **HIGH** —
+> it's debt with no upside.
+
 ## Project overview
 
 A multi-user, browser-based chat application that runs cybersecurity tabletop exercises facilitated by Claude. A creator opens "New session," provides a scenario prompt, defines participant roles (CISO / IR Lead / Legal / Comms / etc.), and shares a unique join link per role. The creator also plays a role. Claude drives a turn-based loop and produces a downloadable markdown after-action report at the end.

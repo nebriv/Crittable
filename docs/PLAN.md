@@ -1,5 +1,13 @@
 # AI Cybersecurity Tabletop Facilitator — Architecture & Implementation Plan
 
+> # ⚠️ NO BACKWARDS COMPATIBILITY
+>
+> This app is **not deployed and has zero users in the wild**. Do not
+> design for graceful upgrades, optional-field shims, version-flag
+> branches, or rollout-safe migrations. Change the contract on both
+> sides in the same PR; delete the old code outright. See CLAUDE.md
+> for the full policy.
+
 ## Context
 
 A multi-user, browser-based chat application that runs cybersecurity tabletop exercises facilitated by Claude. A creator opens "New session," provides a scenario prompt, defines participant roles (e.g., CISO, IR Lead, Legal, Comms, Engineering), and shares a unique join link per role. The creator also plays a role. Claude holds the scenario brief and full roster, drives a turn-based loop (narrates events, decides which role(s) act next, ingests responses over WebSocket, advances the exercise), and at the end produces a downloadable markdown after-action report with scores.
