@@ -64,6 +64,12 @@ export function ScenarioPanel({
   const [result, setResult] = useState<PlayResult | null>(null);
   const [recordName, setRecordName] = useState("");
   const [error, setError] = useState<string | null>(null);
+  // Distinguish "endpoint is 404 because the dev-tools gate is closed"
+  // (disabled=true) from "the gate is open but the directory is
+  // empty" (disabled=false). Same UI state otherwise renders the same
+  // text, leaving the dev unable to tell which knob to flip.
+  const [disabled, setDisabled] = useState(false);
+  const [scenariosPath, setScenariosPath] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -72,6 +78,8 @@ export function ScenarioPanel({
         const body = await api.listScenarios();
         if (!cancelled) {
           setScenarios(body.scenarios);
+          setDisabled(body.disabled);
+          setScenariosPath(body.path ?? null);
           setLoading(false);
         }
       } catch (err) {
@@ -143,14 +151,65 @@ export function ScenarioPanel({
   }
 
   if (loading) {
-    return <p className="text-xs text-ink-300">Loading scenarios…</p>;
+    return (
+      <section
+        aria-label="Scenarios"
+        className="flex flex-col gap-2 rounded border border-info/40 bg-info/10 p-3 text-ink-100"
+      >
+        <h3 className="text-sm font-semibold uppercase tracking-widest text-info">
+          Scenarios
+        </h3>
+        <p className="text-xs text-ink-300">Loading scenarios…</p>
+      </section>
+    );
+  }
+  if (disabled) {
+    // Backend gate is closed (404). Distinct from "no scenarios" so
+    // the dev knows which knob to flip.
+    return (
+      <section
+        aria-label="Scenarios"
+        className="flex flex-col gap-2 rounded border border-warn/40 bg-warn/10 p-3 text-ink-100"
+      >
+        <h3 className="text-sm font-semibold uppercase tracking-widest text-warn">
+          Scenarios — disabled
+        </h3>
+        <p className="text-xs text-ink-300">
+          Dev-tools gate is closed. Set{" "}
+          <code className="font-mono text-warn">DEV_TOOLS_ENABLED=true</code> in
+          your backend env (or <code className="font-mono text-warn">TEST_MODE=true</code>{" "}
+          for tests), restart the backend, and reload this tab.
+        </p>
+        <p className="text-[11px] text-ink-400">
+          The <code className="font-mono">/api/dev/scenarios</code> endpoint
+          returned 404 — see the browser console for the exact response.
+        </p>
+      </section>
+    );
   }
   if (!scenarios || scenarios.length === 0) {
+    // Gate open, directory empty. The dev needs to drop a JSON file.
     return (
-      <p className="text-xs text-ink-300">
-        No scenarios available. Set <code>DEV_TOOLS_ENABLED=true</code> and drop
-        JSON files into <code>backend/scenarios/</code>.
-      </p>
+      <section
+        aria-label="Scenarios"
+        className="flex flex-col gap-2 rounded border border-info/40 bg-info/10 p-3 text-ink-100"
+      >
+        <h3 className="text-sm font-semibold uppercase tracking-widest text-info">
+          Scenarios — empty
+        </h3>
+        <p className="text-xs text-ink-300">
+          Dev-tools is enabled, but no scenarios were found in{" "}
+          <code className="font-mono text-info">
+            {scenariosPath ?? "backend/scenarios"}
+          </code>
+          .
+        </p>
+        <p className="text-[11px] text-ink-400">
+          Drop a <code className="font-mono">*.json</code> file in that
+          directory and reload this tab, or run a session through to PLAY and
+          use the Record button below to download one.
+        </p>
+      </section>
     );
   }
 

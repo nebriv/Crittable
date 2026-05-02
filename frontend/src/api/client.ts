@@ -332,9 +332,15 @@ export const api = {
   },
 
   /**
-   * Dev-tools: list scenarios available for replay. Returns ``[]`` when
-   * dev tools are disabled (the route 404s — surfaced as ``[]`` so the
-   * caller can render a "no scenarios" empty state instead of crashing).
+   * Dev-tools: list scenarios available for replay.
+   *
+   * Returns ``{ scenarios: [], disabled: true }`` when the backend
+   * gate is closed (route 404s — typically ``DEV_TOOLS_ENABLED`` /
+   * ``TEST_MODE`` not set). Returns ``{ scenarios: [], disabled:
+   * false, path: "..." }`` when the gate is open but the directory
+   * is empty. The caller renders distinct empty states for each so
+   * the dev can tell whether to flip the env var or drop a JSON
+   * file in the dir.
    */
   async listScenarios(): Promise<{
     scenarios: Array<{
@@ -347,11 +353,25 @@ export const api = {
       skip_setup: boolean;
     }>;
     path?: string;
+    disabled: boolean;
   }> {
     try {
-      return (await request("GET", "/api/dev/scenarios")) as never;
-    } catch {
-      return { scenarios: [] };
+      const body = (await request("GET", "/api/dev/scenarios")) as {
+        scenarios: never[];
+        path?: string;
+      };
+      return { ...body, disabled: false };
+    } catch (err) {
+      // The route is 404 when dev tools are disabled. Other errors
+      // (network, 500) bubble back up so the panel can show them.
+      const text = err instanceof Error ? err.message : String(err);
+      if (text.includes("404") || text.includes("not found")) {
+        console.info(
+          "[scenarios] /api/dev/scenarios returned 404 — DEV_TOOLS_ENABLED / TEST_MODE not set on backend",
+        );
+        return { scenarios: [], disabled: true };
+      }
+      throw err;
     }
   },
 
