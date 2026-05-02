@@ -1302,7 +1302,6 @@ export function Facilitator() {
                   sessionId={state.sessionId}
                   token={state.token}
                   ws={wsClient}
-                  subscribe={(handler) => wsClient.subscribe(handler)}
                   isCreator={true}
                   sessionStartedAt={snapshot.created_at}
                   selfRoleId={state.creatorRoleId}

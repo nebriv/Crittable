@@ -13,6 +13,8 @@
  */
 import Collaboration from "@tiptap/extension-collaboration";
 import CollaborationCaret from "@tiptap/extension-collaboration-caret";
+import TaskItem from "@tiptap/extension-task-item";
+import TaskList from "@tiptap/extension-task-list";
 import StarterKit from "@tiptap/starter-kit";
 import { EditorContent, useEditor } from "@tiptap/react";
 import type { Editor, Extension } from "@tiptap/core";
@@ -28,6 +30,7 @@ import {
   editorToMarkdown,
   listTemplates,
   pushSnapshot,
+  templateMarkdownToHtml,
 } from "../lib/notepad";
 import type { NotepadTemplate } from "../lib/notepad";
 import type { ServerEvent, WsClient } from "../lib/ws";
@@ -35,9 +38,15 @@ import type { ServerEvent, WsClient } from "../lib/ws";
 interface Props {
   sessionId: string;
   token: string;
+  /**
+   * The shared ``WsClient`` instance. We subscribe to it internally
+   * (via ``ws.subscribe`` in the provider effect) — accepting a
+   * separate ``subscribe`` prop tempted callers to pass a fresh
+   * arrow function on every render, which would tear down + restart
+   * the Yjs/awareness provider on every parent re-render. Per
+   * Copilot review on PR #115.
+   */
   ws: WsClient;
-  /** Subscribe me to the WsClient. Returns an unsubscribe fn. */
-  subscribe: (handler: (evt: ServerEvent) => void) => () => void;
   isCreator: boolean;
   initiallyExpanded?: boolean;
   /** Session start time (ISO) — used to render T+MM:SS timestamps. */
@@ -92,7 +101,6 @@ class WsYjsProvider {
     public readonly doc: Y.Doc,
     public readonly awareness: Awareness,
     private readonly ws: WsClient,
-    private readonly subscribe: Props["subscribe"],
     public readonly onLocked: () => void,
     public readonly onLockPending: (secs: number) => void,
     public readonly onError: (msg: string) => void,
@@ -128,7 +136,7 @@ class WsYjsProvider {
     };
     this.awareness.on("update", this.awarenessObserver);
 
-    this.unsub = this.subscribe((evt) => this.handle(evt));
+    this.unsub = this.ws.subscribe((evt) => this.handle(evt));
 
     // Send initial sync request. The WS may not be open yet — guard.
     try {
@@ -258,7 +266,6 @@ export function SharedNotepad({
   sessionId,
   token,
   ws,
-  subscribe,
   isCreator,
   initiallyExpanded,
   sessionStartedAt,
@@ -292,6 +299,12 @@ export function SharedNotepad({
         StarterKit.configure({
           undoRedo: false, // collaboration owns undo/redo (Yjs UndoManager)
         }),
+        // Task list / item — needed so ``- [ ]`` markdown round-trips
+        // through the editor without losing the checkbox semantics
+        // (the AAR's verbatim-action-items extractor depends on the
+        // ``- [ ] ...`` lines surviving the editor's internal model).
+        TaskList,
+        TaskItem.configure({ nested: true }),
         Collaboration.configure({ fragment: xmlFragment }),
         // Live cursor presence (issue #98 follow-up): renders other
         // editors' carets with their role colour + display name. The
@@ -315,21 +328,22 @@ export function SharedNotepad({
     [xmlFragment],
   );
 
-  // Wire the WS provider once the editor is mounted.
+  // Wire the WS provider once the editor is mounted. Subscription
+  // happens inside the provider via ``ws.subscribe`` so callers
+  // don't have to pass a stable subscribe function.
   useEffect(() => {
     if (!editor) return;
     const provider = new WsYjsProvider(
       ydoc,
       awareness,
       ws,
-      subscribe,
       () => setLocked(true),
       (secs) => setLockPendingSecs(secs),
       (msg) => setErrorMsg(msg),
     );
     provider.start();
     return () => provider.stop();
-  }, [editor, ydoc, awareness, ws, subscribe]);
+  }, [editor, ydoc, awareness, ws]);
 
   // Reflect the lock flag onto the editor's editable state.
   useEffect(() => {
@@ -409,12 +423,17 @@ export function SharedNotepad({
     editor: Editor,
     template: NotepadTemplate,
   ): void {
-    // Convert the template markdown into something TipTap can paste.
-    // We use plain text insertion (#headings preserved as text + a
-    // bulleted list) — TipTap's StarterKit will parse the markdown
-    // shorthand on input. Simpler than wiring a markdown parser; the
-    // resulting Yjs edits flow to other clients via the normal path.
-    editor.chain().focus().clearContent().insertContent(template.content).run();
+    // ``insertContent(string)`` parses the input as HTML, NOT markdown
+    // (Copilot review on PR #115). Convert the template's markdown
+    // to a small HTML subset first so headings / lists / task items
+    // render as structured nodes instead of literal "# Heading" text.
+    const html = templateMarkdownToHtml(template.content);
+    editor
+      .chain()
+      .focus()
+      .clearContent()
+      .insertContent(html, { parseOptions: { preserveWhitespace: false } })
+      .run();
   }
 
   function handleApplyTemplate(t: NotepadTemplate): void {

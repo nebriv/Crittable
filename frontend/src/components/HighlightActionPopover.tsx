@@ -159,6 +159,21 @@ export function HighlightActionPopover({
     };
   }, [toast]);
 
+  // Move keyboard focus into the menu when it opens, and keep it on
+  // the active item as the user navigates with arrow keys. Without
+  // this, ``onKeyDown`` on the menu div never fires (the user's
+  // focus is still in the chat selection) — the advertised
+  // arrow-key/Enter contract per the ARIA APG menu pattern would
+  // be a lie. Per Copilot review on PR #115.
+  useEffect(() => {
+    if (!state || !menuRef.current) return;
+    const items = menuRef.current.querySelectorAll<HTMLButtonElement>(
+      '[role="menuitem"]',
+    );
+    const target = items[focusedIdx] ?? items[0];
+    target?.focus();
+  }, [state, focusedIdx]);
+
   const onClick = useCallback(
     async (action: HighlightAction) => {
       if (!state) return;

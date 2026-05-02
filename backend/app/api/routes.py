@@ -911,8 +911,11 @@ def register_api_routes(app: FastAPI) -> None:
 
         Includes the full markdown ``content`` so the editor can apply
         it locally as a Yjs edit (keeps the server out of XmlFragment
-        walking per path C). Auth: any participant — even spectators
-        can browse, but only the creator can ``POST .../template``.
+        walking per path C). Auth: ``require_participant`` (creator
+        + player roles); spectators are denied because the picker is
+        only useful to roles that can write to the notepad. Only the
+        creator can actually ``POST .../template`` to record the
+        chosen id on the session.
         """
         from ..templates.notepad import list_templates
 

@@ -1063,9 +1063,6 @@ export function Play({ sessionId, token }: Props) {
                   sessionId={sessionId}
                   token={token}
                   ws={wsClient}
-                  subscribe={(handler) =>
-                    wsClient.subscribe(handler)
-                  }
                   isCreator={
                     snapshot.roles.find((r) => r.id === selfRoleId)?.is_creator ?? false
                   }

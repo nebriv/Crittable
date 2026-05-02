@@ -1,6 +1,6 @@
 ## Timeline
 
-_Track key events as they unfold. Use `Ctrl+T` (`Cmd+T` on Mac) to drop a relative timestamp._
+_Track key events as they unfold. Use `Ctrl+Shift+T` (`⌘+Shift+T` on Mac) to drop a relative timestamp._
 
 ## Action Items
 

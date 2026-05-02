@@ -83,9 +83,15 @@ export type ServerEvent =
   // Shared markdown notepad (issue #98). Yjs binary updates are
   // base64-encoded inside JSON envelopes so they ride the existing
   // /ws/sessions/{id} channel without a separate y-websocket server.
-  // record=False on every notepad event server-side: Yjs updates are
-  // not idempotent against the 256-event replay buffer; reconnecting
-  // clients explicitly send notepad_sync_request to fetch the state.
+  // Server-side recording policy:
+  //   - notepad_update / notepad_pin_appended / notepad_awareness /
+  //     notepad_lock_pending: record=False — high-volume, not
+  //     idempotent against the 256-event replay buffer; reconnecting
+  //     clients explicitly send notepad_sync_request for current state.
+  //   - notepad_locked: record=True — terminal state; a late joiner
+  //     who reconnects after End must learn the notepad is locked
+  //     (otherwise their editor would be writable but every edit
+  //     would 409 from the service).
   | {
       type: "notepad_sync_response";
       state: string;

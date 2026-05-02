@@ -114,6 +114,94 @@ export function exportMarkdownUrl(sessionId: string, token: string): string {
 }
 
 /**
+ * Convert the limited markdown subset our starter templates use
+ * (``## headings``, ``- bullets``, ``- [ ]`` task items, blank-line
+ * paragraphs, ``_italic_``, inline ``\`code\```) into HTML that
+ * TipTap can parse via ``insertContent(html, { parseOptions })``.
+ *
+ * NOT a general markdown parser — extending the templates with new
+ * constructs means extending this. For anything richer we'd reach for
+ * `marked` or similar; today's templates don't pay for that dep.
+ *
+ * Lives in lib/ rather than the SharedNotepad component file so the
+ * react-refresh fast-refresh check stays happy (component files
+ * should only export components).
+ */
+export function templateMarkdownToHtml(md: string): string {
+  const lines = md.split(/\r?\n/);
+  const out: string[] = [];
+  let listKind: "ul" | "tasklist" | null = null;
+
+  function closeList(): void {
+    if (listKind === "ul") out.push("</ul>");
+    else if (listKind === "tasklist") out.push("</ul>");
+    listKind = null;
+  }
+
+  function escapeHtml(s: string): string {
+    return s
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;");
+  }
+
+  function inlineFormat(s: string): string {
+    let r = escapeHtml(s);
+    // Inline code first (no other inline format applies inside backticks).
+    r = r.replace(/`([^`]+)`/g, "<code>$1</code>");
+    // Bold then italic so ``**word**`` doesn't get caught by ``_word_``.
+    r = r.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+    r = r.replace(/(^|\W)_([^_]+)_(\W|$)/g, "$1<em>$2</em>$3");
+    return r;
+  }
+
+  for (const raw of lines) {
+    const line = raw.replace(/\s+$/, "");
+    if (line.trim() === "") {
+      closeList();
+      continue;
+    }
+    const heading = /^(#{1,3})\s+(.+)$/.exec(line);
+    if (heading) {
+      closeList();
+      const level = heading[1].length;
+      out.push(`<h${level}>${inlineFormat(heading[2])}</h${level}>`);
+      continue;
+    }
+    const task = /^[-*+]\s+\[([ xX])\]\s+(.+)$/.exec(line);
+    if (task) {
+      if (listKind !== "tasklist") {
+        closeList();
+        out.push('<ul data-type="taskList">');
+        listKind = "tasklist";
+      }
+      const checked = task[1].toLowerCase() === "x";
+      out.push(
+        `<li data-type="taskItem" data-checked="${checked}"><p>${inlineFormat(
+          task[2],
+        )}</p></li>`,
+      );
+      continue;
+    }
+    const bullet = /^[-*+]\s+(.+)$/.exec(line);
+    if (bullet) {
+      if (listKind !== "ul") {
+        closeList();
+        out.push("<ul>");
+        listKind = "ul";
+      }
+      out.push(`<li><p>${inlineFormat(bullet[1])}</p></li>`);
+      continue;
+    }
+    closeList();
+    out.push(`<p>${inlineFormat(line)}</p>`);
+  }
+  closeList();
+  return out.join("");
+}
+
+/**
  * Walk a ProseMirror/TipTap JSON document and emit markdown.
  *
  * This intentionally covers only the node set the editor exposes
