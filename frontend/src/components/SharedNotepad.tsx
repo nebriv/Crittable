@@ -25,6 +25,10 @@ import * as Y from "yjs";
 import { RailHeader } from "./brand/RailHeader";
 import { StatusChip } from "./brand/StatusChip";
 import {
+  NOTEPAD_PIN_EVENT,
+  type NotepadPinEventDetail,
+} from "../lib/highlightActions";
+import {
   applyTemplate,
   exportMarkdownUrl,
   editorToMarkdown,
@@ -33,6 +37,7 @@ import {
   templateMarkdownToHtml,
 } from "../lib/notepad";
 import type { NotepadTemplate } from "../lib/notepad";
+import { appendPinToEditor, relativeStamp } from "../lib/notepadEditor";
 import type { ServerEvent, WsClient } from "../lib/ws";
 
 interface Props {
@@ -244,13 +249,7 @@ function timestampHotkeyExtension(sessionStartedAt: string): Extension {
     addKeyboardShortcuts() {
       return {
         "Mod-Shift-t": () => {
-          const start = new Date(sessionStartedAt).getTime();
-          const elapsedMs = Date.now() - start;
-          const minutes = Math.max(0, Math.floor(elapsedMs / 60000));
-          const seconds = Math.max(0, Math.floor((elapsedMs % 60000) / 1000));
-          const stamp = `T+${String(minutes).padStart(2, "0")}:${String(
-            seconds,
-          ).padStart(2, "0")} — `;
+          const stamp = `${relativeStamp(sessionStartedAt)} — `;
           // @ts-expect-error: editor is bound by TipTap at runtime
           this.editor?.chain().focus().insertContent(stamp).run();
           return true;
@@ -349,6 +348,50 @@ export function SharedNotepad({
   useEffect(() => {
     if (editor) editor.setEditable(!locked);
   }, [editor, locked]);
+
+  // "Add to notes" pin from the chat-highlight popover. The popover
+  // POSTs the snippet, then dispatches ``crittable:notepad-pin`` on
+  // the window — only the originating tab inserts; Yjs collab fans
+  // the resulting transaction to peers. Per-tab dispatch (rather
+  // than a server-side broadcast) prevents double-insert when one
+  // user has two tabs of the same role open.
+  //
+  // The server idempotently 204s a re-pin of the same
+  // ``source_message_id`` (a panic-clicker double-tapping the same
+  // chat bubble), but the popover still dispatches the event for
+  // every successful request. ``insertedPinIdsRef`` tracks the ids
+  // we've already written so the second click of the same pin
+  // doesn't double the editor entry.
+  const insertedPinIdsRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    if (!editor) return;
+    const insertedIds = insertedPinIdsRef.current;
+    function onPin(e: Event): void {
+      const detail = (e as CustomEvent<NotepadPinEventDetail>).detail;
+      if (!detail || !detail.text) return;
+      if (locked) {
+        console.warn("[notepad] pin received while locked; dropping");
+        return;
+      }
+      if (detail.sourceMessageId) {
+        if (insertedIds.has(detail.sourceMessageId)) {
+          console.debug(
+            "[notepad] pin already inserted for source",
+            detail.sourceMessageId,
+          );
+          return;
+        }
+        insertedIds.add(detail.sourceMessageId);
+      }
+      try {
+        appendPinToEditor(editor!, detail.text, sessionStartedAt);
+      } catch (err) {
+        console.warn("[notepad] pin insertion failed", err);
+      }
+    }
+    window.addEventListener(NOTEPAD_PIN_EVENT, onPin);
+    return () => window.removeEventListener(NOTEPAD_PIN_EVENT, onPin);
+  }, [editor, sessionStartedAt, locked]);
 
   // Track empty-state. We watch ydoc updates rather than editor state
   // so the picker disappears as soon as ANY content arrives — even

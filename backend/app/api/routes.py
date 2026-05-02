@@ -788,20 +788,11 @@ def register_api_routes(app: FastAPI) -> None:
                 length=len(sanitized),
                 source_message_id=body.source_message_id,
             )
-        # Tell every connected client to add the line to their local Yjs
-        # editor's Timeline section. The message body has already been
-        # sanitized, but clients still treat it as text (they don't
-        # parse markdown from server pushes).
-        await manager.connections().broadcast(
-            session_id,
-            {
-                "type": "notepad_pin_appended",
-                "text": sanitized,
-                "source_message_id": body.source_message_id,
-                "by_role_id": role_id,
-            },
-            record=False,
-        )
+        # The originating tab inserts the snippet locally on POST
+        # success and Yjs collab fans the resulting transaction to
+        # every peer; no separate WS broadcast is required, so we
+        # don't emit one (it would only encourage every recipient to
+        # double-insert).
         return Response(status_code=status.HTTP_204_NO_CONTENT)
 
     @router.post(
