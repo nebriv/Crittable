@@ -34,8 +34,8 @@ Mentally walk every phase view through SETUP → READY → PLAY → ENDED at com
 - Focus management on route/modal change
 
 ## Logging
-- New API call bypassing `lib/api/client.ts` (loses the `[api]` log wrapper) → **HIGH**
-- Direct `new WebSocket(...)` outside `lib/ws.ts` → **HIGH**
+- New API call bypassing `frontend/src/api/client.ts` (loses the `[api]` log wrapper) → **HIGH**
+- Direct `new WebSocket(...)` outside `frontend/src/lib/ws.ts` → **HIGH**
 - `setError(...)` without a matching `console.warn` carrying the same context → **MEDIUM**
 - `console.*` without a `[module]` prefix (`[ws]`, `[api]`, `[facilitator]`, `[play]`) → **LOW**
 - Logging the join token (the URL token on `/play/:id/:token`) anywhere outside the route handler → **BLOCK**

@@ -4,7 +4,7 @@ Review the diff and report **issues only** — no praise, no summaries. Format:
 
 `[SEVERITY] file:line — issue — fix`
 
-Severities: **BLOCK** (must fix), **HIGH** (this PR), **MEDIUM** (soon), **LOW** (nit). Skip below LOW. Clean category → say "clean".
+Severities: **BLOCK** (must fix), **HIGH** (this PR), **MEDIUM** (soon), **LOW** (nit). Skip below LOW. Report only categories with findings; if there are zero findings overall, say "no issues" once. Do not emit per-category headers for clean categories.
 
 Be specific. Quote the offending line. Group findings with one root cause. Path-specific rules in `.github/instructions/` also apply.
 

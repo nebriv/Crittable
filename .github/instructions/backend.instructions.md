@@ -5,7 +5,7 @@ applyTo: "backend/**"
 # Backend (Python) review
 
 ## Logging (`structlog`)
-- `print` or `import logging` in business code → **BLOCK**. Use `from app.logging_setup import get_logger`.
+- `print` or `import logging` in business code → **BLOCK**. Use `get_logger` from the package's `logging_setup` module (match the surrounding file's import style — relative `from ..logging_setup import get_logger` is the common form).
 - `event=` kwarg passed to a log call → **HIGH**. `event` is reserved by structlog (the message key). Use `audit_kind`, `tool_name`, etc.
 - Re-passing fields already bound by middleware (`request_id`, `session_id`, `turn_id`, `role_id`) → **LOW**. They're inherited automatically.
 - New external boundary without `*_start` + `*_complete` / `*_failed` log lines → **HIGH**. LLM calls, DB calls, WS connect/disconnect, tool dispatch, and extension dispatch already do this — match the pattern.
