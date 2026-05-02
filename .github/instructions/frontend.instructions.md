@@ -6,6 +6,10 @@ applyTo: "frontend/**"
 
 Read `design/handoff/BRAND.md` and `design/handoff/HANDOFF.md` before reviewing UI changes. The "Don't" lists in BRAND.md are load-bearing.
 
+## Type & lint
+- `tsc -b --noEmit` or `npm run lint` (ESLint flat config) regressions introduced in the diff → **MEDIUM** (both must stay clean)
+- New `any` introduced where a real type is reachable → **MEDIUM**
+
 ## Design system
 - Ad-hoc inline styles instead of design tokens (`var(--ink-*)`, `var(--paper-*)`, `var(--signal-*)`, `var(--crit-*)`, `var(--warn-*)`, `var(--info-*)`) → **HIGH**
 - Re-derived chrome instead of brand components from `frontend/src/components/brand/` (`<SiteHeader>`, `<StatusChip>`, `<RailHeader>`, `<Eyebrow>`, `<HudGauges>`, `<TurnStateRail>`, `<DieLoader>`, `<BottomActionBar>`) → **HIGH**
