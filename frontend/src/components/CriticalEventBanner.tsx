@@ -21,22 +21,25 @@ export function CriticalEventBanner({ severity, headline, body, onAcknowledge, c
     <div
       role="alert"
       aria-live="assertive"
-      className="sticky top-0 z-20 border-b-4 border-red-500 bg-red-950/95 p-4 text-red-50"
+      className="sticky top-0 z-20 border-b-4 border-crit bg-crit-bg p-4 text-ink-050 backdrop-blur-sm"
+      style={{ background: "color-mix(in oklch, var(--crit) 28%, var(--ink-900))" }}
     >
       <div className="mx-auto flex max-w-5xl items-start justify-between gap-4">
         <div>
-          <p className="text-xs uppercase tracking-widest">{severity} · breaking</p>
-          <h2 className="text-lg font-semibold">{headline}</h2>
-          <p className="text-sm opacity-90">{body}</p>
+          <p className="mono text-[11px] font-bold uppercase tracking-[0.22em] text-crit">
+            ● {severity.toUpperCase()} · BREAKING
+          </p>
+          <h2 className="mt-1 text-lg font-semibold text-ink-050">{headline}</h2>
+          <p className="text-sm text-ink-100 opacity-90">{body}</p>
         </div>
         <button
           ref={ackRef}
           type="button"
           onClick={onAcknowledge}
           disabled={!canAcknowledge}
-          className="rounded bg-red-100 px-3 py-1 text-sm font-semibold text-red-900 hover:bg-red-200 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-red-300 disabled:opacity-50"
+          className="mono rounded-r-1 bg-signal px-4 py-2 text-[11px] font-bold uppercase tracking-[0.18em] text-ink-900 hover:bg-signal-bright focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-signal-bright disabled:opacity-50"
         >
-          Acknowledge
+          ACKNOWLEDGE
         </button>
       </div>
     </div>

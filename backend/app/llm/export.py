@@ -75,7 +75,15 @@ class AARGenerator:
         self._llm = llm
         self._audit = audit
 
-    async def generate(self, session: Session) -> str:
+    async def generate(self, session: Session) -> tuple[str, dict[str, Any]]:
+        """Run the AAR pipeline and return (markdown, structured_report).
+
+        Both forms come from the same single LLM call — the model emits
+        the structured report via the ``finalize_report`` tool, the
+        generator renders it to markdown, and now the structured form
+        is also returned so callers can persist it for the
+        ``/export.json`` endpoint without a re-parse.
+        """
         messages = [
             {
                 "role": "user",
@@ -90,8 +98,11 @@ class AARGenerator:
             # Per-tier default lives in settings.max_tokens_for("aar").
             session_id=session.id,
         )
-        report = _extract_report(result.content)
-        return _render_markdown(session, report, audit_events=self._audit.dump(session.id))
+        report = _extract_report(result.content, session=session)
+        markdown = _render_markdown(
+            session, report, audit_events=self._audit.dump(session.id)
+        )
+        return markdown, report
 
 
 def _user_payload(session: Session, audit: AuditLog) -> str:
@@ -116,35 +127,164 @@ def _user_payload(session: Session, audit: AuditLog) -> str:
     )
 
 
-def _extract_report(content: list[dict[str, Any]]) -> dict[str, Any]:
+def _extract_report(
+    content: list[dict[str, Any]],
+    *,
+    session: Session,
+) -> dict[str, Any]:
+    """Pull the ``finalize_report`` tool call out of the LLM response and
+    sanitise it into a trusted, well-formed dict.
+
+    This is the ONLY trust boundary for AAR data: everything downstream
+    (``aar_report`` storage, ``/export.md`` markdown render,
+    ``/export.json`` API) reads the result of this function as
+    ground truth and does no further coercion. Two classes of model
+    misbehaviour are corrected here so the rest of the system stays
+    monkey-patch-free:
+
+    1. **Schema-shape drift.** The tool schema declares
+       ``what_went_well`` / ``gaps`` / ``recommendations`` as
+       ``array<string>``, but the model occasionally returns one big
+       string blob. We coerce string → ``[string]`` so the renderer
+       doesn't iterate the string per-character.
+    2. **Identity drift.** ``per_role_scores[].role_id`` MUST point at
+       a real role from ``session.roles`` (the system prompt's
+       "## Roster" block lists them). The model sometimes echoes the
+       *label* instead, or invents an id. We resolve in priority order
+       (id → case-insensitive label) and DROP entries that match
+       neither — we will not let model-invented identities survive into
+       the structured report. The dropped count is logged so a prompt
+       regression is observable.
+
+    On total tool-call failure we still synthesise a minimal report
+    so the rest of the AAR pipeline doesn't crash; that path also
+    logs loudly.
+    """
+    raw: dict[str, Any] | None = None
     for block in content:
         if block.get("type") == "tool_use" and block.get("name") == "finalize_report":
-            return dict(block.get("input") or {})
-    # Fallback: synthesize a minimal report from any text the model produced.
-    # The model SHOULD have called ``finalize_report`` (Block 1 of the AAR
-    # system prompt makes this an explicit instruction). Reaching this branch
-    # means a prompt regression, an Anthropic-side change, or a malformed
-    # response — log loudly so the on-call operator finds the cause from
-    # production logs alone rather than from a "the AAR looks empty" ticket.
-    text = "".join(
-        block.get("text", "") for block in content if block.get("type") == "text"
-    )
-    block_types = [block.get("type") for block in content]
-    _logger.warning(
-        "aar_finalize_report_missing",
-        text_preview=text[:200],
-        block_types=block_types,
-        block_count=len(content),
-    )
+            raw = dict(block.get("input") or {})
+            break
+
+    if raw is None:
+        text = "".join(
+            block.get("text", "") for block in content if block.get("type") == "text"
+        )
+        block_types = [block.get("type") for block in content]
+        _logger.warning(
+            "aar_finalize_report_missing",
+            text_preview=text[:200],
+            block_types=block_types,
+            block_count=len(content),
+        )
+        raw = {
+            "executive_summary": text[:500] or "(no structured report returned)",
+            "narrative": text or "(no narrative returned)",
+            "overall_rationale": "structured report missing",
+        }
+
+    return _sanitise_report(raw, session=session)
+
+
+def _coerce_str_list(value: Any) -> list[str]:
+    """Turn whatever the model emitted for an ``array<string>`` field
+    into a list of non-empty strings. Strings become single-element
+    lists (the bug pattern was the previous ``list(value)`` which
+    split a string into characters). Non-iterable / unexpected
+    shapes return an empty list rather than corrupt downstream
+    rendering."""
+
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [value] if value.strip() else []
+    if isinstance(value, list):
+        out: list[str] = []
+        for item in value:
+            if item is None:
+                continue
+            s = item if isinstance(item, str) else str(item)
+            if s.strip():
+                out.append(s)
+        return out
+    return []
+
+
+def _coerce_int(value: Any, *, lo: int, hi: int) -> int:
+    """Clamp model-emitted numbers into a known range. The 1–5 score
+    bucket is referenced from the system prompt; we accept 0 too so
+    the markdown renderer's "missing" path stays usable, but we never
+    let an out-of-band value (a string, a wild number) leak through."""
+
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        return 0
+    if n < lo:
+        return lo
+    if n > hi:
+        return hi
+    return n
+
+
+def _sanitise_report(raw: dict[str, Any], *, session: Session) -> dict[str, Any]:
+    # Build the role lookup once. Score-able roles are the human
+    # players (kind == "player"); spectators / observers are excluded
+    # so a model emitting a score for them is treated the same as a
+    # made-up id. ``role.kind`` is an enum on ``Role``; fall back to
+    # str() for forward-compat with any new variants.
+    score_kinds = {"player"}
+    scoreable = {
+        r.id: r
+        for r in session.roles
+        if (getattr(r.kind, "value", str(r.kind)) in score_kinds)
+    }
+    by_label_lower = {r.label.lower(): r for r in scoreable.values()}
+
+    cleaned_scores: list[dict[str, Any]] = []
+    dropped: list[dict[str, Any]] = []
+    for entry in list(raw.get("per_role_scores") or []):
+        if not isinstance(entry, dict):
+            dropped.append({"reason": "non_dict_entry", "value": str(entry)[:80]})
+            continue
+        rid_raw = str(entry.get("role_id", "") or "").strip()
+        role = scoreable.get(rid_raw) or by_label_lower.get(rid_raw.lower())
+        if role is None:
+            dropped.append({"reason": "unknown_role_id", "value": rid_raw[:80]})
+            continue
+        cleaned_scores.append(
+            {
+                "role_id": role.id,
+                "label": role.label,
+                "display_name": role.display_name,
+                "decision_quality": _coerce_int(
+                    entry.get("decision_quality"), lo=0, hi=5
+                ),
+                "communication": _coerce_int(
+                    entry.get("communication"), lo=0, hi=5
+                ),
+                "speed": _coerce_int(entry.get("speed"), lo=0, hi=5),
+                "rationale": str(entry.get("rationale") or "")[:1000],
+            }
+        )
+    if dropped:
+        _logger.warning(
+            "aar_per_role_scores_dropped",
+            session_id=session.id,
+            dropped_count=len(dropped),
+            kept_count=len(cleaned_scores),
+            dropped=dropped[:8],
+        )
+
     return {
-        "executive_summary": text[:500] or "(no structured report returned)",
-        "narrative": text or "(no narrative returned)",
-        "what_went_well": [],
-        "gaps": [],
-        "recommendations": [],
-        "per_role_scores": [],
-        "overall_score": 0,
-        "overall_rationale": "structured report missing",
+        "executive_summary": str(raw.get("executive_summary") or ""),
+        "narrative": str(raw.get("narrative") or ""),
+        "what_went_well": _coerce_str_list(raw.get("what_went_well")),
+        "gaps": _coerce_str_list(raw.get("gaps")),
+        "recommendations": _coerce_str_list(raw.get("recommendations")),
+        "per_role_scores": cleaned_scores,
+        "overall_score": _coerce_int(raw.get("overall_score"), lo=0, hi=5),
+        "overall_rationale": str(raw.get("overall_rationale") or ""),
     }
 
 

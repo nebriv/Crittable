@@ -26,7 +26,8 @@
 | `logo/svg/lockup-crittable-dark.svg` | Header lockup |
 | `logo/favicon/HEAD-SNIPPET.html` | Paste into `<head>` verbatim |
 | `BRAND.md` | Brand system reference |
-| `Brand Package.standalone.html` | The full visual reference — every component, voice card, sticker, app screen, mark exploration. **Open this first.** |
+| `source/` | **Full React/JSX source for every artboard and screen.** Read these to lift exact component patterns, layouts, and copy. See `source/SOURCE.md` for a map. |
+| `Brand Package.standalone.html` | Self-contained visual reference (open in browser). If you can't render it, use `source/Brand Package.html` instead — same content, plain JSX. |
 
 ---
 
@@ -88,7 +89,7 @@ Use `logo/svg/mark-animated-dark.svg` as a centered hero element. It loops indef
 
 ## Component conventions
 
-Look at `Brand Package.standalone.html` for the full UI. Distillation:
+Look at `source/app-screens.jsx` for the full UI (or `Brand Package.standalone.html` rendered in a browser). Distillation:
 
 **Cards**
 ```css
@@ -170,7 +171,7 @@ Headlines: imperative verbs, no exclamation points. Body: short sentences, concr
 3. **Pricing** — 3 tiers, mono price labels, no annual/monthly toggle (we'll add it back later if needed).
 4. **About** — 1‑page operator manifesto. No team photos.
 5. **Docs / Changelog** — long‑form Inter on `--ink-900`, code blocks in mono on `--ink-800`.
-6. **App chrome** — header, sidebar, modal frames. Reference `Brand Package.standalone.html` "App Header" and "App Screens" sections.
+6. **App chrome** — header, sidebar, modal frames. Reference `source/app-screens.jsx` (`AppTacticalHUD`, `AppLobby`, `AppBriefing`, `AppAAR`).
 
 Don't try to redesign auth screens, settings, or admin in this pass. Keep their existing layout, just swap tokens and fonts.
 
@@ -195,7 +196,15 @@ handoff/
 ├── HANDOFF.md                        ← this file
 ├── README.md                         ← top-level orientation
 ├── tokens.css                        ← drop into global CSS
-├── Brand Package.standalone.html     ← full visual reference
+├── Brand Package.standalone.html     ← rendered visual reference
+├── source/                           ← React/JSX source for every artboard
+│   ├── SOURCE.md                     ← map of what's in each file
+│   ├── Brand Package.html            ← entry point (works locally, no bundle)
+│   ├── tokens.css
+│   ├── mark.jsx                      ← logo / favicon source
+│   ├── artboards.jsx                 ← brand-system pages
+│   ├── app-screens.jsx               ← all 7 product screens
+│   └── design-canvas.jsx             ← presentation harness (ignore)
 └── logo/
     ├── svg/
     │   ├── mark-encounter-01..06-{dark,light}.svg    ← static marks (each encounter state)

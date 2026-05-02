@@ -90,9 +90,8 @@ describe("RolesPanel — issue #82 (no on-screen tokens)", () => {
     );
 
     // Token must NEVER appear in the rendered DOM.
-    expect(screen.queryByText(/secret-token-do-not-show/)).toBeNull();
-    // Visual badge transitions to Copied!.
-    expect(button.textContent).toMatch(/Copied!/);
+    expect(screen.queryByText(/secret-token-do-not-show/)).toBeNull();    // Visual badge transitions to COPIED! (mono uppercase).
+    expect(button.textContent).toMatch(/Copied!/i);
     // Bottom-of-panel success toast confirms for users with eyes elsewhere.
     expect(screen.getByTestId("roles-panel-hint").textContent).toMatch(
       /Join link for SOC Analyst copied/,
@@ -108,7 +107,7 @@ describe("RolesPanel — issue #82 (no on-screen tokens)", () => {
     await act(async () => {
       await vi.advanceTimersByTimeAsync(2100);
     });
-    expect(button.textContent).toMatch(/Copy link/);
+    expect(button.textContent).toMatch(/Copy link/i);
   });
 
   it("Add role does not render the new role's URL on screen", async () => {
@@ -180,9 +179,10 @@ describe("RolesPanel — issue #82 (no on-screen tokens)", () => {
       />,
     );
 
-    fireEvent.click(
-      screen.getByRole("button", { name: /Kick & reissue/i }),
-    );
+    // Post-redesign: "Kick & reissue" button text was tightened to just
+    // "KICK" (mono uppercase brand button); the title attribute still
+    // carries the full description.
+    fireEvent.click(screen.getByRole("button", { name: /Kick/i }));
     expect(confirmSpy).toHaveBeenCalled();
 
     await waitFor(() => expect(revoke).toHaveBeenCalled());
@@ -244,6 +244,6 @@ describe("RolesPanel — issue #82 (no on-screen tokens)", () => {
     expect(
       (screen.getByRole("button", { name: /Copy join link/i }) as HTMLElement)
         .textContent,
-    ).toMatch(/Copy link/);
+    ).toMatch(/Copy link/i);
   });
 });

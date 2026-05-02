@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Brand Package</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" />
+  <link rel="stylesheet" href="tokens.css" />
+  <style>
+    body { background: #f0eee9; }
+  </style>
+</head>
+<body>
+  <template id="__bundler_thumbnail">
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="100%" height="100%">
+      <rect width="100" height="100" fill="#0A0D13"/>
+      <g transform="translate(20 20) scale(0.6)">
+        <rect x="3" y="3" width="94" height="94" rx="22" ry="22" fill="#0A0D13" stroke="#DCE2EE" stroke-width="3"/>
+        <line x1="14" y1="52" x2="86" y2="52" stroke="#DCE2EE" stroke-opacity="0.18" stroke-width="0.8" stroke-dasharray="2 2"/>
+        <circle cx="22" cy="40" r="3.4" fill="none" stroke="#DCE2EE" stroke-width="1.6"/>
+        <circle cx="33" cy="40" r="3.4" fill="none" stroke="#DCE2EE" stroke-width="1.6"/>
+        <circle cx="44" cy="40" r="4" fill="none" stroke="#DCE2EE" stroke-width="2"/>
+        <circle cx="55" cy="40" r="3.4" fill="none" stroke="#DCE2EE" stroke-width="1.6"/>
+        <circle cx="66" cy="40" r="3.4" fill="none" stroke="#DCE2EE" stroke-width="1.6"/>
+        <g stroke="#5EA6EA" stroke-width="2.4" stroke-linecap="round">
+          <line x1="46" y1="56" x2="54" y2="64"/>
+          <line x1="54" y1="56" x2="46" y2="64"/>
+        </g>
+        <path d="M 22 36 C 18 26, 14 20, 22 16" fill="none" stroke="#DCE2EE" stroke-width="1.6" stroke-linecap="round"/>
+        <path d="M 66 36 C 70 26, 74 20, 78 16" fill="none" stroke="#DCE2EE" stroke-width="1.6" stroke-linecap="round"/>
+        <path d="M 52 60 C 50 50, 60 42, 76 36" fill="none" stroke="#5EA6EA" stroke-width="1.6" stroke-linecap="round"/>
+      </g>
+    </svg>
+  </template>
+  <div id="root"></div>
+
+  <script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+
+  <script type="text/babel" src="design-canvas.jsx"></script>
+  <script type="text/babel" src="mark.jsx"></script>
+  <script type="text/babel" src="artboards.jsx"></script>
+  <script type="text/babel" src="app-screens.jsx"></script>
+
+  <script type="text/babel" data-presets="react">
+    const { createRoot } = ReactDOM;
+
+    function Frame({ children, w = 1280, h = 720 }) {
+      return (
+        <div style={{
+          width: w, height: h,
+          background: 'var(--ink-900)',
+          color: 'var(--ink-100)',
+          fontFamily: "'Inter', system-ui, sans-serif",
+          overflow: 'hidden',
+        }}>{children}</div>
+      );
+    }
+
+    function App() {
+      return (
+        <DesignCanvas>
+          <DCSection id="cover" title="Brand Package" subtitle="D-Pip direction · die-face mark with pip-replacement · cybersecurity-tinted">
+            <DCArtboard id="cover" label="01 · Cover" width={1280} height={720}>
+              <Frame><BrandCover /></Frame>
+            </DCArtboard>
+            <DCArtboard id="library" label="02d · The playbook · 6 plays" width={1280} height={780}>
+              <Frame><PlaybookLibrary /></Frame>
+            </DCArtboard>
+            <DCArtboard id="naming" label="02b · The name is a placeholder" width={1100} height={720}>
+              <Frame w={1100}><NamingNote /></Frame>
+            </DCArtboard>
+          </DCSection>
+
+          <DCSection id="mark" title="The Mark" subtitle="Construction · variants · favicon scale">
+            <DCArtboard id="construction" label="03 · Construction" width={1100} height={680}>
+              <Frame w={1100} h={680}><MarkConstruction /></Frame>
+            </DCArtboard>
+            <DCArtboard id="variants" label="04 · Variants" width={1100} height={680}>
+              <Frame w={1100} h={680}><MarkVariants /></Frame>
+            </DCArtboard>
+            <DCArtboard id="lockups" label="05 · Lockups" width={1100} height={720}>
+              <Frame w={1100} h={720}><Lockups /></Frame>
+            </DCArtboard>
+            <DCArtboard id="favicons" label="06 · Favicon · App Icon" width={1100} height={720}>
+              <Frame w={1100} h={720}><FaviconGrid /></Frame>
+            </DCArtboard>
+          </DCSection>
+
+          <DCSection id="system" title="System" subtitle="Color · type · voice">
+            <DCArtboard id="color" label="07 · Color" width={1100} height={720}>
+              <Frame w={1100} h={720}><ColorSystem /></Frame>
+            </DCArtboard>
+            <DCArtboard id="type" label="08 · Type" width={1100} height={720}>
+              <Frame w={1100} h={720}><TypeSystem /></Frame>
+            </DCArtboard>
+            <DCArtboard id="voice" label="09 · Voice" width={1100} height={720}>
+              <Frame w={1100} h={720}><Voice /></Frame>
+            </DCArtboard>
+          </DCSection>
+
+          <DCSection id="applied" title="Applied" subtitle="In context — stickers, social, swag">
+            <DCArtboard id="stickers" label="10 · Stickers · Social" width={1280} height={720}>
+              <Frame><Stickers /></Frame>
+            </DCArtboard>
+          </DCSection>
+
+          <DCSection id="app" title="App · in context" subtitle="Hi-fi screens · ready for Claude Code handoff">
+            <DCArtboard id="hud" label="11 · Tactical HUD · in-session" width={1440} height={900}>
+              <Frame w={1440} h={900}><AppTacticalHUD /></Frame>
+            </DCArtboard>
+            <DCArtboard id="creator-setup" label="12 · Creator · session setup" width={1280} height={820}>
+              <Frame w={1280} h={820}><AppCreatorSetup /></Frame>
+            </DCArtboard>
+            <DCArtboard id="creator-env" label="13 · Creator · environment" width={1280} height={820}>
+              <Frame w={1280} h={820}><AppEnvironment /></Frame>
+            </DCArtboard>
+            <DCArtboard id="lobby" label="14 · Creator · invite / lobby" width={1280} height={820}>
+              <Frame w={1280} h={820}><AppLobby /></Frame>
+            </DCArtboard>
+            <DCArtboard id="player-join" label="15 · Player · join screen" width={1280} height={820}>
+              <Frame w={1280} h={820}><AppPlayerJoin /></Frame>
+            </DCArtboard>
+            <DCArtboard id="briefing" label="16 · Player · briefing / ready room" width={1280} height={820}>
+              <Frame w={1280} h={820}><AppBriefing /></Frame>
+            </DCArtboard>
+            <DCArtboard id="aar" label="17 · After-action report" width={1280} height={820}>
+              <Frame w={1280} h={820}><AppAAR /></Frame>
+            </DCArtboard>
+          </DCSection>
+        </DesignCanvas>
+      );
+    }
+
+    createRoot(document.getElementById('root')).render(<App />);
+  </script>
+</body>
+</html>

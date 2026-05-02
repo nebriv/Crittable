@@ -670,17 +670,37 @@ def test_render_markdown_logs_when_finalize_report_missing(
     Confirm the warn-level log line fires so production logs catch the
     regression. ``structlog`` writes to stdout via ``PrintLoggerFactory``,
     so we capture via ``capsys`` rather than the python-logging ``caplog``.
+
+    The post-2026-05-01 boundary fix moved sanitisation into
+    ``_extract_report`` itself; the function now requires ``session``
+    so it can validate ``per_role_scores[].role_id`` against the real
+    roster. The fallback path doesn't exercise that validation (no
+    tool call → empty scores), so a minimal Session with no roles is
+    enough.
     """
 
     from app.llm.export import _extract_report
+    from app.sessions.models import Session, SessionState
+
+    session = Session(
+        scenario_prompt="(unused)",
+        state=SessionState.ENDED,
+        roles=[],
+        creator_role_id="",
+    )
 
     fallback = _extract_report(
         [
             {"type": "text", "text": "free-form reply, no tool call"},
-        ]
+        ],
+        session=session,
     )
-    # Sanity: fallback shape preserved.
+    # Sanity: fallback shape preserved (sanitiser passes through the
+    # synthesised executive_summary / narrative; integer fields land
+    # at the safe-default 0).
     assert fallback["overall_score"] == 0
+    assert fallback["per_role_scores"] == []
+    assert fallback["what_went_well"] == []
 
     captured = capsys.readouterr()
     log_blob = captured.out + captured.err

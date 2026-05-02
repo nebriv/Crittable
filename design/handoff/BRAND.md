@@ -39,7 +39,7 @@ A tabletop‑exercise platform for security teams. The product is **Crittable** 
 
 ### Lockups
 
-Lockup = mark + wordmark, set in JetBrains Mono Bold, all‑caps. Tagline `TABLETOP · OPS` sits beneath the wordmark in the same family at smaller weight, letter‑spaced 0.18em.
+Lockup = mark + wordmark, set in JetBrains Mono Bold, all‑caps. Tagline `ROLL · RESPOND · REVIEW` sits beneath the wordmark in the same family at smaller weight, letter‑spaced 0.18em.
 
 | Use | File |
 |---|---|

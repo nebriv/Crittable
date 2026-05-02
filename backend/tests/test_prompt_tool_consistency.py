@@ -111,6 +111,11 @@ _NON_TOOL_ALLOWLIST = frozenset(
         # Tool input fields the prompt references inline
         "role_id",
         "role_ids",
+        # ``id`` (without the role prefix) is referenced in the AAR
+        # tier's ``## Roster (canonical IDs)`` block — "use these
+        # exact ``id`` values in ``per_role_scores[].role_id``".
+        # It's a field name on the roster row, not a tool.
+        "id",
         "rationale",
         "title",
         "note",

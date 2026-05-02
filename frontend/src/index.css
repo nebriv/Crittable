@@ -1,15 +1,155 @@
+/* ============================================================
+   BRAND TOKENS — operator-grade, security-tinted
+   ============================================================
+   Naming follows ink/paper/signal so colors map to roles, not
+   hues. Renaming "the green" later doesn't ripple through code.
+   Source of truth: design/handoff/tokens.css. Mirrored here so
+   the Vite build serves the variables to every component.
+*/
+
+/* Bundled brand fonts (no CDN dependency). The variable-font
+   packages ship a single woff2 per language subset that covers
+   every weight from 100 to 900 — drastically smaller than loading
+   four discrete weights from Google Fonts and self-contained for
+   air-gapped / strict-CSP deployments common in security work.
+   ``wght.css`` covers all language subsets; the browser only
+   downloads the ones it needs (Latin in the common case). See
+   --font-sans / --font-mono below for the ``Variable`` family
+   names registered by these packages. */
+@import "@fontsource-variable/inter/wght.css";
+@import "@fontsource-variable/jetbrains-mono/wght.css";
+
+:root {
+  /* Ink — the operator surface. Cooler than the Tailwind slate
+     in the source app; tuned for long sessions in dim rooms. */
+  --ink-950: #06080C;
+  --ink-900: #0A0D13;   /* page bg                              */
+  --ink-850: #0E121A;   /* chat surface                         */
+  --ink-800: #131824;   /* card bg                              */
+  --ink-750: #181E2C;   /* card hover                           */
+  --ink-700: #1F2636;   /* input bg                             */
+  --ink-600: #2A3344;   /* divider                              */
+  --ink-500: #3A4458;   /* muted border                         */
+  --ink-400: #5B667D;   /* placeholder                          */
+  --ink-300: #8390A8;   /* secondary text                       */
+  --ink-200: #B6BFD0;   /* body text                            */
+  --ink-100: #DCE2EE;   /* primary text                         */
+  --ink-050: #F2F4F9;   /* on-dark heading                      */
+
+  /* Paper — light-mode counterpart (used for stickers, print). */
+  --paper-050: #F6F4ED;
+  --paper-100: #EDEAE0;
+  --paper-200: #DAD5C5;
+  --paper-300: #B5AE99;
+
+  /* Signal — the brand accent. Blue Team blue. */
+  --signal:        oklch(0.72 0.16 245);
+  --signal-bright: oklch(0.82 0.17 245);
+  --signal-dim:    oklch(0.55 0.13 245);
+  --signal-deep:   oklch(0.38 0.10 245);
+  --signal-100:    oklch(0.94 0.05 245);
+  --signal-tint:   color-mix(in oklch, var(--signal) 14%, transparent);
+
+  /* Status — kept narrow on purpose. */
+  --crit:    oklch(0.68 0.21 25);
+  --crit-bg: color-mix(in oklch, var(--crit) 18%, transparent);
+  --warn:    oklch(0.82 0.16 75);
+  --warn-bg: color-mix(in oklch, var(--warn) 16%, transparent);
+  --info:    oklch(0.78 0.13 232);
+  --info-bg: color-mix(in oklch, var(--info) 16%, transparent);
+
+  /* Operator-only chrome */
+  --grid:        rgba(255, 255, 255, 0.035);
+  --grid-strong: rgba(255, 255, 255, 0.07);
+
+  /* Type. Variable-font names come from the @fontsource-variable
+     packages we bundle; system fallbacks render acceptably until the
+     ~50 kB woff2 lands. Bundled (not loaded from Google Fonts CDN) so
+     the app works on air-gapped / strict-CSP deployments — the target
+     audience here is security teams. See PR #110 review thread. */
+  --font-mono: 'JetBrains Mono Variable', ui-monospace, SFMono-Regular, Menlo, monospace;
+  --font-sans: 'Inter Variable', -apple-system, system-ui, sans-serif;
+
+  --t-12: 12px; --t-13: 13px; --t-14: 14px; --t-16: 16px;
+  --t-18: 18px; --t-22: 22px; --t-28: 28px; --t-36: 36px;
+  --t-48: 48px; --t-64: 64px;
+
+  /* Radii — square-ish, tactical. */
+  --r-0: 0px;
+  --r-1: 2px;
+  --r-2: 4px;
+  --r-3: 6px;
+  --r-4: 8px;
+  --r-pill: 999px;
+}
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
+html, body {
+  background: var(--ink-900);
+  color: var(--ink-100);
+  font-family: var(--font-sans);
+  margin: 0;
+  -webkit-font-smoothing: antialiased;
+  font-feature-settings: 'ss01', 'cv11';
+}
+
+.mono { font-family: var(--font-mono); font-feature-settings: 'ss01', 'zero', 'cv11'; }
+.sans { font-family: var(--font-sans); }
+.tabular { font-variant-numeric: tabular-nums; }
+
+/* Backgrounds */
+.dotgrid {
+  background-image: radial-gradient(var(--grid-strong) 1px, transparent 1px);
+  background-size: 16px 16px;
+  background-position: 0 0;
+}
+.linegrid {
+  background-image:
+    linear-gradient(to right, var(--grid) 1px, transparent 1px),
+    linear-gradient(to bottom, var(--grid) 1px, transparent 1px);
+  background-size: 24px 24px;
+}
+.scanlines {
+  background-image: repeating-linear-gradient(
+    0deg,
+    rgba(255,255,255,0.018) 0px,
+    rgba(255,255,255,0.018) 1px,
+    transparent 1px,
+    transparent 3px
+  );
+}
+
+/* Brand keyframes — the source of truth. Tailwind mirrors these
+   in tailwind.config.ts so utility classes can compose them. */
+@keyframes tt-blink {
+  0%, 49% { opacity: 1; }
+  50%, 100% { opacity: 0; }
+}
+@keyframes tt-sweep {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+@keyframes tt-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 var(--signal-tint); }
+  50%      { box-shadow: 0 0 0 6px transparent; }
+}
+@keyframes tt-stream {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(100%); }
+}
+.blink { animation: tt-blink 1s steps(2) infinite; }
+
 /*
  * Timeline → transcript scroll target highlight. The Timeline component
  * sets ``data-flash="1"`` on the message bubble for ~1.4s after a click;
- * this rule pulses an amber ring without depending on imperative
+ * this rule pulses a signal-blue ring without depending on imperative
  * classList mutations that React would clobber on re-render.
  */
 [data-flash="1"] {
-  box-shadow: 0 0 0 2px rgba(252, 211, 77, 0.7);
+  box-shadow: 0 0 0 2px var(--signal);
   transition: box-shadow 200ms ease-out;
 }
 
@@ -33,12 +173,73 @@
   pointer-events: none;
   background: linear-gradient(
     to right,
-    rgba(15, 23, 42, 0) 0%,
-    rgba(15, 23, 42, 0.85) 100%
+    rgba(10, 13, 19, 0) 0%,
+    rgba(10, 13, 19, 0.85) 100%
   );
   opacity: 0;
   transition: opacity 150ms ease-out;
 }
 [data-table-scroll][data-overflowing="1"]::after {
   opacity: 1;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .blink,
+  .animate-chip-pulse,
+  .animate-tt-blink,
+  .animate-tt-pulse,
+  .animate-tt-sweep,
+  .animate-tt-stream {
+    animation: none !important;
+  }
+}
+
+/*
+ * Brand scrollbars. The default WebKit / Firefox scrollbars read as
+ * chunky chrome-grey on the ink-900 surface — wrong both visually
+ * (clashes with the operator palette) and semantically (the rails
+ * should disappear into the chrome, the chat is the focus).
+ *
+ * Two layers:
+ *   - Firefox uses ``scrollbar-color`` + ``scrollbar-width: thin``;
+ *     we point the thumb at ``--ink-500`` and the track at the
+ *     enclosing surface so it blends in.
+ *   - WebKit / Blink get the per-shadow-part overrides; thumb is a
+ *     muted ink-500 that brightens to ink-400 on hover, track is
+ *     transparent (the parent surface shows through), 8 px wide,
+ *     2 px radius to match the rest of the brand. ``corner`` is the
+ *     bottom-right intersection when both axes are scrollable —
+ *     keep it transparent.
+ *
+ * Applied globally; component-level overrides (e.g. the chat scroll
+ * area and the right-rail Timeline) inherit naturally.
+ */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--ink-500) transparent;
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--ink-500);
+  border-radius: 2px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--ink-400);
+  background-clip: padding-box;
+}
+
+::-webkit-scrollbar-corner {
+  background: transparent;
 }

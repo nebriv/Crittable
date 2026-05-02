@@ -17,7 +17,7 @@ interface Props {
 export function SetupChat({ notes, busy, onPickOption }: Props) {
   if (notes.length === 0) {
     return (
-      <div className="rounded border border-slate-700 bg-slate-900 p-3 text-xs text-slate-400">
+      <div className="mono rounded-r-3 border border-ink-600 bg-ink-850 p-3 text-[11px] uppercase tracking-[0.06em] text-ink-400">
         Setup hasn't started yet — waiting for the AI's first question.
       </div>
     );
@@ -27,7 +27,7 @@ export function SetupChat({ notes, busy, onPickOption }: Props) {
 
   return (
     <div
-      className="flex max-h-[60vh] flex-col gap-2 overflow-y-auto rounded border border-slate-700 bg-slate-900 p-3"
+      className="flex max-h-[60vh] flex-col gap-2 overflow-y-auto rounded-r-3 border border-ink-600 bg-ink-850 p-3"
       role="log"
       aria-live="polite"
       aria-relevant="additions"
@@ -41,16 +41,16 @@ export function SetupChat({ notes, busy, onPickOption }: Props) {
           >
             <div
               className={
-                "max-w-[85%] rounded-lg px-3 py-2 text-sm " +
+                "max-w-[85%] rounded-r-2 px-3 py-2 text-sm border " +
                 (isAi
-                  ? "bg-slate-800 text-slate-100"
-                  : "bg-sky-700 text-sky-50")
+                  ? "border-ink-600 border-l-2 border-l-signal bg-ink-800 text-ink-100"
+                  : "border-signal-deep bg-signal-tint text-ink-050")
               }
             >
-              <div className="mb-0.5 text-[10px] uppercase tracking-widest opacity-70">
-                {isAi ? `AI · ${n.topic ?? "facilitator"}` : "You"}
+              <div className="mono mb-1 text-[10px] font-bold uppercase tracking-[0.16em] text-signal opacity-90">
+                {isAi ? `AI · ${(n.topic ?? "facilitator").toUpperCase()}` : "YOU"}
               </div>
-              <p className="whitespace-pre-wrap">{n.content}</p>
+              <p className="whitespace-pre-wrap text-ink-100">{n.content}</p>
               {isAi && idx === notes.length - 1 && n.options && n.options.length > 0 ? (
                 <div className="mt-2 flex flex-wrap gap-1">
                   {n.options.map((opt) => (
@@ -59,7 +59,7 @@ export function SetupChat({ notes, busy, onPickOption }: Props) {
                       type="button"
                       disabled={busy}
                       onClick={() => onPickOption?.(opt)}
-                      className="rounded border border-sky-400 bg-slate-900 px-2 py-0.5 text-xs text-sky-200 hover:bg-sky-900/40 disabled:opacity-50"
+                      className="mono rounded-r-1 border border-signal-deep bg-signal-tint px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.10em] text-signal hover:bg-signal/20 disabled:opacity-50"
                     >
                       {opt}
                     </button>

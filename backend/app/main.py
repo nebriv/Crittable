@@ -167,7 +167,7 @@ def create_app(
         _cfg.get_settings.cache_clear()
 
     app = FastAPI(
-        title="AI Cybersecurity Tabletop Facilitator",
+        title="Crittable",
         version="0.0.2",
         lifespan=_lifespan,
     )

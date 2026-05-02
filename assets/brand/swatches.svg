@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 80" width="600" height="80">
+  <rect width="600" height="80" fill="#0A0D13"/>
+  <g font-family="ui-monospace,Menlo,monospace" font-size="11" fill="#DCE2EE" text-anchor="middle">
+    <g transform="translate(50,12)">
+      <rect width="64" height="32" rx="2" fill="#0A0D13" stroke="#2A3344" stroke-width="1"/>
+      <text x="32" y="50" fill-opacity="0.85">INK-900</text>
+    </g>
+    <g transform="translate(150,12)">
+      <rect width="64" height="32" rx="2" fill="#131824"/>
+      <text x="32" y="50" fill-opacity="0.85">INK-800</text>
+    </g>
+    <g transform="translate(250,12)">
+      <rect width="64" height="32" rx="2" fill="#5EA6EA"/>
+      <text x="32" y="50" fill="#5EA6EA" fill-opacity="0.95">SIGNAL</text>
+    </g>
+    <g transform="translate(350,12)">
+      <rect width="64" height="32" rx="2" fill="#F1604D"/>
+      <text x="32" y="50" fill="#F1604D" fill-opacity="0.95">CRIT</text>
+    </g>
+    <g transform="translate(450,12)">
+      <rect width="64" height="32" rx="2" fill="#E4B45F"/>
+      <text x="32" y="50" fill="#E4B45F" fill-opacity="0.95">WARN</text>
+    </g>
+    <g transform="translate(550,12)">
+      <rect width="64" height="32" rx="2" fill="#84BCE3"/>
+      <text x="32" y="50" fill="#84BCE3" fill-opacity="0.95" transform="translate(-32 0)">INFO</text>
+    </g>
+  </g>
+</svg>

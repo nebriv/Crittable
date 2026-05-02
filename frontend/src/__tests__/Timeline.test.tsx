@@ -24,7 +24,7 @@ function msg(over: Partial<MessageView>): MessageView {
 describe("Timeline", () => {
   it("shows the empty-state copy when no pin-worthy events have fired", () => {
     render(<Timeline messages={[]} roles={ROLES} />);
-    expect(screen.getByText(/Key beats will appear here automatically/i)).toBeInTheDocument();
+    expect(screen.getByText(/Key beats appear here as the AI logs them/i)).toBeInTheDocument();
   });
 
   it("pins critical injects with the headline as title", () => {
@@ -79,7 +79,7 @@ describe("Timeline", () => {
     ];
     render(<Timeline messages={messages} roles={ROLES} />);
     expect(screen.queryByText("Data brief")).not.toBeInTheDocument();
-    expect(screen.getByText(/Key beats will appear here/i)).toBeInTheDocument();
+    expect(screen.getByText(/Key beats appear here as the AI logs them/i)).toBeInTheDocument();
   });
 
   it("renders mixed pin types in transcript order", () => {

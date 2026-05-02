@@ -1,5 +1,5 @@
 {
-  "name": "ai-tabletop-facilitator",
+  "name": "crittable",
   // Use the prebuilt Python image instead of base+python-feature: bookworm only ships
   // 3.11 in apt, so the python feature falls back to a from-source build that fetches
   // the Python release-signing GPG key from public hkp keyservers. Codespaces egress

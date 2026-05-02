@@ -84,14 +84,14 @@ export function GodModePanel({ sessionId, creatorToken, onClose }: Props) {
     <dialog
       ref={dialogRef}
       aria-labelledby="god-mode-heading"
-      className="z-50 w-[min(96vw,1400px)] max-w-none rounded border border-purple-700 bg-slate-950/95 p-4 text-slate-100 backdrop:bg-slate-950/80"
+      className="z-50 w-[min(96vw,1400px)] max-w-none rounded border border-info bg-ink-900/95 p-4 text-ink-100 backdrop:bg-ink-900/80"
     >
-      <header className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-700 pb-2">
+      <header className="flex flex-wrap items-center justify-between gap-2 border-b border-ink-600 pb-2">
         <div>
           <h2 id="god-mode-heading" className="text-lg font-semibold">
             God Mode — full debug
           </h2>
-          <p className="text-xs text-slate-400">
+          <p className="text-xs text-ink-400">
             Creator-only. Polls every 2.5s (paused when tab is hidden). Press
             Esc to close.
           </p>
@@ -102,21 +102,21 @@ export function GodModePanel({ sessionId, creatorToken, onClose }: Props) {
             value={filter}
             onChange={(e) => setFilter(e.target.value)}
             placeholder="Filter blocks…"
-            className="rounded border border-slate-700 bg-slate-900 px-2 py-1 text-xs focus-visible:outline focus-visible:outline-2 focus-visible:outline-purple-300"
+            className="rounded border border-ink-600 bg-ink-850 px-2 py-1 text-xs focus-visible:outline focus-visible:outline-2 focus-visible:outline-info"
             aria-label="Filter debug content"
           />
           <button
             type="button"
             onClick={onClose}
             autoFocus
-            className="rounded border border-slate-600 px-3 py-1 text-sm text-slate-200 hover:bg-slate-800 focus-visible:outline focus-visible:outline-2 focus-visible:outline-purple-300"
+            className="rounded border border-ink-500 px-3 py-1 text-sm text-ink-200 hover:bg-ink-800 focus-visible:outline focus-visible:outline-2 focus-visible:outline-info"
           >
             Close
           </button>
         </div>
       </header>
       {error ? (
-        <p className="mt-2 text-sm text-red-300">poll: {error}</p>
+        <p className="mt-2 text-sm text-crit">poll: {error}</p>
       ) : null}
       <BackendControls sessionId={sessionId} creatorToken={creatorToken} />
       <div className="mt-3 grid max-h-[70vh] grid-cols-1 gap-3 overflow-y-auto md:grid-cols-2">
@@ -172,9 +172,9 @@ function BackendControls({
   return (
     <section
       aria-label="Backend controls"
-      className="mt-3 flex flex-wrap items-center gap-2 rounded border border-amber-700/40 bg-amber-950/20 p-2"
+      className="mt-3 flex flex-wrap items-center gap-2 rounded border border-warn bg-warn/20 p-2"
     >
-      <span className="text-[11px] uppercase tracking-widest text-amber-200">
+      <span className="text-[11px] uppercase tracking-widest text-warn">
         Backend controls
       </span>
       <button
@@ -187,7 +187,7 @@ function BackendControls({
             "Mark the current AI turn errored? Pair with Force-advance to recover.",
           )
         }
-        className="rounded border border-amber-500 px-2 py-0.5 text-xs font-semibold text-amber-200 hover:bg-amber-900/30 disabled:opacity-50"
+        className="rounded border border-warn px-2 py-0.5 text-xs font-semibold text-warn hover:bg-warn/30 disabled:opacity-50"
         title="Mark the current AI turn errored. Use when the AI is stuck in a long stream."
       >
         Abort current AI turn
@@ -196,7 +196,7 @@ function BackendControls({
         type="button"
         disabled={busy !== null}
         onClick={() => run("Force-advance", () => api.forceAdvance(sessionId, creatorToken))}
-        className="rounded border border-sky-500 px-2 py-0.5 text-xs font-semibold text-sky-200 hover:bg-sky-900/30 disabled:opacity-50"
+        className="rounded border border-info px-2 py-0.5 text-xs font-semibold text-info hover:bg-info/30 disabled:opacity-50"
         title="Skip the stuck turn and let the engine advance."
       >
         Force-advance
@@ -211,7 +211,7 @@ function BackendControls({
             "End the exercise NOW? This generates the AAR and closes the session.",
           )
         }
-        className="rounded bg-red-700 px-3 py-0.5 text-xs font-semibold text-white shadow-sm hover:bg-red-600 disabled:opacity-50"
+        className="rounded bg-crit px-3 py-0.5 text-xs font-semibold text-white shadow-sm hover:bg-crit disabled:opacity-50"
         title="Hard-end the session. Triggers the AAR pipeline."
       >
         End session
@@ -221,10 +221,10 @@ function BackendControls({
       <span
         className={
           msg?.kind === "err"
-            ? "text-[11px] text-red-300"
+            ? "text-[11px] text-crit"
             : msg?.kind === "ok"
-              ? "text-[11px] text-emerald-300"
-              : "text-[11px] text-slate-300"
+              ? "text-[11px] text-signal"
+              : "text-[11px] text-ink-300"
         }
         role="status"
         aria-live="polite"
@@ -252,12 +252,12 @@ function DebugBlock({
   return (
     <details
       open={defaultOpen ?? false}
-      className="flex min-h-0 flex-col rounded border border-slate-700 bg-slate-900 p-2"
+      className="flex min-h-0 flex-col rounded border border-ink-600 bg-ink-850 p-2"
     >
-      <summary className="cursor-pointer text-xs uppercase tracking-widest text-slate-300">
+      <summary className="cursor-pointer text-xs uppercase tracking-widest text-ink-300">
         {heading}
       </summary>
-      <pre className="mt-1 max-h-[40vh] overflow-auto whitespace-pre-wrap break-words text-[11px] leading-tight text-slate-200">
+      <pre className="mt-1 max-h-[40vh] overflow-auto whitespace-pre-wrap break-words text-[11px] leading-tight text-ink-200">
         {json}
       </pre>
     </details>
