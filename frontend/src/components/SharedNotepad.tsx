@@ -489,21 +489,34 @@ export function SharedNotepad({
                 : "Hidden from the AI during play; the AI reads it only at the end of the session, when generating the final report. Plan and debrief freely."
             }
           />
-          <a
-            href={exportMarkdownUrl(sessionId, token)}
-            target="_blank"
-            rel="noreferrer"
-            className="mono text-[10px] uppercase tracking-[0.18em] text-ink-300 hover:text-ink-100"
-          >
-            EXPORT
-          </a>
-          <button
-            type="button"
-            onClick={() => setExpanded(false)}
-            className="mono text-[10px] uppercase tracking-[0.18em] text-ink-400 hover:text-ink-200"
-          >
-            COLLAPSE
-          </button>
+          {/* Right-rail is 280px; the bare EXPORT + COLLAPSE labels
+              clipped off the edge alongside the chip. Collapsed into
+              a small ⋯ menu so the header always fits the rail. */}
+          <details className="relative">
+            <summary
+              aria-label="Notepad actions"
+              className="mono cursor-pointer list-none rounded-r-1 border border-ink-600 bg-ink-850 px-2 py-0.5 text-[12px] leading-none text-ink-200 hover:border-signal-deep marker:hidden [&::-webkit-details-marker]:hidden"
+            >
+              ⋯
+            </summary>
+            <div className="absolute right-0 z-10 mt-1 flex flex-col gap-0 rounded-r-1 border border-ink-500 bg-ink-900 p-1 shadow-md">
+              <a
+                href={exportMarkdownUrl(sessionId, token)}
+                target="_blank"
+                rel="noreferrer"
+                className="mono whitespace-nowrap rounded-r-1 px-2 py-1 text-[10px] uppercase tracking-[0.18em] text-ink-200 hover:bg-ink-800 hover:text-ink-100"
+              >
+                Export .md
+              </a>
+              <button
+                type="button"
+                onClick={() => setExpanded(false)}
+                className="mono whitespace-nowrap rounded-r-1 px-2 py-1 text-left text-[10px] uppercase tracking-[0.18em] text-ink-200 hover:bg-ink-800 hover:text-ink-100"
+              >
+                Collapse
+              </button>
+            </div>
+          </details>
         </div>
       </header>
 
