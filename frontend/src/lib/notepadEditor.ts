@@ -58,8 +58,11 @@ export function findPinInsertPos(editor: Editor): number {
  * nodes silently swallow ``\n`` (rendered as a space), so a chat
  * selection that spans paragraphs would otherwise become a single
  * run-on line. The first line carries the ``T+MM:SS — `` stamp;
- * continuation lines are indented (visually grouped, no second stamp).
- * Empty lines are dropped.
+ * continuation lines get a ``↳ `` lead-in marker. We deliberately
+ * avoid a 4-space indent: when ``editorToMarkdown`` serialises the
+ * snapshot back out, CommonMark-style renderers parse paragraphs that
+ * start with 4+ spaces as indented code blocks, which would change
+ * how pins appear in the AAR pipeline. Per Copilot review on PR #125.
  */
 export function appendPinToEditor(
   editor: Editor,
@@ -77,7 +80,7 @@ export function appendPinToEditor(
     content: [
       {
         type: "text",
-        text: idx === 0 ? `${stamp} — ${line}` : `    ${line}`,
+        text: idx === 0 ? `${stamp} — ${line}` : `↳ ${line}`,
       },
     ],
   }));

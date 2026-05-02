@@ -109,4 +109,24 @@ describe("appendPinToEditor", () => {
     appendPinToEditor(editor, "negative-clamp pin", future);
     expect(editor.getText()).toMatch(/T\+00:00 — negative-clamp pin/);
   });
+
+  it("emits one paragraph per non-empty line; continuation lines use ↳ (NOT 4 spaces)", () => {
+    // 4-space indent would round-trip through ``editorToMarkdown`` as a
+    // CommonMark indented code block, which would change AAR rendering.
+    // Per Copilot review on PR #125 — keep the lead-in as ``↳ `` so the
+    // serialised markdown stays as plain paragraphs.
+    const editor = makeEditor("<p>x</p>");
+    const sessionStartedAt = new Date(Date.now() - 60_000).toISOString();
+    appendPinToEditor(
+      editor,
+      "first line\n\nsecond line\n  third line  ",
+      sessionStartedAt,
+    );
+    const text = editor.getText();
+    expect(text).toMatch(/T\+01:00 — first line/);
+    expect(text).toMatch(/↳ second line/);
+    expect(text).toMatch(/↳ third line/);
+    // No 4-space prefix — that would parse as an indented code block.
+    expect(text).not.toMatch(/^ {4}second line/m);
+  });
 });
