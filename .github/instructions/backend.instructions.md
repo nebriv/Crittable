@@ -18,7 +18,7 @@ applyTo: "backend/**"
 - Hardcoded config value that should be env-driven via `pydantic-settings` → **HIGH**
 - New env var without an entry in `docs/configuration.md` → **HIGH**
 - `# type: ignore` without a one-line explanation → **MEDIUM**
-- `ruff` violations → **MEDIUM**
+- `ruff check` or `mypy --strict` regressions introduced in the diff → **MEDIUM** (both must stay clean)
 
 ## Async
 - Sync I/O on an async path → **BLOCK**

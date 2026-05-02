@@ -30,7 +30,7 @@ Be specific. Quote the offending line. Group findings with one root cause. Path-
 - Dense one-liners, nested ternaries, regex without explanation
 - Comments restating *what* instead of *why*; comments referencing the current task/PR (rot fast)
 - Inconsistent naming; mixed I/O + logic + formatting in one function
-- Backwards-compat shims for code with no callers; `_var` renames for "unused" params; `// removed` placeholders
+- `_var` renames for "unused" params; `// removed` placeholders for deleted code
 
 ## 4. Performance
 - N+1 queries, missing indexes implied by new query patterns, full-table scans
@@ -38,7 +38,6 @@ Be specific. Quote the offending line. Group findings with one root cause. Path-
 - Unbounded loops/recursion, O(n²) over user-controlled n, large in-memory accumulations
 
 ## 5. API & contract
-- Breaking changes to public APIs/types/DB schema without migration path
 - Inconsistent error shapes, missing status codes, internals leaking in error messages
 - New endpoints missing auth, validation, or rate limiting
 
@@ -63,3 +62,7 @@ Be specific. Quote the offending line. Group findings with one root cause. Path-
 ## 9. PR body
 - Comma-list closing keyword (`Closes #1, #2, #3`) — only `#1` auto-closes. Repeat per issue.
 - Closing keyword next to an issue number you don't want to close (negation, rhetorical question) → **BLOCK**. GitHub's parser ignores surrounding context.
+
+## 10. No backwards compatibility
+Zero users in the wild — change both sides in the same PR, delete the old code.
+- Optional `field?: T` "for older clients", version-flag branches, deprecation aliases, fallbacks for absent backends, stub-410 endpoints, "optional in case the backend hasn't shipped yet" → **HIGH**.
