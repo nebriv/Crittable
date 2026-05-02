@@ -31,6 +31,8 @@ import {
 } from "../lib/proxy";
 import { useStickyScroll } from "../lib/useStickyScroll";
 import { useTabFocusReporter } from "../lib/useTabFocusReporter";
+import { HighlightActionPopover } from "../components/HighlightActionPopover";
+import { SharedNotepad } from "../components/SharedNotepad";
 import { ServerEvent, WsClient } from "../lib/ws";
 
 export type Phase = "intro" | "setup" | "ready" | "play" | "ended";
@@ -231,6 +233,11 @@ export function Facilitator() {
   const [lastEventAt, setLastEventAt] = useState<number | null>(null);
   const [connectionCount, setConnectionCount] = useState<number | null>(null);
   const wsRef = useRef<WsClient | null>(null);
+  // Mirror the WS client into reactive state — refs don't trigger
+  // re-renders and downstream consumers (SharedNotepad slot,
+  // HighlightActionPopover) need React to re-render once the client
+  // exists. See the matching note in Play.tsx (issue #98 player view).
+  const [wsClient, setWsClient] = useState<WsClient | null>(null);
   const forceAdvanceTimerRef = useRef<number | null>(null);
   // Rate-limit the typing-send-dropped log to one line per WS
   // state edge (issue #77 logging fix; see ``handleTypingChange``).
@@ -399,7 +406,11 @@ export function Facilitator() {
     });
     ws.connect();
     wsRef.current = ws;
-    return () => ws.close();
+    setWsClient(ws);
+    return () => {
+      ws.close();
+      setWsClient(null);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state?.sessionId, state?.token]);
 
@@ -1313,14 +1324,33 @@ export function Facilitator() {
           <RightSidebar
             messages={snapshot.messages}
             roles={snapshot.roles}
-            notesStorageKey={(() => {
-              const role = snapshot.roles.find((r) => r.id === state.creatorRoleId);
-              const v = role?.token_version ?? 0;
-              return `atf-notes:${state.sessionId}:${state.creatorRoleId}:v${v}`;
-            })()}
+            notepad={
+              wsClient ? (
+                <SharedNotepad
+                  sessionId={state.sessionId}
+                  token={state.token}
+                  ws={wsClient}
+                  isCreator={true}
+                  sessionStartedAt={snapshot.created_at}
+                  selfRoleId={state.creatorRoleId}
+                  selfDisplayName={
+                    snapshot.roles.find((r) => r.id === state.creatorRoleId)?.display_name ??
+                    snapshot.roles.find((r) => r.id === state.creatorRoleId)?.label ??
+                    "(creator)"
+                  }
+                />
+              ) : null
+            }
           />
         </aside>
       </div>
+      {wsClient ? (
+        <HighlightActionPopover
+          sessionId={state.sessionId}
+          roleId={state.creatorRoleId}
+          token={state.token}
+        />
+      ) : null}
       <BottomActionBar
         phase={phase}
         backendState={snapshot.state}

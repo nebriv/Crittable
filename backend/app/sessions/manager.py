@@ -92,6 +92,12 @@ class SessionManager:
         # Background tasks (currently just AAR generation). Kept on the manager
         # so they aren't garbage-collected mid-flight; cancelled on shutdown.
         self._bg_tasks: set[asyncio.Task[Any]] = set()
+        # Shared markdown notepad service (issue #98). Holds the per-session
+        # pycrdt Doc; mutations must be performed under the same per-session
+        # lock as ``_locks[session_id]`` since pycrdt isn't safe for
+        # concurrent mutation.
+        from .notepad import NotepadService  # local import to avoid cycle
+        self._notepad = NotepadService()
 
     # ------------------------------------------------------------------ utils
     async def _lock_for(self, session_id: str) -> asyncio.Lock:
@@ -885,9 +891,59 @@ class SessionManager:
         )
         await self._broadcast_state(session)
 
+    # Notepad lock-pending countdown (issue #98). The plan promised
+    # players a 10-second window after the creator clicks End to save
+    # their last thought before the notepad becomes read-only. We can't
+    # delay the session state transition itself (creator expects the
+    # session to end *now*) so we run the lock as a small background
+    # task: emit the lock_pending event immediately, sleep, lock, emit
+    # locked. AAR generation begins while the window is open and reads
+    # whichever snapshot the players have pushed by lock time.
+    NOTEPAD_LOCK_PENDING_SECONDS: float = 10.0
+
+    async def _lock_notepad_after_delay(
+        self, session_id: str, *, delay: float
+    ) -> None:
+        try:
+            if delay > 0:
+                await asyncio.sleep(delay)
+            async with await self._lock_for(session_id):
+                session = await self._repo.get(session_id)
+                if session.notepad.locked:
+                    return
+                self._notepad.lock(session)
+                await self._repo.save(session)
+            self._emit("notepad_locked", session)
+            await self._connections.broadcast(
+                session_id,
+                {
+                    "type": "notepad_locked",
+                    "locked_at": session.notepad.locked_at.isoformat()
+                    if session.notepad.locked_at
+                    else None,
+                },
+                record=True,
+            )
+        except Exception as exc:
+            _logger.exception(
+                "notepad_lock_after_delay_failed",
+                session_id=session_id,
+                error=str(exc),
+            )
+
     async def end_session(
-        self, *, session_id: str, by_role_id: str, reason: str = "ended"
+        self,
+        *,
+        session_id: str,
+        by_role_id: str,
+        reason: str = "ended",
+        notepad_lock_pending_seconds: float | None = None,
     ) -> Session:
+        delay = (
+            self.NOTEPAD_LOCK_PENDING_SECONDS
+            if notepad_lock_pending_seconds is None
+            else max(0.0, notepad_lock_pending_seconds)
+        )
         async with await self._lock_for(session_id):
             session = await self._repo.get(session_id)
             # Creator-only gate (issue #81). The AI-tool end path bypasses
@@ -926,6 +982,28 @@ class SessionManager:
             await self._repo.save(session)
         self._emit("session_ended", session, by=by_role_id, reason=reason)
         await self._broadcast_state(session)
+        # Issue #98: announce the lock-pending countdown immediately
+        # so clients can show the "session ending — N seconds" banner.
+        # The notepad stays writable for ``delay`` seconds so players
+        # can save a last thought, then a background task locks it.
+        # When ``delay`` is 0 (test path) the lock fires synchronously
+        # before AAR generation starts.
+        await self._connections.broadcast(
+            session_id,
+            {
+                "type": "notepad_lock_pending",
+                "locks_in_seconds": int(delay),
+            },
+            record=False,
+        )
+        if delay <= 0:
+            await self._lock_notepad_after_delay(session_id, delay=0)
+        else:
+            task = asyncio.create_task(
+                self._lock_notepad_after_delay(session_id, delay=delay)
+            )
+            self._bg_tasks.add(task)
+            task.add_done_callback(self._bg_tasks.discard)
         await self.trigger_aar_generation(session_id)
         return session
 
@@ -1128,6 +1206,10 @@ class SessionManager:
 
     def connections(self) -> ConnectionManager:
         return self._connections
+
+    def notepad(self) -> Any:
+        """Access the per-process :class:`NotepadService` (issue #98)."""
+        return self._notepad
 
     async def with_lock(self, session_id: str) -> asyncio.Lock:
         return await self._lock_for(session_id)

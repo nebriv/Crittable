@@ -18,6 +18,12 @@ dependencies = [
     "itsdangerous>=2.2",
     "httpx>=0.27",
     "jinja2>=3.1",
+    # Yjs CRDT bindings (issue #98 shared notepad). The server runs
+    # pycrdt as an opaque relay (path C: apply binary updates from
+    # clients, encode state for reconnects). Markdown extraction
+    # happens client-side. MIT-licensed, actively maintained — same
+    # library Jupyter's Real-Time Collaboration extension uses.
+    "pycrdt>=0.10",
 ]
 
 [project.optional-dependencies]

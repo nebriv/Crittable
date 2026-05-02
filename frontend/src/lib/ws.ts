@@ -88,6 +88,45 @@ export type ServerEvent =
         rationale: string;
       };
     }
+  // Shared markdown notepad (issue #98). Yjs binary updates are
+  // base64-encoded inside JSON envelopes so they ride the existing
+  // /ws/sessions/{id} channel without a separate y-websocket server.
+  // Server-side recording policy:
+  //   - notepad_update / notepad_pin_appended / notepad_awareness /
+  //     notepad_lock_pending: record=False — high-volume, not
+  //     idempotent against the 256-event replay buffer; reconnecting
+  //     clients explicitly send notepad_sync_request for current state.
+  //   - notepad_locked: record=True — terminal state; a late joiner
+  //     who reconnects after End must learn the notepad is locked
+  //     (otherwise their editor would be writable but every edit
+  //     would 409 from the service).
+  | {
+      type: "notepad_sync_response";
+      state: string;
+      locked: boolean;
+      template_id: string | null;
+    }
+  | {
+      type: "notepad_update";
+      update: string;
+      origin_role_id: string;
+    }
+  | {
+      type: "notepad_pin_appended";
+      text: string;
+      source_message_id: string | null;
+      by_role_id: string;
+    }
+  | {
+      // Live cursor presence (y-protocols Awareness update). record=False
+      // server-side; relayed to all peers except the sender. ``origin_role_id``
+      // lets the receiver tag the rendered cursor.
+      type: "notepad_awareness";
+      awareness: string;
+      origin_role_id: string;
+    }
+  | { type: "notepad_lock_pending"; locks_in_seconds: number }
+  | { type: "notepad_locked"; locked_at: string | null }
   | { type: "error"; scope: string; message: string };
 
 export type ClientEvent =
@@ -102,7 +141,11 @@ export type ClientEvent =
   // tri-state status dot (joined+focused / joined+backgrounded /
   // not joined). The server aggregates per-role: a role is
   // "focused" if at least one of its open tabs is focused.
-  | { type: "tab_focus"; focused: boolean };
+  | { type: "tab_focus"; focused: boolean }
+  // Shared markdown notepad (issue #98).
+  | { type: "notepad_sync_request" }
+  | { type: "notepad_update"; update: string }
+  | { type: "notepad_awareness"; awareness: string };
 
 export interface WsClientOptions {
   sessionId: string;
@@ -117,8 +160,22 @@ export class WsClient {
   private closedByCaller = false;
   private reconnectAttempt = 0;
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+  // Additional fan-out listeners (issue #98 — SharedNotepad needs to
+  // observe notepad_* events without taking over the page-level
+  // ``onEvent`` callback). The page's ``onEvent`` is still called
+  // first; subscribe handlers run after, so a panic in a notepad
+  // handler can't suppress page-level state updates.
+  private subscribers = new Set<(evt: ServerEvent) => void>();
 
   constructor(private readonly opts: WsClientOptions) {}
+
+  /** Add a fan-out listener. Returns an unsubscribe fn. */
+  subscribe(handler: (evt: ServerEvent) => void): () => void {
+    this.subscribers.add(handler);
+    return () => {
+      this.subscribers.delete(handler);
+    };
+  }
 
   connect(): void {
     this.closedByCaller = false;
@@ -239,11 +296,41 @@ export class WsClient {
             safe.cap = parsed.cap;
             safe.original_len = parsed.original_len;
             break;
+          case "notepad_sync_response":
+            // Log size only — the content is opaque Yjs binary; no
+            // user-visible text leaks via console regardless.
+            safe.state_chars = parsed.state?.length ?? 0;
+            safe.locked = parsed.locked;
+            safe.template_id = parsed.template_id;
+            break;
+          case "notepad_update":
+            safe.update_chars = parsed.update?.length ?? 0;
+            safe.origin_role_id = parsed.origin_role_id;
+            break;
+          case "notepad_pin_appended":
+            safe.text_chars = parsed.text?.length ?? 0;
+            safe.by_role_id = parsed.by_role_id;
+            break;
+          case "notepad_lock_pending":
+            safe.locks_in_seconds = parsed.locks_in_seconds;
+            break;
+          case "notepad_locked":
+            safe.locked_at = parsed.locked_at;
+            break;
           default:
             break;
         }
         console.debug("[ws] event", safe);
         this.opts.onEvent(parsed);
+        // Fan-out to additional subscribers. Each is wrapped so a
+        // throw in one handler doesn't suppress the others.
+        for (const sub of this.subscribers) {
+          try {
+            sub(parsed);
+          } catch (err) {
+            console.warn("[ws] subscriber threw", err);
+          }
+        }
       } catch (err) {
         // Surface parse failures rather than dropping silently — they're
         // almost always a contract drift between client and server.
