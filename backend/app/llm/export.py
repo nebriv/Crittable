@@ -105,6 +105,26 @@ class AARGenerator:
         return markdown, report
 
 
+_CHECKBOX_LINE_RE = re.compile(r"^\s*-\s*\[[ xX]\]\s*(.+?)\s*$", re.MULTILINE)
+
+
+def _extract_action_items_verbatim(markdown: str) -> list[str]:
+    """Pull every checkbox line out of the player notepad markdown.
+
+    Returns the raw line contents (without the leading ``- [ ]``), with
+    duplicates removed while preserving first-seen order. Used to build
+    the ``<player_action_items_verbatim>`` block fed to the AAR — the
+    AAR system prompt instructs the model that every line here MUST
+    appear unmodified in ``recommendations``.
+    """
+    seen: dict[str, None] = {}
+    for match in _CHECKBOX_LINE_RE.finditer(markdown or ""):
+        item = match.group(1).strip()
+        if item and item not in seen:
+            seen[item] = None
+    return list(seen.keys())
+
+
 def _user_payload(session: Session, audit: AuditLog) -> str:
     transcript = "\n".join(
         f"[{m.kind.value}] role={m.role_id or 'AI'}: {m.body}" for m in session.messages
@@ -116,6 +136,28 @@ def _user_payload(session: Session, audit: AuditLog) -> str:
         json.dumps({"kind": e.kind, "ts": e.ts.isoformat(), "payload": e.payload})
         for e in audit.dump(session.id)
     )
+
+    # Player notepad. Wrapped in clearly-fenced delimiters; the AAR
+    # system prompt explicitly instructs the model to treat the
+    # contents as data, not instructions (prompt-injection defense).
+    # ``markdown_snapshot`` is pushed by clients via /notepad/snapshot;
+    # a missing snapshot is fine (empty notepad / nobody pushed yet).
+    notepad_md = (session.notepad.markdown_snapshot or "").strip()
+    action_items = _extract_action_items_verbatim(notepad_md)
+    notepad_block = (
+        "<player_notepad>\n" + (notepad_md or "(notepad empty)") + "\n</player_notepad>"
+    )
+    if action_items:
+        verbatim_block = "<player_action_items_verbatim>\n" + "\n".join(
+            f"- {item}" for item in action_items
+        ) + "\n</player_action_items_verbatim>"
+    else:
+        verbatim_block = (
+            "<player_action_items_verbatim>\n"
+            "(no checkbox-style action items in the notepad)\n"
+            "</player_action_items_verbatim>"
+        )
+
     return (
         "Session transcript:\n"
         f"{transcript}\n\n"
@@ -123,6 +165,8 @@ def _user_payload(session: Session, audit: AuditLog) -> str:
         f"{setup}\n\n"
         "Audit log (JSONL):\n"
         f"{audit_lines}\n\n"
+        f"{notepad_block}\n\n"
+        f"{verbatim_block}\n\n"
         "Call finalize_report with your structured report."
     )
 

@@ -99,6 +99,37 @@ class SetupReplyBody(BaseModel):
     content: str = Field(min_length=1, max_length=4000)
 
 
+class NotepadPinBody(BaseModel):
+    """POST /api/sessions/{id}/notepad/pin (issue #98).
+
+    ``text`` is the user's selected snippet; the server caps it at 280
+    chars and strips markdown / HTML before appending. ``source_message_id``
+    is used for idempotency (double-click on the same message is a no-op
+    instead of a double-pin)."""
+
+    model_config = ConfigDict(extra="forbid")
+    text: str = Field(min_length=1, max_length=2000)
+    source_message_id: str | None = None
+
+
+class NotepadTemplateBody(BaseModel):
+    """POST /api/sessions/{id}/notepad/template (issue #98). Records the
+    creator's template choice on the session; the actual content lands
+    via the normal notepad_update path."""
+
+    model_config = ConfigDict(extra="forbid")
+    template_id: str = Field(min_length=1, max_length=64)
+
+
+class NotepadSnapshotBody(BaseModel):
+    """POST /api/sessions/{id}/notepad/snapshot (issue #98). Latest
+    markdown serialization of the editor — the AAR's source of truth.
+    Server caps at 1 MB; clients should debounce ~1s."""
+
+    model_config = ConfigDict(extra="forbid")
+    markdown: str = Field(max_length=1_000_000)
+
+
 def register_api_routes(app: FastAPI) -> None:
     router = APIRouter(prefix="/api")
 
@@ -692,6 +723,237 @@ def register_api_routes(app: FastAPI) -> None:
         except IllegalTransitionError as exc:
             raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
         return {"ok": True}
+
+    # ---------------------------------------------------- shared notepad (#98)
+    @router.post(
+        "/sessions/{session_id}/notepad/pin",
+        status_code=status.HTTP_204_NO_CONTENT,
+    )
+    async def pin_to_notepad(
+        session_id: str, body: NotepadPinBody, request: Request
+    ) -> Response:
+        """Append a chat-message snippet to the notepad's Timeline section.
+
+        Highlight-to-action popover (issue #98) → POST. Sanitizes markdown
+        + HTML out of the snippet (defense against a player smuggling
+        formatting / clickable links into the AAR via the notepad), caps
+        length to 280 chars, and is idempotent on ``source_message_id``
+        so a double-click doesn't double-pin.
+
+        Auth: any participant (spectators 403). The notepad service also
+        enforces that the caller's role is in the session roster.
+        """
+        from ..sessions.notepad import (
+            NotepadLockedError,
+            NotepadRateLimitedError,
+            NotepadRoleNotAllowedError,
+        )
+
+        manager = _manager(request)
+        token = await _bind_token(request, session_id)
+        try:
+            require_participant(token)
+        except AuthorizationError as exc:
+            raise HTTPException(status.HTTP_403_FORBIDDEN, str(exc)) from exc
+
+        notepad = manager.notepad()
+        async with await manager.with_lock(session_id):
+            session = await manager.get_session(session_id)
+            role_id = token["role_id"]
+            if not notepad.can_pin(session, role_id, body.source_message_id):
+                # Idempotent no-op for double-click on the same message.
+                return Response(status_code=status.HTTP_204_NO_CONTENT)
+            sanitized = notepad.sanitize_pin_text(body.text)[:280]
+            if not sanitized:
+                raise HTTPException(
+                    status.HTTP_400_BAD_REQUEST,
+                    "pin text was empty after sanitization",
+                )
+            try:
+                notepad.record_pin(session, role_id, body.source_message_id)
+            except NotepadLockedError as exc:
+                raise HTTPException(status.HTTP_409_CONFLICT, "notepad is locked") from exc
+            except NotepadRoleNotAllowedError as exc:
+                raise HTTPException(status.HTTP_403_FORBIDDEN, "role not in roster") from exc
+            except NotepadRateLimitedError as exc:
+                raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, "rate limited") from exc
+            manager._emit(
+                "notepad_pin",
+                session,
+                role_id=role_id,
+                length=len(sanitized),
+                source_message_id=body.source_message_id,
+            )
+        # Tell every connected client to add the line to their local Yjs
+        # editor's Timeline section. The message body has already been
+        # sanitized, but clients still treat it as text (they don't
+        # parse markdown from server pushes).
+        await manager.connections().broadcast(
+            session_id,
+            {
+                "type": "notepad_pin_appended",
+                "text": sanitized,
+                "source_message_id": body.source_message_id,
+                "by_role_id": role_id,
+            },
+            record=False,
+        )
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+    @router.post(
+        "/sessions/{session_id}/notepad/template",
+        status_code=status.HTTP_204_NO_CONTENT,
+    )
+    async def apply_notepad_template(
+        session_id: str, body: NotepadTemplateBody, request: Request
+    ) -> Response:
+        """Record which starter template the creator chose.
+
+        Server-side this only stores the ``template_id`` on the session.
+        The actual template content is written into the Yjs doc by the
+        creator's editor (which then flows to other clients via the
+        normal notepad_update path) — keeps the server out of the
+        XmlFragment-walking business per the path-C decision.
+
+        Auth: creator only.
+        """
+        from ..sessions.notepad import NotepadLockedError
+
+        manager = _manager(request)
+        token = await _bind_token(request, session_id)
+        try:
+            require_creator(token)
+        except AuthorizationError as exc:
+            raise HTTPException(status.HTTP_403_FORBIDDEN, str(exc)) from exc
+
+        notepad = manager.notepad()
+        async with await manager.with_lock(session_id):
+            session = await manager.get_session(session_id)
+            try:
+                notepad.set_template_id(session, body.template_id)
+            except NotepadLockedError as exc:
+                raise HTTPException(status.HTTP_409_CONFLICT, "notepad is locked") from exc
+            manager._emit(
+                "notepad_template_applied",
+                session,
+                template_id=body.template_id,
+                by=token["role_id"],
+            )
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+    @router.post(
+        "/sessions/{session_id}/notepad/snapshot",
+        status_code=status.HTTP_204_NO_CONTENT,
+    )
+    async def push_notepad_snapshot(
+        session_id: str, body: NotepadSnapshotBody, request: Request
+    ) -> Response:
+        """Receive a markdown serialization of the notepad from a client.
+
+        Path C of the approved plan: the server doesn't parse Yjs XML
+        fragments; clients (TipTap) serialize their editor state to
+        markdown and POST it here on every meaningful edit (debounced
+        ~1s) and on blur. The latest push wins; the AAR pipeline reads
+        ``session.notepad.markdown_snapshot``.
+
+        Auth: any participant.
+        """
+        from ..sessions.notepad import (
+            NotepadLockedError,
+            NotepadOversizedError,
+            NotepadRoleNotAllowedError,
+        )
+
+        manager = _manager(request)
+        token = await _bind_token(request, session_id)
+        try:
+            require_participant(token)
+        except AuthorizationError as exc:
+            raise HTTPException(status.HTTP_403_FORBIDDEN, str(exc)) from exc
+
+        notepad = manager.notepad()
+        async with await manager.with_lock(session_id):
+            session = await manager.get_session(session_id)
+            try:
+                notepad.set_markdown_snapshot(session, token["role_id"], body.markdown)
+            except NotepadLockedError as exc:
+                raise HTTPException(status.HTTP_409_CONFLICT, "notepad is locked") from exc
+            except NotepadOversizedError as exc:
+                raise HTTPException(status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, str(exc)) from exc
+            except NotepadRoleNotAllowedError as exc:
+                raise HTTPException(status.HTTP_403_FORBIDDEN, "role not in roster") from exc
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+    @router.get("/sessions/{session_id}/notepad/templates")
+    async def list_notepad_templates(
+        session_id: str, request: Request
+    ) -> dict[str, list[dict[str, str]]]:
+        """Return the starter-template catalog for the empty-state picker.
+
+        Includes the full markdown ``content`` so the editor can apply
+        it locally as a Yjs edit (keeps the server out of XmlFragment
+        walking per path C). Auth: any participant — even spectators
+        can browse, but only the creator can ``POST .../template``.
+        """
+        from ..templates.notepad import list_templates
+
+        manager = _manager(request)
+        token = await _bind_token(request, session_id)
+        try:
+            require_participant(token)
+        except AuthorizationError as exc:
+            raise HTTPException(status.HTTP_403_FORBIDDEN, str(exc)) from exc
+        # Touch the session so a missing id 404s consistently with the
+        # other notepad endpoints.
+        await manager.get_session(session_id)
+        return {
+            "templates": [
+                {
+                    "id": t.id,
+                    "label": t.label,
+                    "description": t.description,
+                    "content": t.content,
+                }
+                for t in list_templates()
+            ]
+        }
+
+    @router.get("/sessions/{session_id}/notepad/export.md")
+    async def export_notepad_markdown(
+        session_id: str, request: Request
+    ) -> PlainTextResponse:
+        """Serve the latest markdown snapshot with a contributor header.
+
+        Always available (even after lock-on-end) — the CISO persona
+        review explicitly required export-anytime, not just at AAR.
+        """
+        manager = _manager(request)
+        token = await _bind_token(request, session_id)
+        try:
+            require_participant(token)
+        except AuthorizationError as exc:
+            raise HTTPException(status.HTTP_403_FORBIDDEN, str(exc)) from exc
+
+        async with await manager.with_lock(session_id):
+            session = await manager.get_session(session_id)
+            roster_by_id = {r.id: (r.display_name or r.label) for r in session.roles}
+            contributors = [
+                roster_by_id.get(rid, rid)
+                for rid in session.notepad.contributor_role_ids
+            ]
+            from datetime import UTC
+            from datetime import datetime as _dt
+            header = (
+                f"# Team Notepad — {session.id}\n"
+                f"Contributors: {', '.join(contributors) if contributors else '(none yet)'}\n"
+                f"Locked: {'yes' if session.notepad.locked else 'no'}\n"
+                f"Exported at: {_dt.now(UTC).isoformat()}\n\n"
+            )
+            body_md = session.notepad.markdown_snapshot or "_(notepad is empty)_\n"
+        return PlainTextResponse(
+            header + body_md,
+            media_type="text/markdown; charset=utf-8",
+        )
 
     @router.post("/sessions/{session_id}/plan")
     async def edit_plan(

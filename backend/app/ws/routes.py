@@ -315,6 +315,111 @@ async def _broadcast_typing(
     )
 
 
+async def _handle_notepad_event(
+    *,
+    websocket: WebSocket,
+    manager: SessionManager,
+    session_id: str,
+    role_id: str,
+    event_type: str,
+    payload: dict[str, Any],
+) -> None:
+    """Apply a notepad WS event under the session's lock.
+
+    All mutations of the per-session pycrdt Doc go through here so the
+    NotepadService never sees concurrent calls. ``record=False`` on
+    every broadcast — Yjs updates are not replay-safe; reconnecting
+    clients send ``notepad_sync_request`` to fetch the current state.
+    """
+    import base64
+
+    from ..sessions.notepad import (
+        NotepadLockedError,
+        NotepadOversizedError,
+        NotepadRateLimitedError,
+        NotepadRoleNotAllowedError,
+    )
+
+    notepad = manager.notepad()
+    async with await manager.with_lock(session_id):
+        session = await manager.get_session(session_id)
+        if event_type == "notepad_sync_request":
+            state = notepad.state_as_update(session_id)
+            await websocket.send_json(
+                {
+                    "type": "notepad_sync_response",
+                    "state": base64.b64encode(state).decode("ascii"),
+                    "locked": session.notepad.locked,
+                    "template_id": session.notepad.template_id,
+                }
+            )
+            return
+        # event_type == "notepad_update"
+        update_b64 = payload.get("update")
+        if not isinstance(update_b64, str):
+            await websocket.send_json(
+                {"type": "error", "scope": "notepad", "message": "missing update"}
+            )
+            return
+        try:
+            update_bytes = base64.b64decode(update_b64, validate=True)
+        except (ValueError, TypeError):
+            await websocket.send_json(
+                {"type": "error", "scope": "notepad", "message": "invalid base64"}
+            )
+            return
+        try:
+            notepad.apply_update(session, role_id, update_bytes)
+        except NotepadLockedError:
+            await websocket.send_json(
+                {"type": "error", "scope": "notepad", "message": "notepad is locked"}
+            )
+            return
+        except NotepadRoleNotAllowedError:
+            await websocket.send_json(
+                {"type": "error", "scope": "notepad", "message": "role not in roster"}
+            )
+            return
+        except NotepadOversizedError:
+            await websocket.send_json(
+                {
+                    "type": "error",
+                    "scope": "notepad",
+                    "message": "update too large",
+                }
+            )
+            return
+        except NotepadRateLimitedError:
+            await websocket.send_json(
+                {
+                    "type": "error",
+                    "scope": "notepad",
+                    "message": "rate limited",
+                }
+            )
+            return
+        # Audit + structured log.
+        manager._emit(
+            "notepad_edit",
+            session,
+            role_id=role_id,
+            update_size=len(update_bytes),
+            edit_count=session.notepad.edit_count,
+        )
+    # Broadcast the merged update to every connection (Yjs idempotently
+    # ignores its own update on the sender). record=False keeps the
+    # 256-event replay buffer clean.
+    await manager.connections().broadcast(
+        session_id,
+        {
+            "type": "notepad_update",
+            "update": update_b64,
+            "origin_role_id": role_id,
+        },
+        record=False,
+    )
+
+
 async def _server_pump(
     websocket: WebSocket,
     conn: Any,
@@ -517,6 +622,39 @@ async def _client_pump(
                     role_id=role_id,
                     typing=event_type == "typing_start",
                 )
+            elif event_type in ("notepad_sync_request", "notepad_update"):
+                # Shared markdown notepad (issue #98). The notepad service
+                # acts as an opaque CRDT relay (path C of the approved plan):
+                # the server applies binary updates without parsing them and
+                # encodes its current state for reconnecting clients.
+                # ``record=False`` for both — Yjs updates are not idempotent
+                # against the 256-event replay buffer; reconnecting clients
+                # explicitly request the current state via
+                # ``notepad_sync_request``.
+                try:
+                    await _handle_notepad_event(
+                        websocket=websocket,
+                        manager=manager,
+                        session_id=session_id,
+                        role_id=role_id,
+                        event_type=event_type,
+                        payload=payload,
+                    )
+                except Exception as exc:
+                    _logger.exception(
+                        "ws_notepad_error",
+                        session_id=session_id,
+                        role_id=role_id,
+                        event_type=event_type,
+                        error=str(exc),
+                    )
+                    await websocket.send_json(
+                        {
+                            "type": "error",
+                            "scope": "notepad",
+                            "message": "notepad event failed",
+                        }
+                    )
             else:
                 await websocket.send_json(
                     {"type": "error", "scope": "ws", "message": f"unknown event type: {event_type}"}

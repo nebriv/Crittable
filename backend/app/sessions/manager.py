@@ -92,6 +92,12 @@ class SessionManager:
         # Background tasks (currently just AAR generation). Kept on the manager
         # so they aren't garbage-collected mid-flight; cancelled on shutdown.
         self._bg_tasks: set[asyncio.Task[Any]] = set()
+        # Shared markdown notepad service (issue #98). Holds the per-session
+        # pycrdt Doc; mutations must be performed under the same per-session
+        # lock as ``_locks[session_id]`` since pycrdt isn't safe for
+        # concurrent mutation.
+        from .notepad import NotepadService  # local import to avoid cycle
+        self._notepad = NotepadService()
 
     # ------------------------------------------------------------------ utils
     async def _lock_for(self, session_id: str) -> asyncio.Lock:
@@ -923,9 +929,25 @@ class SessionManager:
                 )
             )
             session.aar_status = "pending"
+            # Lock the shared notepad (issue #98). Subsequent edits are
+            # rejected by NotepadService; clients receive a notepad_locked
+            # broadcast and switch their editor to read-only with the
+            # "Export still available" banner.
+            self._notepad.lock(session)
             await self._repo.save(session)
         self._emit("session_ended", session, by=by_role_id, reason=reason)
+        self._emit("notepad_locked", session, by=by_role_id)
         await self._broadcast_state(session)
+        await self._connections.broadcast(
+            session_id,
+            {
+                "type": "notepad_locked",
+                "locked_at": session.notepad.locked_at.isoformat()
+                if session.notepad.locked_at
+                else None,
+            },
+            record=True,
+        )
         await self.trigger_aar_generation(session_id)
         return session
 
@@ -1128,6 +1150,10 @@ class SessionManager:
 
     def connections(self) -> ConnectionManager:
         return self._connections
+
+    def notepad(self) -> Any:
+        """Access the per-process :class:`NotepadService` (issue #98)."""
+        return self._notepad
 
     async def with_lock(self, session_id: str) -> asyncio.Lock:
         return await self._lock_for(session_id)
