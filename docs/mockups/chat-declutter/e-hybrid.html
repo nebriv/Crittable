@@ -21,24 +21,10 @@
   content: ""; display: inline-block; width: 100%; height: 1px;
   background: #1e293b; vertical-align: middle; margin-right: 8px;
 }
-/* Pinned artifacts strip across top — SOC + IR Lead ask */
-.artifact-strip {
-  display: flex; gap: 8px; overflow-x: auto;
-  padding: 8px 12px;
-  border-bottom: 1px solid #1e293b;
-  background: #0b1320;
-  flex-shrink: 0;
-}
-.artifact-card-mini {
-  flex: 0 0 220px;
-  border: 1px solid #1e293b; border-left-width: 3px;
-  background: #0f172a; border-radius: 4px;
-  padding: 6px 8px; font-size: 11px;
-  cursor: pointer;
-}
-.artifact-card-mini:hover { border-color: #475569; background: #1e293b; }
-.artifact-card-mini .title { font-weight: 600; color: #e2e8f0; font-size: 12px; }
-.artifact-card-mini .meta { color: #64748b; font-size: 10px; margin-top: 2px; }
+/* (Pinned artifacts strip CSS removed in iter-3 — the artifact strip across
+ * the top moved into a Timeline tab on the right rail per operator
+ * feedback "the timeline bar at the top could go just in as a tab on the
+ * right rail". Rail uses the shared .rail-card class from styles.css.) */
 /* Synthetic track-lifecycle row — IR Lead's ask. Renders before the first
  * message in a previously-unseen track so the AAR has a "track opened"
  * landmark instead of inferring from the first message timestamp. */
@@ -74,14 +60,8 @@
 }
 .unread-cta button:hover { background: rgba(251, 191, 36, 0.4); }
 
-/* Human-marked AAR-moment affordance */
-.btn-mark {
-  font-size: 10px; padding: 2px 6px; border-radius: 4px;
-  border: 1px solid #334155; background: transparent; color: #94a3b8;
-  cursor: pointer;
-}
-.btn-mark:hover { background: #1e293b; color: #e2e8f0; border-color: #475569; }
-.btn-mark.active { background: rgba(168, 85, 247, 0.15); color: #c4b5fd; border-color: #a855f7; }
+/* (Mark-for-AAR button CSS removed — affordance was prototyped, then
+ * shelved in favour of PR #115's highlight-to-notepad flow. See issue #117.) */
 /* "Since you last looked" banner — CISO ask */
 .unread-banner {
   background: rgba(56, 189, 248, 0.12);
@@ -95,14 +75,19 @@
 <body class="text-slate-200">
 <div class="flex h-screen flex-col">
 
+<!-- Top status banner — matches Play.tsx (sessionStartedFlash / criticalBanner /
+     "Your turn" / "Submitted" / mid-session-joiner banners). Switching the viewer
+     dropdown updates this banner so the mockup feels like the real app shell. -->
+<div id="status-banner" class="bg-emerald-700 px-4 py-2 text-center text-sm font-semibold text-white shadow"></div>
+
 <header class="flex items-center justify-between border-b border-slate-800 bg-slate-900/60 px-4 py-2">
   <div class="flex items-center gap-3">
     <span class="text-sm font-semibold text-slate-100">Crittable · Tabletop in progress</span>
     <span class="text-xs text-slate-400">Ransomware · turn 7/12</span>
-    <span class="ml-2 rounded bg-emerald-900/60 px-2 py-0.5 text-[10px] font-semibold text-emerald-200">HYBRID — synthesis from iter 1</span>
+    <span class="ml-2 rounded bg-emerald-900/60 px-2 py-0.5 text-[10px] font-semibold text-emerald-200">HYBRID iter-4 — full shell</span>
   </div>
   <div class="flex items-center gap-3 text-xs">
-    <button id="btn-export-timeline" class="rounded border border-slate-700 bg-slate-800 px-2 py-1 text-slate-200 hover:border-slate-500" title="Export AAR-ready timeline (anchors + injects + decisions + artifacts)">Export timeline (md)</button>
+    <button id="btn-export-timeline" class="rounded border border-slate-700 bg-slate-800 px-2 py-1 text-slate-200 hover:border-slate-500" title="Export AAR-ready timeline (anchors + injects + artifacts)">Export timeline (md)</button>
     <button id="btn-export-full" class="rounded border border-slate-700 bg-slate-800 px-2 py-1 text-slate-200 hover:border-slate-500" title="Export full chronological record">Export full record (md)</button>
     <span class="text-slate-400">Viewing as</span>
     <select id="viewer-switcher" class="rounded border border-slate-700 bg-slate-800 px-2 py-1 text-slate-100"></select>
@@ -110,53 +95,76 @@
   </div>
 </header>
 
-<!-- Pinned artifacts strip — surfaces every pinned card across all tracks -->
-<div class="artifact-strip" id="artifact-strip"></div>
+<!-- 3-column shell: 220px Roster+Mgmt | 1fr center (filters + chat + composer) | 320px right rail + Notes
+     Mirrors Play.tsx grid: lg:grid-cols-[220px_1fr_280px]. Right column nudged to 320px to
+     accommodate the rail tabs + the always-visible NotesPanel below. -->
+<div class="grid flex-1 min-h-0 gap-3 p-3" style="grid-template-columns: 220px 1fr 320px">
 
-<div class="flex flex-1 min-h-0">
-  <!-- Center: filter row, optional unread banner, chat -->
-  <main class="flex flex-1 min-w-0 flex-col">
-    <!-- Filter row — track pill AND-s with quality filter, both can be active -->
-    <div class="flex flex-wrap items-center gap-2 border-b border-slate-800 bg-slate-900/40 px-3 py-2">
-      <span class="text-[11px] uppercase tracking-wide text-slate-500">Show</span>
+  <!-- LEFT COLUMN — Roster + creator-only management buttons -->
+  <aside class="flex flex-col gap-3 min-h-0">
+    <section class="rounded border border-slate-700 bg-slate-900/60 p-2">
+      <h3 class="px-1 pb-1 text-[10px] uppercase tracking-widest text-slate-400">Roster</h3>
+      <ul id="roster-list" class="space-y-1"></ul>
+    </section>
+    <section id="mgmt-block" class="rounded border border-slate-700 bg-slate-900/60 p-2 text-xs space-y-1.5">
+      <div class="px-1 pb-0.5 text-[10px] uppercase tracking-widest text-slate-400">Management</div>
+      <button class="w-full rounded border border-amber-500/60 bg-amber-900/20 px-2 py-1 text-left font-semibold text-amber-200 hover:bg-amber-900/40">Force-advance turn</button>
+      <button class="w-full rounded border border-slate-600 bg-slate-800/60 px-2 py-1 text-left text-slate-200 hover:bg-slate-800">Inject critical event</button>
+      <button class="w-full rounded border border-slate-600 bg-slate-800/60 px-2 py-1 text-left text-slate-200 hover:bg-slate-800">Whisper to role…</button>
+      <button class="w-full rounded border border-rose-500/60 bg-rose-900/20 px-2 py-1 text-left font-semibold text-rose-200 hover:bg-rose-900/40">End session</button>
+      <p id="mgmt-note" class="px-1 pt-1 text-[10px] text-slate-500"></p>
+    </section>
+    <section class="rounded border border-slate-700 bg-slate-900/60 p-2 text-[11px] text-slate-400">
+      <div class="px-1 pb-0.5 text-[10px] uppercase tracking-widest text-slate-400">AI status</div>
+      <div class="px-1 leading-relaxed"><span class="text-emerald-300">●</span> Listening · last reply 4s ago<br>est. cost <span class="font-mono text-slate-300">$0.42</span> · 2,847 tok</div>
+    </section>
+  </aside>
+
+  <!-- CENTER COLUMN — filter row + chat + composer -->
+  <main class="flex flex-col min-h-0">
+    <!-- Filter row — quality filter + multi-select track pills, AND-combined.
+         Tracks are best-effort AI-categorization; user can override / clear at will. -->
+    <div class="flex flex-wrap items-center gap-2 rounded-t border border-b-0 border-slate-700 bg-slate-900/60 px-3 py-2">
+      <span class="text-[10px] uppercase tracking-widest text-slate-500">Show</span>
       <button class="pill" data-filter="all" data-active="1">All <span class="count" id="cnt-all"></span></button>
       <button class="pill" data-filter="me">@Me <span class="count" id="cnt-me"></span></button>
       <button class="pill" data-filter="critical">Critical <span class="count" id="cnt-critical"></span></button>
-      <span class="mx-2 h-4 w-px bg-slate-700"></span>
-      <span class="text-[11px] uppercase tracking-wide text-slate-500">AND track</span>
+      <span class="mx-1 h-4 w-px bg-slate-700"></span>
+      <span class="text-[10px] uppercase tracking-widest text-slate-500" title="Tracks are AI-categorized — best-effort, not authoritative. Click to filter; clearing all unselected falls back to All.">AND track</span>
       <button class="pill" data-track="containment"><span style="color:#f43f5e">●</span> Containment</button>
       <button class="pill" data-track="disclosure"><span style="color:#f59e0b">●</span> Disclosure</button>
       <button class="pill" data-track="comms"><span style="color:#ec4899">●</span> Comms</button>
       <button class="pill" data-track="lateral"><span style="color:#14b8a6">●</span> Lateral</button>
       <span class="ml-auto text-[11px] text-slate-500" id="filter-summary">All messages</span>
     </div>
-
-    <!-- "Since you last looked" banner — flashes after a filter change with the count of newly visible @-mentions -->
-    <div id="unread-banner" class="m-3 hidden"></div>
-
-    <!-- Chat scroll -->
-    <div id="chat" class="flex-1 min-h-0 overflow-y-auto px-3 py-3 space-y-1"></div>
-
-    <!-- Composer -->
-    <div class="border-t border-slate-800 bg-slate-900/40 p-3">
+    <div id="unread-banner" class="hidden border-x border-slate-700 bg-slate-900/40 px-3 py-2"></div>
+    <div id="chat" class="flex-1 min-h-0 overflow-y-auto rounded-b-none border-x border-slate-700 bg-slate-950/40 px-3 py-3 space-y-1"></div>
+    <div class="rounded-b border border-t-0 border-slate-700 bg-slate-900/60 p-3">
       <div class="flex gap-2">
-        <input class="flex-1 rounded border border-slate-700 bg-slate-800 px-3 py-2 text-sm placeholder-slate-500" placeholder="Type a reply…">
+        <input class="flex-1 rounded border border-slate-700 bg-slate-800 px-3 py-2 text-sm placeholder-slate-500" placeholder="Type a reply… use @Role to address (e.g. @CISO, @Tom)">
         <button class="rounded bg-sky-600 px-4 text-sm font-medium text-white hover:bg-sky-500">Send</button>
       </div>
     </div>
   </main>
 
-  <!-- Right rail: Artifacts | Action items | Critical
-       (a "Decisions / AAR moments" tab would have lived here too, but that
-       affordance is intentionally shelved — see issue #117 — to avoid
-       duplicating PR #115's highlight-to-notepad flow.) -->
-  <aside class="w-80 flex-shrink-0 border-l border-slate-800 bg-slate-900/30 flex flex-col min-h-0">
-    <div class="flex border-b border-slate-800 text-[11px]">
-      <button class="rail-tab flex-1 px-2 py-2 font-semibold text-slate-100 border-b-2 border-sky-500" data-rail="artifacts">Artifacts</button>
-      <button class="rail-tab flex-1 px-2 py-2 text-slate-400 hover:text-slate-200" data-rail="actions">Action items</button>
-      <button class="rail-tab flex-1 px-2 py-2 text-slate-400 hover:text-slate-200" data-rail="critical">Critical</button>
-    </div>
-    <div id="rail-body" class="flex-1 min-h-0 overflow-y-auto p-3 space-y-2"></div>
+  <!-- RIGHT COLUMN — rail tabs + always-visible NotesPanel below -->
+  <aside class="flex flex-col gap-3 min-h-0">
+    <section class="flex flex-col rounded border border-slate-700 bg-slate-900/60 min-h-0" style="flex: 1 1 0">
+      <div class="flex border-b border-slate-700 text-[11px]">
+        <button class="rail-tab flex-1 px-2 py-2 font-semibold text-slate-100 border-b-2 border-sky-500" data-rail="artifacts">Artifacts</button>
+        <button class="rail-tab flex-1 px-2 py-2 text-slate-400 hover:text-slate-200" data-rail="actions">Action items</button>
+        <button class="rail-tab flex-1 px-2 py-2 text-slate-400 hover:text-slate-200" data-rail="timeline">Timeline</button>
+      </div>
+      <div id="rail-body" class="flex-1 min-h-0 overflow-y-auto p-2 space-y-2"></div>
+    </section>
+    <section class="rounded border border-slate-700 bg-slate-900/60 p-2.5 text-sm flex-shrink-0">
+      <header class="flex items-baseline justify-between gap-2 pb-1">
+        <h3 class="text-[10px] uppercase tracking-widest text-slate-300">Notes &amp; follow-ups</h3>
+        <span class="rounded bg-amber-900/40 px-1.5 py-0.5 text-[9px] font-semibold text-amber-200" title="Local-only — see PR #115 for the shared collaborative notepad.">Local only</span>
+      </header>
+      <textarea id="notes-area" rows="5" class="w-full resize-y rounded border border-slate-700 bg-slate-950 p-2 text-xs text-slate-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-400" placeholder="Decisions, open questions, follow-ups…"></textarea>
+      <p class="mt-1 text-[10px] text-slate-500">Stub for the per-role notepad. The shared collaborative notepad (PR #115) lives here in the real app.</p>
+    </section>
   </aside>
 </div>
 </div>
@@ -196,38 +204,75 @@ function chatItem(m, prevMinute) {
   const critCls = isCritical ? "border-red-500/60 bg-red-950/40" : "border-slate-800 bg-slate-900/40";
   const meBadge = isMe ? `<span class="ml-2 rounded bg-amber-500/20 px-1.5 py-0.5 text-[10px] font-semibold text-amber-200">@you</span>` : "";
   const critBadge = isCritical ? `<span class="ml-2 rounded border border-red-500/60 bg-red-900/40 px-1.5 py-0.5 text-[10px] font-semibold text-red-200">INJECT</span>` : "";
+  // Iter-3 noise reduction (operator feedback "REALLY busy, lots of colors,
+  // lots of chips"): the per-message track-CHIP is dropped — the colored
+  // track-BAR on the left already conveys track membership, and AI-categorized
+  // tracks aren't reliable enough to deserve a prominent header chip on every
+  // line. Only the @you and INJECT badges remain; both are interaction-driving,
+  // not categorization-driving.
   return anchor + `
-    <article id="msg-${m.id}" class="flex gap-3 rounded border ${critCls} ${ringCls} p-3"
+    <article id="msg-${m.id}" class="flex gap-2.5 rounded border ${critCls} ${ringCls} p-2.5"
       data-mid="${m.id}" data-track="${m.track}" data-me="${isMe?1:0}"
       data-critical="${isCritical?1:0}">
-      <div class="track-bar" style="background:${trackHex}"></div>
-      <div class="avatar ${bg} ${bd} ${tx} border">${initials(role)}</div>
+      <div class="track-bar" style="background:${trackHex}" title="track: ${trackInfo(m.track).label} (AI-categorized)"></div>
+      <div class="avatar ${bg} ${bd} ${tx} border" style="width:24px;height:24px;font-size:10px">${initials(role)}</div>
       <div class="min-w-0 flex-1">
-        <header class="flex flex-wrap items-center justify-between gap-2 text-[11px] uppercase tracking-wide text-slate-400">
-          <span class="flex flex-wrap items-center gap-1">
+        <header class="flex flex-wrap items-center justify-between gap-2 text-[11px] text-slate-400">
+          <span class="flex flex-wrap items-center gap-1.5">
             <span class="font-semibold text-slate-200">${actorLabel(role)}</span>
-            <span class="track-chip track-${m.track}">${trackInfo(m.track).label}</span>
             ${meBadge}${critBadge}
           </span>
           <span class="font-mono text-slate-500">${m.ts}</span>
         </header>
-        <p class="mt-1 whitespace-pre-wrap text-sm leading-relaxed">${renderBody(m, VIEWER)}</p>
+        <p class="mt-0.5 whitespace-pre-wrap text-sm leading-relaxed">${renderBody(m, VIEWER)}</p>
       </div>
     </article>`;
 }
 
-function renderArtifactStrip() {
-  const cards = pinnedCards();
-  document.getElementById("artifact-strip").innerHTML = cards.length
-    ? cards.map((c) => {
-        const r = byRole(c.from);
-        return `<div class="artifact-card-mini" style="border-left-color:${trackColorHex(c.track)}" onclick="scrollToMsg('${c.msgId}')">
-          <div class="title">${c.title}</div>
-          <div class="text-[11px] text-slate-300 mt-0.5">${c.body}</div>
-          <div class="meta">${c.ts} · ${r ? r.label : "?"} · #${c.track}</div>
-        </div>`;
-      }).join("")
-    : `<span class="text-xs text-slate-500 px-2 py-1">No artifacts pinned yet.</span>`;
+// Roster + management note + status banner — these wire the mockup into
+// the actual app shell (Play.tsx) so the chat-declutter UI is judged in
+// context, not floating in space.
+function renderRoster() {
+  // Active turn = whose @-mention the AI most recently fired (m36 -> ciso).
+  // Hardcoded for the mockup; in production it's snapshot.current_turn.role_ids.
+  const activeIds = new Set(["ciso", "comms"]);
+  // Pretend SOC2 is offline to demonstrate the "not joined" state.
+  const onlineIds = new Set(["ai", "ciso", "ir", "legal", "comms", "soc1"]);
+  const ul = document.getElementById("roster-list");
+  ul.innerHTML = ROLES.map((r) => {
+    const isActive = activeIds.has(r.id);
+    const isSelf = r.id === VIEWER;
+    const isOnline = onlineIds.has(r.id);
+    const cls = isActive
+      ? "border-emerald-400/60 bg-emerald-700/20 text-emerald-50"
+      : "border-slate-700 bg-slate-900/60 text-slate-300";
+    const dot = isOnline ? "bg-emerald-400" : "bg-slate-600";
+    const selfBadge = isSelf ? `<span class="ml-1 text-[10px] text-sky-300">(you)</span>` : "";
+    const offBadge = !isOnline ? `<span class="ml-1 text-[10px] text-slate-500">· not joined</span>` : "";
+    return `<li class="flex items-center gap-1.5 rounded border px-1.5 py-1 text-[11px] ${cls}">
+      <span class="inline-block h-1.5 w-1.5 shrink-0 rounded-full ${dot}"></span>
+      <span class="min-w-0 flex-1 truncate"><span class="font-semibold">${r.label}</span>${r.name ? `<span class="ml-1 text-slate-400">· ${r.name.split(" ")[0]}</span>` : ""}${selfBadge}${offBadge}</span>
+    </li>`;
+  }).join("");
+}
+
+function renderStatusBanner() {
+  const viewer = byRole(VIEWER);
+  const banner = document.getElementById("status-banner");
+  // Same logic as Play.tsx: critical first, then ENDED, errored, your-turn,
+  // submitted, mid-session-joiner. Mocked here as a viewer-aware demo.
+  // m36 addresses CISO; m11/m12 address Comms; everyone else "Submitted".
+  if (VIEWER === "ciso" || VIEWER === "comms") {
+    banner.className = "bg-emerald-700 px-4 py-2 text-center text-sm font-semibold text-white shadow";
+    banner.textContent = `Your turn — ${viewer.label}${viewer.name ? ` (${viewer.name})` : ""}`;
+  } else {
+    banner.className = "bg-slate-800 px-4 py-2 text-center text-xs text-slate-200 shadow";
+    banner.textContent = `Submitted as ${viewer.label}${viewer.name ? ` (${viewer.name})` : ""}. Waiting on CISO, Comms.`;
+  }
+  // Creator-only management buttons hidden for non-creator roles.
+  const isCreator = (VIEWER === "ciso");
+  document.getElementById("mgmt-block").style.display = isCreator ? "" : "none";
+  // (Cleared rather than re-noting; mgmt-note kept short.)
 }
 
 // Render a synthetic "[#track opened by ROLE at HH:MM:SS]" row before the
@@ -300,13 +345,13 @@ function applyFilters() {
   const banner = document.getElementById("unread-banner");
   if (hiddenMentions > 0) {
     const tracks = [...hiddenTracksWithMe].map((t) => "#" + t).join(", ");
-    banner.className = "m-3";
+    banner.className = "border-x border-slate-700 bg-slate-900/40 px-3 py-2";
     banner.innerHTML = `<div class="unread-cta">
       <span><strong>${hiddenMentions}</strong> @-mention${hiddenMentions === 1 ? "" : "s"} for you hidden by the current filter (${tracks}).</span>
       <button onclick="clearFilters()">Show all</button>
     </div>`;
   } else {
-    banner.className = "m-3 hidden";
+    banner.className = "hidden";
     banner.innerHTML = "";
   }
 }
@@ -355,21 +400,50 @@ function renderRail() {
       </div>`;
     }).join("") || `<div class="text-xs text-slate-500">No action items.</div>`;
   } else {
-    // Critical events
-    const list = criticalList();
-    body.innerHTML = list.length ? list.map((c) => `
-      <div class="rail-card cursor-pointer border-red-500/40" onclick="scrollToMsg('${c.msgId}')">
-        <div class="track-bar" style="background:#ef4444"></div>
+    // Timeline tab — replaces the old top "artifacts strip" per operator iter-3
+    // feedback ("the timeline bar at the top could go just in as a tab on the
+    // right rail"). Chronologically interleaves: track-opens, critical injects,
+    // and pinned artifacts. Decisions deliberately not in this list — see
+    // issue #117. Critical entries get a red accent so the dropped Critical
+    // tab still has a presence.
+    const seen = new Set();
+    const events = [];
+    for (const m of MESSAGES) {
+      if (m.track !== "main" && !seen.has(m.track)) {
+        seen.add(m.track);
+        const r = byRole(m.from);
+        events.push({ ts: m.ts, track: m.track, msgId: m.id, kind: "open",
+          title: `#${m.track} opened`, body: `by ${r ? actorLabel(r) : "?"}` });
+      }
+      if (m.kind === "critical") {
+        events.push({ ts: m.ts, track: m.track, msgId: m.id, kind: "inject",
+          title: "INJECT", body: m.body });
+      }
+      if (m.pinned) {
+        events.push({ ts: m.ts, track: m.track, msgId: m.id, kind: m.pinned.kind,
+          title: m.pinned.title, body: m.pinned.body });
+      }
+    }
+    events.sort((a, b) => a.ts.localeCompare(b.ts));
+    body.innerHTML = events.length ? events.map((e) => {
+      const accent = e.kind === "inject" ? "border-red-500/50" : "";
+      const label = e.kind === "inject" ? "text-red-300" : "text-slate-400";
+      return `<div class="rail-card cursor-pointer ${accent}" onclick="scrollToMsg('${e.msgId}')">
+        <div class="track-bar" style="background:${e.kind === 'inject' ? '#ef4444' : trackColorHex(e.track)}"></div>
         <div class="min-w-0 flex-1">
-          <div class="text-[11px] uppercase tracking-wide text-red-300">inject</div>
-          <div class="mt-1 text-sm text-slate-100">${c.body}</div>
-          <div class="mt-1 text-[10px] text-slate-500">${c.ts} · jump →</div>
+          <div class="flex items-center justify-between gap-1 text-[10px] uppercase tracking-wide ${label}">
+            <span>${e.kind}</span>
+            <span class="font-mono text-slate-500">${e.ts}</span>
+          </div>
+          <div class="mt-0.5 text-sm font-semibold text-slate-100">${e.title}</div>
+          <div class="mt-0.5 text-[11px] text-slate-300">${e.body}</div>
         </div>
-      </div>`).join("") : `<div class="text-xs text-slate-500">No injects fired.</div>`;
+      </div>`;
+    }).join("") : `<div class="text-xs text-slate-500">Nothing on the timeline yet.</div>`;
   }
 }
 
-function rerender() { renderArtifactStrip(); renderChat(); renderRail(); }
+function rerender() { renderRoster(); renderStatusBanner(); renderChat(); renderRail(); }
 
 document.querySelectorAll(".pill[data-filter]").forEach((b) => {
   b.addEventListener("click", () => {

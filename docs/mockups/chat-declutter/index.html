@@ -24,31 +24,43 @@
     </p>
   </header>
 
-  <!-- Iteration-2 banner -->
+  <!-- Iter-4 banner -->
   <section class="mb-6 rounded-lg border border-emerald-700/60 bg-emerald-950/30 p-4">
-    <h2 class="text-sm font-semibold uppercase tracking-wide text-emerald-200">Iteration 2 · synthesis is live</h2>
+    <h2 class="text-sm font-semibold uppercase tracking-wide text-emerald-200">Iteration 4 · full app shell</h2>
     <p class="mt-2 text-sm text-slate-300">
       <a href="e-hybrid.html" class="font-semibold text-emerald-300 underline hover:text-emerald-200">Mockup E (Hybrid)</a>
-      combines A's chassis with the iter-1 cybersecurity-team asks:
-      pinned-artifacts strip across the top (SOC + IR — fixes cross-track IOC handoff),
-      multi-select AND-able track + filter pills (CISO + SOC — pick multiple tracks AND a quality filter),
-      sticky minute-boundary timestamps + synthetic "[#track] opened by ROLE at HH:MM:SS" rows (IR Lead — for AAR reconstruction),
-      hidden-mentions banner that fires when the active filter is hiding @-mentions for you (CISO),
-      header export buttons (timeline.md / full-record.md, IR Lead),
-      and three right-rail tabs:
-      <strong>Artifacts</strong> (auto-pinned IOCs / timeline / persistence),
-      <strong>Action items</strong> (owner + status, jump-to-message),
-      <strong>Critical</strong> (every inject pinned).
+      now sits inside the actual Play.tsx app shell so the chat-declutter chrome is judged in
+      context. Top status banner ("Your turn — CISO" / "Submitted, waiting on…"), three columns
+      mirroring <code>lg:grid-cols-[220px_1fr_280px]</code>: <strong>left</strong> = roster
+      with online dots and active-turn highlight + creator-only management buttons
+      (Force-advance · Inject critical · Whisper to role · End session) + AI status; <strong>centre</strong>
+      = filter row + chat + composer; <strong>right</strong> = three rail tabs
+      (<strong>Artifacts</strong> · <strong>Action items</strong> · <strong>Timeline</strong>) plus an
+      always-visible <strong>Notes &amp; follow-ups</strong> panel below.
     </p>
     <p class="mt-2 text-xs text-slate-400">
-      <strong>Iter-1 ranking summary:</strong> CISO + Comms + IR put A or D in their top 2;
-      Legal preferred C; SOC preferred C for parallel-track separation. Threads (B) lost unanimously.
-      The hybrid (E) is the iteration-2 candidate. Legal's iter-1 asks (privilege markers, regulator
-      clocks) are intentionally <em>not</em> in E — this is a tabletop-rehearsal tool for cybersecurity
-      teams, not a litigation-defense tool. The "mark for AAR" affordance was prototyped in an earlier
-      pass and then shelved (see <a class="underline text-sky-400" href="https://github.com/nebriv/Crittable/issues/117">issue #117</a>):
-      PR #115's highlight-to-notepad popover already provides the right primitive for capturing
-      AAR-worthy moments, and adding a parallel per-message button would duplicate it.
+      <strong>Iter-3 operator-feedback fixes baked in:</strong>
+      (a) per-message track-chip dropped — the colored track-bar on the left already
+      conveys track membership, and AI-categorized tracks aren't reliable enough to deserve
+      a prominent header chip on every line; (b) the artifact strip across the top moved into
+      a Timeline rail tab; (c) Critical rail tab dropped — injects are already loud inline and
+      the Critical filter pill at the top covers the "scope to injects" need; (d) full app shell
+      restored (top banner, left roster + management, NotesPanel below the rail) so the mockup
+      reads like Play.tsx.
+    </p>
+    <p class="mt-2 text-xs text-slate-400">
+      <strong>Open caveat — AI-categorization reliability:</strong> tracks are AI-categorized,
+      not authoritative. Track filters degrade gracefully (clear all = falls back to All); the
+      track-bar is a hint, not a primary nav. If categorization drift becomes a problem in
+      production, a manual-tag override on each message is the next step.
+    </p>
+    <p class="mt-2 text-xs text-slate-400">
+      <strong>Earlier focus-group ranking:</strong> CISO + Comms + IR put A or D in their top 2;
+      Legal preferred C; SOC preferred C for parallel-track separation. Threads (B) lost
+      unanimously. Legal's iter-1 asks (privilege markers, regulator clocks) are intentionally
+      <em>not</em> in E — this is a tabletop-rehearsal tool, not a litigation-defense tool.
+      The "mark for AAR" affordance is shelved in favour of PR #115's highlight-to-notepad flow
+      (see <a class="underline text-sky-400" href="https://github.com/nebriv/Crittable/issues/117">issue #117</a>).
     </p>
   </section>
 
