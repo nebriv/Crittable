@@ -15,7 +15,7 @@ from ..sessions.manager import SessionManager
 from ..sessions.repository import SessionNotFoundError
 from ..sessions.turn_driver import TurnDriver
 from ..sessions.turn_engine import IllegalTransitionError
-from .connection_manager import ConnectionManager
+from .connection_manager import ConnectionManager, _Connection
 
 _logger = get_logger("ws.routes")
 
@@ -472,7 +472,7 @@ async def _handle_notepad_event(
 
 async def _server_pump(
     websocket: WebSocket,
-    conn: Any,
+    conn: _Connection,
     connections: ConnectionManager,
 ) -> None:
     try:
@@ -489,7 +489,7 @@ async def _client_pump(
     session_id: str,
     role_id: str,
     kind: ParticipantKindLiteral,
-    conn: Any,
+    conn: _Connection,
     connections: ConnectionManager,
 ) -> None:
     # Mutating-event gate: spectators can connect (read-only fan-out) but
