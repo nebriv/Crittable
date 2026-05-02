@@ -15,36 +15,25 @@ interface Props {
    * can tell whether an invited player has actually opened the link
    * (vs. opened but tabbed away). See issue #52.
    */
-  connectedRoleIds?: ReadonlySet<string>;
+  connectedRoleIds: ReadonlySet<string>;
   /**
    * Subset of ``connectedRoleIds`` whose tabs are currently focused /
    * visible. Drives the blue (active) vs yellow (joined but tabbed
    * away) colour of the status dot. A role in ``connectedRoleIds`` but
    * not in this set is shown as joined-but-idle.
    */
-  focusedRoleIds?: ReadonlySet<string>;
+  focusedRoleIds: ReadonlySet<string>;
 }
 
 type RoleStatus = "not_joined" | "joined_active" | "joined_idle";
 
-/**
- * Compute the per-role status for the tri-state indicator.
- * Pre-condition: caller only invokes this when ``connected`` is
- * defined — the dot itself is gated on ``connectedRoleIds`` so we
- * don't render anything when presence is unknown. Returning
- * ``joined_active`` for the undefined-connected case below is a
- * defensive default, never reached by the current call site.
- */
 function computeStatus(
   roleId: string,
-  connected: ReadonlySet<string> | undefined,
-  focused: ReadonlySet<string> | undefined,
+  connected: ReadonlySet<string>,
+  focused: ReadonlySet<string>,
 ): RoleStatus {
-  if (!connected || !connected.has(roleId)) return "not_joined";
-  // ``focused === undefined`` means the backend didn't ship the
-  // focus aggregate (older deploy) — fall back to "active" so we
-  // don't paint everyone yellow.
-  if (!focused || focused.has(roleId)) return "joined_active";
+  if (!connected.has(roleId)) return "not_joined";
+  if (focused.has(roleId)) return "joined_active";
   return "joined_idle";
 }
 
@@ -261,50 +250,38 @@ export function RolesPanel({
         <h3 className="text-xs uppercase tracking-widest text-slate-300">Roles</h3>
         <span className="text-xs text-slate-400">
           {(() => {
-            // Show seated / joined / active so the creator gets the
-            // tri-state aggregate without having to count dots. We
-            // suppress the active break-out when ``focusedRoleIds``
-            // is unknown (older backend) — adding a "0 active" line
-            // there would be misleading.
-            const seated = roles.length;
-            if (!connectedRoleIds) return `${seated} seated`;
             const joined = roles.filter((r) => connectedRoleIds.has(r.id)).length;
-            if (!focusedRoleIds) return `${seated} seated · ${joined} joined`;
             const active = roles.filter((r) => focusedRoleIds.has(r.id)).length;
-            return `${seated} seated · ${joined} joined · ${active} active`;
+            return `${roles.length} seated · ${joined} joined · ${active} active`;
           })()}
         </span>
       </div>
-      {connectedRoleIds ? (
-        // The legend itself is in the accessibility tree (so a
-        // screen-reader user gets the colour↔meaning mapping the
-        // sighted user just saw); only the inert colour swatches are
-        // ``aria-hidden``. Pre-fix the entire <p> was hidden and the
-        // colour code was a sighted-only signal.
-        <p className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-slate-400">
-          <span className="inline-flex items-center gap-1">
-            <span
-              aria-hidden="true"
-              className="inline-block h-2 w-2 rounded-full bg-sky-400"
-            />
-            active
-          </span>
-          <span className="inline-flex items-center gap-1">
-            <span
-              aria-hidden="true"
-              className="inline-block h-2 w-2 rounded-full bg-amber-400"
-            />
-            tab not active
-          </span>
-          <span className="inline-flex items-center gap-1">
-            <span
-              aria-hidden="true"
-              className="inline-block h-2 w-2 rounded-full bg-slate-500"
-            />
-            not joined
-          </span>
-        </p>
-      ) : null}
+      {/* Legend is in the accessibility tree (so a screen-reader user
+          gets the colour↔meaning mapping the sighted user just saw);
+          only the inert colour swatches are ``aria-hidden``. */}
+      <p className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-slate-400">
+        <span className="inline-flex items-center gap-1">
+          <span
+            aria-hidden="true"
+            className="inline-block h-2 w-2 rounded-full bg-sky-400"
+          />
+          active
+        </span>
+        <span className="inline-flex items-center gap-1">
+          <span
+            aria-hidden="true"
+            className="inline-block h-2 w-2 rounded-full bg-amber-400"
+          />
+          tab not active
+        </span>
+        <span className="inline-flex items-center gap-1">
+          <span
+            aria-hidden="true"
+            className="inline-block h-2 w-2 rounded-full bg-slate-500"
+          />
+          not joined
+        </span>
+      </p>
 
       <ul className="flex flex-col gap-2">
         {roles.map((r) => {
@@ -350,23 +327,19 @@ export function RolesPanel({
                   </span>
                 ) : null}
               </div>
-              {connectedRoleIds ? (
-                <span
-                  aria-hidden="true"
-                  title={dotTitle}
-                  className={
-                    "mt-1 inline-block h-3 w-3 shrink-0 rounded-full ring-1 ring-slate-950 " +
-                    dotClass
-                  }
-                />
-              ) : null}
-              {connectedRoleIds ? (
-                // ``Status: Active`` reads coherently in a screen
-                // reader's role-card walk; bare "Active" without the
-                // ``Status:`` prefix collapsed into the role label
-                // ("SOC Analyst Active") with no semantic separation.
-                <span className="sr-only">{`Status: ${dotTitle}`}</span>
-              ) : null}
+              <span
+                aria-hidden="true"
+                title={dotTitle}
+                className={
+                  "mt-1 inline-block h-3 w-3 shrink-0 rounded-full ring-1 ring-slate-950 " +
+                  dotClass
+                }
+              />
+              {/* ``Status: Active`` reads coherently in a screen
+                  reader's role-card walk; bare "Active" without the
+                  ``Status:`` prefix collapsed into the role label
+                  ("SOC Analyst Active") with no semantic separation. */}
+              <span className="sr-only">{`Status: ${dotTitle}`}</span>
             </div>
             {!r.is_creator ? (
               <div className="flex flex-wrap items-center justify-center gap-1">

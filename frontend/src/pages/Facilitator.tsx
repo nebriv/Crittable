@@ -489,43 +489,22 @@ export function Facilitator() {
           else next.delete(evt.role_id);
           return next;
         });
-        // Mirror the focus aggregate. ``focused === undefined`` means
-        // the backend didn't include the field (older deploy) — keep
-        // previous focus state untouched in that case so we don't
-        // accidentally drop everyone to "tabbed away".
-        if (typeof evt.focused === "boolean") {
-          setFocusedRoleIds((prev) => {
-            const next = new Set(prev);
-            // A role can only be focused if it's also active — the
-            // ``active=false`` branch must guarantee removal even if
-            // the server (incorrectly) sent ``focused=true`` alongside.
-            if (evt.active && evt.focused) next.add(evt.role_id);
-            else next.delete(evt.role_id);
-            return next;
-          });
-        } else if (!evt.active) {
-          // Defensive: if the server omits ``focused`` but says the
-          // role disconnected, drop them from the focused set too.
-          setFocusedRoleIds((prev) => {
-            if (!prev.has(evt.role_id)) return prev;
-            const next = new Set(prev);
-            next.delete(evt.role_id);
-            return next;
-          });
-        }
+        setFocusedRoleIds((prev) => {
+          const next = new Set(prev);
+          // A role can only be focused if it's also active — the
+          // ``active=false`` branch must guarantee removal even if
+          // the server (incorrectly) sent ``focused=true`` alongside.
+          if (evt.active && evt.focused) next.add(evt.role_id);
+          else next.delete(evt.role_id);
+          return next;
+        });
         if (typeof evt.connection_count === "number") {
           setConnectionCount(evt.connection_count);
         }
         break;
       case "presence_snapshot":
         setPresence(new Set(evt.role_ids));
-        if (Array.isArray(evt.focused_role_ids)) {
-          setFocusedRoleIds(new Set(evt.focused_role_ids));
-        } else {
-          // Old backend — assume every connected role is focused so
-          // the UI doesn't paint everyone yellow on first load.
-          setFocusedRoleIds(new Set(evt.role_ids));
-        }
+        setFocusedRoleIds(new Set(evt.focused_role_ids));
         if (typeof evt.connection_count === "number") {
           setConnectionCount(evt.connection_count);
         }

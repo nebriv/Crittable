@@ -67,6 +67,8 @@ describe("RolesPanel — issue #82 (no on-screen tokens)", () => {
         onRoleAdded={vi.fn()}
         onRoleChanged={vi.fn()}
         onError={vi.fn()}
+        connectedRoleIds={new Set()}
+        focusedRoleIds={new Set()}
       />,
     );
 
@@ -133,6 +135,8 @@ describe("RolesPanel — issue #82 (no on-screen tokens)", () => {
         onRoleAdded={onRoleAdded}
         onRoleChanged={vi.fn()}
         onError={vi.fn()}
+        connectedRoleIds={new Set()}
+        focusedRoleIds={new Set()}
       />,
     );
 
@@ -177,6 +181,8 @@ describe("RolesPanel — issue #82 (no on-screen tokens)", () => {
         onRoleAdded={vi.fn()}
         onRoleChanged={onRoleChanged}
         onError={vi.fn()}
+        connectedRoleIds={new Set()}
+        focusedRoleIds={new Set()}
       />,
     );
 
@@ -276,37 +282,6 @@ describe("RolesPanel — issue #82 (no on-screen tokens)", () => {
     expect(list.textContent ?? "").not.toMatch(/not joined/);
   });
 
-  it("falls back to active dot when focusedRoleIds is omitted (older backend compat)", () => {
-    const roles: RoleView[] = [
-      {
-        id: "role-soc",
-        label: "SOC Analyst",
-        kind: "player",
-        is_creator: false,
-        display_name: null,
-      } as RoleView,
-    ];
-
-    render(
-      <RolesPanel
-        sessionId={SESSION_ID}
-        creatorToken={CREATOR_TOKEN}
-        roles={roles}
-        busy={false}
-        onRoleAdded={vi.fn()}
-        onRoleChanged={vi.fn()}
-        onError={vi.fn()}
-        connectedRoleIds={new Set(["role-soc"])}
-        // focusedRoleIds intentionally omitted — simulate older backend
-      />,
-    );
-
-    // Without focus info the row is treated as active rather than
-    // dropped into the joined-but-idle state.
-    expect(screen.getAllByTitle("Active").length).toBe(1);
-    expect(screen.queryByTitle("Joined, tab not active")).toBeNull();
-  });
-
   it("Copy link surfaces an inline error when clipboard write fails (not bubbled to onError)", async () => {
     vi.spyOn(api, "reissueRole").mockResolvedValue({
       token: "secret-token-do-not-show",
@@ -324,6 +299,8 @@ describe("RolesPanel — issue #82 (no on-screen tokens)", () => {
         onRoleAdded={vi.fn()}
         onRoleChanged={vi.fn()}
         onError={onError}
+        connectedRoleIds={new Set()}
+        focusedRoleIds={new Set()}
       />,
     );
 
