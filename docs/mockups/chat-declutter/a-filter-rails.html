@@ -168,12 +168,17 @@ function renderRail() {
   } else if (state.rail === "decisions") {
     cards = decisionList().map((d) => {
       const r = byRole(d.from);
+      const who = r ? (r.name ? `${r.name.split(" ")[0]} (${r.label})` : r.label) : "?";
       return `<div class="rail-card cursor-pointer" onclick="scrollToMsg('${d.msgId}')">
         <div class="track-bar" style="background:${trackColorHex(d.track)}"></div>
         <div class="min-w-0 flex-1">
-          <div class="text-[11px] uppercase tracking-wide text-violet-300">decision</div>
-          <div class="text-sm text-slate-100">${d.body}</div>
-          <div class="mt-1 text-[10px] text-slate-500">${d.ts} · ${r ? r.label : "?"} · jump →</div>
+          <div class="flex items-baseline justify-between">
+            <span class="text-sm font-bold text-slate-100">${who}</span>
+            <span class="text-xs font-mono text-slate-400">${d.ts}</span>
+          </div>
+          <div class="text-[11px] uppercase tracking-wide text-violet-300 mt-0.5">decision · #${d.track}</div>
+          <div class="mt-1 text-xs text-slate-300">${d.body.length > 140 ? d.body.slice(0,140) + "…" : d.body}</div>
+          <div class="mt-1 text-[10px] text-slate-500">jump to message →</div>
         </div>
       </div>`;
     }).join("");
