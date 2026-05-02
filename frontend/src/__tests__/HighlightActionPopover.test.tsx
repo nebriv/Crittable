@@ -6,20 +6,12 @@
  * walk, ``onSelect`` invocation, and Escape dismissal.
  */
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { HighlightActionPopover } from "../components/HighlightActionPopover";
 import type { HighlightAction } from "../lib/highlightActions";
-
-// jsdom's Range has no getBoundingClientRect; the popover needs one
-// to position itself. Stub it with a fixed rect — these tests don't
-// care about pixel positioning.
-beforeAll(() => {
-  if (typeof Range.prototype.getBoundingClientRect !== "function") {
-    Range.prototype.getBoundingClientRect = () =>
-      ({ top: 100, left: 100, bottom: 116, right: 200, width: 100, height: 16, x: 100, y: 100, toJSON: () => ({}) }) as DOMRect;
-  }
-});
+// Range.prototype.getBoundingClientRect is stubbed globally in
+// src/test-setup.ts (jsdom doesn't ship it; the popover needs it).
 
 function dispatchSelectionInside(el: HTMLElement, text = "hello world"): void {
   // jsdom's Selection API is partial; fake the bits the popover reads.

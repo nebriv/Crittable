@@ -74,37 +74,52 @@ export function HighlightActionPopover({
   // Selection → popover state.
   useEffect(() => {
     function onChange(): void {
-      const sel = window.getSelection();
-      if (!sel || sel.isCollapsed) {
+      // Guard the entire handler — selection state can be invalid
+      // (Range with no rect, jsdom Selection-impl emitting stray
+      // selectionchange after a test teardown, etc.). Treat any
+      // throw as "no selection" rather than crashing the listener
+      // chain, which surfaces as an uncaught browser error in dev
+      // and crashes vitest --run in CI.
+      try {
+        const sel = window.getSelection();
+        if (!sel || sel.isCollapsed) {
+          setState(null);
+          return;
+        }
+        const text = sel.toString().trim();
+        if (text.length < 2) {
+          setState(null);
+          return;
+        }
+        const anchorEl = findHighlightable(sel.anchorNode);
+        if (!anchorEl) {
+          setState(null);
+          return;
+        }
+        if (sel.rangeCount < 1) {
+          setState(null);
+          return;
+        }
+        const range = sel.getRangeAt(0);
+        const rect = range.getBoundingClientRect();
+        const sourceMessageId = anchorEl.dataset?.messageId ?? null;
+        const sourceKind = asSourceKind(anchorEl.dataset?.messageKind);
+        setState({
+          rect,
+          ctx: {
+            text,
+            sourceMessageId,
+            sourceKind,
+            roleId,
+            sessionId,
+            token,
+          },
+        });
+        setFocusedIdx(0);
+      } catch (err) {
+        console.debug("[notepad] selectionchange ignored", err);
         setState(null);
-        return;
       }
-      const text = sel.toString().trim();
-      if (text.length < 2) {
-        setState(null);
-        return;
-      }
-      const anchorEl = findHighlightable(sel.anchorNode);
-      if (!anchorEl) {
-        setState(null);
-        return;
-      }
-      const range = sel.getRangeAt(0);
-      const rect = range.getBoundingClientRect();
-      const sourceMessageId = anchorEl.dataset?.messageId ?? null;
-      const sourceKind = asSourceKind(anchorEl.dataset?.messageKind);
-      setState({
-        rect,
-        ctx: {
-          text,
-          sourceMessageId,
-          sourceKind,
-          roleId,
-          sessionId,
-          token,
-        },
-      });
-      setFocusedIdx(0);
     }
     document.addEventListener("selectionchange", onChange);
     return () => document.removeEventListener("selectionchange", onChange);
