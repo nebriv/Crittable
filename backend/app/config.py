@@ -112,6 +112,18 @@ class Settings(BaseSettings):
         env_file=None,
         case_sensitive=True,
         extra="ignore",
+        # Treat empty-string env vars as unset, so the field default
+        # wins instead of pydantic raising a ``bool_parsing`` /
+        # ``int_parsing`` error on ``""``. This is the docker-compose
+        # ``${VAR:-}`` pattern: when the operator hasn't set ``VAR``
+        # in their ``.env`` Compose passes the literal empty string
+        # to the container. Without this flag, ``DEV_TOOLS_ENABLED``,
+        # ``TEST_MODE``, and similar bool fields crashed the app on
+        # startup with ``ValidationError: Input should be a valid
+        # boolean, unable to interpret input ''`` — producing a
+        # restart loop. Asserted by
+        # ``tests/test_config.py::test_empty_env_vars_fall_back_to_defaults``.
+        env_ignore_empty=True,
     )
 
     # ---- Mode ----------------------------------------------------------
