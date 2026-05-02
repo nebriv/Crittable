@@ -39,27 +39,7 @@
 .artifact-card-mini:hover { border-color: #475569; background: #1e293b; }
 .artifact-card-mini .title { font-weight: 600; color: #e2e8f0; font-size: 12px; }
 .artifact-card-mini .meta { color: #64748b; font-size: 10px; margin-top: 2px; }
-/* Notification clocks widget — Legal ask */
-.clock-row {
-  display: flex; align-items: center; gap: 6px;
-  padding: 6px 8px;
-  border-bottom: 1px solid #1e293b;
-  font-size: 11px;
-}
-.clock-jur { font-weight: 700; color: #e2e8f0; min-width: 60px; }
-.clock-state { font-size: 10px; padding: 1px 6px; border-radius: 999px; }
-.clock-pending { background: #1e293b; color: #94a3b8; }
-.clock-active { background: rgba(244, 63, 94, 0.15); color: #fb7185; border: 1px solid rgba(244, 63, 94, 0.4); }
-/* Privilege banner / per-message marker */
-.priv-banner {
-  background: rgba(168, 85, 247, 0.1);
-  border: 1px solid rgba(168, 85, 247, 0.3);
-  color: #c4b5fd;
-  padding: 4px 8px; border-radius: 4px;
-  font-size: 11px; font-weight: 600;
-}
-.msg-priv { outline: 1px dashed rgba(168, 85, 247, 0.5); outline-offset: 1px; }
-/* Human-marked decision affordance */
+/* Human-marked AAR-moment affordance */
 .btn-mark {
   font-size: 10px; padding: 2px 6px; border-radius: 4px;
   border: 1px solid #334155; background: transparent; color: #94a3b8;
@@ -130,13 +110,13 @@
     </div>
   </main>
 
-  <!-- Right rail with 4 tabs: Artifacts | Decisions | Clocks | Privileged -->
+  <!-- Right rail: Artifacts | Decisions | Action items | Critical -->
   <aside class="w-80 flex-shrink-0 border-l border-slate-800 bg-slate-900/30 flex flex-col min-h-0">
     <div class="flex border-b border-slate-800 text-[11px]">
       <button class="rail-tab flex-1 px-2 py-2 font-semibold text-slate-100 border-b-2 border-sky-500" data-rail="artifacts">Artifacts</button>
       <button class="rail-tab flex-1 px-2 py-2 text-slate-400 hover:text-slate-200" data-rail="decisions">Decisions</button>
-      <button class="rail-tab flex-1 px-2 py-2 text-slate-400 hover:text-slate-200" data-rail="clocks">Clocks</button>
-      <button class="rail-tab flex-1 px-2 py-2 text-slate-400 hover:text-slate-200" data-rail="privileged">Privileged</button>
+      <button class="rail-tab flex-1 px-2 py-2 text-slate-400 hover:text-slate-200" data-rail="actions">Action items</button>
+      <button class="rail-tab flex-1 px-2 py-2 text-slate-400 hover:text-slate-200" data-rail="critical">Critical</button>
     </div>
     <div id="rail-body" class="flex-1 min-h-0 overflow-y-auto p-3 space-y-2"></div>
   </aside>
@@ -150,28 +130,24 @@ let state = {
   filter: "all",
   trackFilter: null,
   rail: "artifacts",
-  // Human-marked decisions: msgId -> { decider: roleId, ts: clockTime }.
-  // Pre-seed Legal-affirmed ones to mimic Diana already curating.
+  // Human-marked AAR moments — what counts as a decision worth citing in the
+  // post-incident write-up. CISO and IR both asked for an attributed primitive
+  // (decider + ts + jump-to-message) so the post-mortem doesn't depend on
+  // memory. Pre-seeded with three obvious-in-retrospect calls to demonstrate.
   humanDecisions: {
-    m21: { decider: "legal", ts: "14:36:55" },
-    m25: { decider: "ciso",  ts: "14:37:50" },
-    m37: { decider: "ciso",  ts: "14:41:20" },
+    m21: { decider: "ir",   ts: "14:36:55" },
+    m25: { decider: "ciso", ts: "14:37:50" },
+    m37: { decider: "ciso", ts: "14:41:20" },
   },
-  // Privileged messages — Legal-set
-  privileged: new Set(["m07", "m08", "m15", "m21", "m24", "m29", "m30", "m35"]),
+  // Action items extracted by IR-Lead role. Each entry is a tracked TODO
+  // surfaced in the rail so they don't get lost in chat scroll.
+  actionItems: [
+    { id: "a1", msgId: "m28", owner: "ir",    text: "Call retainer counsel + cyber-insurance carrier by EOD",   status: "open" },
+    { id: "a2", msgId: "m26", owner: "soc2",  text: "Memory + disk image FS-CORP-{02,03,07,11} before reimage", status: "in_progress" },
+    { id: "a3", msgId: "m31", owner: "soc1",  text: "Containment hunt — verify persistence cleared on FS-CORP-07", status: "open" },
+    { id: "a4", msgId: "m37", owner: "comms", text: "Ship holding-statement option B; route via Legal review",   status: "in_progress" },
+  ],
 };
-
-// Notification-clock state. Triggered when m21 fires (HR data on FS-CORP-07).
-function clockState() {
-  const triggered = MESSAGES.find((m) => m.id === "m21");
-  const t = triggered ? triggered.ts : null;
-  return [
-    { jur: "CA",    rule: "SB-1386 / CCPA — without unreasonable delay", state: t ? "active" : "pending", since: t },
-    { jur: "NY",    rule: "SHIELD Act — without unreasonable delay",     state: t ? "active" : "pending", since: t },
-    { jur: "IL",    rule: "PIPA — most expedient time possible",          state: t ? "active" : "pending", since: t },
-    { jur: "HIPAA", rule: "60d from discovery (PHI scope pending)",       state: t ? "active" : "pending", since: t },
-  ];
-}
 
 function tsMinute(ts) { return ts.slice(0, 5); } // "14:30:02" -> "14:30"
 
@@ -185,29 +161,19 @@ function chatItem(m, prevMinute) {
   // Sticky minute-anchor row when minute changes
   const anchor = (minute !== prevMinute) ? `<div class="ts-anchor">${minute}</div>` : "";
   const isHumanDecision = !!state.humanDecisions[m.id];
-  const isPriv = state.privileged.has(m.id);
   const ringCls = isMe && (m.kind === "ai_text" || isCritical) ? "awaiting-me" : "";
-  const privCls = isPriv ? "msg-priv" : "";
   const critCls = isCritical ? "border-red-500/60 bg-red-950/40" : "border-slate-800 bg-slate-900/40";
   const meBadge = isMe ? `<span class="ml-2 rounded bg-amber-500/20 px-1.5 py-0.5 text-[10px] font-semibold text-amber-200">@you</span>` : "";
   const decBadge = isHumanDecision
-    ? `<span class="ml-2 rounded border border-violet-500/60 bg-violet-900/40 px-1.5 py-0.5 text-[10px] font-semibold text-violet-200" title="Marked decision by ${(byRole(state.humanDecisions[m.id].decider)||{}).label} at ${state.humanDecisions[m.id].ts}">DECISION · ${(byRole(state.humanDecisions[m.id].decider)||{}).short}</span>`
+    ? `<span class="ml-2 rounded border border-violet-500/60 bg-violet-900/40 px-1.5 py-0.5 text-[10px] font-semibold text-violet-200" title="Marked AAR moment by ${(byRole(state.humanDecisions[m.id].decider)||{}).label} at ${state.humanDecisions[m.id].ts}">DECISION · ${(byRole(state.humanDecisions[m.id].decider)||{}).short}</span>`
     : "";
   const critBadge = isCritical ? `<span class="ml-2 rounded border border-red-500/60 bg-red-900/40 px-1.5 py-0.5 text-[10px] font-semibold text-red-200">INJECT</span>` : "";
-  const privBadge = isPriv ? `<span class="ml-2 rounded border border-violet-400/50 bg-violet-900/30 px-1.5 py-0.5 text-[10px] font-semibold text-violet-200" title="Marked privileged / attorney work product by Legal">PRIV/WP</span>` : "";
-  // Viewer-conditional affordances:
-  // Mark-as-decision: visible to CISO + Legal only.
-  // Mark-as-privileged: visible to Legal only.
-  const canMarkDecision = ["ciso", "legal"].includes(VIEWER);
-  const canMarkPriv     = VIEWER === "legal";
-  const decisionBtn = canMarkDecision
-    ? `<button class="btn-mark ${isHumanDecision ? "active" : ""}" onclick="toggleDecision('${m.id}')">${isHumanDecision ? "✓ decision" : "+ mark decision"}</button>`
-    : "";
-  const privBtn = canMarkPriv
-    ? `<button class="btn-mark ${isPriv ? "active" : ""}" onclick="togglePriv('${m.id}')">${isPriv ? "✓ priv/WP" : "+ mark priv"}</button>`
-    : "";
+  // Mark-as-decision is available to anyone — it's an AAR-curation primitive,
+  // not a litigation artifact. Anyone in the exercise can flag a moment they
+  // think the post-mortem should call out, and the click stamps decider + ts.
+  const decisionBtn = `<button class="btn-mark ${isHumanDecision ? "active" : ""}" onclick="toggleDecision('${m.id}')">${isHumanDecision ? "✓ AAR moment" : "+ mark for AAR"}</button>`;
   return anchor + `
-    <article id="msg-${m.id}" class="flex gap-3 rounded border ${critCls} ${ringCls} ${privCls} p-3"
+    <article id="msg-${m.id}" class="flex gap-3 rounded border ${critCls} ${ringCls} p-3"
       data-mid="${m.id}" data-track="${m.track}" data-me="${isMe?1:0}"
       data-critical="${isCritical?1:0}" data-decision="${isHumanDecision?1:0}">
       <div class="track-bar" style="background:${trackHex}"></div>
@@ -217,12 +183,12 @@ function chatItem(m, prevMinute) {
           <span class="flex flex-wrap items-center gap-1">
             <span class="font-semibold text-slate-200">${actorLabel(role)}</span>
             <span class="track-chip track-${m.track}">${trackInfo(m.track).label}</span>
-            ${meBadge}${decBadge}${critBadge}${privBadge}
+            ${meBadge}${decBadge}${critBadge}
           </span>
           <span class="font-mono text-slate-500">${m.ts}</span>
         </header>
         <p class="mt-1 whitespace-pre-wrap text-sm leading-relaxed">${renderBody(m, VIEWER)}</p>
-        <div class="mt-2 flex items-center gap-2">${decisionBtn}${privBtn}</div>
+        <div class="mt-2 flex items-center gap-2">${decisionBtn}</div>
       </div>
     </article>`;
 }
@@ -304,43 +270,38 @@ function renderRail() {
           <div class="mt-1 text-[10px] text-slate-500">marked ${info.ts} · #${m.track} · jump →</div>
         </div>
       </div>`;
-    }).join("") : `<div class="text-xs text-slate-500">No decisions marked. CISO and Legal can mark messages with the "+ mark decision" button.</div>`;
-  } else if (state.rail === "clocks") {
-    const triggered = clockState()[0].state === "active";
-    body.innerHTML = `
-      <div class="${triggered ? "priv-banner" : "rail-card"}">
-        ${triggered
-          ? `Notification clock TRIGGERED — HR data on FS-CORP-07 (Legal-marked decision m21, 14:36:50). Counsel has been engaged.`
-          : `No notification trigger yet.`}
-      </div>
-      ${clockState().map((c) => `
-        <div class="clock-row">
-          <span class="clock-jur">${c.jur}</span>
-          <span class="clock-state ${c.state === "active" ? "clock-active" : "clock-pending"}">${c.state.toUpperCase()}</span>
-          <span class="text-[11px] text-slate-400">${c.rule}${c.since ? ` · since ${c.since}` : ""}</span>
-        </div>
-      `).join("")}
-      <div class="text-[10px] text-slate-500 px-2 mt-2">Triggered timestamps stamp the AAR. Legal owns this widget.</div>
-    `;
-  } else {
-    // Privileged tab — only Legal can edit; other viewers see redacted preview
-    if (VIEWER !== "legal") {
-      body.innerHTML = `<div class="rail-card text-xs text-slate-400">${state.privileged.size} messages flagged Privileged / Attorney Work Product. <br><br>Visible only to Legal. Other roles see the chat content but cannot toggle privilege state.</div>`;
-    } else {
-      const ids = [...state.privileged];
-      body.innerHTML = ids.length ? ids.map((mid) => {
-        const m = MESSAGES.find((x) => x.id === mid);
-        if (!m) return "";
-        const r = byRole(m.from);
-        return `<div class="rail-card cursor-pointer msg-priv" onclick="scrollToMsg('${mid}')">
-          <div class="min-w-0 flex-1">
-            <div class="text-[11px] uppercase tracking-wide text-violet-300">priv/WP · ${r ? r.label : "?"}</div>
-            <div class="mt-1 text-xs text-slate-200">${m.body.length > 120 ? m.body.slice(0,120) + "…" : m.body}</div>
-            <div class="mt-1 text-[10px] text-slate-500">${m.ts} · #${m.track} · jump →</div>
+    }).join("") : `<div class="text-xs text-slate-500">Nothing marked yet. Click "+ mark for AAR" on any message to flag it for the post-mortem.</div>`;
+  } else if (state.rail === "actions") {
+    body.innerHTML = state.actionItems.map((a) => {
+      const owner = byRole(a.owner);
+      const m = MESSAGES.find((x) => x.id === a.msgId);
+      const tone = a.status === "in_progress" ? "text-amber-200 border-amber-500/40 bg-amber-900/20"
+                 : a.status === "done"        ? "text-emerald-200 border-emerald-500/40 bg-emerald-900/20"
+                                              : "text-slate-300 border-slate-600 bg-slate-800/40";
+      return `<div class="rail-card cursor-pointer" onclick="scrollToMsg('${a.msgId}')">
+        <div class="track-bar" style="background:${trackColorHex(m ? m.track : 'main')}"></div>
+        <div class="min-w-0 flex-1">
+          <div class="flex items-center justify-between">
+            <span class="text-sm font-semibold text-slate-100">${owner ? owner.label : "?"}</span>
+            <span class="rounded px-1.5 py-0.5 text-[10px] font-semibold border ${tone}">${a.status.replace("_", " ").toUpperCase()}</span>
           </div>
-        </div>`;
-      }).join("") : `<div class="text-xs text-slate-500">No messages marked priv/WP yet.</div>`;
-    }
+          <div class="mt-1 text-xs text-slate-300">${a.text}</div>
+          <div class="mt-1 text-[10px] text-slate-500">from ${a.msgId} · jump →</div>
+        </div>
+      </div>`;
+    }).join("") || `<div class="text-xs text-slate-500">No action items.</div>`;
+  } else {
+    // Critical events
+    const list = criticalList();
+    body.innerHTML = list.length ? list.map((c) => `
+      <div class="rail-card cursor-pointer border-red-500/40" onclick="scrollToMsg('${c.msgId}')">
+        <div class="track-bar" style="background:#ef4444"></div>
+        <div class="min-w-0 flex-1">
+          <div class="text-[11px] uppercase tracking-wide text-red-300">inject</div>
+          <div class="mt-1 text-sm text-slate-100">${c.body}</div>
+          <div class="mt-1 text-[10px] text-slate-500">${c.ts} · jump →</div>
+        </div>
+      </div>`).join("") : `<div class="text-xs text-slate-500">No injects fired.</div>`;
   }
 }
 
@@ -349,13 +310,7 @@ function toggleDecision(mid) {
   else state.humanDecisions[mid] = { decider: VIEWER, ts: new Date().toLocaleTimeString().slice(0,8) };
   rerender();
 }
-function togglePriv(mid) {
-  if (state.privileged.has(mid)) state.privileged.delete(mid);
-  else state.privileged.add(mid);
-  rerender();
-}
 window.toggleDecision = toggleDecision;
-window.togglePriv = togglePriv;
 
 function rerender() { renderArtifactStrip(); renderChat(); renderRail(); }
 
