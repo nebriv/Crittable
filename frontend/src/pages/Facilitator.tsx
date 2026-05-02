@@ -346,11 +346,14 @@ export function Facilitator() {
       creatorRoleId !== null && submittedIds.includes(creatorRoleId);
     const myTurn = iAmActive && !iHaveSubmitted && !aiThinking;
     if (myTurn) return { pending: true, state: "Your turn" };
-    if (aiThinking) return { pending: false, state: "AI thinking" };
-    if (iHaveSubmitted) return { pending: false, state: "Submitted" };
+    // BRIEFING is a sub-state of aiThinking (the AI is composing the
+    // briefing) — surface the more specific label before the generic
+    // "AI thinking" branch, otherwise the BRIEFING case is dead code.
     if (snapshot.state === "BRIEFING") {
       return { pending: false, state: "Briefing" };
     }
+    if (aiThinking) return { pending: false, state: "AI thinking" };
+    if (iHaveSubmitted) return { pending: false, state: "Submitted" };
     if (snapshot.state === "AWAITING_PLAYERS") {
       return { pending: false, state: "Waiting on roles" };
     }

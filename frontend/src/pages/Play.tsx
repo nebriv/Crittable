@@ -651,16 +651,20 @@ export function Play({ sessionId, token }: Props) {
     const pending = iAmActive && !iHaveSubmitted && !aiThinking;
     let state: string | null = null;
     // Order matters: check ENDED first (terminal), then "your turn"
-    // (highest-priority foreground signal), then AI thinking, then
-    // post-submit waiting, then phase-specific labels. Every backend
-    // SessionState (CREATED / SETUP / READY / BRIEFING /
-    // AWAITING_PLAYERS / AI_PROCESSING / ENDED) is covered so a fresh
-    // session doesn't fall through to a bare "Crittable".
+    // (highest-priority foreground signal), then phase-specific labels
+    // that are MORE specific than "AI thinking" (BRIEFING is a
+    // sub-state of aiThinking but the label is more informative),
+    // then generic AI thinking, then post-submit waiting, then the
+    // remaining phase fallbacks. Every backend SessionState
+    // (CREATED / SETUP / READY / BRIEFING / AWAITING_PLAYERS /
+    // AI_PROCESSING / ENDED) gets a label so a fresh session doesn't
+    // fall through to a bare "Crittable".
     if (snapshot.state === "ENDED") state = "Ended";
     else if (pending) state = "Your turn";
+    else if (snapshot.state === "BRIEFING") state = "Briefing";
     else if (aiThinking) state = "AI thinking";
     else if (iHaveSubmitted) state = "Submitted";
-    else if (snapshot.state === "BRIEFING") state = "Briefing";
+    else if (snapshot.state === "AWAITING_PLAYERS") state = "Waiting on roles";
     else if (snapshot.state === "SETUP") state = "Setup";
     else if (snapshot.state === "READY") state = "Ready";
     else if (snapshot.state === "CREATED") state = "Initializing";
