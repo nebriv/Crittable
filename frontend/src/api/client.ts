@@ -6,6 +6,8 @@
 export interface SessionSnapshot {
   id: string;
   state: string;
+  /** Session-start timestamp (ISO 8601, UTC) — used for ``T+MM:SS`` relative timestamps in the shared notepad. */
+  created_at: string;
   scenario_prompt: string;
   plan: ScenarioPlan | null;
   roles: RoleView[];

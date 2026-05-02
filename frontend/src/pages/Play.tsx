@@ -2,8 +2,10 @@ import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "re
 import { api, SessionSnapshot } from "../api/client";
 import { Composer } from "../components/Composer";
 import { CriticalEventBanner } from "../components/CriticalEventBanner";
+import { HighlightActionPopover } from "../components/HighlightActionPopover";
 import { RightSidebar } from "../components/RightSidebar";
 import { RoleRoster } from "../components/RoleRoster";
+import { SharedNotepad } from "../components/SharedNotepad";
 import { Transcript } from "../components/Transcript";
 import { DieLoader } from "../components/brand/DieLoader";
 import { HudGauges } from "../components/brand/HudGauges";
@@ -106,6 +108,15 @@ export function Play({ sessionId, token }: Props) {
   // (multiple times per turn) — too noisy in production.
   const wasShowingMidSessionChipRef = useRef(false);
   const wsRef = useRef<WsClient | null>(null);
+  // Mirror the WS client into reactive state too. ``wsRef`` is a
+  // mutable ref — assigning to it does NOT trigger a re-render, which
+  // means downstream consumers gated on ``wsRef.current`` (e.g. the
+  // SharedNotepad slot in the right rail) never see the transition
+  // from null → connected unless something else nudges React. The
+  // creator path nudges plenty (godMode, plan edits); the player path
+  // can sit idle and the notepad never mounts. Issue surfaced during
+  // manual smoke for #98.
+  const [wsClient, setWsClient] = useState<WsClient | null>(null);
   const forceAdvanceTimerRef = useRef<number | null>(null);
 
   // Determine self by inspecting snapshot.roles and matching the role with the
@@ -147,7 +158,11 @@ export function Play({ sessionId, token }: Props) {
     });
     ws.connect();
     wsRef.current = ws;
-    return () => ws.close();
+    setWsClient(ws);
+    return () => {
+      ws.close();
+      setWsClient(null);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [displayName, sessionId, token]);
 
@@ -1042,15 +1057,35 @@ export function Play({ sessionId, token }: Props) {
           <RightSidebar
             messages={snapshot.messages}
             roles={snapshot.roles}
-            notesStorageKey={(() => {
-              if (!selfRoleId) return null;
-              const role = snapshot.roles.find((r) => r.id === selfRoleId);
-              const v = role?.token_version ?? 0;
-              return `atf-notes:${sessionId}:${selfRoleId}:v${v}`;
-            })()}
+            notepad={
+              wsClient && selfRoleId ? (
+                <SharedNotepad
+                  sessionId={sessionId}
+                  token={token}
+                  ws={wsClient}
+                  isCreator={
+                    snapshot.roles.find((r) => r.id === selfRoleId)?.is_creator ?? false
+                  }
+                  sessionStartedAt={snapshot.created_at}
+                  selfRoleId={selfRoleId}
+                  selfDisplayName={
+                    snapshot.roles.find((r) => r.id === selfRoleId)?.display_name ??
+                    snapshot.roles.find((r) => r.id === selfRoleId)?.label ??
+                    "(unknown)"
+                  }
+                />
+              ) : null
+            }
           />
         </aside>
       </div>
+      {selfRoleId && wsClient ? (
+        <HighlightActionPopover
+          sessionId={sessionId}
+          roleId={selfRoleId}
+          token={token}
+        />
+      ) : null}
     </main>
   );
 }

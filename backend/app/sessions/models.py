@@ -220,6 +220,39 @@ class DecisionLogEntry(BaseModel):
     rationale: str
 
 
+class NotepadState(BaseModel):
+    """Snapshot-side state for the shared markdown notepad (issue #98).
+
+    The Yjs binary state itself lives on :class:`SessionManager` as a
+    per-session ``pycrdt.Doc`` (not pydantic-serializable). This model
+    holds only the values the snapshot/AAR pipeline reads: the most
+    recent markdown extraction (pushed by clients), lock status, and
+    accounting fields.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    created_at: datetime = Field(default_factory=_now)
+    locked: bool = False
+    locked_at: datetime | None = None
+    # Latest markdown view of the notepad. Pushed by clients via the
+    # /notepad/snapshot endpoint (debounced) and forced on session end.
+    # Source of truth for AAR ingestion.
+    markdown_snapshot: str = ""
+    snapshot_updated_at: datetime | None = None
+    # Which starter template was applied (generic_ir / ransomware / data_breach / "custom" / None).
+    template_id: str | None = None
+    edit_count: int = 0
+    # Set of source_message_ids already pinned, to prevent double-pin from
+    # accidental double-clicks. A different selection from the same
+    # message creates a new pin (different request) — that's expected.
+    pinned_message_ids: list[str] = Field(default_factory=list)
+    # Roles that have emitted at least one update or pin. Used by the
+    # export.md header to render "Contributors: ..." without scanning
+    # the audit log.
+    contributor_role_ids: list[str] = Field(default_factory=list)
+
+
 class Session(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -259,6 +292,8 @@ class Session(BaseModel):
     same critical-event call on three consecutive turns after the
     first attempt was rejected. Cleared when the rolling window
     drops below the cap."""
+
+    notepad: NotepadState = Field(default_factory=NotepadState)
 
     aar_markdown: str | None = None
     aar_status: AARStatus = "pending"
