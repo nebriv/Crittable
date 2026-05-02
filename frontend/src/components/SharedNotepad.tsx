@@ -25,6 +25,10 @@ import * as Y from "yjs";
 import { RailHeader } from "./brand/RailHeader";
 import { StatusChip } from "./brand/StatusChip";
 import {
+  NOTEPAD_PIN_EVENT,
+  type NotepadPinEventDetail,
+} from "../lib/highlightActions";
+import {
   applyTemplate,
   exportMarkdownUrl,
   editorToMarkdown,
@@ -33,6 +37,7 @@ import {
   templateMarkdownToHtml,
 } from "../lib/notepad";
 import type { NotepadTemplate } from "../lib/notepad";
+import { appendPinToEditor, relativeStamp } from "../lib/notepadEditor";
 import type { ServerEvent, WsClient } from "../lib/ws";
 
 interface Props {
@@ -244,13 +249,7 @@ function timestampHotkeyExtension(sessionStartedAt: string): Extension {
     addKeyboardShortcuts() {
       return {
         "Mod-Shift-t": () => {
-          const start = new Date(sessionStartedAt).getTime();
-          const elapsedMs = Date.now() - start;
-          const minutes = Math.max(0, Math.floor(elapsedMs / 60000));
-          const seconds = Math.max(0, Math.floor((elapsedMs % 60000) / 1000));
-          const stamp = `T+${String(minutes).padStart(2, "0")}:${String(
-            seconds,
-          ).padStart(2, "0")} — `;
+          const stamp = `${relativeStamp(sessionStartedAt)} — `;
           // @ts-expect-error: editor is bound by TipTap at runtime
           this.editor?.chain().focus().insertContent(stamp).run();
           return true;
@@ -261,6 +260,13 @@ function timestampHotkeyExtension(sessionStartedAt: string): Extension {
 }
 
 const COACHMARK_KEY = "crittable.notepad.coachmark_seen";
+
+// Bound for the per-instance "already-inserted" pin id ring buffer.
+// Long sessions can produce hundreds of pins; keeping every id in
+// memory forever is a slow leak. 256 is well past any realistic
+// double-click window — by the time we evict the oldest id, the
+// user's panic-click flurry on that message is long over.
+const MAX_INSERTED_PIN_IDS = 256;
 
 export function SharedNotepad({
   sessionId,
@@ -349,6 +355,60 @@ export function SharedNotepad({
   useEffect(() => {
     if (editor) editor.setEditable(!locked);
   }, [editor, locked]);
+
+  // "Add to notes" pin from the chat-highlight popover. The popover
+  // POSTs the snippet, then dispatches ``crittable:notepad-pin`` on
+  // the window — only the originating tab inserts; Yjs collab fans
+  // the resulting transaction to peers. Per-tab dispatch (rather
+  // than a server-side broadcast) prevents double-insert when one
+  // user has two tabs of the same role open.
+  //
+  // The server idempotently 204s a re-pin of the same
+  // ``source_message_id`` (a panic-clicker double-tapping the same
+  // chat bubble), but the popover still dispatches the event for
+  // every successful request. ``insertedPinIdsRef`` tracks the ids
+  // we've already written so the second click of the same pin
+  // doesn't double the editor entry. The id is recorded ONLY after
+  // the insert succeeds — if ``appendPinToEditor`` throws, the user
+  // can retry the same pin (per Copilot review on PR #125). Bounded
+  // to the last ``MAX_INSERTED_PIN_IDS`` ids in FIFO order so a long
+  // session doesn't grow the Set unboundedly.
+  const insertedPinIdsRef = useRef<string[]>([]);
+  useEffect(() => {
+    if (!editor) return;
+    const inserted = insertedPinIdsRef.current;
+    function onPin(e: Event): void {
+      const detail = (e as CustomEvent<NotepadPinEventDetail>).detail;
+      if (!detail || !detail.text) return;
+      if (locked) {
+        console.warn("[notepad] pin received while locked; dropping");
+        return;
+      }
+      if (
+        detail.sourceMessageId &&
+        inserted.includes(detail.sourceMessageId)
+      ) {
+        console.debug(
+          "[notepad] pin already inserted for source",
+          detail.sourceMessageId,
+        );
+        return;
+      }
+      try {
+        appendPinToEditor(editor!, detail.text, sessionStartedAt);
+        if (detail.sourceMessageId) {
+          inserted.push(detail.sourceMessageId);
+          if (inserted.length > MAX_INSERTED_PIN_IDS) {
+            inserted.splice(0, inserted.length - MAX_INSERTED_PIN_IDS);
+          }
+        }
+      } catch (err) {
+        console.warn("[notepad] pin insertion failed", err);
+      }
+    }
+    window.addEventListener(NOTEPAD_PIN_EVENT, onPin);
+    return () => window.removeEventListener(NOTEPAD_PIN_EVENT, onPin);
+  }, [editor, sessionStartedAt, locked]);
 
   // Track empty-state. We watch ydoc updates rather than editor state
   // so the picker disappears as soon as ANY content arrives — even

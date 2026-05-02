@@ -109,6 +109,62 @@ export async function pinToNotepad(
   );
 }
 
+/**
+ * Mirror of ``backend/app/sessions/notepad.py::sanitize_pin_text``. The
+ * server runs this on every ``/notepad/pin`` POST as defence in depth,
+ * but the editor inserts the snippet locally (via the
+ * ``crittable:notepad-pin`` window event) and then pushes its full
+ * markdown snapshot back to the server — so without client-side
+ * sanitisation, an unsanitised string round-trips into
+ * ``session.notepad.markdown_snapshot`` and feeds the AAR.
+ *
+ * Strips, in order:
+ *   1. Fenced code blocks (``\`\`\`...\`\`\``) — fixed-point
+ *   2. Markdown links / images — fixed-point
+ *   3. HTML tags — fixed-point
+ *   4. Backticks
+ *   5. Leading whitespace / blockquote / heading / list markers per line
+ *
+ * Each tag-stripping pass is run until fixed-point: a single-pass
+ * ``replace`` leaves residual markup when an attacker nests tags
+ * (e.g. ``<scr<script>ipt>`` collapses to ``<script>`` after one
+ * pass) — flagged by CodeQL's "incomplete multi-character
+ * sanitisation" rule.
+ *
+ * Keep in sync with the server regexes — there are tests on each side
+ * that exercise the regex set; if you add a marker class to one,
+ * update both.
+ */
+const PIN_LINK_RE = /!?\[([^\]]*)\]\(([^)]*)\)/g;
+const PIN_HTML_RE = /<[^>]+>/g;
+const PIN_FENCE_RE = /```[^`]*```/gs;
+const PIN_BACKTICK_RE = /`+/g;
+const PIN_LEADING_RE = /^[\s>#\-*+]+/gm;
+
+function replaceUntilStable(
+  input: string,
+  re: RegExp,
+  replacement: string,
+  limit = 8,
+): string {
+  let out = input;
+  for (let i = 0; i < limit; i++) {
+    const next = out.replace(re, replacement);
+    if (next === out) break;
+    out = next;
+  }
+  return out;
+}
+
+export function sanitizePinText(raw: string): string {
+  let out = replaceUntilStable(raw, PIN_FENCE_RE, "");
+  out = replaceUntilStable(out, PIN_LINK_RE, "$1");
+  out = replaceUntilStable(out, PIN_HTML_RE, "");
+  out = out.replace(PIN_BACKTICK_RE, "");
+  out = out.replace(PIN_LEADING_RE, "");
+  return out.trim();
+}
+
 export function exportMarkdownUrl(sessionId: string, token: string): string {
   return `/api/sessions/${sessionId}/notepad/export.md?token=${encodeURIComponent(token)}`;
 }

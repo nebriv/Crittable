@@ -244,23 +244,31 @@ class NotepadService:
         leading list/blockquote/heading markers from text that came
         from a chat selection. Prevents a player from smuggling
         clickable links or formatting into the Timeline (which feeds
-        into the AAR generation prompt). The link / image regex is
-        applied **until fixed-point** so nested markup like
-        ``[![img](x)](http://evil.com)`` collapses fully."""
+        into the AAR generation prompt). Each tag-stripping pass runs
+        until fixed-point so nested markup like
+        ``[![img](x)](http://evil.com)`` or ``<scr<script>ipt>``
+        (which collapses to ``<script>`` after one pass) gets fully
+        stripped — single-pass ``re.sub`` left residue that the
+        client-side mirror in ``frontend/src/lib/notepad.ts`` was
+        flagged for by CodeQL's incomplete-multi-character-
+        sanitisation rule."""
 
-        out = raw
+        def _replace_until_stable(
+            pattern: re.Pattern[str], replacement: str, source: str, *, limit: int = 8
+        ) -> str:
+            current = source
+            for _ in range(limit):
+                next_value = pattern.sub(replacement, current)
+                if next_value == current:
+                    return next_value
+                current = next_value
+            return current
+
         # Strip code fences first so backticks inside them don't escape
         # the fence-stripping pass.
-        out = cls._PIN_FENCE_RE.sub("", out)
-        # Loop image/link strip until stable — single-pass
-        # ``re.sub`` keeps the inner alt-text of nested markdown links
-        # which can itself be a link/image.
-        for _ in range(8):
-            new = cls._PIN_LINK_RE.sub(lambda m: m.group(1), out)
-            if new == out:
-                break
-            out = new
-        out = cls._PIN_HTML_RE.sub("", out)
+        out = _replace_until_stable(cls._PIN_FENCE_RE, "", raw)
+        out = _replace_until_stable(cls._PIN_LINK_RE, r"\1", out)
+        out = _replace_until_stable(cls._PIN_HTML_RE, "", out)
         out = cls._PIN_BACKTICK_RE.sub("", out)
         out = cls._PIN_LEADING_RE.sub("", out)
         return out.strip()

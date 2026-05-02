@@ -5,7 +5,7 @@
  * untested: selection detection, ``data-highlightable`` ancestor
  * walk, ``onSelect`` invocation, and Escape dismissal.
  */
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { HighlightActionPopover } from "../components/HighlightActionPopover";
@@ -62,7 +62,9 @@ describe("HighlightActionPopover", () => {
         />
       </>,
     );
-    dispatchSelectionInside(screen.getByTestId("non-highlightable"));
+    await act(async () => {
+      dispatchSelectionInside(screen.getByTestId("non-highlightable"));
+    });
     // No menu appears.
     await waitFor(() => {
       expect(screen.queryByRole("menu")).toBeNull();
@@ -92,9 +94,13 @@ describe("HighlightActionPopover", () => {
         />
       </>,
     );
-    dispatchSelectionInside(screen.getByTestId("bubble"), "AI inject text");
+    await act(async () => {
+      dispatchSelectionInside(screen.getByTestId("bubble"), "AI inject text");
+    });
     const btn = await screen.findByRole("menuitem", { name: /add to notes/i });
-    fireEvent.click(btn);
+    await act(async () => {
+      fireEvent.click(btn);
+    });
     await waitFor(() => {
       expect(onSelect).toHaveBeenCalledTimes(1);
     });
@@ -107,6 +113,89 @@ describe("HighlightActionPopover", () => {
       sourceKind: "ai",
     });
     expect(ctx.text.length).toBeGreaterThan(0);
+  });
+
+  it("does NOT open the menu mid-drag (suppressed until mouseup)", async () => {
+    const onSelect = vi.fn().mockResolvedValue(undefined);
+    const actions: HighlightAction[] = [
+      { id: "pin", label: "Add to notes", onSelect },
+    ];
+    render(
+      <>
+        <div
+          data-testid="bubble"
+          data-highlightable="true"
+          data-message-id="msg_drag"
+          data-message-kind="chat"
+        >
+          some text the user is drag-selecting
+        </div>
+        <HighlightActionPopover
+          sessionId="s"
+          roleId="r"
+          token="t"
+          actions={actions}
+        />
+      </>,
+    );
+    // Simulate the user pressing the mouse button down on the bubble
+    // (start of a drag-select). The popover should NOT open on the
+    // selectionchange events that fire while the mouse is held down —
+    // the menu would otherwise pop up under the cursor and break the
+    // drag a few characters in.
+    await act(async () => {
+      fireEvent.mouseDown(screen.getByTestId("bubble"));
+      dispatchSelectionInside(screen.getByTestId("bubble"), "some text");
+    });
+    // No menu while the mouse is down.
+    await waitFor(() => {
+      expect(screen.queryByRole("menu")).toBeNull();
+    });
+    // Release the mouse — popover should now appear at the final
+    // selection rect.
+    await act(async () => {
+      fireEvent.mouseUp(document);
+    });
+    await screen.findByRole("menu");
+  });
+
+  it("does NOT clear the selection on scroll (regression: drag-select dies)", async () => {
+    const actions: HighlightAction[] = [
+      { id: "pin", label: "Pin", onSelect: vi.fn().mockResolvedValue(undefined) },
+    ];
+    render(
+      <>
+        <div
+          data-testid="bubble"
+          data-highlightable="true"
+          data-message-id="m"
+          data-message-kind="chat"
+        >
+          some text
+        </div>
+        <HighlightActionPopover
+          sessionId="s"
+          roleId="r"
+          token="t"
+          actions={actions}
+        />
+      </>,
+    );
+    await act(async () => {
+      dispatchSelectionInside(screen.getByTestId("bubble"), "some text");
+    });
+    await screen.findByRole("menu");
+    // Confirm the selection is intact before the scroll.
+    expect(window.getSelection()?.isCollapsed).toBe(false);
+    // Fire a window-level scroll (e.g. chat container auto-scrolls
+    // because the user dragged near the edge).
+    await act(async () => {
+      window.dispatchEvent(new Event("scroll"));
+    });
+    // The popover hides (its rect is now stale) but the selection
+    // MUST stay alive — clearing it would terminate the drag-select
+    // mid-stream, which was the user-reported regression.
+    expect(window.getSelection()?.isCollapsed).toBe(false);
   });
 
   it("hides the menu on Escape", async () => {
@@ -131,9 +220,13 @@ describe("HighlightActionPopover", () => {
         />
       </>,
     );
-    dispatchSelectionInside(screen.getByTestId("bubble"), "some text");
+    await act(async () => {
+      dispatchSelectionInside(screen.getByTestId("bubble"), "some text");
+    });
     await screen.findByRole("menu");
-    fireEvent.keyDown(document, { key: "Escape" });
+    await act(async () => {
+      fireEvent.keyDown(document, { key: "Escape" });
+    });
     await waitFor(() => {
       expect(screen.queryByRole("menu")).toBeNull();
     });

@@ -15,7 +15,20 @@
  */
 import type { ReactNode } from "react";
 
-import { pinToNotepad } from "./notepad";
+import { pinToNotepad, sanitizePinText } from "./notepad";
+
+/**
+ * Dispatched on ``window`` after a successful "Add to notes" POST.
+ * SharedNotepad listens and inserts the snippet locally; Yjs collab
+ * propagates to peers. Per-tab dispatch (rather than a server-side
+ * broadcast) prevents double-insert when one user has two tabs open.
+ */
+export const NOTEPAD_PIN_EVENT = "crittable:notepad-pin";
+
+export interface NotepadPinEventDetail {
+  text: string;
+  sourceMessageId: string | null;
+}
 
 /**
  * Source surfaces the highlight popover may activate over. Keep the
@@ -41,14 +54,33 @@ export interface HighlightAction {
   isAvailable?: (ctx: HighlightContext) => boolean;
   /** Returned promise resolves on success; rejects to surface a toast. */
   onSelect: (ctx: HighlightContext) => Promise<void>;
+  /** Optional override for the success toast. Default: "{label} — pinned." */
+  successToast?: string;
 }
 
 const pinToNotepadAction: HighlightAction = {
   id: "pin-to-notepad",
   label: "Add to notes",
   glyph: "+",
-  onSelect: ({ sessionId, token, text, sourceMessageId }) =>
-    pinToNotepad(sessionId, token, text, sourceMessageId),
+  successToast: "Pinned to notepad.",
+  onSelect: async ({ sessionId, token, text, sourceMessageId }) => {
+    await pinToNotepad(sessionId, token, text, sourceMessageId);
+    // Sanitize before dispatch so the editor receives the same shape
+    // the server stores in ``session.notepad.markdown_snapshot``.
+    // Without this, an unsanitized ``# heading injected`` round-trips
+    // through the next ``pushSnapshot`` and ends up feeding the AAR.
+    // Mirrors ``backend/app/sessions/notepad.py::sanitize_pin_text``.
+    const safe = sanitizePinText(text).slice(0, 280);
+    if (!safe) return;
+    // The Yjs doc is untouched server-side — inserting the snippet is
+    // the originating tab's job. Yjs collab propagates the resulting
+    // transaction to peers via the regular ``notepad_update`` flow.
+    const detail: NotepadPinEventDetail = {
+      text: safe,
+      sourceMessageId,
+    };
+    window.dispatchEvent(new CustomEvent(NOTEPAD_PIN_EVENT, { detail }));
+  },
 };
 
 /**

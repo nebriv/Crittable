@@ -180,6 +180,20 @@ def test_sanitize_pin_text_strips_markdown_html_and_leading_markers() -> None:
     assert not out.startswith(("#", "-", ">", " "))
 
 
+def test_sanitize_pin_text_nested_html_tags_strip_to_fixed_point() -> None:
+    # CodeQL incomplete-multi-character-sanitisation regression. A
+    # single-pass ``re.sub`` over ``<[^>]+>`` collapses
+    # ``<scr<script>ipt>`` to ``<script>`` — still a script tag in
+    # the output. Fixed-point loop must strip until stable.
+    raw = "<scr<script>ipt>alert(1)</scr</script>ipt>"
+    out = NotepadService.sanitize_pin_text(raw)
+    assert "<script" not in out.lower()
+    assert "</script" not in out.lower()
+    # The visible-text content survives (matches the existing test's
+    # contract — sanitiser strips markup, not the words).
+    assert "alert(1)" in out
+
+
 # ----------------------------------------------------------- AAR ingestion
 
 

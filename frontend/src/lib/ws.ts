@@ -92,10 +92,10 @@ export type ServerEvent =
   // base64-encoded inside JSON envelopes so they ride the existing
   // /ws/sessions/{id} channel without a separate y-websocket server.
   // Server-side recording policy:
-  //   - notepad_update / notepad_pin_appended / notepad_awareness /
-  //     notepad_lock_pending: record=False — high-volume, not
-  //     idempotent against the 256-event replay buffer; reconnecting
-  //     clients explicitly send notepad_sync_request for current state.
+  //   - notepad_update / notepad_awareness / notepad_lock_pending:
+  //     record=False — high-volume, not idempotent against the 256-
+  //     event replay buffer; reconnecting clients explicitly send
+  //     notepad_sync_request for current state.
   //   - notepad_locked: record=True — terminal state; a late joiner
   //     who reconnects after End must learn the notepad is locked
   //     (otherwise their editor would be writable but every edit
@@ -110,12 +110,6 @@ export type ServerEvent =
       type: "notepad_update";
       update: string;
       origin_role_id: string;
-    }
-  | {
-      type: "notepad_pin_appended";
-      text: string;
-      source_message_id: string | null;
-      by_role_id: string;
     }
   | {
       // Live cursor presence (y-protocols Awareness update). record=False
@@ -306,10 +300,6 @@ export class WsClient {
           case "notepad_update":
             safe.update_chars = parsed.update?.length ?? 0;
             safe.origin_role_id = parsed.origin_role_id;
-            break;
-          case "notepad_pin_appended":
-            safe.text_chars = parsed.text?.length ?? 0;
-            safe.by_role_id = parsed.by_role_id;
             break;
           case "notepad_lock_pending":
             safe.locks_in_seconds = parsed.locks_in_seconds;

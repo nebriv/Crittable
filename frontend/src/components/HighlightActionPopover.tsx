@@ -70,10 +70,19 @@ export function HighlightActionPopover({
   const [focusedIdx, setFocusedIdx] = useState<number>(0);
   const dismissRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const menuRef = useRef<HTMLDivElement | null>(null);
+  // ``true`` while the user has the mouse held down to drag-select.
+  // Suppresses popover OPENING during the drag — the menu would
+  // otherwise pop up under the cursor mid-selection, where the
+  // ``onMouseDown={preventDefault}`` collapses the user's drag and
+  // ends the selection a few characters in. ``mouseup`` clears it
+  // and re-evaluates so the popover lands at the final rect. Tests
+  // dispatch ``selectionchange`` directly without a mousedown, so
+  // they bypass this gate naturally.
+  const draggingRef = useRef(false);
 
   // Selection → popover state.
   useEffect(() => {
-    function onChange(): void {
+    function applySelection(): void {
       // Guard the entire handler — selection state can be invalid
       // (Range with no rect, jsdom Selection-impl emitting stray
       // selectionchange after a test teardown, etc.). Treat any
@@ -121,8 +130,66 @@ export function HighlightActionPopover({
         setState(null);
       }
     }
+    function onChange(): void {
+      if (draggingRef.current) {
+        // Mid-drag: don't open the popover (see draggingRef comment).
+        // Still allow the dismiss path so a collapsed selection clears
+        // a stale menu, but never set a new rect/ctx here.
+        try {
+          const sel = window.getSelection();
+          if (!sel || sel.isCollapsed || sel.toString().trim().length < 2) {
+            setState(null);
+          }
+        } catch {
+          setState(null);
+        }
+        return;
+      }
+      applySelection();
+    }
+    function onMouseDown(e: MouseEvent): void {
+      // Clicks INSIDE the menu shouldn't be counted as a drag-select
+      // start (the menu's ``onMouseDown={preventDefault}`` already
+      // shields its own clicks). Anything else — including a fresh
+      // mousedown on a chat bubble that starts a new drag — flips us
+      // into drag mode until the matching mouseup.
+      if (menuRef.current?.contains(e.target as Node)) return;
+      draggingRef.current = true;
+    }
+    function onMouseUp(): void {
+      if (!draggingRef.current) return;
+      draggingRef.current = false;
+      // After the drag completes, render the popover at the final
+      // selection rect. We DON'T just rely on the next selectionchange
+      // here because Chrome doesn't always fire one if the mouseup
+      // happens inside the same text run as the last selectionchange.
+      applySelection();
+    }
+    function clearDragging(): void {
+      // Defensive reset: if the OS swallows the matching mouseup
+      // (window switch, context menu, drag-out-of-window, tab
+      // background-throttle mid-drag), ``draggingRef`` would otherwise
+      // stay ``true`` and suppress every subsequent popover open.
+      // ``visibilitychange`` and ``blur`` cover the alt-tab path;
+      // ``pointercancel`` covers touch / pen interactions where the
+      // OS reroutes the gesture. Mirror state with the clean-slate.
+      if (!draggingRef.current) return;
+      draggingRef.current = false;
+    }
     document.addEventListener("selectionchange", onChange);
-    return () => document.removeEventListener("selectionchange", onChange);
+    document.addEventListener("mousedown", onMouseDown, true);
+    document.addEventListener("mouseup", onMouseUp, true);
+    document.addEventListener("pointercancel", clearDragging, true);
+    document.addEventListener("visibilitychange", clearDragging);
+    window.addEventListener("blur", clearDragging);
+    return () => {
+      document.removeEventListener("selectionchange", onChange);
+      document.removeEventListener("mousedown", onMouseDown, true);
+      document.removeEventListener("mouseup", onMouseUp, true);
+      document.removeEventListener("pointercancel", clearDragging, true);
+      document.removeEventListener("visibilitychange", clearDragging);
+      window.removeEventListener("blur", clearDragging);
+    };
   }, [sessionId, roleId, token]);
 
   // Dismiss on scroll (selection rectangles drift) and on Escape.
@@ -131,8 +198,14 @@ export function HighlightActionPopover({
   useEffect(() => {
     if (!state) return;
     function onScroll(): void {
+      // Hide the popover (its anchor rect is now stale) but DO NOT
+      // call ``removeAllRanges()`` here. A scroll event fires when a
+      // scrollable chat container auto-scrolls during a drag-select,
+      // and clearing the range mid-drag terminates the user's
+      // selection a few characters in — exactly the bug the user
+      // reported. The selection itself stays valid; the next
+      // selectionchange or mouseup will re-anchor the menu.
       setState(null);
-      window.getSelection()?.removeAllRanges();
     }
     function onKey(e: KeyboardEvent): void {
       if (e.key === "Escape") {
@@ -165,13 +238,20 @@ export function HighlightActionPopover({
   // focus is still in the chat selection) — the advertised
   // arrow-key/Enter contract per the ARIA APG menu pattern would
   // be a lie. Per Copilot review on PR #115.
+  //
+  // ``preventScroll: true`` is load-bearing: without it the browser
+  // scrolls the focused button into view, which fires our scroll
+  // handler, which hides the menu. The menu is already inside the
+  // viewport (clamped below) so a scroll-into-view is always a no-op
+  // visually; suppressing it just keeps the open/scroll cycle from
+  // racing.
   useEffect(() => {
     if (!state || !menuRef.current) return;
     const items = menuRef.current.querySelectorAll<HTMLButtonElement>(
       '[role="menuitem"]',
     );
     const target = items[focusedIdx] ?? items[0];
-    target?.focus();
+    target?.focus({ preventScroll: true });
   }, [state, focusedIdx]);
 
   const onClick = useCallback(
@@ -180,7 +260,13 @@ export function HighlightActionPopover({
       setPending(action.id);
       try {
         await action.onSelect(state.ctx);
-        setToast(`${action.label}: pinned to Timeline.`);
+        // The previous wording "pinned to Timeline" surprised users —
+        // the visible side effect of "Add to notes" is text appearing
+        // in the team notepad, not in the right-rail Timeline widget.
+        // Action authors can override per-action via ``successToast``;
+        // the default names the panel that just changed.
+        const success = action.successToast ?? `${action.label} — pinned.`;
+        setToast(success);
         // Clear the selection so the popover hides cleanly.
         window.getSelection()?.removeAllRanges();
         setState(null);
