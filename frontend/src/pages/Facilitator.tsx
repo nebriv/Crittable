@@ -22,6 +22,7 @@ import { SetupChat } from "../components/SetupChat";
 import { Transcript } from "../components/Transcript";
 import { BottomActionBar } from "../components/brand/BottomActionBar";
 import { DieLoader } from "../components/brand/DieLoader";
+import { CollapsibleRailPanel } from "../components/brand/CollapsibleRailPanel";
 import { HudGauges } from "../components/brand/HudGauges";
 import { TurnStateRail } from "../components/brand/TurnStateRail";
 import { SetupWizard } from "../components/setup/SetupWizard";
@@ -1017,7 +1018,7 @@ export function Facilitator() {
           return Array.from(seen).sort();
         })()}
       />
-      <div className="mx-auto grid w-full max-w-7xl flex-1 grid-cols-1 gap-3 p-3 lg:min-h-0 lg:grid-cols-[260px_1fr_280px] lg:overflow-hidden">
+      <div className="grid w-full flex-1 grid-cols-1 gap-3 p-3 lg:min-h-0 lg:grid-cols-[260px_minmax(0,1fr)_320px] lg:overflow-hidden xl:grid-cols-[280px_minmax(0,1fr)_400px] 2xl:grid-cols-[300px_minmax(0,1fr)_minmax(440px,28%)]">
         <aside className="flex flex-col gap-3 lg:min-h-0 lg:overflow-y-auto lg:pr-1">
           <RolesPanel
             sessionId={state.sessionId}
@@ -1318,9 +1319,15 @@ export function Facilitator() {
         </section>
 
         <aside className="flex flex-col gap-3 lg:min-h-0 lg:overflow-y-auto lg:pr-1">
-          <div className="rounded-r-3 border border-ink-600 bg-ink-850">
+          <CollapsibleRailPanel
+            title="HUD"
+            subtitle="placeholder"
+            subtitleTone="warn"
+            persistKey="crittable.rail.hud.collapsed"
+            defaultCollapsed
+          >
             <HudGauges />
-          </div>
+          </CollapsibleRailPanel>
           <RightSidebar
             messages={snapshot.messages}
             roles={snapshot.roles}

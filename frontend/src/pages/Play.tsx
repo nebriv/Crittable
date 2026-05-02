@@ -8,6 +8,7 @@ import { RoleRoster } from "../components/RoleRoster";
 import { SharedNotepad } from "../components/SharedNotepad";
 import { Transcript } from "../components/Transcript";
 import { DieLoader } from "../components/brand/DieLoader";
+import { CollapsibleRailPanel } from "../components/brand/CollapsibleRailPanel";
 import { HudGauges } from "../components/brand/HudGauges";
 import { confirmLeaveSession } from "../lib/leaveGuard";
 import { isMidSessionJoiner } from "../lib/proxy";
@@ -923,7 +924,7 @@ export function Play({ sessionId, token }: Props) {
           tight, the current beat is finishing up.
         </div>
       ) : null}
-      <div className="mx-auto grid w-full max-w-7xl flex-1 grid-cols-1 gap-3 p-3 lg:min-h-0 lg:grid-cols-[220px_1fr_280px] lg:overflow-hidden">
+      <div className="grid w-full flex-1 grid-cols-1 gap-3 p-3 lg:min-h-0 lg:grid-cols-[220px_minmax(0,1fr)_320px] lg:overflow-hidden xl:grid-cols-[240px_minmax(0,1fr)_400px] 2xl:grid-cols-[260px_minmax(0,1fr)_minmax(440px,28%)]">
         <aside className="flex flex-col gap-3 lg:min-h-0 lg:overflow-y-auto lg:pr-1">
           <RoleRoster
             roles={snapshot.roles}
@@ -1068,9 +1069,15 @@ export function Play({ sessionId, token }: Props) {
           </div>
         </section>
         <aside className="flex flex-col gap-3 lg:min-h-0 lg:overflow-y-auto lg:pr-1">
-          <div className="rounded-r-3 border border-ink-600 bg-ink-850">
+          <CollapsibleRailPanel
+            title="HUD"
+            subtitle="placeholder"
+            subtitleTone="warn"
+            persistKey="crittable.rail.hud.collapsed"
+            defaultCollapsed
+          >
             <HudGauges />
-          </div>
+          </CollapsibleRailPanel>
           <RightSidebar
             messages={snapshot.messages}
             roles={snapshot.roles}

@@ -1,16 +1,14 @@
-import { RailHeader } from "./RailHeader";
-
 /**
- * Brand-mock <PressureGauge> + the <RightRail> "HUD" panel that wraps
+ * Brand-mock <PressureGauge> + the right-rail "HUD" panel that wraps
  * three of them. Lifted from /tmp/brand-source/handoff/source/app-screens.jsx
  * lines 37-63 (PressureGauge) and 498-503 (the HUD panel).
  *
  * THESE ARE PLACEHOLDERS — the user explicitly asked to keep them
  * visible but not wire them to live data. The wrapper carries
  * ``data-placeholder="1"`` so any future "wire it up" engineer can
- * grep for it, and the panel's RailHeader subtitle reads PLACEHOLDER
- * (warn-toned) instead of the brand mock's "live" so it's obvious at
- * a glance that the bars aren't real.
+ * grep for it. The panel renders inside a ``CollapsibleRailPanel`` at
+ * the page level, which carries the ``placeholder`` warn-toned chip
+ * in the header so it's obvious at a glance that the bars aren't real.
  */
 
 interface GaugeProps {
@@ -92,31 +90,27 @@ interface PanelProps {
 }
 
 /**
- * The 3-gauge HUD panel — drop-in for the right rail. Static demo
- * values mirror the brand mock (0.62 / 0.34 / 0.18). Wrap in any
- * scroll container; the panel itself is fixed-height.
+ * The 3-gauge HUD panel body — drop-in for the right rail. Static
+ * demo values mirror the brand mock (0.62 / 0.34 / 0.18). The
+ * ``data-placeholder="1"`` attribute is grep-able for any future
+ * "wire it up" engineer. Header chrome lives in the parent
+ * ``CollapsibleRailPanel``; this component renders body only.
  */
 export function HudGauges({ className }: PanelProps) {
   return (
     <div
       className={className}
       data-placeholder="1"
-      style={{ display: "flex", flexDirection: "column" }}
+      style={{
+        padding: 14,
+        display: "flex",
+        flexDirection: "column",
+        gap: 14,
+      }}
     >
-      <RailHeader title="HUD" subtitle="placeholder" subtitleTone="warn" />
-      <div
-        style={{
-          padding: 14,
-          display: "flex",
-          flexDirection: "column",
-          gap: 14,
-          borderBottom: "1px solid var(--ink-600)",
-        }}
-      >
-        <PressureGauge value={0.62} label="MGMT PRESSURE" />
-        <PressureGauge value={0.34} label="CONTAINMENT" />
-        <PressureGauge value={0.18} label="BURN RATE" />
-      </div>
+      <PressureGauge value={0.62} label="MGMT PRESSURE" />
+      <PressureGauge value={0.34} label="CONTAINMENT" />
+      <PressureGauge value={0.18} label="BURN RATE" />
     </div>
   );
 }

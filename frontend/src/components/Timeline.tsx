@@ -202,15 +202,19 @@ export function Timeline({ messages, roles: _roles }: Props) {
   void flashing;
 
   return (
-    <section
+    <div
       aria-labelledby="timeline-heading"
-      className="flex min-h-0 flex-col gap-2 rounded-r-3 border border-ink-600 bg-ink-850 p-3 text-sm"
+      className="flex min-h-0 flex-col gap-2 p-3 text-sm"
     >
+      {/* Visually-hidden heading — the parent ``CollapsibleRailPanel``
+          renders the visible "TIMELINE" chrome, but screen readers
+          still benefit from the section being labelled inside the
+          accordion body. */}
       <h3
         id="timeline-heading"
-        className="mono text-[10px] font-bold uppercase tracking-[0.22em] text-ink-300"
+        className="sr-only"
       >
-        TIMELINE · {items.length} {items.length === 1 ? "EVENT" : "EVENTS"}
+        Timeline · {items.length} {items.length === 1 ? "event" : "events"}
       </h3>
       {items.length === 0 ? (
         <p className="mono text-[10px] uppercase tracking-[0.04em] text-ink-400">
@@ -240,6 +244,6 @@ export function Timeline({ messages, roles: _roles }: Props) {
           ))}
         </ol>
       )}
-    </section>
+    </div>
   );
 }

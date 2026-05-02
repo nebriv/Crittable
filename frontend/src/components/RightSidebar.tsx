@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 
 import { MessageView, RoleView } from "../api/client";
+import { CollapsibleRailPanel } from "./brand/CollapsibleRailPanel";
 import { Timeline } from "./Timeline";
 
 interface Props {
@@ -21,12 +22,22 @@ interface Props {
  * Desktop: an always-visible right column. Mobile: collapsed into a
  * ``<details>`` block so the chat stays the primary surface and the user
  * isn't burying scrolling beneath several hundred px of side panels.
+ *
+ * The Timeline is rendered inside a ``CollapsibleRailPanel`` so users
+ * can collapse it to give the notepad more vertical space (sessions
+ * with few or zero pinned beats produce a small Timeline panel that
+ * still ate ~60px of header chrome under the previous layout).
  */
 export function RightSidebar({ messages, roles, notepad }: Props) {
   return (
     <>
       <aside className="hidden flex-col gap-4 lg:flex lg:min-h-0 lg:overflow-y-auto lg:pr-1">
-        <Timeline messages={messages} roles={roles} />
+        <CollapsibleRailPanel
+          title="TIMELINE"
+          persistKey="crittable.rail.timeline.collapsed"
+        >
+          <Timeline messages={messages} roles={roles} />
+        </CollapsibleRailPanel>
         {notepad ?? null}
       </aside>
       <details
