@@ -30,6 +30,7 @@ import {
   buildImpersonateOptions,
   countUnjoinedImpersonateOptions,
 } from "../lib/proxy";
+import { useSessionTitle } from "../lib/useSessionTitle";
 import { useStickyScroll } from "../lib/useStickyScroll";
 import { useTabFocusReporter } from "../lib/useTabFocusReporter";
 import { HighlightActionPopover } from "../components/HighlightActionPopover";
@@ -285,6 +286,81 @@ export function Facilitator() {
   useEffect(() => {
     if (error) console.warn("[facilitator] error surfaced", error);
   }, [error]);
+
+  // Browser-tab title cue. The pending dot lights up only when the
+  // creator is the one holding the exercise up:
+  //   - SETUP: AI just asked a question (last note is from "ai") and
+  //     the creator hasn't answered yet (``!busy`` so we don't blink
+  //     the dot during the in-flight POST).
+  //   - READY: the plan is finalised and the creator must press Start.
+  //   - PLAY: the creator's role is on the active set and the AI
+  //     isn't already drafting.
+  // The state label adds context for the foregrounded case ("Setup",
+  // "Ready", "Briefing", "AI thinking", "Ended"). Hook is called
+  // unconditionally above the early returns so the hook count is
+  // stable across phase transitions; ``snapshot === null`` (intro
+  // page) collapses to just ``Crittable``.
+  const titleSignal = useMemo(() => {
+    if (!snapshot) return { pending: false, state: null as string | null };
+    const aiThinking =
+      snapshot.state !== "ENDED" &&
+      snapshot.current_turn?.status !== "errored" &&
+      (aiCalls.size > 0 ||
+        streamingActive ||
+        snapshot.state === "AI_PROCESSING" ||
+        snapshot.state === "BRIEFING" ||
+        snapshot.current_turn?.status === "processing");
+    if (snapshot.state === "ENDED") {
+      return { pending: false, state: "Ended" };
+    }
+    if (snapshot.state === "CREATED") {
+      // Pre-SETUP transient — covers the brief gap between session
+      // create and the first AI question landing.
+      return { pending: false, state: "Initializing" };
+    }
+    if (snapshot.state === "SETUP") {
+      const notes = snapshot.setup_notes ?? [];
+      const last = notes[notes.length - 1];
+      const awaitingReply =
+        notes.length > 0 && last?.speaker === "ai" && !busy && !aiThinking;
+      // Sub-segment with "·" rather than another em-dash so we don't
+      // render "Setup — AI thinking — Crittable" (two dashes).
+      return {
+        pending: awaitingReply,
+        state: aiThinking ? "Setup · AI thinking" : "Setup",
+      };
+    }
+    if (snapshot.state === "READY") {
+      // Player view labels this same SessionState as "Ready" — keep
+      // creator's longer "Ready to start" because the creator is the
+      // one who must press the button, but stay in the same word
+      // family so a player watching over the creator's shoulder sees
+      // a consistent vocabulary.
+      return { pending: !busy, state: "Ready to start" };
+    }
+    const activeIds = snapshot.current_turn?.active_role_ids ?? [];
+    const submittedIds = snapshot.current_turn?.submitted_role_ids ?? [];
+    const creatorRoleId = state?.creatorRoleId ?? null;
+    const iAmActive =
+      creatorRoleId !== null && activeIds.includes(creatorRoleId);
+    const iHaveSubmitted =
+      creatorRoleId !== null && submittedIds.includes(creatorRoleId);
+    const myTurn = iAmActive && !iHaveSubmitted && !aiThinking;
+    if (myTurn) return { pending: true, state: "Your turn" };
+    // BRIEFING is a sub-state of aiThinking (the AI is composing the
+    // briefing) — surface the more specific label before the generic
+    // "AI thinking" branch, otherwise the BRIEFING case is dead code.
+    if (snapshot.state === "BRIEFING") {
+      return { pending: false, state: "Briefing" };
+    }
+    if (aiThinking) return { pending: false, state: "AI thinking" };
+    if (iHaveSubmitted) return { pending: false, state: "Submitted" };
+    if (snapshot.state === "AWAITING_PLAYERS") {
+      return { pending: false, state: "Waiting on roles" };
+    }
+    return { pending: false, state: null };
+  }, [snapshot, state?.creatorRoleId, busy, aiCalls.size, streamingActive]);
+  useSessionTitle(titleSignal);
 
   // ----------------------------------------------------- create session
   async function handleCreate(e: FormEvent) {
