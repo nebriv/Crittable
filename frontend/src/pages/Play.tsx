@@ -11,6 +11,7 @@ import { DieLoader } from "../components/brand/DieLoader";
 import { HudGauges } from "../components/brand/HudGauges";
 import { confirmLeaveSession } from "../lib/leaveGuard";
 import { isMidSessionJoiner } from "../lib/proxy";
+import { useSessionTitle } from "../lib/useSessionTitle";
 import { useStickyScroll } from "../lib/useStickyScroll";
 import { useTabFocusReporter } from "../lib/useTabFocusReporter";
 import { ServerEvent, WsClient } from "../lib/ws";
@@ -624,6 +625,48 @@ export function Play({ sessionId, token }: Props) {
     }
     return undefined;
   }, [snapshot?.state, effectiveDisplayName, sessionId]);
+
+  // Browser-tab title cue. The pending dot lights up only when the
+  // local participant is the one holding the exercise up — backgrounded
+  // tabs surface that via the OS tab strip without sound or browser
+  // notifications. The state label adds context for the foregrounded
+  // case ("Briefing", "AI thinking", "Ended"). Derived unconditionally
+  // above the early returns so the hook count is stable across renders;
+  // ``snapshot === null`` collapses to just ``Crittable``.
+  const titleSignal = useMemo(() => {
+    if (!snapshot) return { pending: false, state: null as string | null };
+    const activeIds = snapshot.current_turn?.active_role_ids ?? [];
+    const submittedIds = snapshot.current_turn?.submitted_role_ids ?? [];
+    const iAmActive = selfRoleId !== null && activeIds.includes(selfRoleId);
+    const iHaveSubmitted =
+      selfRoleId !== null && submittedIds.includes(selfRoleId);
+    const aiThinking =
+      snapshot.state !== "ENDED" &&
+      snapshot.current_turn?.status !== "errored" &&
+      (aiCalls.size > 0 ||
+        streamingActive ||
+        snapshot.state === "AI_PROCESSING" ||
+        snapshot.state === "BRIEFING" ||
+        snapshot.current_turn?.status === "processing");
+    const pending = iAmActive && !iHaveSubmitted && !aiThinking;
+    let state: string | null = null;
+    // Order matters: check ENDED first (terminal), then "your turn"
+    // (highest-priority foreground signal), then AI thinking, then
+    // post-submit waiting, then phase-specific labels. Every backend
+    // SessionState (CREATED / SETUP / READY / BRIEFING /
+    // AWAITING_PLAYERS / AI_PROCESSING / ENDED) is covered so a fresh
+    // session doesn't fall through to a bare "Crittable".
+    if (snapshot.state === "ENDED") state = "Ended";
+    else if (pending) state = "Your turn";
+    else if (aiThinking) state = "AI thinking";
+    else if (iHaveSubmitted) state = "Submitted";
+    else if (snapshot.state === "BRIEFING") state = "Briefing";
+    else if (snapshot.state === "SETUP") state = "Setup";
+    else if (snapshot.state === "READY") state = "Ready";
+    else if (snapshot.state === "CREATED") state = "Initializing";
+    return { pending, state };
+  }, [snapshot, selfRoleId, aiCalls.size, streamingActive]);
+  useSessionTitle(titleSignal);
 
   // Issue #76: a participant who has submitted their display name but
   // arrived while the creator is still drafting the plan was previously
