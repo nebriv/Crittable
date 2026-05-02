@@ -195,14 +195,33 @@ Backwards compatibility: existing messages have `workstream_id=None` and `mentio
         "long-running concern (e.g. 'Containment', 'Disclosure', 'Comms') that "
         "groups related chat messages so participants can filter their view. "
         "Each workstream has a stable id (lowercase, snake_case), a 1–3 word "
-        "label, and an optional lead role. Subsequent ``address_role`` / "
-        "``pose_choice`` / ``share_data`` / ``inject_critical_event`` calls "
+        "label, and an optional lead role. Subsequent ``address_role`` calls "
         "may reference the workstream via a ``workstream_id`` field; messages "
         "without one render under the default '#main' bucket. "
-        "Call this once during setup. You may add more workstreams via a second "
-        "call mid-session if a wholly new concern emerges (e.g. a regulator "
-        "investigation track), but be sparing — too many workstreams clutter "
-        "the UI worse than none. Hard cap: 8 total per session."
+        "\n\n"
+        "WHEN TO CALL THIS: only when you expect 3+ participants to work on "
+        "2+ distinct concerns concurrently for a sustained portion of the "
+        "exercise. Examples that warrant workstreams: ransomware with "
+        "parallel containment / disclosure / comms tracks; multi-region "
+        "outage with separate site teams; supply-chain breach with "
+        "investigation + customer-comms + vendor-management running at "
+        "once. "
+        "\n\n"
+        "WHEN TO SKIP THIS: small or sequential scenarios where every actor "
+        "is working the same concern at any given moment. Examples that "
+        "don't need workstreams: phishing-triage with sequential "
+        "investigate-then-remediate; a 2-person tabletop; an insider-threat "
+        "investigation where HR + Legal + IT are collaborating on one "
+        "thread. Skipping is harmless — the @Me filter, the Critical filter, "
+        "and the hidden-mentions banner all still work without workstreams "
+        "(they read from message metadata, not workstream membership). The "
+        "user only loses the workstream pills, which would have been empty "
+        "or single-valued and therefore useless anyway. "
+        "\n\n"
+        "Call this once during setup, after ``propose_scenario_plan`` is "
+        "finalized and before ``finalize_setup`` closes the setup tier. "
+        "Hard cap: 8 total per session. When in doubt, skip — the UI is "
+        "well-behaved either way."
     ),
     "input_schema": {
         "type": "object",
@@ -369,6 +388,18 @@ The operator flagged: *"We need to make sure this isn't too spaghetti'd in imple
 ### 6.1 Workstream metadata is NOT load-bearing for play correctness
 
 A message with `workstream_id=None` renders, broadcasts, and counts toward turn submission identically to one with `workstream_id="containment"`. The play engine, the phase policy, the turn validator, and the strict-retry loop are completely workstream-blind. **Test for this:** all existing turn-engine tests in `backend/tests/test_turn_*.py` continue to pass without modification, even with workstreams declared in the session.
+
+Critically, **the chat-declutter UI itself also degrades gracefully** when workstreams are absent (whether by design — small scenarios — or by data — old sessions before this lands):
+
+| Filter pill | Depends on | Works without workstreams? |
+|---|---|---|
+| All | nothing | yes |
+| @Me | `Message.mentions[]` | yes — populated server-side from `address_role.role_id`, never reads `workstream_id` |
+| Critical | `MessageKind.CRITICAL_INJECT` | yes — same enum that drives the red bubble today |
+| Hidden-mentions banner | `mentions[]` ∩ `self_role_id` | yes — same data source as @Me |
+| Track multi-select pills | `Workstream` registry + `Message.workstream_id` | no, but the pills don't render at all when there are no declared workstreams (and the "AND track" divider conditionally hides) — there's nothing to lose |
+
+So a 2-role tabletop with no `declare_workstreams` call gets a clean **All / @Me / Critical** filter row, the hidden-mentions banner, and every message under `#main`. The user never sees an empty Track pill section. Skipping the AI categorization step doesn't strip away any filter affordance the user actually needs at that scale; it just hides chrome that would have been empty.
 
 ### 6.2 `phase_policy.py` stays untouched
 
