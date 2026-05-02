@@ -3,7 +3,10 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   buildSessionTitle,
   DEFAULT_TITLE,
+  FAVICON_DEFAULT_HREF,
+  FAVICON_PENDING_HREF,
   PENDING_MARKER,
+  setFaviconPending,
   useSessionTitle,
 } from "../lib/useSessionTitle";
 
@@ -145,5 +148,163 @@ describe("useSessionTitle (hook integration)", () => {
   it("collapses to just the brand when state is null and nothing pending", () => {
     render(<Harness pending={false} state={null} />);
     expect(document.title).toBe(DEFAULT_TITLE);
+  });
+});
+
+// ---------------------------------------------------------------------
+// Favicon swap — the SVG ``link[rel=icon]`` href should toggle between
+// the default mark and the amber-badge variant in lockstep with
+// ``pending``. Test the helper directly + integration through the hook.
+
+function installFaviconLink(initialHref: string): HTMLLinkElement {
+  // jsdom doesn't honour index.html — every test installs its own
+  // fake link so the helper has something to query.
+  const existing = document.querySelector<HTMLLinkElement>(
+    'link[rel="icon"][type="image/svg+xml"]',
+  );
+  if (existing) existing.remove();
+  const link = document.createElement("link");
+  link.rel = "icon";
+  link.type = "image/svg+xml";
+  link.href = initialHref;
+  document.head.appendChild(link);
+  return link;
+}
+
+function removeFaviconLink(): void {
+  const link = document.querySelector<HTMLLinkElement>(
+    'link[rel="icon"][type="image/svg+xml"]',
+  );
+  if (link) link.remove();
+}
+
+function currentFaviconHref(): string | null {
+  const link = document.querySelector<HTMLLinkElement>(
+    'link[rel="icon"][type="image/svg+xml"]',
+  );
+  if (!link) return null;
+  // ``link.href`` is the resolved absolute URL — pull the path so the
+  // assertion is host-agnostic.
+  return new URL(link.href).pathname;
+}
+
+describe("setFaviconPending", () => {
+  beforeEach(() => {
+    installFaviconLink(FAVICON_DEFAULT_HREF);
+  });
+  afterEach(() => {
+    removeFaviconLink();
+  });
+
+  it("swaps the SVG favicon href to the pending variant", () => {
+    setFaviconPending(true);
+    expect(currentFaviconHref()).toBe(FAVICON_PENDING_HREF);
+  });
+
+  it("restores the default SVG favicon when pending=false", () => {
+    setFaviconPending(true);
+    setFaviconPending(false);
+    expect(currentFaviconHref()).toBe(FAVICON_DEFAULT_HREF);
+  });
+
+  it("no-ops when the SVG link element is absent", () => {
+    // Test environment without the index.html: the helper must not
+    // throw — a missing favicon is a soft failure (PNGs / .ico still
+    // render fine, just without the badge).
+    removeFaviconLink();
+    expect(() => setFaviconPending(true)).not.toThrow();
+    expect(() => setFaviconPending(false)).not.toThrow();
+    expect(currentFaviconHref()).toBeNull();
+  });
+
+  it("skips the DOM write when the href is already the requested value", () => {
+    // Cheap repaint guard for the rapid-state-thrash case (chunk
+    // boundaries flipping pending on/off). We can't observe browser
+    // repaints in jsdom, so we observe that ``link.href`` isn't
+    // re-assigned by spying on the setter. The instance-level
+    // ``Object.defineProperty`` shadows the prototype ``href``
+    // descriptor on this one element only — no global state to
+    // restore (the link is removed in ``afterEach``).
+    const link = installFaviconLink(FAVICON_DEFAULT_HREF);
+    let writeCount = 0;
+    Object.defineProperty(link, "href", {
+      configurable: true,
+      get() {
+        return `http://localhost${FAVICON_DEFAULT_HREF}`;
+      },
+      set() {
+        writeCount += 1;
+      },
+    });
+    setFaviconPending(false);
+    expect(writeCount).toBe(0);
+  });
+});
+
+describe("useSessionTitle (favicon integration)", () => {
+  let savedTitle: string;
+  beforeEach(() => {
+    savedTitle = document.title;
+    installFaviconLink(FAVICON_DEFAULT_HREF);
+  });
+  afterEach(() => {
+    // Reset title and link so this suite doesn't bleed state into
+    // other test files that read ``document.title`` or the favicon.
+    document.title = savedTitle;
+    removeFaviconLink();
+  });
+
+  it("swaps the favicon when pending fires", () => {
+    const { rerender } = render(
+      <Harness pending={false} state="AI thinking" />,
+    );
+    expect(currentFaviconHref()).toBe(FAVICON_DEFAULT_HREF);
+    rerender(<Harness pending={true} state="Your turn" />);
+    expect(currentFaviconHref()).toBe(FAVICON_PENDING_HREF);
+  });
+
+  it("sets the pending favicon when mounted already pending", () => {
+    // Real Play.tsx mount with cached state hits this — the user's
+    // first paint after a refresh is on a turn already waiting on
+    // them. The ``false→true`` test above doesn't cover the
+    // initial-mount-with-pending=true path.
+    render(<Harness pending={true} state="Your turn" />);
+    expect(currentFaviconHref()).toBe(FAVICON_PENDING_HREF);
+  });
+
+  it("doesn't re-write the favicon when only the state label changes", () => {
+    // The hook's effect deps include ``opts.state``, so a state-only
+    // change re-runs the effect. The helper's
+    // ``link.href.endsWith(href)`` guard should keep this from
+    // touching the DOM. This regression test catches a future change
+    // that drops the guard at the helper layer.
+    const { rerender } = render(<Harness pending={true} state="Your turn" />);
+    const link = document.querySelector<HTMLLinkElement>(
+      'link[rel="icon"][type="image/svg+xml"]',
+    );
+    if (!link) throw new Error("test setup: favicon link missing");
+    let writeCount = 0;
+    Object.defineProperty(link, "href", {
+      configurable: true,
+      get() {
+        return `http://localhost${FAVICON_PENDING_HREF}`;
+      },
+      set() {
+        writeCount += 1;
+      },
+    });
+    // State changes but pending stays true — favicon should not be
+    // re-written even though the effect re-runs.
+    rerender(<Harness pending={true} state="Submitted" />);
+    expect(writeCount).toBe(0);
+  });
+
+  it("restores the default favicon on unmount", () => {
+    const { unmount } = render(
+      <Harness pending={true} state="Your turn" />,
+    );
+    expect(currentFaviconHref()).toBe(FAVICON_PENDING_HREF);
+    unmount();
+    expect(currentFaviconHref()).toBe(FAVICON_DEFAULT_HREF);
   });
 });
