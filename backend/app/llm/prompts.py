@@ -72,7 +72,8 @@ _TOOL_USE_PROTOCOL = (
     "options). Pick at least one; you can also chain two (e.g. "
     "`share_data` for the logs + `broadcast` for the call to "
     "action).\n"
-    "  (b) one of {`set_active_roles`, `end_session`} — the yield or terminate.\n"
+    "  (b) `set_active_roles` — the yield. (The exercise ends only when the "
+    "creator calls it; you do NOT have a tool to terminate the session.)\n"
     "`inject_critical_event`, `track_role_followup`, `resolve_role_followup`, "
     "`request_artifact`, `lookup_resource`, `use_extension_tool` are NEVER a "
     "valid turn on their own — they're bookkeeping / escalation. Emit them in "
@@ -112,8 +113,16 @@ _TOOL_USE_PROTOCOL = (
     "players see a banner with no direction; pair it with `broadcast` + "
     "`set_active_roles` as shown in the critical-inject rule below.\n\n"
     "**Yield rule.** Every play-phase turn ends with `set_active_roles` "
-    "(yield to one or more role_ids) OR `end_session`. Free-form prose "
-    "without one of those tool calls is invalid output and will be retried. "
+    "(yield to one or more role_ids). Free-form prose without that tool "
+    "call is invalid output and will be retried. The exercise ends only "
+    "when the creator triggers it from the UI — you do not have a tool "
+    "to terminate the session, and you should not narrate as if you do. "
+    "If a participant asks to wrap up / conclude / end the exercise, "
+    "acknowledge briefly via `broadcast` (e.g. \"Only the creator can "
+    "end the exercise from the UI — flag them if you want to wrap up\") "
+    "and yield normally to the active roles. Do NOT narrate a wrap-up, "
+    "summary, or after-action review; that's the creator's call and "
+    "the AAR pipeline runs separately. "
     "Exception: a runtime override note (e.g. INTERJECT MODE for direct-"
     "question answers) may forbid `set_active_roles` for that single "
     "response — when present, follow the override note over this rule.\n\n"
@@ -318,6 +327,13 @@ _AAR_SYSTEM = (
     "quote/paraphrase moments), balanced (call out both gaps and strengths), "
     "and grounded (every score's rationale points at a specific turn or "
     "quoted line).\n\n"
+    "**Identity is OURS, not yours.** Use ONLY the role IDs from the "
+    "## Roster block in this prompt — do not invent new IDs and do not "
+    "use display names or labels in `per_role_scores[].role_id`. Any entry "
+    "whose role_id doesn't match the roster will be discarded. One entry "
+    "per active human role; skip the AI Facilitator and any spectator-kind "
+    "roles. Array fields (`what_went_well`, `gaps`, `recommendations`) MUST "
+    "be JSON arrays of strings — never one big string blob.\n\n"
     "**Length + style targets** (the markdown export renders these in a "
     "fixed order: header → executive_summary → narrative → what_went_well "
     "→ gaps → recommendations → per_role_scores → overall_score → "
@@ -361,7 +377,7 @@ INTERJECT_NOTE = (
     "transcript. Either way: do NOT add the asker to the active set, "
     "and do NOT remove the existing active roles — they are still "
     "expected to respond on their own time.\n"
-    "  * DO NOT call ``end_session`` or ``inject_critical_event`` "
+    "  * DO NOT call ``inject_critical_event`` "
     "(interjects are not new beats).\n"
     "  * DO NOT emit a text content block — interjects skip rationale "
     "harvesting; just dispatch the answer tool(s) directly.\n"
@@ -567,9 +583,32 @@ def build_aar_system_blocks(session: Session) -> list[dict[str, Any]]:
     plan_json = json.dumps(
         session.plan.model_dump() if session.plan else {}, indent=2, sort_keys=True
     )
+    # Canonical roster block. The model must echo these exact role_ids
+    # back in `per_role_scores`; the extractor drops anything else. We
+    # include the AI Facilitator + any spectators here only as
+    # negative context ("don't score these") — same list the markdown
+    # exporter uses, so the model sees one source of truth.
+    roster_lines: list[str] = []
+    for role in session.roles:
+        kind = getattr(role.kind, "value", str(role.kind))
+        creator_tag = " (creator, score this)" if role.is_creator else ""
+        score_tag = (
+            " · score this" if kind == "player" else f" · do NOT score (kind={kind})"
+        )
+        dn = f' — "{role.display_name}"' if role.display_name else ""
+        roster_lines.append(
+            f"  - id={role.id} · label={role.label}{dn}{creator_tag}{score_tag}"
+        )
+    roster_text = (
+        "Use these exact `id` values in `per_role_scores[].role_id` — any "
+        "other value is dropped silently:\n" + "\n".join(roster_lines)
+        if roster_lines
+        else "(no roster — emit an empty per_role_scores list)"
+    )
     text = "\n\n".join(
         [
             "## AAR — system instructions\n" + _AAR_SYSTEM,
+            "## Roster (canonical IDs)\n" + roster_text,
             "## Frozen scenario plan\n```json\n" + plan_json + "\n```",
         ]
     )

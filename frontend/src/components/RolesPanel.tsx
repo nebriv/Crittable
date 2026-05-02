@@ -38,9 +38,9 @@ function computeStatus(
 }
 
 const STATUS_DOT_CLASS: Record<RoleStatus, string> = {
-  not_joined: "bg-slate-500",
-  joined_active: "bg-sky-400",
-  joined_idle: "bg-amber-400",
+  not_joined: "bg-ink-500",
+  joined_active: "bg-signal",
+  joined_idle: "bg-warn",
 };
 
 const STATUS_LABEL: Record<RoleStatus, string> = {
@@ -245,10 +245,12 @@ export function RolesPanel({
   }
 
   return (
-    <div className="flex min-w-0 flex-col gap-3 rounded border border-slate-700 bg-slate-900 p-3 text-sm">
+    <div className="flex min-w-0 flex-col gap-3 rounded-r-3 border border-ink-600 bg-ink-850 p-3 text-sm">
       <div className="flex items-center justify-between gap-2">
-        <h3 className="text-xs uppercase tracking-widest text-slate-300">Roles</h3>
-        <span className="text-xs text-slate-400">
+        <h3 className="mono text-[10px] font-bold uppercase tracking-[0.22em] text-ink-300">
+          ROLES
+        </h3>
+        <span className="mono text-[10px] uppercase tracking-[0.04em] text-ink-400 tabular-nums">
           {(() => {
             const joined = roles.filter((r) => connectedRoleIds.has(r.id)).length;
             const active = roles.filter((r) => focusedRoleIds.has(r.id)).length;
@@ -259,25 +261,25 @@ export function RolesPanel({
       {/* Legend is in the accessibility tree (so a screen-reader user
           gets the colour↔meaning mapping the sighted user just saw);
           only the inert colour swatches are ``aria-hidden``. */}
-      <p className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-slate-400">
+      <p className="mono flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px] uppercase tracking-[0.06em] text-ink-400">
         <span className="inline-flex items-center gap-1">
           <span
             aria-hidden="true"
-            className="inline-block h-2 w-2 rounded-full bg-sky-400"
+            className="inline-block h-2 w-2 rounded-full bg-signal"
           />
           active
         </span>
         <span className="inline-flex items-center gap-1">
           <span
             aria-hidden="true"
-            className="inline-block h-2 w-2 rounded-full bg-amber-400"
+            className="inline-block h-2 w-2 rounded-full bg-warn"
           />
           tab not active
         </span>
         <span className="inline-flex items-center gap-1">
           <span
             aria-hidden="true"
-            className="inline-block h-2 w-2 rounded-full bg-slate-500"
+            className="inline-block h-2 w-2 rounded-full bg-ink-500"
           />
           not joined
         </span>
@@ -291,38 +293,28 @@ export function RolesPanel({
           return (
           <li
             key={r.id}
-            className={
-              "flex flex-col gap-2 rounded border bg-slate-950 p-2 " +
-              // ``opacity-70`` was previously used to de-emphasise
-              // not-joined cards but it reads as "disabled" — the
-              // grey status dot already conveys the state without
-              // dimming the actionable buttons. Use a slightly muted
-              // border instead.
-              (status === "not_joined"
-                ? "border-slate-800"
-                : "border-slate-700")
-            }
+            className="flex flex-col gap-2 rounded-r-1 border border-ink-600 bg-ink-800 p-2"
           >
             {/* Top row: name + display_name + creator star on the
-                left; status dot pinned to the top-right corner. The
-                pre-redesign layout collided the action buttons with
-                the role name when the panel was narrow — the buttons
-                wrapped over the label and the user couldn't read who
-                the row belonged to. Buttons now live on their own
-                row below (centered) so this row is always legible. */}
+                left; tri-state status dot pinned to the top-right
+                corner. The pre-redesign layout collided the action
+                buttons with the role name when the panel was narrow —
+                the buttons wrapped over the label and the user
+                couldn't read who the row belonged to. Buttons now
+                live on their own row below (centered) so this row is
+                always legible. */}
             <div className="flex items-start justify-between gap-2">
               <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-0.5">
-                <span className="break-words font-semibold">{r.label}</span>
+                <span className="mono break-words font-bold uppercase tracking-[0.06em] text-ink-100">
+                  {r.label}
+                </span>
                 {r.display_name ? (
-                  <span className="text-xs text-slate-300">{r.display_name}</span>
+                  <span className="break-words text-xs text-ink-200">
+                    {r.display_name}
+                  </span>
                 ) : null}
                 {r.is_creator ? (
-                  // ``text-yellow-300`` (lemon-gold) is distinct from
-                  // the ``bg-amber-400`` of the idle status dot —
-                  // pre-fix both were amber and the creator's row
-                  // collided three amber shades along the right edge
-                  // (star + dot + Kick button border).
-                  <span className="text-xs text-yellow-300" title="Creator">
+                  <span className="text-xs text-warn" title="Creator">
                     ★
                   </span>
                 ) : null}
@@ -331,7 +323,7 @@ export function RolesPanel({
                 aria-hidden="true"
                 title={dotTitle}
                 className={
-                  "mt-1 inline-block h-3 w-3 shrink-0 rounded-full ring-1 ring-slate-950 " +
+                  "mt-1 inline-block h-3 w-3 shrink-0 rounded-full ring-1 ring-ink-900 " +
                   dotClass
                 }
               />
@@ -349,10 +341,10 @@ export function RolesPanel({
                   disabled={busy}
                   aria-label="Copy join link"
                   className={
-                    "rounded border px-2 py-0.5 text-xs focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-400 disabled:opacity-50 " +
+                    "mono rounded-r-1 border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.10em] focus-visible:outline focus-visible:outline-2 focus-visible:outline-signal disabled:opacity-50 " +
                     (copiedRoleIds.has(r.id)
-                      ? "border-emerald-500 bg-emerald-900/40 text-emerald-100"
-                      : "border-slate-700 text-slate-200 hover:bg-slate-800")
+                      ? "border-signal bg-signal-tint text-signal"
+                      : "border-ink-500 text-ink-200 hover:border-signal hover:text-signal")
                   }
                   title="Re-mint and copy the join link without invalidating any existing tabs."
                 >
@@ -362,26 +354,26 @@ export function RolesPanel({
                       flips for 2s. The audible confirmation comes
                       from the panel-level live region below. */}
                   <span aria-hidden="true">
-                    {copiedRoleIds.has(r.id) ? "Copied!" : "Copy link"}
+                    {copiedRoleIds.has(r.id) ? "COPIED!" : "COPY LINK"}
                   </span>
                 </button>
                 <button
                   type="button"
                   onClick={() => kick(r.id, r.label)}
                   disabled={busy}
-                  className="rounded border border-amber-600 px-2 py-0.5 text-xs text-amber-300 hover:bg-amber-900/30 focus-visible:outline focus-visible:outline-2 focus-visible:outline-amber-300 disabled:opacity-50"
+                  className="mono rounded-r-1 border border-warn px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.10em] text-warn hover:bg-warn-bg focus-visible:outline focus-visible:outline-2 focus-visible:outline-warn disabled:opacity-50"
                   title="Disconnect anyone using the current link and issue a new link."
                 >
-                  Kick &amp; reissue
+                  KICK
                 </button>
                 <button
                   type="button"
                   onClick={() => remove(r.id, r.label)}
                   disabled={busy}
-                  className="rounded border border-red-600 px-2 py-0.5 text-xs text-red-300 hover:bg-red-900/30 focus-visible:outline focus-visible:outline-2 focus-visible:outline-red-300 disabled:opacity-50"
+                  className="mono rounded-r-1 border border-crit px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.10em] text-crit hover:bg-crit-bg focus-visible:outline focus-visible:outline-2 focus-visible:outline-crit disabled:opacity-50"
                   title="Remove this role from the session."
                 >
-                  Remove
+                  REMOVE
                 </button>
               </div>
             ) : null}
@@ -390,30 +382,30 @@ export function RolesPanel({
         })}
       </ul>
 
-      <form onSubmit={add} className="flex flex-col gap-2 border-t border-slate-700 pt-3">
-        <label className="text-xs uppercase tracking-widest text-slate-300">Add role</label>
+      <form onSubmit={add} className="flex flex-col gap-2 border-t border-dashed border-ink-600 pt-3">
+        <label className="mono text-[10px] font-bold uppercase tracking-[0.20em] text-signal">+ ADD ROLE</label>
         <input
           value={newRole}
           onChange={(e) => setNewRole(e.target.value)}
           placeholder="IR Lead"
-          className="w-full rounded border border-slate-700 bg-slate-950 p-1 text-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-400"
+          className="w-full rounded-r-1 border border-ink-600 bg-ink-900 p-2 text-sm text-ink-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-signal-deep focus:border-signal-deep"
         />
         <button
           type="submit"
           disabled={busy || !newRole.trim()}
-          className="rounded bg-sky-600 px-2 py-1 text-xs font-semibold text-white hover:bg-sky-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-300 disabled:opacity-50"
+          className="mono rounded-r-1 bg-signal px-3 py-1.5 text-[10px] font-bold uppercase tracking-[0.16em] text-ink-900 hover:bg-signal-bright focus-visible:outline focus-visible:outline-2 focus-visible:outline-signal-bright disabled:cursor-not-allowed disabled:opacity-50"
         >
-          Add role
+          ADD ROLE →
         </button>
       </form>
 
       {hint ? (
-        <p className="text-xs text-emerald-300" data-testid="roles-panel-hint">
+        <p className="mono text-[10px] uppercase tracking-[0.06em] text-signal" data-testid="roles-panel-hint">
           {hint}
         </p>
       ) : null}
       {errorHint ? (
-        <p className="text-xs text-red-300" data-testid="roles-panel-error">
+        <p className="mono text-[10px] uppercase tracking-[0.06em] text-crit" data-testid="roles-panel-error">
           {errorHint}
         </p>
       ) : null}

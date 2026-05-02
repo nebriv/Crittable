@@ -1,0 +1,184 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Brand Package — Print</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" />
+  <link rel="stylesheet" href="../brand/tokens.css" />
+  <style>
+    * { box-sizing: border-box; }
+    html, body { margin: 0; padding: 0; background: #f0eee9; font-family: 'Inter', system-ui, sans-serif; -webkit-print-color-adjust: exact; print-color-adjust: exact; color-adjust: exact; }
+    body { color: #0A0D13; }
+
+    /* Each page is a landscape 16:9 sheet at screen-time so users can preview */
+    .page {
+      width: 297mm;
+      height: 209mm; /* slightly less than A4 landscape to avoid overflow */
+      margin: 8mm auto;
+      background: #ffffff;
+      box-shadow: 0 1px 4px rgba(0,0,0,0.08);
+      page-break-after: always;
+      break-after: page;
+      page-break-inside: avoid;
+      break-inside: avoid;
+      overflow: hidden;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      position: relative;
+    }
+    .page:last-child { page-break-after: auto; break-after: auto; }
+
+    .page-label {
+      position: absolute;
+      top: 6mm;
+      left: 8mm;
+      font: 500 9px/1 'JetBrains Mono', monospace;
+      letter-spacing: 0.08em;
+      color: #6B7382;
+      text-transform: uppercase;
+      z-index: 2;
+    }
+
+    /* The artboard itself is rendered at its intrinsic px size, then scaled to fit. */
+    .scaler {
+      transform-origin: center center;
+      flex: none;
+    }
+
+    /* Print rules: landscape A4, no margins from browser, our page sheet defines the area */
+    @page { size: A4 landscape; margin: 0; }
+
+    @media print {
+      html, body { background: #ffffff; }
+      .page {
+        margin: 0;
+        box-shadow: none;
+        width: 297mm;
+        height: 210mm;
+      }
+    }
+
+    /* Spinner before render */
+    #boot {
+      position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
+      font: 500 13px/1.4 'JetBrains Mono', monospace; color: #6B7382; background: #f0eee9; z-index: 9999;
+    }
+    @media print { #boot { display: none; } }
+  </style>
+</head>
+<body>
+  <div id="boot">Preparing print layout…</div>
+  <template id="__bundler_thumbnail">
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="100%" height="100%">
+      <rect width="100" height="100" fill="#0A0D13"/>
+    </svg>
+  </template>
+
+  <div id="root"></div>
+
+  <script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+
+  <!-- Stub DesignCanvas / DCSection / DCArtboard so artboards.jsx etc still compile,
+       but render nothing here (we re-list manually for print) -->
+  <script type="text/babel" data-presets="react">
+    window.DesignCanvas = ({ children }) => <>{children}</>;
+    window.DCSection = ({ children }) => <>{children}</>;
+    window.DCArtboard = ({ children }) => <>{children}</>;
+  </script>
+
+  <script type="text/babel" src="../brand/mark.jsx"></script>
+  <script type="text/babel" src="../brand/artboards.jsx"></script>
+  <script type="text/babel" src="../brand/app-screens.jsx"></script>
+
+  <script type="text/babel" data-presets="react">
+    const { createRoot } = ReactDOM;
+
+    function Frame({ children, w = 1280, h = 720 }) {
+      return (
+        <div style={{
+          width: w, height: h,
+          background: 'var(--ink-900)',
+          color: 'var(--ink-100)',
+          fontFamily: "'Inter', system-ui, sans-serif",
+          overflow: 'hidden',
+        }}>{children}</div>
+      );
+    }
+
+    // Page sheet sized to landscape A4 with a small inner margin reserved for the label.
+    // Available inner area is roughly 281mm x 193mm at 96dpi → 1062 x 730 px.
+    const PAGE_INNER_W = 1062;
+    const PAGE_INNER_H = 720;
+
+    function Page({ label, w, h, children }) {
+      const scale = Math.min(PAGE_INNER_W / w, PAGE_INNER_H / h);
+      return (
+        <div className="page">
+          <div className="page-label">{label}</div>
+          <div className="scaler" style={{
+            width: w, height: h,
+            transform: `scale(${scale})`,
+          }}>
+            {children}
+          </div>
+        </div>
+      );
+    }
+
+    const ARTBOARDS = [
+      { label: '01 · Cover',                          w: 1280, h: 720, R: () => <Frame><BrandCover /></Frame> },
+      { label: '02d · Playbook · 6 plays',            w: 1280, h: 780, R: () => <Frame h={780}><PlaybookLibrary /></Frame> },
+      { label: '02b · The name is a placeholder',     w: 1100, h: 720, R: () => <Frame w={1100}><NamingNote /></Frame> },
+      { label: '03 · Mark Construction',              w: 1100, h: 680, R: () => <Frame w={1100} h={680}><MarkConstruction /></Frame> },
+      { label: '04 · Mark Variants',                  w: 1100, h: 680, R: () => <Frame w={1100} h={680}><MarkVariants /></Frame> },
+      { label: '05 · Lockups',                        w: 1100, h: 720, R: () => <Frame w={1100} h={720}><Lockups /></Frame> },
+      { label: '06 · Favicon · App Icon',             w: 1100, h: 720, R: () => <Frame w={1100} h={720}><FaviconGrid /></Frame> },
+      { label: '07 · Color',                          w: 1100, h: 720, R: () => <Frame w={1100} h={720}><ColorSystem /></Frame> },
+      { label: '08 · Type',                           w: 1100, h: 720, R: () => <Frame w={1100} h={720}><TypeSystem /></Frame> },
+      { label: '09 · Voice',                          w: 1100, h: 720, R: () => <Frame w={1100} h={720}><Voice /></Frame> },
+      { label: '10 · Stickers · Social',              w: 1280, h: 720, R: () => <Frame><Stickers /></Frame> },
+      { label: '11 · Tactical HUD · in-session',      w: 1440, h: 900, R: () => <Frame w={1440} h={900}><AppTacticalHUD /></Frame> },
+      { label: '12 · Creator · session setup',        w: 1280, h: 820, R: () => <Frame w={1280} h={820}><AppCreatorSetup /></Frame> },
+      { label: '13 · Creator · environment',          w: 1280, h: 820, R: () => <Frame w={1280} h={820}><AppEnvironment /></Frame> },
+      { label: '14 · Creator · invite / lobby',       w: 1280, h: 820, R: () => <Frame w={1280} h={820}><AppLobby /></Frame> },
+      { label: '15 · Player · join screen',           w: 1280, h: 820, R: () => <Frame w={1280} h={820}><AppPlayerJoin /></Frame> },
+      { label: '16 · Player · briefing / ready room', w: 1280, h: 820, R: () => <Frame w={1280} h={820}><AppBriefing /></Frame> },
+      { label: '17 · After-action report',            w: 1280, h: 820, R: () => <Frame w={1280} h={820}><AppAAR /></Frame> },
+    ];
+
+    function App() {
+      return (
+        <div>
+          {ARTBOARDS.map((a, i) => (
+            <Page key={i} label={a.label} w={a.w} h={a.h}>
+              <a.R />
+            </Page>
+          ))}
+        </div>
+      );
+    }
+
+    createRoot(document.getElementById('root')).render(<App />);
+
+    // Hide boot once mounted, then wait for fonts + a beat before printing.
+    requestAnimationFrame(() => {
+      const boot = document.getElementById('boot');
+      if (boot) boot.style.display = 'none';
+    });
+
+    (async () => {
+      try { if (document.fonts && document.fonts.ready) await document.fonts.ready; } catch (e) {}
+      // Give React a tick to commit, then a safety delay
+      await new Promise(r => setTimeout(r, 600));
+      const noPrint = /[?&]noprint/.test(location.search);
+      if (window.__autoPrint !== false && !noPrint) window.print();
+    })();
+  </script>
+</body>
+</html>

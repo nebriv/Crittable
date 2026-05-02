@@ -264,31 +264,30 @@ export function Composer({
   const hasImpersonate = (impersonateOptions?.length ?? 0) > 0;
 
   return (
-    <form onSubmit={handle} className="flex flex-col gap-2">
+    <form
+      onSubmit={handle}
+      className="flex flex-col gap-2 rounded-r-3 border-t border-ink-600 bg-ink-850 p-3"
+    >
       <div className="flex items-center justify-between gap-2">
         <label
-          className="text-xs uppercase tracking-widest text-slate-400"
+          className="mono text-[10px] font-bold uppercase tracking-[0.20em] text-signal"
           htmlFor="composer"
         >
-          {label ?? "Your message"}
+          {label ? `RESPONDING AS · ${label.toUpperCase()}` : "RESPONDING AS · YOU"}
         </label>
         {hasImpersonate ? (
-          <label className="flex items-center gap-1 text-xs text-slate-300">
+          <label className="mono flex items-center gap-1 text-[10px] uppercase tracking-[0.10em] text-ink-300">
             Respond as
             <select
               value={asRoleId}
               onChange={(e) => setAsRoleId(e.target.value)}
               disabled={!enabled}
-              className="rounded border border-slate-700 bg-slate-900 px-1 py-0.5 text-xs text-slate-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-400 disabled:opacity-50"
+              className="mono rounded-r-1 border border-ink-500 bg-ink-900 px-1 py-0.5 text-[11px] text-ink-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-signal disabled:opacity-50"
               title="Creator-only solo-test helper. Submit on behalf of another active role."
             >
               <option value="">{selfLabel ?? "self"} (you)</option>
               {(impersonateOptions ?? []).map((o) => (
                 <option key={o.id} value={o.id}>
-                  {/* Off-turn proxy lands as an interjection (sidebar
-                      comment); call that out plainly so a creator
-                      doesn't think they're submitting a turn answer
-                      under the role's name. Issue #80. */}
                   {o.label}
                   {o.offTurn ? " — sidebar (off-turn)" : " (proxy)"}
                 </option>
@@ -298,30 +297,19 @@ export function Composer({
         ) : null}
       </div>
       {asRoleId ? (() => {
-        // Loud impersonation banner so a creator who picked "as: SOC" but
-        // then types fast can't miss that they're about to post under
-        // someone else's name. The submit button colour shifts to amber
-        // for the same reason. The inline "back to me" button is the
-        // user-agent's MEDIUM ask: switching out of proxy mode shouldn't
-        // require reopening the dropdown.
-        //
-        // Issue #80: when the selected role is off-turn the wording
-        // shifts from "(proxy)" to "(sidebar — not a turn answer)" so
-        // the creator knows the submission won't count as the role's
-        // turn answer.
         const selected = (impersonateOptions ?? []).find(
           (o) => o.id === asRoleId,
         );
         const offTurn = Boolean(selected?.offTurn);
         return (
           <div
-            className="flex flex-wrap items-center justify-between gap-2 rounded border border-amber-600/60 bg-amber-950/40 px-2 py-1 text-xs text-amber-100"
+            className="mono flex flex-wrap items-center justify-between gap-2 rounded-r-1 border border-warn bg-warn-bg px-2 py-1 text-[11px] uppercase tracking-[0.04em] text-warn"
             role="status"
             aria-live="polite"
           >
             <span>
               Submitting as{" "}
-              <span className="font-semibold">
+              <span className="font-bold">
                 {selected?.label ?? asRoleId}
               </span>{" "}
               {offTurn ? "(sidebar — not a turn answer)" : "(proxy)"}
@@ -329,7 +317,7 @@ export function Composer({
             <button
               type="button"
               onClick={() => setAsRoleId("")}
-              className="rounded border border-amber-500/60 px-2 py-0.5 text-[11px] font-semibold text-amber-100 hover:bg-amber-900/40"
+              className="mono rounded-r-1 border border-warn px-2 py-0.5 text-[10px] font-bold uppercase text-warn hover:bg-warn/20"
             >
               Back to {selfLabel ?? "me"}
             </button>
@@ -344,33 +332,35 @@ export function Composer({
         placeholder={placeholder}
         disabled={!enabled}
         rows={3}
-        className={`w-full rounded border ${
-          asRoleId ? "border-amber-600/60" : "border-slate-700"
-        } bg-slate-900 p-2 text-sm text-slate-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-400 disabled:opacity-50`}
+        className={`w-full rounded-r-1 border bg-ink-900 p-3 text-sm text-ink-100 sans focus-visible:outline focus-visible:outline-2 focus-visible:outline-signal-deep disabled:opacity-50 ${
+          asRoleId ? "border-warn" : "border-signal-deep"
+        }`}
       />
       <div className="flex items-center justify-between gap-2">
-        <span className="text-[11px] text-slate-300">
-          <kbd className="rounded border border-slate-600 bg-slate-800 px-1 font-mono text-[10px]">Enter</kbd>{" "}
+        <span className="mono text-[10px] uppercase tracking-[0.04em] text-ink-400">
+          <kbd className="mono rounded-r-1 border border-ink-500 bg-ink-800 px-1 text-[10px] text-ink-100">Enter</kbd>{" "}
           to send,{" "}
-          <kbd className="rounded border border-slate-600 bg-slate-800 px-1 font-mono text-[10px]">Shift</kbd>+
-          <kbd className="rounded border border-slate-600 bg-slate-800 px-1 font-mono text-[10px]">Enter</kbd>{" "}
+          <kbd className="mono rounded-r-1 border border-ink-500 bg-ink-800 px-1 text-[10px] text-ink-100">Shift</kbd>+
+          <kbd className="mono rounded-r-1 border border-ink-500 bg-ink-800 px-1 text-[10px] text-ink-100">Enter</kbd>{" "}
           for a new line
         </span>
         <button
           type="submit"
           disabled={!enabled || !text.trim()}
-          className={`rounded px-3 py-1 text-sm font-semibold text-white focus-visible:outline focus-visible:outline-2 disabled:opacity-50 ${
+          className={`mono rounded-r-1 px-4 py-1.5 text-[11px] font-bold uppercase tracking-[0.18em] focus-visible:outline focus-visible:outline-2 disabled:cursor-not-allowed disabled:opacity-50 ${
             asRoleId
-              ? "bg-amber-600 hover:bg-amber-500 focus-visible:outline-amber-300"
-              : "bg-sky-600 hover:bg-sky-500 focus-visible:outline-sky-300"
+              ? "bg-warn text-ink-900 hover:bg-warn/80 focus-visible:outline-warn"
+              : "bg-signal text-ink-900 hover:bg-signal-bright focus-visible:outline-signal-bright"
           }`}
         >
           {(() => {
-            if (!asRoleId) return "Submit";
+            if (!asRoleId) return "SUBMIT →";
             const selected = (impersonateOptions ?? []).find(
               (o) => o.id === asRoleId,
             );
-            return selected?.offTurn ? "Submit (sidebar)" : "Submit (proxy)";
+            return selected?.offTurn
+              ? "SUBMIT (SIDEBAR) →"
+              : "SUBMIT (PROXY) →";
           })()}
         </button>
       </div>

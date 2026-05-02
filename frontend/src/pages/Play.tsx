@@ -5,6 +5,9 @@ import { CriticalEventBanner } from "../components/CriticalEventBanner";
 import { RightSidebar } from "../components/RightSidebar";
 import { RoleRoster } from "../components/RoleRoster";
 import { Transcript } from "../components/Transcript";
+import { DieLoader } from "../components/brand/DieLoader";
+import { HudGauges } from "../components/brand/HudGauges";
+import { confirmLeaveSession } from "../lib/leaveGuard";
 import { isMidSessionJoiner } from "../lib/proxy";
 import { useStickyScroll } from "../lib/useStickyScroll";
 import { useTabFocusReporter } from "../lib/useTabFocusReporter";
@@ -663,8 +666,8 @@ export function Play({ sessionId, token }: Props) {
 
   if (!snapshot) {
     return (
-      <main className="flex min-h-screen items-center justify-center text-slate-400">
-        Connecting…
+      <main className="dotgrid flex min-h-screen items-center justify-center bg-ink-900 text-ink-300">
+        <DieLoader label="Connecting to session" size={96} />
       </main>
     );
   }
@@ -789,20 +792,63 @@ export function Play({ sessionId, token }: Props) {
             : "Waiting for the AI.";
 
   return (
-    <main className="flex min-h-screen flex-col lg:h-screen lg:min-h-0 lg:overflow-hidden">
+    <main className="flex min-h-screen flex-col bg-ink-900 lg:h-screen lg:min-h-0 lg:overflow-hidden">
+      {/* Brand chrome — same lockup pattern as the Facilitator view but
+          stripped to read-only context. The session ID is mono so the
+          player can quote it back to support. */}
+      <header
+        role="banner"
+        className="border-b border-ink-600 bg-ink-850 px-5"
+        style={{ minHeight: 48 }}
+      >
+        <div className="mx-auto flex w-full max-w-7xl flex-wrap items-center gap-3 py-2">
+          <a
+            href="/"
+            aria-label="Crittable home"
+            className="inline-flex items-center"
+            title="Crittable"
+            onClick={confirmLeaveSession}
+          >
+            <img
+              src="/logo/svg/lockup-crittable-dark-transparent.svg"
+              alt="Crittable"
+              height={28}
+              // Tailwind preflight resets ``img { height: auto }``;
+              // inline style wins. Same trick on every lockup/mark.
+              style={{ height: 28 }}
+              className="block"
+            />
+          </a>
+          <span className="h-6 w-px bg-ink-600" aria-hidden="true" />
+          <span className="mono text-[10px] font-bold uppercase tracking-[0.22em] text-ink-300">
+            PLAYER
+          </span>
+          {myRole ? (
+            <span className="mono inline-flex items-center gap-1 rounded-r-1 border border-signal-deep bg-signal-tint px-2 py-0.5 text-[11px] font-semibold uppercase tracking-[0.06em] text-signal">
+              <span className="opacity-70">ROLE</span>
+              <span className="tabular-nums">{myRole.label}</span>
+            </span>
+          ) : null}
+          <span className="mono text-[12px] text-ink-300">
+            SESSION{" "}
+            <span className="font-semibold text-ink-100 tabular-nums">
+              {sessionId.slice(0, 8)}
+            </span>
+          </span>
+          <span className="ml-auto mono text-[11px] uppercase tracking-[0.16em] text-ink-400">
+            {displayName ?? ""}
+          </span>
+        </div>
+      </header>
+
       {sessionStartedFlash ? (
-        // Issue #76 transition cue (UI/UX review HIGH): the screen
-        // the participant was on (JoinIntro waiting variant) just
-        // unmounted; without this banner SR users had no signal.
-        // ``aria-live="assertive"`` because this announcement
-        // supersedes any ongoing tip-rotation announcement.
         <div
           role="status"
           aria-live="assertive"
           data-testid="session-started-flash"
-          className="bg-emerald-700 px-4 py-2 text-center text-sm font-semibold text-white shadow-lg"
+          className="border-b border-signal-deep bg-signal-tint px-4 py-2 text-center mono text-[11px] font-bold uppercase tracking-[0.18em] text-signal"
         >
-          Session started — you're in.
+          ● SESSION STARTED — YOU'RE IN
         </div>
       ) : null}
       {criticalBanner ? (
@@ -816,19 +862,15 @@ export function Play({ sessionId, token }: Props) {
         <div
           role="status"
           aria-live="polite"
-          className="bg-emerald-800 px-4 py-3 text-center text-sm font-semibold text-emerald-50"
+          className="border-b border-signal-deep bg-signal-tint px-4 py-3 text-center text-sm font-semibold text-signal"
         >
           Exercise complete. Thanks for participating — your facilitator can download the AAR.
         </div>
       ) : snapshot.current_turn?.status === "errored" ? (
-        // The AI failed to yield via a tool after strict retry. Without
-        // this banner, players sit watching no progress and have no idea
-        // what's happening — the activity panel that surfaces the error
-        // is creator-only.
         <div
           role="status"
           aria-live="polite"
-          className="bg-amber-900/70 px-4 py-3 text-center text-sm font-semibold text-amber-100"
+          className="border-b border-warn bg-warn-bg px-4 py-3 text-center text-sm font-semibold text-warn"
         >
           The AI facilitator paused — your facilitator has been notified and
           can resume the exercise.
@@ -837,76 +879,68 @@ export function Play({ sessionId, token }: Props) {
         <div
           role="status"
           aria-live="assertive"
-          className="bg-emerald-700 px-4 py-2 text-center text-sm font-semibold text-white shadow-lg"
+          className="border-b border-signal bg-signal px-4 py-2 text-center mono text-[12px] font-bold uppercase tracking-[0.18em] text-ink-900 shadow-lg"
         >
-          Your turn — {myRole?.label} ({displayName})
+          ● YOUR TURN — {myRole?.label} ({displayName})
         </div>
       ) : iHaveSubmitted ? (
-        // Replace the "Your turn" banner with positive confirmation that
-        // the submission landed, plus *who* we're now waiting on. Without
-        // this the player sees their message in the chat but the
-        // composer + banner state both look identical to "still my turn",
-        // which the operator-as-tester just hit.
         <div
           role="status"
           aria-live="polite"
-          className="bg-slate-800 px-4 py-2 text-center text-xs text-slate-200 shadow"
+          className="border-b border-ink-600 bg-ink-800 px-4 py-2 text-center mono text-[11px] uppercase tracking-[0.10em] text-ink-200 shadow"
         >
-          Submitted as {myRole?.label} ({displayName}).{" "}
+          ✓ SUBMITTED AS {myRole?.label} ({displayName}) ·{" "}
           {otherPending.length > 0
             ? `Waiting on ${otherPending.join(", ")}.`
-            : "Waiting for the AI to respond."}
+            : "Waiting for the AI."}
         </div>
       ) : showMidSessionJoinerChip ? (
-        // Issue #80 bonus: cue for a participant whose role was added
-        // mid-session. See ``isMidSessionJoiner`` for the predicate
-        // and the useEffect above for the breadcrumb log. The leading
-        // sky stripe + ⤴ glyph distinguish this from the "Submitted
-        // as …" banner above (UI/UX review: both used the same slate
-        // styling and were indistinguishable).
         <div
           role="status"
           aria-live="polite"
           data-testid="mid-session-joiner-chip"
-          className="border-l-4 border-sky-600 bg-slate-800 px-4 py-2 text-xs text-slate-200 shadow"
+          className="border-l-4 border-info bg-ink-800 px-4 py-2 text-xs text-ink-200 shadow"
         >
-          <span aria-hidden="true" className="mr-1.5 text-sky-400">
+          <span aria-hidden="true" className="mr-1.5 text-info">
             ⤴
           </span>
           Just joined? You'll be brought into the next turn — sit
           tight, the current beat is finishing up.
         </div>
       ) : null}
-      <div className="mx-auto grid w-full max-w-7xl flex-1 grid-cols-1 gap-4 p-4 lg:min-h-0 lg:grid-cols-[220px_1fr_280px] lg:overflow-hidden">
-        <aside className="flex flex-col gap-4 lg:min-h-0 lg:overflow-y-auto lg:pr-1">
+      <div className="mx-auto grid w-full max-w-7xl flex-1 grid-cols-1 gap-3 p-3 lg:min-h-0 lg:grid-cols-[220px_1fr_280px] lg:overflow-hidden">
+        <aside className="flex flex-col gap-3 lg:min-h-0 lg:overflow-y-auto lg:pr-1">
           <RoleRoster
             roles={snapshot.roles}
             activeRoleIds={activeRoleIds}
             selfRoleId={selfRoleId}
             connectedRoleIds={presence}
           />
-          <div className="flex flex-col gap-2 rounded border border-slate-700 bg-slate-900 p-2 text-xs">
+          <div className="flex flex-col gap-2 rounded-r-3 border border-ink-600 bg-ink-850 p-3">
+            <span className="mono text-[10px] font-bold uppercase tracking-[0.22em] text-ink-300">
+              ESCAPE HATCHES
+            </span>
             <button
               onClick={handleForceAdvance}
               disabled={forceAdvanceCooldown}
               aria-disabled={forceAdvanceCooldown}
-              className="rounded border border-amber-500 px-2 py-1 font-semibold text-amber-200 hover:bg-amber-900/30 disabled:cursor-not-allowed disabled:opacity-50"
+              className="mono rounded-r-1 border border-warn px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-warn hover:bg-warn-bg focus-visible:outline focus-visible:outline-2 focus-visible:outline-warn disabled:cursor-not-allowed disabled:opacity-50"
             >
               {forceAdvanceCooldown
-                ? "Force-advance turn (cooling down)"
+                ? "Force-advance (cooling)"
                 : "Force-advance turn"}
             </button>
             {isSelfCreator ? (
               <button
                 onClick={handleEnd}
-                className="rounded border border-red-500 px-2 py-1 font-semibold text-red-300 hover:bg-red-900/30"
+                className="mono rounded-r-1 border border-crit px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-crit hover:bg-crit-bg focus-visible:outline focus-visible:outline-2 focus-visible:outline-crit"
               >
                 End session
               </button>
             ) : null}
           </div>
         </aside>
-        <section className="flex min-w-0 flex-col gap-3 lg:min-h-0 lg:overflow-hidden">
+        <section className="flex min-w-0 flex-col gap-2 lg:min-h-0 lg:overflow-hidden">
           {/*
             On desktop the Composer must stay pinned at the bottom of the
             section regardless of how long the transcript grows — issue #56
@@ -929,6 +963,7 @@ export function Play({ sessionId, token }: Props) {
               }
               typingRoleIds={Object.keys(typing).filter((rid) => rid !== selfRoleId)}
               highlightLastAi={isMyTurn}
+              selfRoleId={selfRoleId}
             />
           </div>
           {/* "New messages below" chip — appears when a message arrives
@@ -936,14 +971,15 @@ export function Play({ sessionId, token }: Props) {
               re-pins to the bottom. Mirrors the standard chat-app
               pattern (Slack / Discord) so an unpinned user knows
               there's content below without being yanked off whatever
-              they were reading. Solid sky/blue rather than amber:
-              the "Awaiting your response" banner directly below uses
-              amber, and an amber-on-slate chip blended into it. Sky
-              is the only saturated color not already in the palette
-              (amber=awaiting/critical, emerald=AI, red=critical,
-              slate=system, sky-700/30=player bubbles — but the chip
-              is solid sky-500 which reads as distinct from the
-              translucent player-bubble border). */}
+              they were reading. The chip uses ``bg-signal-bright``
+              (the brand accent's hover tier) so it reads as a
+              call-to-action distinct from the surrounding chat
+              tones — AI bubbles are signal-tinted left-bordered,
+              player bubbles are signal-tinted only when "you", and
+              the warn-toned "your turn" banner sits directly below
+              the composer. The bright signal tier is the only token
+              not already used in passive chrome at this density,
+              which keeps the chip legible during a busy turn. */}
           {hasUnreadBelow ? (
             // Live-region semantics live on the wrapper, not the
             // button. Per ARIA APG: live regions should be applied to
@@ -960,7 +996,7 @@ export function Play({ sessionId, token }: Props) {
               <button
                 type="button"
                 onClick={forceScrollToBottom}
-                className="pointer-events-auto -mt-12 mb-1 rounded-full border border-sky-300 bg-sky-500 px-4 py-1.5 text-xs font-semibold text-white animate-chip-pulse hover:bg-sky-400 motion-reduce:animate-none motion-reduce:shadow-lg motion-reduce:ring-2 motion-reduce:ring-sky-500/30"
+                className="mono pointer-events-auto -mt-12 mb-1 rounded-r-pill border border-signal bg-signal-bright px-4 py-1.5 text-[11px] font-bold uppercase tracking-[0.10em] text-ink-900 animate-chip-pulse hover:bg-signal motion-reduce:animate-none motion-reduce:shadow-lg motion-reduce:ring-2 motion-reduce:ring-signal/30"
               >
                 New messages below ↓
               </button>
@@ -984,7 +1020,7 @@ export function Play({ sessionId, token }: Props) {
                 // both. The chip is visual reinforcement; the polite
                 // region is a quieter follow-up.
                 aria-live="polite"
-                className="rounded border border-amber-500/70 bg-amber-500/10 px-3 py-1.5 text-center text-xs font-semibold leading-tight text-amber-200 break-words"
+                className="rounded border border-warn bg-warn-bg px-3 py-1.5 text-center text-xs font-semibold leading-tight text-warn break-words"
               >
                 ⚠ Awaiting your response — {myRole?.label ?? "you"}
               </div>
@@ -1001,31 +1037,36 @@ export function Play({ sessionId, token }: Props) {
               <p
                 role="status"
                 aria-live="polite"
-                className="rounded border border-slate-600/60 bg-slate-800/60 px-2 py-1 text-xs text-slate-200"
+                className="rounded border border-ink-500/60 bg-ink-800/60 px-2 py-1 text-xs text-ink-200"
               >
                 {notice}{" "}
                 <button
                   type="button"
                   onClick={() => setNotice(null)}
-                  className="ml-1 underline hover:text-slate-100"
+                  className="ml-1 underline hover:text-ink-100"
                 >
                   dismiss
                 </button>
               </p>
             ) : null}
-            {error ? <p className="text-sm text-red-400" role="alert">{error}</p> : null}
+            {error ? <p className="text-sm text-crit" role="alert">{error}</p> : null}
           </div>
         </section>
-        <RightSidebar
-          messages={snapshot.messages}
-          roles={snapshot.roles}
-          notesStorageKey={(() => {
-            if (!selfRoleId) return null;
-            const role = snapshot.roles.find((r) => r.id === selfRoleId);
-            const v = role?.token_version ?? 0;
-            return `atf-notes:${sessionId}:${selfRoleId}:v${v}`;
-          })()}
-        />
+        <aside className="flex flex-col gap-3 lg:min-h-0 lg:overflow-y-auto lg:pr-1">
+          <div className="rounded-r-3 border border-ink-600 bg-ink-850">
+            <HudGauges />
+          </div>
+          <RightSidebar
+            messages={snapshot.messages}
+            roles={snapshot.roles}
+            notesStorageKey={(() => {
+              if (!selfRoleId) return null;
+              const role = snapshot.roles.find((r) => r.id === selfRoleId);
+              const v = role?.token_version ?? 0;
+              return `atf-notes:${sessionId}:${selfRoleId}:v${v}`;
+            })()}
+          />
+        </aside>
       </div>
     </main>
   );
@@ -1235,68 +1276,89 @@ export function JoinIntro({
   // we surface the failure inline with a Retry button.
   if (snapshotError && !snapshotLoaded) {
     return (
-      <main className="flex min-h-screen items-center justify-center bg-slate-950 p-6 text-slate-100">
+      <main className="dotgrid flex min-h-screen items-center justify-center bg-ink-900 p-6 text-ink-100">
         <article
-          className="flex w-full max-w-md flex-col gap-4 rounded-lg border border-red-500/40 bg-slate-900 p-8 shadow-xl"
+          className="flex w-full max-w-md flex-col gap-4 rounded-r-3 border border-crit/60 bg-ink-850 p-8 shadow-xl"
           aria-labelledby="join-intro-error-heading"
         >
-          <h1 id="join-intro-error-heading" className="text-lg font-semibold text-red-300">
-            Couldn't load the session
+          <div className="flex items-center gap-3">
+            <img
+              src="/logo/svg/lockup-crittable-dark-transparent.svg"
+              alt="Crittable"
+              height={28}
+              // Tailwind preflight resets ``img { height: auto }``;
+              // inline style wins. Same trick on every lockup/mark.
+              style={{ height: 28 }}
+              className="block"
+            />
+          </div>
+          <h1
+            id="join-intro-error-heading"
+            className="mono text-[12px] font-bold uppercase tracking-[0.20em] text-crit"
+          >
+            ● COULDN'T LOAD THE SESSION
           </h1>
-          <p className="text-sm text-slate-300">
+          <p className="text-sm text-ink-200">
             We tried to fetch the session details and got an error. The
             most common causes are: the join link has expired, the
             session was ended by the facilitator, or your network blipped.
           </p>
           <p
             role="alert"
-            className="rounded border border-red-700/60 bg-red-950/40 p-2 text-xs text-red-200"
+            className="mono rounded-r-1 border border-crit bg-crit-bg p-2 text-xs text-crit"
           >
             {snapshotError}
           </p>
           <button
             type="button"
             onClick={onRetry}
-            className="self-end rounded bg-sky-600 px-4 py-2 text-sm font-semibold text-white hover:bg-sky-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-300"
+            className="mono self-end rounded-r-1 bg-signal px-4 py-2 text-[11px] font-bold uppercase tracking-[0.16em] text-ink-900 hover:bg-signal-bright focus-visible:outline focus-visible:outline-2 focus-visible:outline-signal-bright"
           >
-            Retry
+            RETRY
           </button>
         </article>
       </main>
     );
   }
 
-  // Snapshot-loading branch: render a small skeleton until the fetch
-  // resolves. Pre-fix the page painted with ``roleLabel === undefined``
-  // → "Join the tabletop exercise" generic heading, then the role label
-  // popped in 1-2s later, which let users click Begin against an
-  // undefined role context.
+  // Snapshot-loading branch: render the brand DieLoader so the user
+  // gets a strong "the system's working on it" cue (animated mark)
+  // rather than a flat text spinner.
   if (!snapshotLoaded) {
     return (
       <main
-        className="flex min-h-screen items-center justify-center bg-slate-950 p-6 text-slate-300"
+        className="dotgrid flex min-h-screen items-center justify-center bg-ink-900 p-6"
         role="status"
         aria-busy="true"
         aria-label="Loading session"
       >
-        Loading session…
+        <DieLoader label="Loading session" size={96} />
       </main>
     );
   }
 
   return (
-    <main className="flex min-h-screen items-start justify-center bg-slate-950 p-6 py-8 text-slate-100 sm:items-center">
+    <main className="dotgrid flex min-h-screen items-start justify-center bg-ink-900 p-6 py-8 text-ink-100 sm:items-center">
       <article
-        className="flex w-full max-w-2xl flex-col gap-6 rounded-lg border border-slate-700 bg-slate-900 p-8 shadow-xl"
+        className="flex w-full max-w-2xl flex-col gap-6 rounded-r-3 border border-ink-600 bg-ink-850 p-8 shadow-xl"
         aria-labelledby="join-intro-heading"
       >
         <header className="flex flex-col gap-2">
-          <p className="text-xs uppercase tracking-widest text-emerald-400">
-            Tabletop exercise — join{isSpectator ? " (spectator)" : ""}
+          <div className="flex items-center gap-3 mb-2">
+            <img
+              src="/logo/svg/lockup-crittable-dark-transparent.svg"
+              alt="Crittable"
+              height={32}
+              style={{ height: 32 }}
+              className="block"
+            />
+          </div>
+          <p className="mono text-[11px] font-bold uppercase tracking-[0.22em] text-signal">
+            JOIN SESSION{isSpectator ? " · SPECTATOR" : ""}
           </p>
           <h1
             id="join-intro-heading"
-            className="break-words text-2xl font-semibold"
+            className="break-words text-2xl font-semibold text-ink-050 tracking-[-0.02em]"
           >
             {roleLabel
               ? isSpectator
@@ -1305,9 +1367,9 @@ export function JoinIntro({
               : "Join the tabletop exercise"}
           </h1>
           {scenarioPreview ? (
-            <p className="mt-2 rounded border border-slate-700 bg-slate-950/40 p-3 text-sm leading-relaxed text-slate-300">
-              <span className="block text-[0.65rem] uppercase tracking-widest text-slate-400">
-                Scenario brief
+            <p className="mt-2 rounded-r-2 border-l-2 border-signal bg-ink-800 p-3 text-sm leading-relaxed text-ink-100">
+              <span className="block mono text-[10px] font-bold uppercase tracking-[0.20em] text-signal mb-1">
+                SCENARIO BRIEF
               </span>
               {scenarioPreview}
             </p>
@@ -1317,57 +1379,57 @@ export function JoinIntro({
         <section aria-labelledby="how-to-play-heading" className="flex flex-col gap-2">
           <h2
             id="how-to-play-heading"
-            className="text-sm font-semibold uppercase tracking-widest text-slate-300"
+            className="mono text-[11px] font-bold uppercase tracking-[0.22em] text-ink-300"
           >
-            {isSpectator ? "How to watch" : "How to play"}
+            {isSpectator ? "HOW TO WATCH" : "HOW TO PLAY"}
           </h2>
           {isSpectator ? (
-            <ul className="flex flex-col gap-2 text-sm leading-relaxed text-slate-200">
+            <ul className="flex flex-col gap-2 text-sm leading-relaxed text-ink-200">
               <li>
-                <span className="font-semibold">You're in read-only mode.</span>{" "}
+                <span className="font-semibold text-ink-100">You're in read-only mode.</span>{" "}
                 You'll see the full transcript, the AI's narration, and
                 player responses live, but your composer stays disabled.
                 The AI will not call on you to respond.
               </li>
               <li>
-                <span className="font-semibold">No active-role chip will appear.</span>{" "}
-                The amber "Awaiting your response" cue is for active
+                <span className="font-semibold text-ink-100">No active-role chip will appear.</span>{" "}
+                The "Awaiting your response" cue is for active
                 players only.
               </li>
               <li>
-                <span className="font-semibold">After-action report (AAR).</span>{" "}
+                <span className="font-semibold text-ink-100">After-action report (AAR).</span>{" "}
                 When the facilitator ends the session you'll be able to
                 download the markdown AAR from the same screen.
               </li>
             </ul>
           ) : (
-            <ul className="flex flex-col gap-2 text-sm leading-relaxed text-slate-200">
+            <ul className="flex flex-col gap-2 text-sm leading-relaxed text-ink-200">
               <li>
-                <span className="font-semibold">Type how you'd respond on the job.</span>{" "}
+                <span className="font-semibold text-ink-100">Type how you'd respond on the job.</span>{" "}
                 Plain English — no special syntax. The AI is your facilitator;
                 talk to it the way you'd talk to a colleague running the
                 exercise.
               </li>
               <li>
-                <span className="font-semibold">Ask for what you'd actually have.</span>{" "}
+                <span className="font-semibold text-ink-100">Ask for what you'd actually have.</span>{" "}
                 Logs, alerts, packet captures, threat intel, screenshots —
                 say "what does Defender show?" or "pull the auth logs"
                 and the AI will produce realistic synthetic data.
               </li>
               <li>
-                <span className="font-semibold">Push back, propose alternatives, or hand off.</span>{" "}
+                <span className="font-semibold text-ink-100">Push back, propose alternatives, or hand off.</span>{" "}
                 Disagree with a teammate? Say so. Want to bring in
                 another role ("loop in Legal")? Just say it. The AI
                 tracks decisions and handoffs.
               </li>
               <li>
-                <span className="font-semibold">When it's your turn,</span>{" "}
-                the input box at the bottom unlocks and an amber{" "}
-                <span className="rounded border border-amber-500/70 bg-amber-500/10 px-1.5 py-0.5 text-[0.7rem] font-semibold text-amber-200">
-                  ⚠ Awaiting your response
+                <span className="font-semibold text-ink-100">When it's your turn,</span>{" "}
+                the input box at the bottom unlocks and a{" "}
+                <span className="mono rounded-r-1 border border-warn bg-warn-bg px-1.5 py-0.5 text-[10px] font-bold uppercase text-warn">
+                  ⚠ AWAITING YOUR RESPONSE
                 </span>{" "}
                 chip appears. The most recent AI message is also
-                outlined in amber so you can spot what to react to.
+                outlined so you can spot what to react to.
               </li>
             </ul>
           )}
@@ -1391,17 +1453,18 @@ export function JoinIntro({
           <section
             aria-labelledby="waiting-heading"
             data-testid="join-intro-waiting"
-            className="flex flex-col gap-3 rounded border border-emerald-700/40 bg-emerald-950/20 p-4"
+            className="flex flex-col gap-4 rounded-r-3 border border-signal-deep bg-signal-tint p-5"
             role="status"
           >
-            <div className="flex items-center gap-3">
-              <span
-                aria-hidden="true"
-                className="inline-block h-4 w-4 shrink-0 animate-spin rounded-full border-2 border-emerald-400 border-t-transparent motion-reduce:animate-none"
-              />
+            <div className="flex items-center gap-4">
+              {/* Brand die animation as the loading icon. ``aria-hidden``
+                  because the heading carries the screen-reader text. */}
+              <div aria-hidden="true">
+                <DieLoader size={56} label={null} />
+              </div>
               <h2
                 id="waiting-heading"
-                className="text-sm font-semibold text-emerald-200"
+                className="text-sm font-semibold text-signal-bright leading-relaxed"
               >
                 {sessionState === "BRIEFING"
                   ? "The AI is preparing the scenario brief…"
@@ -1411,13 +1474,13 @@ export function JoinIntro({
               </h2>
             </div>
             {roleLabel ? (
-              <p className="text-sm text-slate-200">
+              <p className="text-sm text-ink-200">
                 You're seated as{" "}
-                <span className="font-semibold">{roleLabel}</span>
+                <span className="font-semibold text-ink-100">{roleLabel}</span>
                 {joinedDisplayName ? (
                   <>
                     {" "}
-                    <span className="text-slate-400">
+                    <span className="mono text-ink-400">
                       ({joinedDisplayName})
                     </span>
                   </>
@@ -1426,24 +1489,24 @@ export function JoinIntro({
               </p>
             ) : null}
             {joinedSeatCount > 0 ? (
-              <p className="text-xs text-slate-400">
+              <p className="mono text-[11px] uppercase tracking-[0.10em] text-ink-400">
                 {joinedSeatCount === 1
-                  ? "1 other seat is connected."
-                  : `${joinedSeatCount} other seats are connected.`}
+                  ? "● 1 OTHER SEAT CONNECTED"
+                  : `● ${joinedSeatCount} OTHER SEATS CONNECTED`}
               </p>
             ) : null}
             <div
-              className="rounded border border-slate-700 bg-slate-950/40 p-3"
+              className="rounded-r-2 border border-ink-600 bg-ink-900 p-3"
               data-testid="join-intro-tip"
             >
-              <p className="flex items-center justify-between text-[0.65rem] uppercase tracking-widest text-slate-400">
-                <span>While you wait</span>
-                <span aria-hidden="true">
+              <p className="flex items-center justify-between mono text-[10px] font-bold uppercase tracking-[0.20em] text-ink-400">
+                <span>WHILE YOU WAIT</span>
+                <span aria-hidden="true" className="tabular-nums">
                   {tipIndex + 1} / {WAITING_TIPS.length}
                 </span>
               </p>
               <p
-                className="mt-1 text-sm leading-relaxed text-slate-200"
+                className="mt-1 text-sm leading-relaxed text-ink-200"
                 aria-live="polite"
               >
                 {WAITING_TIPS[tipIndex]}
@@ -1451,62 +1514,45 @@ export function JoinIntro({
             </div>
           </section>
         ) : (
-          <form onSubmit={submit} className="flex flex-col gap-2">
+          <form onSubmit={submit} className="flex flex-col gap-3">
             <label
               htmlFor="display-name"
-              className="text-xs uppercase tracking-widest text-slate-300"
+              className="mono text-[10px] font-bold uppercase tracking-[0.20em] text-signal"
             >
-              Your display name (visible to the rest of the team)
+              YOUR DISPLAY NAME
             </label>
             {roleExistingDisplayName ? (
-              <p className="text-xs text-slate-400">
-                Welcome back — your saved name is pre-filled. Click Begin
-                to rejoin, or edit if you'd like to change it.
+              <p className="mono text-[11px] uppercase tracking-[0.04em] text-ink-400">
+                Welcome back — your saved name is pre-filled. Click BEGIN
+                to rejoin.
               </p>
             ) : null}
             <input
               id="display-name"
-              // ``autoFocus`` removed: screen-reader users would land
-              // mid-form and miss the heading + "How to play" guide
-              // (which is the whole point of this page). Sighted users
-              // can tab into the input in one keystroke.
-              // ``required`` removed: the JS guard + disabled-Begin
-              // button already cover empty submission, and the browser
-              // tooltip from native required would conflict with our
-              // own error surface.
-              // ``sessionEnded`` does NOT disable the input — the copy
-              // below tells the user they can still join in read-only
-              // mode after entering a name. Disabling the input made
-              // that promise impossible to keep for first-time joiners
-              // of an ENDED session.
               disabled={submitting}
               value={name}
               onChange={(e) => setName(e.target.value)}
               placeholder="e.g. Bridget"
               maxLength={64}
-              className="rounded border border-slate-700 bg-slate-950 p-2 text-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-400 disabled:cursor-not-allowed disabled:opacity-60"
+              className="rounded-r-1 border border-ink-600 bg-ink-900 p-3 text-sm text-ink-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-signal-deep focus:border-signal-deep disabled:cursor-not-allowed disabled:opacity-60"
             />
             {error ? (
-              <p className="text-sm text-red-400" role="alert">
+              <p className="mono text-[11px] uppercase tracking-[0.04em] text-crit" role="alert">
                 {error}
               </p>
             ) : null}
             {sessionEnded ? (
-              <p className="text-sm text-amber-300" role="status">
-                This session has already ended. You can still join in
-                read-only mode after entering a name, but no new
-                responses will be accepted.
+              <p className="mono text-[11px] uppercase tracking-[0.04em] text-warn" role="status">
+                ⚠ This session has already ended. You can still join in
+                read-only mode.
               </p>
             ) : null}
             <button
               type="submit"
               disabled={submitting || !name.trim()}
-              // Full-width tap target on mobile (avoids cramped right-
-              // aligned button when the on-screen keyboard pushes the
-              // viewport up); right-aligned on sm+.
-              className="mt-2 self-stretch rounded bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-emerald-300 disabled:cursor-not-allowed disabled:opacity-60 sm:self-end"
+              className="mono mt-2 self-stretch rounded-r-1 bg-signal px-4 py-3 text-[12px] font-bold uppercase tracking-[0.20em] text-ink-900 hover:bg-signal-bright focus-visible:outline focus-visible:outline-2 focus-visible:outline-signal-bright disabled:cursor-not-allowed disabled:opacity-60 sm:self-end sm:px-6"
             >
-              {submitting ? "Joining…" : "Begin"}
+              {submitting ? "JOINING…" : "BEGIN →"}
             </button>
           </form>
         )}

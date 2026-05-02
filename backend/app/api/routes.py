@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from typing import Any
 
@@ -928,6 +929,156 @@ def register_api_routes(app: FastAPI) -> None:
                 "Content-Disposition": f'attachment; filename="{filename_slug}-aar.md"',
                 "X-AAR-Status": "ready",
             },
+        )
+
+    @router.get("/sessions/{session_id}/export.json")
+    async def export_json(session_id: str, request: Request) -> Response:
+        """Structured AAR JSON, mirroring ``export.md`` status semantics.
+
+        Same gating as the markdown variant — 425 while pending /
+        generating, 200 with the structured report when ready, 500 on
+        failure, 410 once the GC reaper has evicted the session.
+
+        The body is the dict produced by the AAR generator's
+        ``finalize_report`` tool (``executive_summary``, ``narrative``,
+        ``what_went_well`` / ``gaps`` / ``recommendations`` (lists of
+        strings), ``per_role_scores`` (decision_quality / communication
+        / speed / rationale per role), ``overall_score``,
+        ``overall_rationale``) plus a small ``meta`` envelope (session
+        id, title, started/ended timestamps, turn count, role roster)
+        so the frontend can render the score-card / per-role layout
+        without hitting ``/snapshot`` again.
+        """
+        gc = getattr(request.app.state, "session_gc", None)
+        if gc is not None and gc.is_evicted(session_id):
+            raise HTTPException(
+                status.HTTP_410_GONE,
+                "session export retention window expired",
+                headers={"X-AAR-Status": "evicted"},
+            )
+
+        manager = _manager(request)
+        token = await _bind_token(request, session_id)
+        try:
+            require_participant(token)
+            session = await manager.get_session(session_id)
+        except AuthorizationError as exc:
+            raise HTTPException(status.HTTP_403_FORBIDDEN, str(exc)) from exc
+        except SessionNotFoundError as exc:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "session not found") from exc
+
+        if session.state != SessionState.ENDED:
+            raise HTTPException(status.HTTP_425_TOO_EARLY, "session not yet ended")
+
+        if session.aar_status in ("pending", "generating"):
+            return Response(
+                content=f'{{"status":"{session.aar_status}"}}',
+                media_type="application/json",
+                status_code=status.HTTP_425_TOO_EARLY,
+                headers={
+                    "Retry-After": "3",
+                    "X-AAR-Status": session.aar_status,
+                },
+            )
+
+        if session.aar_status == "failed" or session.aar_report is None:
+            raise HTTPException(
+                status.HTTP_500_INTERNAL_SERVER_ERROR,
+                f"AAR generation failed: {session.aar_error or 'unknown error'}",
+                headers={"X-AAR-Status": session.aar_status},
+            )
+
+        # ``session.aar_report`` is trusted: the AAR generator
+        # boundary (``_extract_report`` in app/llm/export.py) already
+        # validates the model's tool input against the canonical
+        # roster, drops invented role_ids, and coerces string-array
+        # fields. The route handler does NOT re-validate or re-coerce
+        # — defensive layers here would diverge from the storage
+        # representation and is exactly the monkey-patch pattern
+        # CLAUDE.md flags. We only do view-time concerns: per-role
+        # rationale is creator-only (issue #55), and decision-count
+        # is derived from session messages (which the AAR generator
+        # doesn't see).
+        is_creator = token["role_id"] == session.creator_role_id
+
+        decisions_by_role: dict[str, int] = {}
+        for msg in session.messages:
+            if (
+                msg.kind.value == "player"
+                and msg.role_id
+                and not getattr(msg, "is_interjection", False)
+            ):
+                decisions_by_role[msg.role_id] = (
+                    decisions_by_role.get(msg.role_id, 0) + 1
+                )
+
+        # Per-role rationale is visible to ALL participants — same
+        # policy as the markdown export. ``strip_creator_only`` only
+        # touches Appendix E (the AI decision-rationale log, issue
+        # #55); the per-role-scores table renders rationale for
+        # everyone. Copilot review on PR #110 caught a regression
+        # where this endpoint was stripping rationale for non-creators
+        # but the markdown wasn't, creating two divergent AAR views
+        # depending on which export the user fetched.
+        scores: list[dict[str, Any]] = []
+        for s in list(session.aar_report.get("per_role_scores") or []):
+            entry = dict(s)
+            entry["decisions"] = decisions_by_role.get(
+                entry.get("role_id", ""), 0
+            )
+            scores.append(entry)
+
+        # Build a lookup so the frontend can render role labels +
+        # display names without joining the score array against
+        # /snapshot's roles array.
+        roles = [
+            {
+                "id": r.id,
+                "label": r.label,
+                "display_name": r.display_name,
+                "is_creator": r.is_creator,
+            }
+            for r in session.roles
+        ]
+
+        elapsed_ms = (
+            int((session.ended_at - session.created_at).total_seconds() * 1000)
+            if session.ended_at is not None
+            else None
+        )
+        # Count "stuck" turns — turns that ended with ``status="errored"``
+        # before being force-advanced. Useful tone signal in the AAR
+        # header ("0 stuck" reads cleanly; "3 stuck" reads as a warning).
+        stuck = sum(1 for t in session.turns if getattr(t, "status", None) == "errored")
+
+        # ``session.aar_report`` is the trusted form (validated +
+        # coerced at the LLM boundary). Read it as plain dict access
+        # — no defensive wrappers here.
+        body: dict[str, Any] = {
+            "executive_summary": session.aar_report.get("executive_summary", ""),
+            "narrative": session.aar_report.get("narrative", ""),
+            "what_went_well": session.aar_report.get("what_went_well", []),
+            "gaps": session.aar_report.get("gaps", []),
+            "recommendations": session.aar_report.get("recommendations", []),
+            "per_role_scores": scores,
+            "overall_score": session.aar_report.get("overall_score", 0),
+            "overall_rationale": session.aar_report.get("overall_rationale", ""),
+            "meta": {
+                "session_id": session.id,
+                "title": session.plan.title if session.plan else None,
+                "created_at": session.created_at.isoformat(),
+                "ended_at": session.ended_at.isoformat() if session.ended_at else None,
+                "elapsed_ms": elapsed_ms,
+                "turn_count": len(session.turns),
+                "stuck_count": stuck,
+                "roles": roles,
+                "is_creator": is_creator,
+            },
+        }
+        return Response(
+            content=json.dumps(body),
+            media_type="application/json",
+            headers={"X-AAR-Status": "ready"},
         )
 
     @router.get("/sessions/{session_id}/activity")

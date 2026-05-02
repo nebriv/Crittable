@@ -1,0 +1,120 @@
+/* ============================================================
+   BRAND TOKENS — operator-grade, security-tinted
+   ============================================================
+   Naming follows ink/paper/signal so colors map to roles, not
+   hues. Renaming "the green" later doesn't ripple through code.
+*/
+
+:root {
+  /* Ink — the operator surface. Cooler than the Tailwind slate
+     in the source app; tuned for long sessions in dim rooms. */
+  --ink-950: #06080C;
+  --ink-900: #0A0D13;   /* page bg                              */
+  --ink-850: #0E121A;   /* chat surface                         */
+  --ink-800: #131824;   /* card bg                              */
+  --ink-750: #181E2C;   /* card hover                           */
+  --ink-700: #1F2636;   /* input bg                             */
+  --ink-600: #2A3344;   /* divider                              */
+  --ink-500: #3A4458;   /* muted border                         */
+  --ink-400: #5B667D;   /* placeholder                          */
+  --ink-300: #8390A8;   /* secondary text                       */
+  --ink-200: #B6BFD0;   /* body text                            */
+  --ink-100: #DCE2EE;   /* primary text                         */
+  --ink-050: #F2F4F9;   /* on-dark heading                      */
+
+  /* Paper — light-mode counterpart (used for stickers, print). */
+  --paper-050: #F6F4ED;
+  --paper-100: #EDEAE0;
+  --paper-200: #DAD5C5;
+  --paper-300: #B5AE99;
+
+  /* Signal — the brand accent. Blue Team blue: tabletop exercises
+     are a Blue Team discipline, so the accent reads "defenders."
+     A confident operations blue, not corporate-SaaS-cyan. Tuned in
+     oklch so the hue stays consistent across tints. */
+  --signal:        oklch(0.72 0.16 245);
+  --signal-bright: oklch(0.82 0.17 245);
+  --signal-dim:    oklch(0.55 0.13 245);
+  --signal-deep:   oklch(0.38 0.10 245);
+  --signal-100:    oklch(0.94 0.05 245);
+  --signal-tint:   color-mix(in oklch, var(--signal) 14%, transparent);
+
+  /* Status — semantic, kept narrow on purpose. The product has
+     enough color noise; we resist a 7-hue rainbow. */
+  --crit:    oklch(0.68 0.21 25);    /* high severity */
+  --crit-bg: color-mix(in oklch, var(--crit) 18%, transparent);
+  --warn:    oklch(0.82 0.16 75);    /* medium severity / pending */
+  --warn-bg: color-mix(in oklch, var(--warn) 16%, transparent);
+  --info:    oklch(0.78 0.13 232);   /* informational / sidebar */
+  --info-bg: color-mix(in oklch, var(--info) 16%, transparent);
+
+  /* Operator-only chrome */
+  --grid:    rgba(255, 255, 255, 0.035);
+  --grid-strong: rgba(255, 255, 255, 0.07);
+
+  /* Type scale — anchored to JetBrains Mono for chrome / mono UI;
+     Inter for the editorial bits (briefs, headings, AAR body).   */
+  --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  --font-sans: 'Inter', -apple-system, system-ui, sans-serif;
+
+  --t-12: 12px; --t-13: 13px; --t-14: 14px; --t-16: 16px;
+  --t-18: 18px; --t-22: 22px; --t-28: 28px; --t-36: 36px;
+  --t-48: 48px; --t-64: 64px;
+
+  /* Radii — square-ish; this is a tactical product, not a SaaS card
+     deck. Top tier 8px keeps it from feeling brutalist. */
+  --r-0: 0px;
+  --r-1: 2px;
+  --r-2: 4px;
+  --r-3: 6px;
+  --r-4: 8px;
+  --r-pill: 999px;
+}
+
+html, body {
+  background: var(--ink-900);
+  color: var(--ink-100);
+  font-family: var(--font-sans);
+  margin: 0;
+  -webkit-font-smoothing: antialiased;
+  font-feature-settings: 'ss01', 'cv11';
+}
+
+.mono { font-family: var(--font-mono); font-feature-settings: 'ss01', 'zero', 'cv11'; }
+.sans { font-family: var(--font-sans); }
+.tabular { font-variant-numeric: tabular-nums; }
+
+/* Backgrounds */
+.dotgrid {
+  background-image: radial-gradient(var(--grid-strong) 1px, transparent 1px);
+  background-size: 16px 16px;
+  background-position: 0 0;
+}
+.linegrid {
+  background-image:
+    linear-gradient(to right, var(--grid) 1px, transparent 1px),
+    linear-gradient(to bottom, var(--grid) 1px, transparent 1px);
+  background-size: 24px 24px;
+}
+.scanlines {
+  background-image: repeating-linear-gradient(
+    0deg,
+    rgba(255,255,255,0.018) 0px,
+    rgba(255,255,255,0.018) 1px,
+    transparent 1px,
+    transparent 3px
+  );
+}
+
+/* Animations */
+@keyframes tt-blink { 0%, 49% { opacity: 1 } 50%, 100% { opacity: 0 } }
+@keyframes tt-sweep { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+@keyframes tt-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 var(--signal-tint); }
+  50%      { box-shadow: 0 0 0 6px transparent; }
+}
+@keyframes tt-stream {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(100%); }
+}
+.blink { animation: tt-blink 1s steps(2) infinite; }

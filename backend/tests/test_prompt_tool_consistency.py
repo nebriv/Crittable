@@ -90,6 +90,13 @@ HISTORICAL_REMOVED_PLAY_TOOLS = frozenset(
         "inject_event",
         "mark_timeline_point",
         "record_decision_rationale",
+        # Issue #104 (2026-05-02): the AI used to be able to terminate
+        # the session, but the model occasionally narrated the act
+        # without calling the tool — leaving creators with the false
+        # impression the exercise had wrapped up. Ending an exercise
+        # is a creator-shaped commit (kicks off the AAR pipeline, no
+        # undo) so the capability moved to creator-only.
+        "end_session",
     }
 )
 
@@ -111,6 +118,11 @@ _NON_TOOL_ALLOWLIST = frozenset(
         # Tool input fields the prompt references inline
         "role_id",
         "role_ids",
+        # ``id`` (without the role prefix) is referenced in the AAR
+        # tier's ``## Roster (canonical IDs)`` block — "use these
+        # exact ``id`` values in ``per_role_scores[].role_id``".
+        # It's a field name on the roster row, not a tool.
+        "id",
         "rationale",
         "title",
         "note",

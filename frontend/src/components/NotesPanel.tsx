@@ -48,21 +48,27 @@ export function NotesPanel({ storageKey, heading = "Notes & follow-ups", placeho
   return (
     <section
       aria-labelledby="notes-heading"
-      className="flex min-h-0 flex-col gap-2 rounded border border-slate-700 bg-slate-900 p-3 text-sm"
+      className="flex min-h-0 flex-col gap-2 rounded-r-3 border border-ink-600 bg-ink-850 p-3 text-sm"
     >
       <header className="flex flex-wrap items-baseline justify-between gap-2">
-        <h3 id="notes-heading" className="text-xs uppercase tracking-widest text-slate-300">
-          {heading}
+        <h3
+          id="notes-heading"
+          className="mono text-[10px] font-bold uppercase tracking-[0.22em] text-ink-300"
+        >
+          {heading.toUpperCase()}
         </h3>
         <span className="flex items-center gap-2">
           <span
-            className="rounded bg-amber-900/40 px-1.5 py-0.5 text-[10px] font-semibold text-amber-200"
+            className="mono rounded-r-1 border border-warn bg-warn-bg px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-[0.10em] text-warn"
             title="These notes never leave your browser. Clearing site data deletes them."
           >
-            Local only
+            LOCAL ONLY
           </span>
           {savedAt ? (
-            <span className="text-[10px] text-slate-500" aria-live="polite">
+            <span
+              className="mono text-[10px] tabular-nums text-ink-500"
+              aria-live="polite"
+            >
               Saved {new Date(savedAt).toLocaleTimeString()}
             </span>
           ) : null}
@@ -73,7 +79,7 @@ export function NotesPanel({ storageKey, heading = "Notes & follow-ups", placeho
         onChange={(e) => setText(e.target.value)}
         rows={6}
         placeholder={placeholder ?? "Decisions, open questions, follow-ups…"}
-        className="min-h-[8rem] resize-y rounded border border-slate-700 bg-slate-950 p-2 text-sm text-slate-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-400"
+        className="min-h-[8rem] resize-y rounded-r-1 border border-ink-600 bg-ink-900 p-2 text-sm text-ink-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-signal-deep focus:border-signal-deep"
       />
     </section>
   );

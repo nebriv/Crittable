@@ -126,11 +126,13 @@ _STRICT_YIELD_NOTE = (
     "beat is already in the transcript. Your only job on this turn is to "
     "call `set_active_roles` with the role_ids that should respond next. "
     "The tool surface has been narrowed and `tool_choice` forces a call "
-    "to `set_active_roles`; you cannot end the session on a recovery "
-    "pass. (This is the one path where Block 6's silent-yield "
-    "prohibition is overridden — the player-facing brief landed on a "
-    "prior attempt and is already in the transcript, so emitting only "
-    "`set_active_roles` here is the right move.)"
+    "to `set_active_roles`. (Note: `set_active_roles` is the only "
+    "yielding move available to you on any play turn — only the creator "
+    "can end the exercise, from the UI; do not narrate a session-ending "
+    "outcome here or elsewhere.) (This is the one path where Block 6's "
+    "silent-yield prohibition is overridden — the player-facing brief "
+    "landed on a prior attempt and is already in the transcript, so "
+    "emitting only `set_active_roles` here is the right move.)"
 )
 _STRICT_YIELD_USER_NUDGE = (
     "[system] Your previous tool calls did not include a yielding tool. "

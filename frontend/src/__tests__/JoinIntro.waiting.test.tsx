@@ -127,7 +127,7 @@ describe("JoinIntro — issue #76 (joined, waiting for session start)", () => {
     // connected" (UI/UX review: pre-fix included the local
     // participant in the count, so "1 seat joined" was just *me*).
     expect(
-      screen.getByText(/3 other seats are connected/i),
+      screen.getByText(/3 other seats connected/i),
     ).toBeInTheDocument();
   });
 
@@ -142,7 +142,7 @@ describe("JoinIntro — issue #76 (joined, waiting for session start)", () => {
       />,
     );
     expect(
-      screen.getByText(/1 other seat is connected/i),
+      screen.getByText(/1 other seat connected/i),
     ).toBeInTheDocument();
   });
 

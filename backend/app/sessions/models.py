@@ -263,6 +263,13 @@ class Session(BaseModel):
     aar_markdown: str | None = None
     aar_status: AARStatus = "pending"
     aar_error: str | None = None
+    # Structured form of the AAR (the ``finalize_report`` tool input that
+    # the AAR generator already produces). Persisted alongside the
+    # rendered markdown so the frontend can render a structured layout
+    # (per-role score cards, narrative + bullet blocks) without parsing
+    # markdown back into fields. Same lifecycle as ``aar_markdown``: set
+    # together when generation succeeds, cleared / re-set on retry.
+    aar_report: dict[str, Any] | None = None
 
     def role_by_id(self, role_id: str) -> Role | None:
         return next((r for r in self.roles if r.id == role_id), None)

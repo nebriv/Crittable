@@ -974,7 +974,7 @@ class SessionManager:
 
         try:
             generator = AARGenerator(llm=self._llm, audit=self._audit)
-            markdown = await generator.generate(target)
+            markdown, report = await generator.generate(target)
         except Exception as exc:
             _logger.exception("aar_generation_failed", session_id=session_id, error=str(exc))
             async with await self._lock_for(session_id):
@@ -1001,6 +1001,7 @@ class SessionManager:
             except Exception:
                 return
             session.aar_markdown = markdown
+            session.aar_report = report
             session.aar_status = "ready"
             session.aar_error = None
             await self._repo.save(session)

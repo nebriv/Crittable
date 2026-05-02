@@ -19,20 +19,20 @@ export function DecisionLogPanel({ entries }: Props) {
   return (
     <section
       aria-label="AI decision rationale log"
-      className="flex min-w-0 flex-col gap-2 rounded border border-slate-700 bg-slate-900 p-3 text-sm"
+      className="flex min-w-0 flex-col gap-2 rounded border border-ink-600 bg-ink-850 p-3 text-sm"
     >
       <header className="flex items-baseline justify-between gap-2">
-        <h3 className="text-xs uppercase tracking-widest text-slate-300">
+        <h3 className="text-xs uppercase tracking-widest text-ink-300">
           AI decision log
         </h3>
-        <span className="text-[11px] text-slate-500">{entries.length} entries</span>
+        <span className="text-[11px] text-ink-500">{entries.length} entries</span>
       </header>
-      <p className="text-[11px] text-slate-400">
+      <p className="text-[11px] text-ink-400">
         Why the AI picked each beat (e.g. who it yielded to and why).
         Visible to facilitator only — players never see this.
       </p>
       {ordered.length === 0 ? (
-        <p className="text-xs text-slate-500">
+        <p className="text-xs text-ink-500">
           No rationales recorded yet. One short line per play turn will
           appear here as the exercise runs.
         </p>
@@ -46,15 +46,15 @@ export function DecisionLogPanel({ entries }: Props) {
             return (
               <li
                 key={e.id}
-                className="rounded border border-slate-800 bg-slate-950 p-2 text-xs"
+                className="rounded border border-ink-800 bg-ink-900 p-2 text-xs"
               >
-                <header className="mb-0.5 flex items-baseline justify-between gap-2 text-[11px] uppercase tracking-wide text-slate-500">
+                <header className="mb-0.5 flex items-baseline justify-between gap-2 text-[11px] uppercase tracking-wide text-ink-500">
                   <span>{beat}</span>
                   <time dateTime={e.ts}>
                     {new Date(e.ts).toLocaleTimeString()}
                   </time>
                 </header>
-                <p className="whitespace-pre-wrap break-words text-slate-200">
+                <p className="whitespace-pre-wrap break-words text-ink-200">
                   {e.rationale}
                 </p>
               </li>

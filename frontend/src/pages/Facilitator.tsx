@@ -1,7 +1,6 @@
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { TableScroll } from "../components/TableScroll";
 import {
   api,
   CostSnapshot,
@@ -10,6 +9,8 @@ import {
   ScenarioPlan,
   SessionSnapshot,
 } from "../api/client";
+import { confirmLeaveSession } from "../lib/leaveGuard";
+import { AarReportView } from "../components/AarReport";
 import { Composer } from "../components/Composer";
 import { CriticalEventBanner } from "../components/CriticalEventBanner";
 import { DecisionLogPanel } from "../components/DecisionLogPanel";
@@ -19,7 +20,15 @@ import { RolesPanel } from "../components/RolesPanel";
 import { SessionActivityPanel } from "../components/SessionActivityPanel";
 import { SetupChat } from "../components/SetupChat";
 import { Transcript } from "../components/Transcript";
-import { buildImpersonateOptions } from "../lib/proxy";
+import { BottomActionBar } from "../components/brand/BottomActionBar";
+import { DieLoader } from "../components/brand/DieLoader";
+import { HudGauges } from "../components/brand/HudGauges";
+import { TurnStateRail } from "../components/brand/TurnStateRail";
+import { SetupWizard } from "../components/setup/SetupWizard";
+import {
+  buildImpersonateOptions,
+  countUnjoinedImpersonateOptions,
+} from "../lib/proxy";
 import { useStickyScroll } from "../lib/useStickyScroll";
 import { useTabFocusReporter } from "../lib/useTabFocusReporter";
 import { ServerEvent, WsClient } from "../lib/ws";
@@ -170,6 +179,16 @@ export function Facilitator() {
   const [focusedRoleIds, setFocusedRoleIds] = useState<Set<string>>(
     () => new Set(),
   );
+  // Issue #103 follow-up (Copilot review on PR #114): until the first
+  // ``presence_snapshot`` lands the empty set above is indistinguishable
+  // from "nobody has joined", and the "Tip: N roles haven't joined yet"
+  // banner would briefly fire on initial load / reconnect even when
+  // every role is actually connected. Tracked separately from the set
+  // itself so other consumers (RolesPanel dot, RoleRoster online dot)
+  // keep their existing presence-aware behaviour. Reset to false on
+  // session change and on every WS reconnect so a stale "ready" flag
+  // can't outlive a dropped socket.
+  const [presenceReady, setPresenceReady] = useState(false);
   // Real-time AI-thinking tracking — same shape as Play.tsx. ``aiCalls``
   // maps in-flight LLM ``call_id`` → tier (``setup`` / ``play`` / ``aar``
   // / ``guardrail`` / ``interject``) from ``ai_thinking`` boundary
@@ -369,7 +388,14 @@ export function Facilitator() {
       sessionId: state.sessionId,
       token: state.token,
       onEvent: handleEvent,
-      onStatus: (s) => setWsStatus(s),
+      onStatus: (s) => {
+        setWsStatus(s);
+        // Issue #103 follow-up: drop the "presence is authoritative"
+        // flag whenever the socket isn't open, so the next reconnect
+        // has to wait for a fresh ``presence_snapshot`` before the
+        // tip can fire again.
+        if (s !== "open") setPresenceReady(false);
+      },
     });
     ws.connect();
     wsRef.current = ws;
@@ -505,6 +531,7 @@ export function Facilitator() {
       case "presence_snapshot":
         setPresence(new Set(evt.role_ids));
         setFocusedRoleIds(new Set(evt.focused_role_ids));
+        setPresenceReady(true);
         if (typeof evt.connection_count === "number") {
           setConnectionCount(evt.connection_count);
         }
@@ -754,6 +781,7 @@ export function Facilitator() {
     setCriticalBanner(null);
     setDecisionLog([]);
     setPresence(new Set());
+    setPresenceReady(false);
     setCost(null);
     setLastEventAt(null);
     setConnectionCount(null);
@@ -887,258 +915,46 @@ export function Facilitator() {
   }
 
   // ----------------------------------------------------- render
-  if (phase === "intro") {
-    const onToggleDevMode = (next: boolean) => {
-      setDevMode(next);
-      if (next) {
-        // Prefill only sections the user hasn't typed into. Lets a tester
-        // partially customise (e.g. tweak the team list) and still get
-        // the rest of the boilerplate filled.
-        setSetupParts((cur) => ({
-          scenario: cur.scenario.trim() ? cur.scenario : DEV_SETUP_PREFILL.scenario,
-          team: cur.team.trim() ? cur.team : DEV_SETUP_PREFILL.team,
-          environment: cur.environment.trim() ? cur.environment : DEV_SETUP_PREFILL.environment,
-          constraints: cur.constraints.trim() ? cur.constraints : DEV_SETUP_PREFILL.constraints,
-        }));
-        if (!creatorDisplayName.trim()) {
-          setCreatorDisplayName("Dev Tester");
-        }
+  // Wrap setDevMode so toggling on prefills any blank scenario sections —
+  // preserves the pre-redesign behaviour (Issue #?? originally added the
+  // partial-prefill so testers could tweak one section and let the rest
+  // of the boilerplate fill).
+  const onToggleDevMode = (next: boolean) => {
+    setDevMode(next);
+    if (next) {
+      setSetupParts((cur) => ({
+        scenario: cur.scenario.trim() ? cur.scenario : DEV_SETUP_PREFILL.scenario,
+        team: cur.team.trim() ? cur.team : DEV_SETUP_PREFILL.team,
+        environment: cur.environment.trim() ? cur.environment : DEV_SETUP_PREFILL.environment,
+        constraints: cur.constraints.trim() ? cur.constraints : DEV_SETUP_PREFILL.constraints,
+      }));
+      if (!creatorDisplayName.trim()) {
+        setCreatorDisplayName("Dev Tester");
       }
-    };
-    const setPart = (key: keyof typeof setupParts) => (value: string) =>
-      setSetupParts((cur) => ({ ...cur, [key]: value }));
+    }
+  };
+
+  if (phase === "intro") {
     return (
-      <main className="mx-auto flex max-w-3xl flex-col gap-4 p-8">
-        <h1 className="text-2xl font-semibold">New tabletop exercise</h1>
-        <p className="text-sm text-slate-400">
-          Give the facilitator AI a few sections of context up front so it
-          can skip the boilerplate questions. Only the scenario brief is
-          required; richer answers shorten the setup dialogue.
-        </p>
-        <ol className="flex flex-col gap-1 rounded border border-slate-700 bg-slate-900 p-3 text-xs text-slate-300">
-          <li className="text-[11px] uppercase tracking-widest text-slate-400">
-            What to expect
-          </li>
-          <li>1. <span className="text-slate-200">Setup</span> — the AI reads what you wrote below, asks 1–3 follow-up questions, then drafts a plan you can edit, approve, or skip.</li>
-          <li>2. <span className="text-slate-200">Invite</span> — copy a per-role join link to each participant; you can also play one of the roles yourself.</li>
-          <li>3. <span className="text-slate-200">Run</span> — the AI narrates beats, throws injects, and yields turns to specific roles. Typical session: 30–60 min.</li>
-          <li>4. <span className="text-slate-200">After-action</span> — when you end the session, the AI generates a markdown report with per-role scores and a transcript.</li>
-        </ol>
-        <form onSubmit={handleCreate} className="flex flex-col gap-3">
-          <div className="flex items-start gap-2 rounded border border-amber-600/60 bg-amber-950/30 p-2 text-xs text-amber-100">
-            <label className="flex items-center gap-2 font-semibold">
-              <input
-                type="checkbox"
-                checked={devMode}
-                onChange={(e) => onToggleDevMode(e.target.checked)}
-                aria-describedby="dev-mode-hint"
-              />
-              Dev mode
-            </label>
-            <span id="dev-mode-hint" className="text-[12px] text-amber-100/90">
-              Prefills all four sections with a known ransomware brief +
-              "Dev Tester" display name and skips the AI setup dialogue.
-              Use this for local QA only.
-            </span>
-          </div>
-          <label className="text-xs uppercase tracking-widest text-slate-400">
-            Scenario brief <span className="text-rose-400">*</span>
-          </label>
-          <textarea
-            value={setupParts.scenario}
-            onChange={(e) => setPart("scenario")(e.target.value)}
-            rows={3}
-            required
-            placeholder="What happened, when, at what severity. e.g. 'Ransomware via vendor portal at a regional bank, finance laptops encrypting, ~90 min of simulated time.'"
-            className="rounded border border-slate-700 bg-slate-900 p-2 text-sm"
-          />
-          <label className="text-xs uppercase tracking-widest text-slate-400">
-            About your team
-          </label>
-          <textarea
-            value={setupParts.team}
-            onChange={(e) => setPart("team")(e.target.value)}
-            rows={3}
-            placeholder="Roles + seniority + on-call posture. e.g. 'CISO (lead, on-call), IR Lead (3 yrs), SOC L1, Legal (business hours).' Optional — leave blank to let the AI ask."
-            className="rounded border border-slate-700 bg-slate-900 p-2 text-sm"
-          />
-          <label className="text-xs uppercase tracking-widest text-slate-400">
-            About your environment
-          </label>
-          <textarea
-            value={setupParts.environment}
-            onChange={(e) => setPart("environment")(e.target.value)}
-            rows={3}
-            placeholder="Stack, IdP, EDR/SIEM, crown jewels, regulatory regime. e.g. 'Microsoft 365 + Azure AD, Defender + Sentinel, customer PII + ACH, FFIEC / state-AG.' Optional."
-            className="rounded border border-slate-700 bg-slate-900 p-2 text-sm"
-          />
-          <label className="text-xs uppercase tracking-widest text-slate-400">
-            Constraints / things to avoid
-          </label>
-          <textarea
-            value={setupParts.constraints}
-            onChange={(e) => setPart("constraints")(e.target.value)}
-            rows={2}
-            placeholder="Hard NOs, learning objectives, pacing tolerance. e.g. 'No real CVEs; keep regulator framing US-state-AG; don't invent attacker attribution.' Optional."
-            className="rounded border border-slate-700 bg-slate-900 p-2 text-sm"
-          />
-          <div className="grid grid-cols-2 gap-3">
-            <input
-              value={creatorLabel}
-              onChange={(e) => setCreatorLabel(e.target.value)}
-              required
-              placeholder="Your role label (e.g. CISO)"
-              className="rounded border border-slate-700 bg-slate-900 p-2 text-sm"
-            />
-            <input
-              value={creatorDisplayName}
-              onChange={(e) => setCreatorDisplayName(e.target.value)}
-              required
-              placeholder="Your display name"
-              className="rounded border border-slate-700 bg-slate-900 p-2 text-sm"
-            />
-          </div>
-          {(() => {
-            // Helpers shared between the Add-role button and the Enter
-            // shortcut. Extracted so the trim/dedup logic lives in one
-            // place — duplicating it across the two handlers was flagged
-            // as a regression footgun in code review.
-            const addRoleLabel = (next: string) => {
-              const trimmed = next.trim();
-              if (!trimmed) return;
-              if (
-                setupRoles.some((r) => r.toLowerCase() === trimmed.toLowerCase())
-              ) {
-                setSetupRoleDraft("");
-                return;
-              }
-              setSetupRoles((cur) => [...cur, trimmed]);
-              setSetupRoleDraft("");
-            };
-            // Surface the silent dedupe-against-creator-label case: if the
-            // operator picks "IR Lead" as their own role label and leaves
-            // it in the suggestions, it'll be filtered out at create
-            // time. Tell them up front rather than letting the seat go
-            // missing without explanation.
-            const creatorLabelLower = creatorLabel.trim().toLowerCase();
-            const dedupeWithCreator = creatorLabelLower
-              ? setupRoles.find((r) => r.toLowerCase() === creatorLabelLower)
-              : undefined;
-            const defaultsMatch =
-              setupRoles.length === SETUP_ROLE_DEFAULTS.length &&
-              SETUP_ROLE_DEFAULTS.every((d, i) => setupRoles[i] === d);
-            return (
-              <fieldset className="flex flex-col gap-2 rounded border border-slate-700 bg-slate-900 p-3">
-                <legend className="px-1 text-xs uppercase tracking-widest text-slate-400">
-                  Roles to invite
-                </legend>
-                <p className="text-[11px] text-slate-400">
-                  Add the seats other participants will fill. Each role
-                  gets its own join link in the lobby — you'll copy and
-                  share the link yourself. You can also add or remove
-                  roles later from the Roles panel.
-                </p>
-                {setupRoles.length > 0 ? (
-                  <ul className="flex flex-wrap gap-1.5">
-                    {setupRoles.map((label, idx) => (
-                      <li
-                        key={`${label}-${idx}`}
-                        className="inline-flex items-center gap-1 rounded border border-slate-600 bg-slate-950 py-0.5 pl-2 pr-0.5 text-xs text-slate-200"
-                      >
-                        <span>{label}</span>
-                        <button
-                          type="button"
-                          onClick={() =>
-                            setSetupRoles((cur) =>
-                              cur.filter((_, i) => i !== idx),
-                            )
-                          }
-                          aria-label={`Remove ${label}`}
-                          className="rounded px-1.5 py-0.5 text-slate-400 hover:bg-slate-800 hover:text-red-300 focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-300"
-                          title={`Remove ${label}`}
-                        >
-                          <span aria-hidden="true">×</span>
-                        </button>
-                      </li>
-                    ))}
-                  </ul>
-                ) : (
-                  <p className="text-[11px] italic text-slate-500">
-                    No invitee roles yet. You'll need at least 1 invitee
-                    (you + 1 = 2 player seats) before the exercise can
-                    start.
-                  </p>
-                )}
-                {dedupeWithCreator ? (
-                  <p
-                    role="status"
-                    className="text-[11px] text-amber-300"
-                  >
-                    You're playing "{dedupeWithCreator}", so it won't be
-                    auto-added as a separate invitee.
-                  </p>
-                ) : null}
-                <div className="flex flex-wrap gap-2">
-                  <input
-                    value={setupRoleDraft}
-                    onChange={(e) => setSetupRoleDraft(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter") {
-                        e.preventDefault();
-                        addRoleLabel(setupRoleDraft);
-                      }
-                    }}
-                    placeholder="e.g. IR Lead — press Enter to add another"
-                    aria-label="New role label"
-                    className="flex-1 rounded border border-slate-700 bg-slate-950 p-2 text-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-300"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => addRoleLabel(setupRoleDraft)}
-                    disabled={!setupRoleDraft.trim()}
-                    className="rounded border border-slate-600 px-3 py-2 text-xs text-slate-200 hover:bg-slate-800 focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-300 disabled:opacity-50"
-                  >
-                    Add role
-                  </button>
-                </div>
-                <div className="flex flex-wrap gap-3 text-[11px] text-slate-400">
-                  {setupRoles.length > 0 ? (
-                    <button
-                      type="button"
-                      onClick={() => setSetupRoles([])}
-                      className="text-slate-400 underline hover:text-slate-200 focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-300"
-                    >
-                      Clear all
-                    </button>
-                  ) : null}
-                  {!defaultsMatch ? (
-                    <button
-                      type="button"
-                      onClick={() => setSetupRoles([...SETUP_ROLE_DEFAULTS])}
-                      className="text-slate-400 underline hover:text-slate-200 focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-300"
-                    >
-                      Reset to defaults
-                    </button>
-                  ) : null}
-                </div>
-              </fieldset>
-            );
-          })()}
-          <button
-            type="submit"
-            disabled={busy}
-            className="self-start rounded bg-sky-600 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50"
-          >
-            {busy ? "Creating…" : devMode ? "Create session (dev fast-skip)" : "Create session"}
-          </button>
-        </form>
-        {busyMessage ? (
-          <p className="text-sm text-sky-300" role="status" aria-live="polite">
-            {busyMessage}
-          </p>
-        ) : null}
-        {error ? <p className="text-sm text-red-400">{error}</p> : null}
-      </main>
+      <SetupWizard
+        phase="intro"
+        setupParts={setupParts}
+        setSetupParts={setSetupParts}
+        creatorLabel={creatorLabel}
+        setCreatorLabel={setCreatorLabel}
+        creatorDisplayName={creatorDisplayName}
+        setCreatorDisplayName={setCreatorDisplayName}
+        setupRoles={setupRoles}
+        setSetupRoles={setSetupRoles}
+        setupRoleDraft={setupRoleDraft}
+        setSetupRoleDraft={setSetupRoleDraft}
+        devMode={devMode}
+        setDevMode={onToggleDevMode}
+        busy={busy}
+        busyMessage={busyMessage}
+        error={error}
+        onSubmit={handleCreate}
+      />
     );
   }
 
@@ -1190,8 +1006,8 @@ export function Facilitator() {
           return Array.from(seen).sort();
         })()}
       />
-      <div className="mx-auto grid w-full max-w-7xl flex-1 grid-cols-1 gap-4 p-4 lg:min-h-0 lg:grid-cols-[280px_1fr_280px] lg:overflow-hidden">
-        <aside className="flex flex-col gap-4 lg:min-h-0 lg:overflow-y-auto lg:pr-1">
+      <div className="mx-auto grid w-full max-w-7xl flex-1 grid-cols-1 gap-3 p-3 lg:min-h-0 lg:grid-cols-[260px_1fr_280px] lg:overflow-hidden">
+        <aside className="flex flex-col gap-3 lg:min-h-0 lg:overflow-y-auto lg:pr-1">
           <RolesPanel
             sessionId={state.sessionId}
             creatorToken={state.token}
@@ -1209,6 +1025,9 @@ export function Facilitator() {
               roles={snapshot.roles}
             />
           ) : null}
+          <div className="rounded-r-3 border border-ink-600 bg-ink-850">
+            <TurnStateRail state={snapshot.state} />
+          </div>
           <SessionActivityPanel
             sessionId={state.sessionId}
             creatorToken={state.token}
@@ -1219,7 +1038,7 @@ export function Facilitator() {
           <DecisionLogPanel entries={decisionLog} />
         </aside>
 
-        <section className="flex min-w-0 flex-col gap-3 lg:min-h-0 lg:overflow-hidden">
+        <section className="flex min-w-0 flex-col gap-2 lg:min-h-0 lg:overflow-hidden">
           {/*
             Every phase view (setup / ready / ended / play) renders inside the
             same scrollable region. Pre-fix the wrapping ``<div>`` only
@@ -1275,7 +1094,7 @@ export function Facilitator() {
                 <div
                   role="status"
                   aria-live="polite"
-                  className="flex shrink-0 flex-wrap items-center justify-between gap-2 rounded border border-amber-700/60 bg-amber-950/40 p-3 text-sm text-amber-100"
+                  className="flex shrink-0 flex-wrap items-center justify-between gap-2 rounded border border-warn bg-warn-bg p-3 text-sm text-warn"
                 >
                   <span>
                     The AI failed to yield via a tool. Click below to nudge
@@ -1286,7 +1105,7 @@ export function Facilitator() {
                     onClick={handleForceAdvance}
                     disabled={busy || forceAdvanceCooldown}
                     aria-disabled={busy || forceAdvanceCooldown}
-                    className="rounded border border-emerald-500 bg-emerald-900/30 px-3 py-1 text-xs font-semibold text-emerald-100 hover:bg-emerald-700/40 disabled:cursor-not-allowed disabled:opacity-50"
+                    className="rounded border border-signal bg-signal-tint px-3 py-1 text-xs font-semibold text-signal-100 hover:bg-signal-tint disabled:cursor-not-allowed disabled:opacity-50"
                   >
                     {forceAdvanceCooldown ? "AI: take next beat (cooling down)" : "AI: take next beat"}
                   </button>
@@ -1345,10 +1164,13 @@ export function Facilitator() {
                 // flagged as a regression on the same screen as the
                 // scroll bug.
                 highlightLastAi={isMyTurn}
+                // Self-id so the creator's own player bubbles render
+                // with the signal-tinted "you" variant.
+                selfRoleId={state.creatorRoleId}
               />
             </>
           ) : null}
-          {error ? <p className="text-sm text-red-400">{error}</p> : null}
+          {error ? <p className="text-sm text-crit">{error}</p> : null}
           </div>
           {/* "New messages below" chip — appears when content arrives
               while the operator has scrolled up to re-read. Clicking
@@ -1371,7 +1193,7 @@ export function Facilitator() {
               <button
                 type="button"
                 onClick={forceScrollToBottom}
-                className="pointer-events-auto -mt-12 mb-1 rounded-full border border-sky-300 bg-sky-500 px-4 py-1.5 text-xs font-semibold text-white animate-chip-pulse hover:bg-sky-400 motion-reduce:animate-none motion-reduce:shadow-lg motion-reduce:ring-2 motion-reduce:ring-sky-500/30"
+                className="mono pointer-events-auto -mt-12 mb-1 rounded-r-pill border border-signal bg-signal-bright px-4 py-1.5 text-[11px] font-bold uppercase tracking-[0.10em] text-ink-900 animate-chip-pulse hover:bg-signal motion-reduce:animate-none motion-reduce:shadow-lg motion-reduce:ring-2 motion-reduce:ring-signal/30"
               >
                 New messages below ↓
               </button>
@@ -1423,14 +1245,31 @@ export function Facilitator() {
                   snapshot.state === "AWAITING_PLAYERS" && !busy;
                 const canSelfSpeak = isMyTurn && !busy;
                 const canProxy = impersonateOptions.length > 0 && !busy;
+                // Issue #103: the tip used to fire whenever the
+                // "Respond as" dropdown had any entries — but the
+                // dropdown also includes joined-and-actively-playing
+                // roles that simply haven't submitted on the current
+                // turn. Only nudge the creator about invite links when
+                // there's actually a player role with no live tabs.
+                //
+                // ``presenceReady`` (Copilot review on PR #114) keeps
+                // the tip suppressed during the brief window between
+                // WS connect and the first ``presence_snapshot`` —
+                // without it, the empty initial set would briefly
+                // count every joined role as "unjoined" on initial
+                // load and on every reconnect, regressing into the
+                // exact misleading behavior this issue fixed.
+                const unjoinedImpersonateCount = presenceReady
+                  ? countUnjoinedImpersonateOptions(impersonateOptions, presence)
+                  : 0;
                 return (
                   <>
-                    {canProxy && impersonateOptions.length > 0 ? (
+                    {canProxy && unjoinedImpersonateCount > 0 ? (
                       // One-line hint addressing the user-agent CRITICAL —
                       // a fresh creator should know WHY a "Respond as"
                       // dropdown just appeared and that it's optional.
-                      <p className="mb-1 text-[11px] text-slate-400">
-                        Tip: {impersonateOptions.length === 1 ? "1 role hasn't" : `${impersonateOptions.length} roles haven't`}{" "}
+                      <p className="mb-1 text-[11px] text-ink-400">
+                        Tip: {unjoinedImpersonateCount === 1 ? "1 role hasn't" : `${unjoinedImpersonateCount} roles haven't`}{" "}
                         joined yet — share their invite link, or use
                         "Respond as" to answer for them while solo-testing.
                       </p>
@@ -1467,16 +1306,50 @@ export function Facilitator() {
           ) : null}
         </section>
 
-        <RightSidebar
-          messages={snapshot.messages}
-          roles={snapshot.roles}
-          notesStorageKey={(() => {
-            const role = snapshot.roles.find((r) => r.id === state.creatorRoleId);
-            const v = role?.token_version ?? 0;
-            return `atf-notes:${state.sessionId}:${state.creatorRoleId}:v${v}`;
-          })()}
-        />
+        <aside className="flex flex-col gap-3 lg:min-h-0 lg:overflow-y-auto lg:pr-1">
+          <div className="rounded-r-3 border border-ink-600 bg-ink-850">
+            <HudGauges />
+          </div>
+          <RightSidebar
+            messages={snapshot.messages}
+            roles={snapshot.roles}
+            notesStorageKey={(() => {
+              const role = snapshot.roles.find((r) => r.id === state.creatorRoleId);
+              const v = role?.token_version ?? 0;
+              return `atf-notes:${state.sessionId}:${state.creatorRoleId}:v${v}`;
+            })()}
+          />
+        </aside>
       </div>
+      <BottomActionBar
+        phase={phase}
+        backendState={snapshot.state}
+        wsStatus={wsStatus}
+        godMode={godMode}
+        onToggleGodMode={() => setGodMode((g) => !g)}
+        onStart={handleStart}
+        onForceAdvance={handleForceAdvance}
+        onEnd={handleEnd}
+        onNewSession={handleNewSession}
+        onViewAar={() => setShowAarPopup(true)}
+        playerCount={playerCount}
+        hasFinalizedPlan={Boolean(snapshot.plan)}
+        aarStatus={snapshot.aar_status ?? null}
+        busy={busy}
+        turnIndex={snapshot.current_turn?.index ?? null}
+        rationaleCount={decisionLog.length}
+        connectionCount={connectionCount}
+        lastEventAt={lastEventAt}
+        cost={cost ?? snapshot.cost}
+        messageCount={snapshot.messages.length}
+        activeTiers={(() => {
+          const seen = new Set<string>();
+          for (const tier of aiCalls.values()) seen.add(tier);
+          return Array.from(seen).sort();
+        })()}
+        buildSha={__ATF_GIT_SHA__}
+        buildTs={__ATF_BUILD_TS__}
+      />
       {godMode ? (
         <GodModePanel
           sessionId={state.sessionId}
@@ -1554,107 +1427,87 @@ export function TopBar(props: {
    *  the mapping per ``call_id``. */
   activeTiers: string[];
 }) {
-  const wsColour =
-    props.wsStatus === "open"
-      ? "text-emerald-300"
-      : props.wsStatus === "connecting"
-        ? "text-amber-300"
-        : "text-red-300";
-  const canStart =
-    (props.phase === "ready" || props.phase === "setup") &&
-    props.hasFinalizedPlan &&
-    props.playerCount >= 2;
-  // ``Last: Xs ago`` chip — re-render once a second so the displayed
-  // delta stays fresh without bumping component state from outside. We
-  // tick a meaningless integer; React diffs the rendered string. The
-  // 1 s cadence matches the resolution of the data we have (Date.now()
-  // is millisecond-precise but a sub-second indicator would just look
-  // jittery).
+  // Brand chrome only — the dense operator telemetry + CTAs live in
+  // <BottomActionBar/> at the foot of the in-session view. Layout:
+  //   [lockup] | FACILITATOR · session-pill · STATE · TURN · ELAPSED
+  //   ml-auto → AAR-status (ENDED only)
   //
-  // Depend on the *boolean* presence of a timestamp rather than its
-  // value: ``lastEventAt`` is bumped on every WS frame (including
-  // typing pings + heartbeats), so a value-dep would tear down and
-  // re-create the timer hundreds of times a minute under load. The
-  // boolean only flips once (null → number on first frame), so the
-  // interval is created exactly once per session. The timer reads the
-  // latest timestamp from ``props`` on each tick via ``lastEventLabel``
-  // below, which closes over ``props`` afresh on every render.
-  const hasLastEvent = props.lastEventAt !== null;
-  const [, _setTick] = useState(0);
-  useEffect(() => {
-    if (!hasLastEvent) return;
-    const id = setInterval(() => _setTick((n) => n + 1), 1000);
-    return () => clearInterval(id);
-  }, [hasLastEvent]);
-  const lastEventLabel = props.lastEventAt === null
-    ? "—"
-    : (() => {
-        const ms = Math.max(0, Date.now() - props.lastEventAt);
-        if (ms < 1000) return "<1s ago";
-        const s = Math.floor(ms / 1000);
-        if (s < 60) return `${s}s ago`;
-        const m = Math.floor(s / 60);
-        if (m < 60) return `${m}m ago`;
-        return `${Math.floor(m / 60)}h ago`;
-      })();
-
+  // ``backendState`` is the canonical source for the STATE pill so the
+  // bar matches the brand mock's <AppTopBar> verbatim.
+  const stateLabel = (props.backendState || props.phase).toUpperCase();
+  const stateTone =
+    props.backendState === "AWAITING_PLAYERS"
+      ? "warn"
+      : props.backendState === "ENDED"
+        ? "default"
+        : "signal";
+  const stateBg =
+    stateTone === "warn"
+      ? "bg-warn-bg text-warn border border-warn"
+      : stateTone === "signal"
+        ? "bg-signal-tint text-signal border border-signal-deep"
+        : "bg-ink-700 text-ink-200 border border-ink-500";
   return (
     <header
       role="banner"
-      className="border-b border-slate-800 bg-slate-900/70 px-4 py-2 text-xs"
+      className="border-b border-ink-600 bg-ink-850 px-5"
+      style={{ minHeight: 48 }}
     >
-      <div className="mx-auto flex w-full max-w-7xl flex-wrap items-center gap-2">
-        {/* Left cluster: title + phase-conditional primary actions. The
-            CTA sits early in the row so an LTR reader's eye lands on the
-            verb before the debug pills. */}
-        <span className="font-semibold uppercase tracking-widest text-slate-400">
-          Facilitator
+      <div className="mx-auto flex w-full max-w-7xl flex-wrap items-center gap-3 py-2">
+        <a
+          href="/"
+          aria-label="Crittable home"
+          className="inline-flex items-center"
+          title="Crittable"
+          // Mid-session navigating to ``/`` (the marketing home)
+          // drops the operator's chat view + any in-flight reply.
+          // Confirm before letting the click through; helper lives
+          // in lib/leaveGuard so the same warning text applies to
+          // Play.tsx + WizardRail too.
+          onClick={confirmLeaveSession}
+        >
+          <img
+            src="/logo/svg/lockup-crittable-dark-transparent.svg"
+            alt="Crittable"
+            height={28}
+            // Tailwind preflight resets ``img { height: auto }`` —
+            // overrides the height attr and lets the SVG render at
+            // its intrinsic 100 px viewBox. Inline style wins. Same
+            // trick on every lockup/mark img in the codebase.
+            style={{ height: 28 }}
+            className="block"
+          />
+        </a>
+        <span className="h-6 w-px bg-ink-600" aria-hidden="true" />
+        <span className="mono text-[10px] font-bold uppercase tracking-[0.22em] text-ink-300">
+          FACILITATOR
         </span>
-
-        {props.phase === "ready" || props.phase === "setup" ? (
-          <>
-            <button
-              type="button"
-              onClick={props.onStart}
-              disabled={!canStart || props.busy}
-              className="rounded bg-emerald-600 px-3 py-1 text-sm font-semibold text-white hover:bg-emerald-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-emerald-300 disabled:cursor-not-allowed disabled:opacity-50"
-              title={
-                !props.hasFinalizedPlan
-                  ? "Finalize the plan first"
-                  : props.playerCount < 2
-                    ? "Add at least 2 player roles"
-                    : ""
-              }
-            >
-              Start session
-            </button>
-            <span className="text-slate-400">
-              Players: {props.playerCount} (need ≥ 2 to start)
-            </span>
-          </>
+        <span className="mono text-[12px] text-ink-300">
+          PHASE{" "}
+          <span className="font-semibold text-ink-100">
+            {props.phase.toUpperCase()}
+          </span>
+        </span>
+        <span
+          className={
+            "mono inline-flex items-center gap-1 rounded-r-1 px-2 py-0.5 text-[11px] font-semibold uppercase tracking-[0.04em] " +
+            stateBg
+          }
+          title="Backend session.state — see backend/app/sessions/manager.py"
+        >
+          <span className="opacity-70">STATE</span>
+          <span className="tabular-nums">{stateLabel}</span>
+        </span>
+        {props.turnIndex != null ? (
+          <span className="mono inline-flex items-center gap-1 rounded-r-1 border border-ink-500 bg-ink-700 px-2 py-0.5 text-[11px] font-semibold uppercase">
+            <span className="text-ink-300 opacity-70">TURN</span>
+            <span className="tabular-nums text-ink-100">{props.turnIndex}</span>
+          </span>
         ) : null}
-
-        {props.phase === "play" ? (
-          <>
-            <button
-              type="button"
-              onClick={props.onForceAdvance}
-              disabled={props.busy}
-              className="rounded border border-emerald-500 bg-emerald-900/30 px-3 py-1 text-sm font-semibold text-emerald-100 hover:bg-emerald-700/40 focus-visible:outline focus-visible:outline-2 focus-visible:outline-emerald-300 disabled:opacity-50"
-              title="Hand the turn to the AI now. Use when conversation has stalled OR when one player is unresponsive."
-            >
-              AI: take next beat
-            </button>
-            <button
-              type="button"
-              onClick={props.onEnd}
-              disabled={props.busy}
-              className="rounded border border-red-500 px-3 py-1 text-sm font-semibold text-red-300 hover:bg-red-900/30 focus-visible:outline focus-visible:outline-2 focus-visible:outline-red-300 disabled:opacity-50"
-            >
-              End session
-            </button>
-          </>
-        ) : null}
+        <span className="mono inline-flex items-center gap-1 rounded-r-1 border border-ink-500 bg-ink-700 px-2 py-0.5 text-[11px] font-semibold uppercase">
+          <span className="text-ink-300 opacity-70">PLAYERS</span>
+          <span className="tabular-nums text-ink-100">{props.playerCount}</span>
+        </span>
 
         {props.phase === "ended"
           ? (() => {
@@ -1663,9 +1516,9 @@ export function TopBar(props: {
                   <button
                     type="button"
                     onClick={props.onViewAar}
-                    className="rounded bg-emerald-600 px-3 py-1 text-sm font-semibold text-white hover:bg-emerald-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-emerald-300"
+                    className="mono ml-auto rounded-r-1 bg-signal px-3 py-1 text-[11px] font-bold uppercase tracking-[0.16em] text-ink-900 hover:bg-signal-bright focus-visible:outline focus-visible:outline-2 focus-visible:outline-signal-bright"
                   >
-                    View AAR
+                    VIEW AAR →
                   </button>
                 );
               }
@@ -1673,9 +1526,9 @@ export function TopBar(props: {
                 return (
                   <span
                     role="status"
-                    className="inline-flex items-center gap-1 rounded border border-red-500/60 bg-red-950/30 px-2 py-0.5 text-red-200"
+                    className="mono ml-auto inline-flex items-center gap-1 rounded-r-1 border border-crit bg-crit-bg px-2 py-0.5 text-[11px] uppercase tracking-[0.10em] text-crit"
                   >
-                    AAR failed — see Retry in main panel.
+                    AAR FAILED — RETRY IN PANEL
                   </span>
                 );
               }
@@ -1683,123 +1536,17 @@ export function TopBar(props: {
                 <span
                   role="status"
                   aria-live="polite"
-                  className="inline-flex items-center gap-1.5 rounded bg-slate-800/80 px-2 py-0.5 text-slate-300"
+                  className="mono ml-auto inline-flex items-center gap-1.5 rounded-r-1 bg-ink-800 px-2 py-0.5 text-[11px] uppercase tracking-[0.10em] text-ink-300"
                 >
                   <span
                     aria-hidden="true"
-                    className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-400"
+                    className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-signal"
                   />
-                  AAR generating… (~30 s)
+                  AAR GENERATING… (~30 S)
                 </span>
               );
             })()
           : null}
-
-        {/* Right cluster: debug telemetry + meta actions. Wrapped in its
-            own container so ``ml-auto`` reliably pushes the whole group
-            to the row's end (and stays grouped when the row wraps on
-            mobile). Per operator request, every debug datum currently
-            shown is preserved — only the layout changed. */}
-        <div className="ml-auto flex flex-wrap items-center gap-2">
-          {/* Turn / message / rationale / tabs / last-event chips. All
-              read straight off existing snapshot + WS state; no extra
-              round-trip. Useful for "what's happening?" diagnostics
-              while the app is under active development. */}
-          <span
-            className="rounded bg-slate-800 px-2 py-0.5 text-slate-200"
-            title="Current turn index from snapshot.current_turn.index"
-          >
-            T#{props.turnIndex ?? "—"}
-          </span>
-          <span
-            className="rounded bg-slate-800 px-2 py-0.5 text-slate-200"
-            title="Total messages on the session (snapshot.messages.length)"
-          >
-            {props.messageCount} msgs
-          </span>
-          <span
-            className="rounded bg-slate-800 px-2 py-0.5 text-slate-200"
-            title="AI rationale entries logged via record_decision_rationale"
-          >
-            Rationale: {props.rationaleCount}
-          </span>
-          <span
-            className="rounded bg-slate-800 px-2 py-0.5 text-slate-200"
-            title="Total open WebSocket tabs watching this session (server-reported)"
-          >
-            Tabs: {props.connectionCount ?? "—"}
-          </span>
-          <span
-            className="rounded bg-slate-800 px-2 py-0.5 text-slate-300"
-            title="Time since the last WebSocket frame arrived. Stalls here mean the connection is silent even if ws: open."
-          >
-            Last: {lastEventLabel}
-          </span>
-          {/* LLM tier chip (#9). When idle the chip stays present (just
-              de-emphasised) so the bar layout doesn't reflow on every
-              call boundary; when active it goes amber + bold so the
-              operator's eye picks it up while glancing across the bar. */}
-          {props.activeTiers.length > 0 ? (
-            <span
-              className="rounded bg-amber-900/40 px-2 py-0.5 font-semibold text-amber-200"
-              role="status"
-              aria-live="polite"
-              title={`Active LLM call(s) — tier${props.activeTiers.length === 1 ? "" : "s"}: ${props.activeTiers.join(", ")}.`}
-            >
-              LLM: {props.activeTiers.join("+")}
-            </span>
-          ) : (
-            <span
-              className="rounded bg-slate-800 px-2 py-0.5 text-slate-500"
-              title="No LLM call currently in flight."
-            >
-              LLM: idle
-            </span>
-          )}
-          {/* Cost: click-to-expand chip. The summary shows the dollar
-              amount; the disclosure body shows the token breakdown
-              (mirrors the old sidebar CostMeter, but inline). Native
-              <details> gives focus management + Esc-to-collapse for
-              free; the popup positions absolutely so it overlays the
-              page chrome below the bar without pushing layout. */}
-          <CostChip cost={props.cost} />
-          <span className={wsColour}>● ws: {props.wsStatus}</span>
-          <span className="rounded bg-slate-800 px-2 py-0.5 text-slate-200">
-            state: {props.backendState} · phase: {props.phase}
-          </span>
-          {/* Build identification — surfaced so a creator filing a bug
-              report can tell us which version they're on without opening
-              DevTools. Vite injects ``__ATF_GIT_SHA__`` at build time. */}
-          <span
-            className="rounded bg-slate-800 px-2 py-0.5 font-mono text-[10px] text-slate-400"
-            title={`Build: ${__ATF_GIT_SHA__} · ${__ATF_BUILD_TS__}`}
-          >
-            v {__ATF_GIT_SHA__}
-          </span>
-          <button
-            type="button"
-            onClick={props.onToggleGodMode}
-            aria-pressed={props.godMode}
-            className={
-              "rounded border px-2 py-0.5 font-semibold focus-visible:outline focus-visible:outline-2 focus-visible:outline-purple-300 " +
-              (props.godMode
-                ? "border-purple-500 bg-purple-700/40 text-purple-100"
-                : "border-purple-700/40 text-purple-300 hover:bg-purple-900/30")
-            }
-            title="Toggle full debug overlay (audit log, system prompt, etc). Creator-only."
-          >
-            {props.godMode ? "● God Mode" : "○ God Mode"}
-          </button>
-          <button
-            type="button"
-            onClick={props.onNewSession}
-            disabled={props.busy}
-            className="rounded border border-slate-600 px-2 py-0.5 text-slate-300 hover:bg-slate-800 focus-visible:outline focus-visible:outline-2 focus-visible:outline-slate-300 disabled:opacity-50"
-            title="End the current session (if any) and return to the new-session form."
-          >
-            Start a new session
-          </button>
-        </div>
       </div>
     </header>
   );
@@ -1818,7 +1565,7 @@ function BusyChip({ busy, message }: { busy: boolean; message: string | null }) 
     <span
       role="status"
       aria-live="polite"
-      className="mb-1 inline-flex shrink-0 items-center gap-2 self-start rounded bg-sky-900/40 px-2 py-1 text-xs text-sky-200"
+      className="mono mb-1 inline-flex shrink-0 items-center gap-2 self-start rounded-r-1 border border-info bg-info-bg px-2 py-1 text-[11px] uppercase tracking-[0.10em] text-info"
     >
       <Spinner /> {message ?? "Working…"}
     </span>
@@ -1829,80 +1576,17 @@ function Spinner() {
   return (
     <span
       aria-hidden="true"
-      className="inline-block h-3 w-3 animate-spin rounded-full border-2 border-sky-400 border-t-transparent"
+      className="inline-block h-3 w-3 animate-spin rounded-full border-2 border-info border-t-transparent"
     />
   );
 }
 
-/**
- * Top-bar cost chip with a click-to-expand disclosure (Anthropic
- * plan-usage popup style). Replaces the old ``CostMeter`` sidebar card —
- * the dollar number now lives in the always-visible debug strip and
- * clicking it reveals the token breakdown that previously took up a
- * fixed sidebar slot. Native ``<details>`` gives keyboard + screen
- * reader behavior for free; ``open`` is internal to the element.
- */
-function CostChip({ cost }: { cost: CostSnapshot | null }) {
-  if (!cost) {
-    // Render a placeholder chip so the bar's column count is stable
-    // before the first ``cost_updated`` arrives. The "Cost: $—" form
-    // also tells the creator the channel exists but is empty rather
-    // than missing.
-    return (
-      <span
-        className="rounded bg-slate-800 px-2 py-0.5 text-slate-400"
-        title="No cost data yet — first LLM call will populate this."
-      >
-        Cost: $—
-      </span>
-    );
-  }
-  return (
-    <details className="relative">
-      <summary
-        className="cursor-pointer list-none rounded bg-slate-800 px-2 py-0.5 font-semibold text-emerald-300 hover:bg-slate-700/60 focus-visible:outline focus-visible:outline-2 focus-visible:outline-emerald-300"
-        title="Cumulative Anthropic API spend for this session. Click to expand the token breakdown."
-      >
-        Cost: ${cost.estimated_usd.toFixed(4)}
-      </summary>
-      {/* Absolutely-positioned popover so the disclosure body doesn't
-          push siblings around when toggled. ``z-20`` keeps it above the
-          page grid; matching the bar's right-side anchor lets it expand
-          left without leaving the viewport. */}
-      <div className="absolute right-0 top-full z-20 mt-1 w-72 rounded border border-slate-700 bg-slate-900 p-3 text-xs text-slate-200 shadow-lg">
-        <p className="mb-1 uppercase tracking-widest text-slate-400">
-          Cost — token breakdown
-        </p>
-        <dl className="grid grid-cols-2 gap-x-3 gap-y-1">
-          <dt className="text-slate-400">Input</dt>
-          <dd className="text-right text-slate-100">
-            {cost.input_tokens.toLocaleString()}
-          </dd>
-          <dt className="text-slate-400">Output</dt>
-          <dd className="text-right text-slate-100">
-            {cost.output_tokens.toLocaleString()}
-          </dd>
-          <dt className="text-slate-400">Cache read</dt>
-          <dd className="text-right text-slate-100">
-            {cost.cache_read_tokens.toLocaleString()}
-          </dd>
-          <dt className="text-slate-400">Cache create</dt>
-          <dd className="text-right text-slate-100">
-            {cost.cache_creation_tokens.toLocaleString()}
-          </dd>
-          <dt className="font-semibold text-emerald-300">Estimated</dt>
-          <dd className="text-right font-semibold text-emerald-300">
-            ${cost.estimated_usd.toFixed(4)}
-          </dd>
-        </dl>
-        <p className="mt-2 text-[10px] leading-tight text-slate-500">
-          Charged to the operator's Anthropic key. Cumulative for this
-          session.
-        </p>
-      </div>
-    </details>
-  );
-}
+/* CostChip moved to <BottomActionBar/> as `CostChipMini`. The
+ * post-redesign chrome puts dense operator telemetry (cost, turn,
+ * msgs, rationale, last event, ws state, build SHA) in the bottom
+ * action bar so the top SiteHeader stays uncluttered brand chrome.
+ * If a future task needs an inline cost chip back in the top bar, the
+ * minimal mono variant in `BottomActionBar` is the canonical version. */
 
 function ActiveRolesHint({
   activeRoleIds,
@@ -1915,8 +1599,8 @@ function ActiveRolesHint({
     .map((id) => roles.find((r) => r.id === id)?.label ?? id)
     .join(", ");
   return (
-    <div className="rounded border border-emerald-700/40 bg-emerald-950/30 p-2 text-xs text-emerald-200">
-      <p className="uppercase tracking-widest text-emerald-300">Active</p>
+    <div className="rounded border border-signal-deep bg-signal-tint p-2 text-xs text-signal-bright">
+      <p className="uppercase tracking-widest text-signal">Active</p>
       <p>{labels || "(none)"}</p>
     </div>
   );
@@ -1927,11 +1611,12 @@ function ActiveRolesHint({
  * the actor we're blocked on so the screen doesn't look frozen, with a
  * smaller ``(N of M)`` tail for at-a-glance count.
  *
- * Issue #88: previously rendered amber-on-amber (read as "warning") and
- * exposed a per-role "Copy invite" button that duplicated the Copy link
- * affordance already in the Roles panel. The tone is now neutral slate
- * matching the rest of the awaiting-state banners; copy/issuing links is
- * handled exclusively by the Roles panel.
+ * Issue #88: previously rendered warn-tone-on-warn-tone (read as
+ * "warning") and exposed a per-role "Copy invite" button that
+ * duplicated the Copy link affordance already in the Roles panel.
+ * The tone is now neutral ink matching the rest of the
+ * awaiting-state banners; copy/issuing links is handled
+ * exclusively by the Roles panel.
  */
 export function WaitingChip({
   activeRoleIds,
@@ -1964,10 +1649,10 @@ export function WaitingChip({
     <div
       role="status"
       aria-live="polite"
-      className="mb-2 flex items-center gap-2 rounded bg-slate-800 px-2 py-1 text-xs text-slate-200"
+      className="mb-2 flex items-center gap-2 rounded bg-ink-800 px-2 py-1 text-xs text-ink-200"
     >
       <span>{phrase}</span>
-      <span className="text-slate-400">
+      <span className="text-ink-400">
         ({pending.length} of {activeRoleIds.length})
       </span>
     </div>
@@ -2012,78 +1697,88 @@ function SetupView({
   return (
     <div className="flex flex-col gap-3">
       <div>
-        <h2 className="text-lg font-semibold">Setup dialogue</h2>
-        <p className="text-xs text-slate-400">
-          Answer the AI's questions briefly. When you have shared enough background, click{" "}
+        <p className="mono text-[10px] font-bold uppercase tracking-[0.22em] text-signal">
+          STEP 02 · SETUP DIALOGUE
+        </p>
+        <h2 className="mt-1 text-lg font-semibold tracking-[-0.01em] text-ink-050">
+          Answer the AI's setup questions
+        </h2>
+        <p className="mt-1 text-xs text-ink-300 leading-relaxed">
+          Answer briefly. When you have shared enough background, click{" "}
           <em>"Looks ready — propose the plan"</em> to nudge it to draft. Once a plan is on the
           table, click <em>"Approve plan"</em> to commit it.
         </p>
       </div>
 
       {notes.length === 0 && !busy ? (
-        <p className="rounded border border-amber-700 bg-amber-950/40 p-3 text-xs text-amber-200">
-          No setup messages yet. The AI usually responds in 5–20 seconds. If nothing appears soon,
-          check the backend container logs — the most common causes are a missing
-          <code className="mx-1 rounded bg-slate-900 px-1">ANTHROPIC_API_KEY</code> or a network
-          issue reaching the Anthropic API.
-        </p>
+        <div className="flex flex-col items-center gap-3 rounded-r-3 border border-warn bg-warn-bg p-6">
+          <DieLoader label="Waiting for the AI's first question" size={64} />
+          <p className="mono text-[11px] uppercase tracking-[0.06em] text-warn">
+            No setup messages yet. The AI usually responds in 5–20 seconds.
+            If nothing appears soon, check the backend container logs — the
+            most common causes are a missing{" "}
+            <code className="mx-1 rounded-r-1 bg-ink-900 px-1 text-signal">ANTHROPIC_API_KEY</code>{" "}
+            or a network issue reaching the Anthropic API.
+          </p>
+        </div>
       ) : null}
 
       <SetupChat notes={notes} busy={busy} onPickOption={onPickOption} />
 
-      {/* Operator-action busy chip — pinned with the reply form so the
-          "is the AI thinking?" signal stays where the operator's eye is.
-          See the play-phase BusyChip above the Composer for the same
-          pattern. */}
       <BusyChip busy={busy} message={busyMessage} />
 
-      <form onSubmit={onSubmit} className="flex flex-col gap-2">
+      <form
+        onSubmit={onSubmit}
+        className="flex flex-col gap-2 rounded-r-3 border border-ink-600 bg-ink-850 p-3"
+      >
+        <span className="mono text-[10px] font-bold uppercase tracking-[0.20em] text-signal">
+          REPLY TO THE AI
+        </span>
         <textarea
           value={setupReply}
           onChange={(e) => setSetupReply(e.target.value)}
           rows={3}
           placeholder="Type your reply to the AI…"
           disabled={busy}
-          className="rounded border border-slate-700 bg-slate-900 p-2 text-sm disabled:opacity-50"
+          className="rounded-r-1 border border-ink-600 bg-ink-900 p-3 text-sm text-ink-100 sans focus-visible:outline focus-visible:outline-2 focus-visible:outline-signal-deep focus:border-signal-deep disabled:opacity-50"
         />
         <div className="flex flex-wrap gap-2">
           <button
             type="submit"
             disabled={busy || !setupReply.trim()}
-            className="rounded bg-sky-600 px-3 py-1 text-sm font-semibold text-white disabled:opacity-50"
+            className="mono rounded-r-1 bg-signal px-3 py-1.5 text-[11px] font-bold uppercase tracking-[0.16em] text-ink-900 hover:bg-signal-bright disabled:cursor-not-allowed disabled:opacity-50"
           >
-            Send reply
+            SEND REPLY →
           </button>
           {hasPlan ? (
-            // A draft plan exists — only one action (finalize) is meaningful.
             <button
               type="button"
               onClick={onApprovePlan}
               disabled={busy}
-              className="rounded bg-emerald-600 px-3 py-1 text-sm font-semibold text-white hover:bg-emerald-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-emerald-300 disabled:opacity-50"
+              className="mono rounded-r-1 border border-signal-deep bg-signal-tint px-3 py-1.5 text-[11px] font-bold uppercase tracking-[0.16em] text-signal hover:border-signal hover:bg-signal/20 focus-visible:outline focus-visible:outline-2 focus-visible:outline-signal disabled:opacity-50"
               title="Commits the existing draft plan immediately (no AI call)."
             >
-              Approve &amp; start lobby
+              APPROVE &amp; START LOBBY →
             </button>
           ) : (
             <button
               type="button"
               onClick={onLooksReady}
               disabled={busy}
-              className="rounded border border-emerald-600 px-3 py-1 text-sm font-semibold text-emerald-300 hover:bg-emerald-700/20 focus-visible:outline focus-visible:outline-2 focus-visible:outline-emerald-300 disabled:opacity-50"
+              className="mono rounded-r-1 border border-signal-deep px-3 py-1.5 text-[11px] font-semibold uppercase tracking-[0.16em] text-signal hover:bg-signal-tint focus-visible:outline focus-visible:outline-2 focus-visible:outline-signal disabled:opacity-50"
               title="Asks the AI to draft a plan; auto-finalizes it if one comes back."
             >
-              Looks ready — propose the plan
+              LOOKS READY — PROPOSE THE PLAN
             </button>
           )}
           <button
             type="button"
             onClick={onSkipSetup}
             disabled={busy}
-            className="ml-auto rounded border border-dashed border-slate-700 px-3 py-1 text-xs text-slate-500 opacity-70 hover:opacity-100 hover:bg-slate-800 disabled:opacity-50"
+            className="mono ml-auto rounded-r-1 border border-dashed border-ink-500 px-3 py-1 text-[10px] uppercase tracking-[0.16em] text-ink-500 opacity-70 hover:opacity-100 hover:bg-ink-800 disabled:opacity-50"
             title="Dev/testing only: skip the AI setup dialogue and use a generic default plan."
           >
-            Skip setup (dev only)
+            SKIP SETUP (DEV)
           </button>
         </div>
       </form>
@@ -2095,9 +1790,12 @@ function SetupView({
 
 function PlanPreview({ plan, sessionId }: { plan: ScenarioPlan; sessionId?: string }) {
   return (
-    <details className="rounded border border-emerald-700/60 bg-emerald-950/20 p-2 text-xs" open>
-      <summary className="cursor-pointer text-emerald-300">
-        Proposed plan: {plan.title}
+    <details
+      className="rounded-r-3 border border-signal-deep bg-signal-tint p-3 text-xs"
+      open
+    >
+      <summary className="mono cursor-pointer text-[11px] font-bold uppercase tracking-[0.16em] text-signal">
+        ● PROPOSED PLAN — {plan.title}
       </summary>
       <div className="mt-2">
         <PlanView plan={plan} sessionId={sessionId} />
@@ -2157,14 +1855,14 @@ function PlanView({
     });
   }
   return (
-    <article className="flex flex-col gap-4 text-sm text-slate-100">
+    <article className="flex flex-col gap-4 text-sm text-ink-100">
       <header>
-        <h3 className="text-lg font-semibold text-emerald-100">{plan.title}</h3>
+        <h3 className="text-lg font-semibold text-signal-100">{plan.title}</h3>
       </header>
 
       {plan.executive_summary ? (
         <section className="flex flex-col gap-1">
-          <h4 className="text-xs uppercase tracking-widest text-slate-400">
+          <h4 className="text-xs uppercase tracking-widest text-ink-400">
             Executive summary
           </h4>
           <ReactMarkdown
@@ -2185,7 +1883,7 @@ function PlanView({
 
       {plan.key_objectives.length > 0 ? (
         <section className="flex flex-col gap-1">
-          <h4 className="text-xs uppercase tracking-widest text-slate-400">Key objectives</h4>
+          <h4 className="text-xs uppercase tracking-widest text-ink-400">Key objectives</h4>
           <ul className="ml-4 list-disc space-y-0.5">
             {plan.key_objectives.map((o, i) => (
               <li key={i}>{o}</li>
@@ -2196,7 +1894,7 @@ function PlanView({
 
       {plan.guardrails.length > 0 ? (
         <section className="flex flex-col gap-1">
-          <h4 className="text-xs uppercase tracking-widest text-slate-400">Guardrails</h4>
+          <h4 className="text-xs uppercase tracking-widest text-ink-400">Guardrails</h4>
           <ul className="ml-4 list-disc space-y-0.5">
             {plan.guardrails.map((o, i) => (
               <li key={i}>{o}</li>
@@ -2207,7 +1905,7 @@ function PlanView({
 
       {plan.success_criteria.length > 0 ? (
         <section className="flex flex-col gap-1">
-          <h4 className="text-xs uppercase tracking-widest text-slate-400">
+          <h4 className="text-xs uppercase tracking-widest text-ink-400">
             Success criteria
           </h4>
           <ul className="ml-4 list-disc space-y-0.5">
@@ -2220,7 +1918,7 @@ function PlanView({
 
       {plan.out_of_scope.length > 0 ? (
         <section className="flex flex-col gap-1">
-          <h4 className="text-xs uppercase tracking-widest text-slate-400">Out of scope</h4>
+          <h4 className="text-xs uppercase tracking-widest text-ink-400">Out of scope</h4>
           <ul className="ml-4 list-disc space-y-0.5">
             {plan.out_of_scope.map((o, i) => (
               <li key={i}>{o}</li>
@@ -2230,15 +1928,15 @@ function PlanView({
       ) : null}
 
       {plan.narrative_arc.length > 0 || plan.injects.length > 0 ? (
-        <section className="flex flex-col gap-2 rounded border border-amber-700/40 bg-amber-950/20 p-2">
+        <section className="flex flex-col gap-2 rounded border border-warn bg-warn-bg p-2">
           <header className="flex flex-wrap items-center justify-between gap-2">
-            <h4 className="text-xs uppercase tracking-widest text-amber-200">
+            <h4 className="text-xs uppercase tracking-widest text-warn">
               Narrative arc &amp; injects
             </h4>
             <button
               type="button"
               onClick={toggleReveal}
-              className="rounded border border-amber-500/60 px-2 py-0.5 text-xs font-semibold text-amber-100 hover:bg-amber-900/30"
+              className="rounded border border-warn px-2 py-0.5 text-xs font-semibold text-warn hover:bg-warn-bg"
               aria-pressed={reveal}
               title={
                 reveal
@@ -2250,7 +1948,7 @@ function PlanView({
             </button>
           </header>
           {!reveal ? (
-            <p className="text-xs text-amber-200/80">
+            <p className="text-xs text-warn">
               <span className="font-semibold">Participant mode.</span>{" "}
               Hidden so you can play through fresh. {plan.narrative_arc.length}{" "}
               beat{plan.narrative_arc.length === 1 ? "" : "s"}, {plan.injects.length}{" "}
@@ -2261,7 +1959,7 @@ function PlanView({
             <>
               {plan.narrative_arc.length > 0 ? (
                 <div className="flex flex-col gap-1">
-                  <p className="text-[11px] uppercase tracking-widest text-amber-200/80">
+                  <p className="text-[11px] uppercase tracking-widest text-warn">
                     Narrative arc
                   </p>
                   <ol className="ml-4 list-decimal space-y-1">
@@ -2269,7 +1967,7 @@ function PlanView({
                       <li key={b.beat}>
                         <span className="font-semibold">{b.label}</span>
                         {b.expected_actors.length > 0 ? (
-                          <span className="ml-1 text-slate-400">
+                          <span className="ml-1 text-ink-400">
                             — {b.expected_actors.join(", ")}
                           </span>
                         ) : null}
@@ -2280,14 +1978,14 @@ function PlanView({
               ) : null}
               {plan.injects.length > 0 ? (
                 <div className="flex flex-col gap-1">
-                  <p className="text-[11px] uppercase tracking-widest text-amber-200/80">
+                  <p className="text-[11px] uppercase tracking-widest text-warn">
                     Injects
                   </p>
                   <ul className="ml-4 list-disc space-y-1">
                     {plan.injects.map((inj, i) => (
                       <li key={i}>
-                        <span className="text-slate-400">[{inj.trigger}]</span>{" "}
-                        <span className="text-slate-400">({inj.type})</span>{" "}
+                        <span className="text-ink-400">[{inj.trigger}]</span>{" "}
+                        <span className="text-ink-400">({inj.type})</span>{" "}
                         {inj.summary}
                       </li>
                     ))}
@@ -2364,49 +2062,64 @@ function EndedView({ sessionId, token }: { sessionId: string; token: string }) {
 
   return (
     <div
-      className="flex flex-col gap-3 rounded border border-emerald-700/60 bg-emerald-950/30 p-4"
+      className="flex flex-col gap-3 rounded-r-3 border border-signal-deep bg-signal-tint p-5"
       role="status"
       aria-live="polite"
     >
-      <h2 className="text-lg font-semibold text-emerald-200">
+      <p className="mono text-[10px] font-bold uppercase tracking-[0.22em] text-signal">
+        STEP 06 · REVIEW
+      </p>
+      <h2 className="text-lg font-semibold tracking-[-0.01em] text-ink-050">
         Session ended — exercise complete
       </h2>
       {aarState === "generating" ? (
-        <p className="inline-flex items-center gap-2 text-sm text-emerald-100">
-          <span
-            aria-hidden="true"
-            className="inline-block h-2 w-2 animate-ping rounded-full bg-emerald-400"
-          />
-          Generating after-action report (this can take 30–60 s)…
-        </p>
+        <div className="flex items-center gap-4 rounded-r-2 border border-ink-600 bg-ink-850 p-3">
+          <DieLoader size={48} label={null} />
+          <div className="flex-1">
+            <p className="mono text-[11px] font-bold uppercase tracking-[0.16em] text-signal">
+              GENERATING AFTER-ACTION REPORT
+            </p>
+            <p className="mt-1 text-xs text-ink-300">
+              This can take 30–60 seconds. The full transcript, per-role
+              scores, frozen scenario plan, and audit log all flow through
+              the AAR pipeline.
+            </p>
+          </div>
+        </div>
       ) : aarState === "ready" ? (
-        <p className="text-sm text-emerald-100">
-          After-action report is ready. Use{" "}
-          <span className="font-semibold">View AAR</span> in the sidebar
-          Controls to read it (the popup contains a Download .md button).
-          The report includes the full transcript, per-role scores, the
-          frozen scenario plan, and the audit log.
+        <p className="text-sm text-ink-100 leading-relaxed">
+          After-action report is{" "}
+          <span className="mono font-bold uppercase tracking-[0.10em] text-signal">
+            READY
+          </span>
+          . Click{" "}
+          <span className="mono font-bold uppercase tracking-[0.10em] text-signal">
+            VIEW AAR
+          </span>{" "}
+          in the bottom action bar to read it (the popup contains a
+          Download .md button). The report includes the full transcript,
+          per-role scores, the frozen scenario plan, and the audit log.
         </p>
       ) : aarState === "expired" ? (
-        <div className="flex flex-col gap-2">
-          <p className="text-sm text-amber-200">
-            This after-action report has expired and is no longer
-            available.
+        <div className="flex flex-col gap-2 rounded-r-2 border border-warn bg-warn-bg p-3">
+          <p className="mono text-[11px] font-bold uppercase tracking-[0.16em] text-warn">
+            ⚠ AAR EXPIRED
           </p>
-          <p className="text-xs text-amber-100/80">
+          <p className="text-xs text-ink-200 leading-relaxed">
             Sessions are purged from server memory after the configured
-            retention window (<code>EXPORT_RETENTION_MIN</code>, default
-            60 minutes) to limit data retention. There is no recovery — to
-            preserve a future AAR, download the <code>.md</code> file
-            before the window elapses.
+            retention window (<code className="mono text-signal">EXPORT_RETENTION_MIN</code>,
+            default 60 minutes) to limit data retention. There is no
+            recovery — to preserve a future AAR, download the{" "}
+            <code className="mono text-signal">.md</code> file before the
+            window elapses.
           </p>
         </div>
       ) : (
-        <div className="flex flex-col gap-2">
-          <p className="text-sm text-red-300">
-            AAR generation failed{errMsg ? `: ${errMsg}` : ""}.
+        <div className="flex flex-col gap-2 rounded-r-2 border border-crit bg-crit-bg p-3">
+          <p className="mono text-[11px] font-bold uppercase tracking-[0.16em] text-crit">
+            ● AAR GENERATION FAILED{errMsg ? ` — ${errMsg}` : ""}
           </p>
-          <p className="text-xs text-red-200/80">
+          <p className="text-xs text-ink-200 leading-relaxed">
             Most failures are transient (model timeout, rate limit). Click
             Retry — if it keeps failing, check the backend logs or contact
             your operator.
@@ -2424,9 +2137,9 @@ function EndedView({ sessionId, token }: { sessionId: string; token: string }) {
                 setErrMsg(err instanceof Error ? err.message : String(err));
               }
             }}
-            className="self-start rounded bg-amber-600 px-3 py-1 text-sm font-semibold text-white hover:bg-amber-500"
+            className="mono self-start rounded-r-1 bg-warn px-3 py-1.5 text-[11px] font-bold uppercase tracking-[0.16em] text-ink-900 hover:bg-warn/80"
           >
-            Retry AAR generation
+            RETRY AAR GENERATION
           </button>
         </div>
       )}
@@ -2443,46 +2156,12 @@ function AARPopup({
   token: string;
   onClose: () => void;
 }) {
-  const [body, setBody] = useState<string | null>(null);
-  const [err, setErr] = useState<string | null>(null);
   const dialogRef = useRef<HTMLDialogElement>(null);
+  const downloadMdHref = `/api/sessions/${sessionId}/export.md?token=${encodeURIComponent(token)}`;
+  const downloadJsonHref = `/api/sessions/${sessionId}/export.json?token=${encodeURIComponent(token)}`;
 
-  const downloadHref = `/api/sessions/${sessionId}/export.md?token=${encodeURIComponent(token)}`;
-
-  // Fetch the markdown body once when the popup mounts.
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const res = await fetch(downloadHref);
-        if (cancelled) return;
-        if (!res.ok) {
-          // 410 Gone = backend evicted the session after the retention
-          // window. Surface a plain-English message instead of "HTTP 410".
-          if (res.status === 410) {
-            setErr(
-              "This after-action report has expired and is no longer available — sessions are purged after the configured retention window.",
-            );
-          } else {
-            setErr(`HTTP ${res.status}`);
-          }
-          return;
-        }
-        const text = await res.text();
-        if (!cancelled) setBody(text);
-      } catch (e) {
-        if (!cancelled) setErr(e instanceof Error ? e.message : String(e));
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-    // downloadHref is derived from sessionId/token; safe to depend on them.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sessionId, token]);
-
-  // Use the native <dialog> element so we get focus-trap + Esc-to-close
-  // for free, matching God Mode's pattern.
+  // Use the native <dialog> for focus-trap + Esc-to-close. Matches the
+  // GodMode pattern.
   useEffect(() => {
     const dlg = dialogRef.current;
     if (!dlg) return;
@@ -2496,134 +2175,59 @@ function AARPopup({
     <dialog
       ref={dialogRef}
       onClose={onClose}
-      className="m-auto flex h-[90vh] w-[min(900px,95vw)] flex-col rounded-lg border border-slate-700 bg-slate-900 p-0 text-slate-100 backdrop:bg-black/60"
+      className="m-auto flex h-[90vh] w-[min(1080px,96vw)] flex-col rounded-r-3 border border-ink-600 bg-ink-850 p-0 text-ink-100 backdrop:bg-black/60"
       aria-labelledby="aar-popup-heading"
     >
-      <div className="flex shrink-0 items-center justify-between gap-3 border-b border-slate-800 bg-slate-950/70 p-3">
-        <h3 id="aar-popup-heading" className="text-sm font-semibold text-emerald-200">
-          After-action report
-        </h3>
+      <div className="flex shrink-0 items-center justify-between gap-3 border-b border-ink-600 bg-ink-900 p-3">
+        <div className="flex items-center gap-3">
+          <img
+            src="/logo/svg/lockup-crittable-dark-transparent.svg"
+            alt="Crittable"
+            height={20}
+            style={{ height: 20 }}
+            className="block"
+          />
+          <span className="h-5 w-px bg-ink-600" aria-hidden="true" />
+          <h3
+            id="aar-popup-heading"
+            className="mono text-[11px] font-bold uppercase tracking-[0.22em] text-signal"
+          >
+            ● AFTER-ACTION REPORT
+          </h3>
+        </div>
         <div className="flex items-center gap-2">
           <a
-            href={downloadHref}
+            href={downloadMdHref}
             rel="noopener"
             download
-            className="rounded bg-emerald-600 px-3 py-1 text-xs font-semibold text-white hover:bg-emerald-500"
+            className="mono rounded-r-1 bg-signal px-3 py-1 text-[10px] font-bold uppercase tracking-[0.16em] text-ink-900 hover:bg-signal-bright"
           >
-            Download .md
+            DOWNLOAD .MD
           </a>
           <button
             type="button"
             onClick={onClose}
-            className="rounded border border-slate-600 px-3 py-1 text-xs text-slate-200 hover:bg-slate-800"
+            className="mono rounded-r-1 border border-ink-500 px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-ink-200 hover:border-ink-400 hover:bg-ink-800"
           >
-            Close
+            CLOSE
           </button>
         </div>
       </div>
-      <div className="min-h-0 flex-1 overflow-auto p-4 text-sm leading-relaxed">
-        {err ? (
-          <p className="text-red-300">Failed to load AAR: {err}</p>
-        ) : body == null ? (
-          <p className="text-slate-400">Loading…</p>
-        ) : (
-          <article className="text-slate-100">
-            <ReactMarkdown
-              skipHtml
-              // GFM = tables / strikethrough / autolinks / task lists. The
-              // AAR generator emits per-role score tables, so without this
-              // they render as raw pipe text.
-              remarkPlugins={[remarkGfm]}
-              components={{
-                h1: ({ children }) => (
-                  <h1 className="mb-3 mt-4 text-xl font-semibold text-emerald-100">{children}</h1>
-                ),
-                h2: ({ children }) => (
-                  <h2 className="mb-2 mt-4 text-lg font-semibold text-emerald-100">{children}</h2>
-                ),
-                h3: ({ children }) => (
-                  <h3 className="mb-2 mt-3 text-base font-semibold text-emerald-200">{children}</h3>
-                ),
-                h4: ({ children }) => (
-                  <h4 className="mb-1 mt-3 text-sm font-semibold text-emerald-200">{children}</h4>
-                ),
-                p: ({ children }) => <p className="mb-3 whitespace-pre-wrap">{children}</p>,
-                ul: ({ children }) => <ul className="mb-3 ml-5 list-disc space-y-1">{children}</ul>,
-                ol: ({ children }) => <ol className="mb-3 ml-5 list-decimal space-y-1">{children}</ol>,
-                li: ({ children }) => <li className="leading-relaxed">{children}</li>,
-                strong: ({ children }) => <strong className="font-semibold">{children}</strong>,
-                em: ({ children }) => <em className="italic">{children}</em>,
-                blockquote: ({ children }) => (
-                  <blockquote className="mb-3 border-l-4 border-slate-700 pl-3 italic text-slate-300">
-                    {children}
-                  </blockquote>
-                ),
-                code: ({ children }) => (
-                  <code className="rounded bg-slate-800 px-1 py-0.5 text-[0.85em]">{children}</code>
-                ),
-                pre: ({ children }) => (
-                  <pre className="mb-3 overflow-auto rounded bg-slate-950 p-2 text-[0.85em]">
-                    {children}
-                  </pre>
-                ),
-                hr: () => <hr className="my-4 border-slate-700" />,
-                a: ({ href, children }) => (
-                  <a
-                    href={href}
-                    target="_blank"
-                    rel="noreferrer noopener"
-                    className="text-sky-300 underline"
-                  >
-                    {children}
-                  </a>
-                ),
-                del: ({ children }) => (
-                  <del className="text-slate-400 line-through">{children}</del>
-                ),
-                table: ({ children }) => (
-                  <TableScroll>
-                    <table className="min-w-full border-collapse text-xs">{children}</table>
-                  </TableScroll>
-                ),
-                thead: ({ children }) => (
-                  <thead className="bg-slate-900/60">{children}</thead>
-                ),
-                tr: ({ children }) => (
-                  <tr className="border-b border-slate-800">{children}</tr>
-                ),
-                th: ({ children }) => (
-                  <th className="border border-slate-700 px-2 py-1 text-left font-semibold">
-                    {children}
-                  </th>
-                ),
-                td: ({ children }) => (
-                  <td className="border border-slate-800 px-2 py-1 align-top">
-                    {children}
-                  </td>
-                ),
-              }}
-            >
-              {body}
-            </ReactMarkdown>
-          </article>
-        )}
+      <div className="min-h-0 flex-1 overflow-hidden p-5">
+        <AarReportView
+          sessionId={sessionId}
+          token={token}
+          downloadMdHref={downloadMdHref}
+          downloadJsonHref={downloadJsonHref}
+        />
       </div>
-      <div className="flex shrink-0 items-center justify-end gap-2 border-t border-slate-800 bg-slate-950/70 p-3">
-        <a
-          href={downloadHref}
-          rel="noopener"
-          download
-          className="rounded bg-emerald-600 px-3 py-1 text-xs font-semibold text-white hover:bg-emerald-500"
-        >
-          Download .md
-        </a>
-        <button
-          type="button"
-          onClick={onClose}
-          className="rounded border border-slate-600 px-3 py-1 text-xs text-slate-200 hover:bg-slate-800"
-        >
-          Close
-        </button>
+      <div className="flex shrink-0 items-center justify-between gap-2 border-t border-ink-600 bg-ink-900 p-3">
+        <span className="mono text-[10px] uppercase tracking-[0.16em] text-ink-500">
+          ROLL · RESPOND · REVIEW
+        </span>
+        <span className="mono text-[10px] uppercase tracking-[0.10em] text-ink-500 tabular-nums">
+          SESSION {sessionId.slice(0, 8)}
+        </span>
       </div>
     </dialog>
   );
@@ -2639,13 +2243,24 @@ function ReadyView({
 }) {
   return (
     <div className="flex flex-col gap-3">
-      <h2 className="text-lg font-semibold">Plan finalized — ready to start</h2>
+      <p className="mono text-[10px] font-bold uppercase tracking-[0.22em] text-signal">
+        STEP 04 · READY
+      </p>
+      <h2 className="text-lg font-semibold tracking-[-0.01em] text-ink-050">
+        Plan finalized — ready to start
+      </h2>
       {plan ? (
-        <div className="rounded border border-slate-700 bg-slate-900 p-3">
+        <div className="rounded-r-3 border border-ink-600 bg-ink-850 p-4">
           <PlanView plan={plan} sessionId={sessionId} />
         </div>
       ) : null}
-      <p className="text-sm text-slate-400">Add at least 2 roles, then click "Start session".</p>
+      <p className="mono text-[11px] uppercase tracking-[0.06em] text-ink-300">
+        Add at least 2 roles, then click{" "}
+        <span className="mono font-bold tracking-[0.16em] text-signal">
+          START SESSION
+        </span>{" "}
+        in the bottom action bar.
+      </p>
     </div>
   );
 }

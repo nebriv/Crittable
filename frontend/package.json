@@ -1,7 +1,8 @@
 {
-  "name": "ai-tabletop-facilitator-frontend",
+  "name": "crittable-frontend",
   "private": true,
   "version": "0.0.1",
+  "license": "SEE LICENSE IN ../LICENSE",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -12,6 +13,8 @@
     "test": "vitest"
   },
   "dependencies": {
+    "@fontsource-variable/inter": "^5.2.8",
+    "@fontsource-variable/jetbrains-mono": "^5.2.8",
     "@testing-library/dom": "^10.4.1",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
