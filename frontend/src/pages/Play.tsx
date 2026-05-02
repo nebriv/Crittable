@@ -7,6 +7,7 @@ import { RoleRoster } from "../components/RoleRoster";
 import { Transcript } from "../components/Transcript";
 import { DieLoader } from "../components/brand/DieLoader";
 import { HudGauges } from "../components/brand/HudGauges";
+import { confirmLeaveSession } from "../lib/leaveGuard";
 import { isMidSessionJoiner } from "../lib/proxy";
 import { useStickyScroll } from "../lib/useStickyScroll";
 import { ServerEvent, WsClient } from "../lib/ws";
@@ -789,11 +790,15 @@ export function Play({ sessionId, token }: Props) {
             aria-label="Crittable home"
             className="inline-flex items-center"
             title="Crittable"
+            onClick={confirmLeaveSession}
           >
             <img
-              src="/logo/svg/lockup-crittable-dark.svg"
+              src="/logo/svg/lockup-crittable-dark-transparent.svg"
               alt="Crittable"
               height={28}
+              // Tailwind preflight resets ``img { height: auto }``;
+              // inline style wins. Same trick on every lockup/mark.
+              style={{ height: 28 }}
               className="block"
             />
           </a>
@@ -1261,9 +1266,12 @@ export function JoinIntro({
         >
           <div className="flex items-center gap-3">
             <img
-              src="/logo/svg/lockup-crittable-dark.svg"
+              src="/logo/svg/lockup-crittable-dark-transparent.svg"
               alt="Crittable"
               height={28}
+              // Tailwind preflight resets ``img { height: auto }``;
+              // inline style wins. Same trick on every lockup/mark.
+              style={{ height: 28 }}
               className="block"
             />
           </div>
@@ -1321,9 +1329,10 @@ export function JoinIntro({
         <header className="flex flex-col gap-2">
           <div className="flex items-center gap-3 mb-2">
             <img
-              src="/logo/svg/lockup-crittable-dark.svg"
+              src="/logo/svg/lockup-crittable-dark-transparent.svg"
               alt="Crittable"
               height={32}
+              style={{ height: 32 }}
               className="block"
             />
           </div>

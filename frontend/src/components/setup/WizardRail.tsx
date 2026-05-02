@@ -57,10 +57,10 @@ export function WizardRail({ current, done }: Props) {
         }}
       >
         <img
-          src="/logo/svg/lockup-crittable-dark.svg"
+          src="/logo/svg/lockup-crittable-dark-transparent.svg"
           alt="Crittable"
           height={28}
-          style={{ display: "block" }}
+          style={{ display: "block", height: 28 }}
         />
       </a>
 

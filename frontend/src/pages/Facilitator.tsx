@@ -9,6 +9,7 @@ import {
   ScenarioPlan,
   SessionSnapshot,
 } from "../api/client";
+import { confirmLeaveSession } from "../lib/leaveGuard";
 import { AarReportView } from "../components/AarReport";
 import { Composer } from "../components/Composer";
 import { CriticalEventBanner } from "../components/CriticalEventBanner";
@@ -1391,11 +1392,22 @@ export function TopBar(props: {
           aria-label="Crittable home"
           className="inline-flex items-center"
           title="Crittable"
+          // Mid-session navigating to ``/`` (the marketing home)
+          // drops the operator's chat view + any in-flight reply.
+          // Confirm before letting the click through; helper lives
+          // in lib/leaveGuard so the same warning text applies to
+          // Play.tsx + WizardRail too.
+          onClick={confirmLeaveSession}
         >
           <img
-            src="/logo/svg/lockup-crittable-dark.svg"
+            src="/logo/svg/lockup-crittable-dark-transparent.svg"
             alt="Crittable"
             height={28}
+            // Tailwind preflight resets ``img { height: auto }`` —
+            // overrides the height attr and lets the SVG render at
+            // its intrinsic 100 px viewBox. Inline style wins. Same
+            // trick on every lockup/mark img in the codebase.
+            style={{ height: 28 }}
             className="block"
           />
         </a>
@@ -2102,9 +2114,10 @@ function AARPopup({
       <div className="flex shrink-0 items-center justify-between gap-3 border-b border-ink-600 bg-ink-900 p-3">
         <div className="flex items-center gap-3">
           <img
-            src="/logo/svg/lockup-crittable-dark.svg"
+            src="/logo/svg/lockup-crittable-dark-transparent.svg"
             alt="Crittable"
             height={20}
+            style={{ height: 20 }}
             className="block"
           />
           <span className="h-5 w-px bg-ink-600" aria-hidden="true" />

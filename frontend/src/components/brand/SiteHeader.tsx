@@ -66,10 +66,14 @@ export function SiteHeader({
         style={{ display: "flex", alignItems: "center", textDecoration: "none" }}
       >
         <img
-          src="/logo/svg/lockup-crittable-dark.svg"
+          src="/logo/svg/lockup-crittable-dark-transparent.svg"
           alt="Crittable"
           height={28}
-          style={{ display: "block" }}
+          // Inline height — Tailwind preflight resets ``img { height: auto }``
+          // which would otherwise force the SVG back to its intrinsic
+          // 100 px viewBox height. Same trick applied to every lockup
+          // / mark <img> in the codebase.
+          style={{ display: "block", height: 28 }}
         />
       </a>
       {session ? (

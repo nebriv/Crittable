@@ -186,8 +186,13 @@ export function BottomActionBar(props: Props) {
         state: {props.backendState}
       </span>
 
-      <div style={{ flex: 1 }} />
-
+      {/* Build SHA + admin meta cluster — keep grouped with the
+          telemetry above instead of pushing it to the far right.
+          Pre-fix this row had a ``<div style={{ flex: 1 }} />``
+          chasm separating left-side telemetry from right-side
+          meta, which read as two disconnected clusters at typical
+          viewport widths. The single-cluster flow with natural
+          ``gap-2`` spacing reads as one operator console row. */}
       <span
         className="mono rounded-r-1 bg-ink-800 px-2 py-0.5 text-[10px] text-ink-400"
         title={`Build: ${props.buildSha} · ${props.buildTs}`}

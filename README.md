@@ -2,7 +2,16 @@
   <img src="./assets/brand/mark-animated-dark.gif" alt="Crittable mark — die rolling through six encounter states" width="180" />
 </p>
 <p align="center">
-  <img src="./assets/brand/lockup-crittable-dark.png" alt="CRITTABLE — ROLL · RESPOND · REVIEW" width="320" />
+  <!-- Transparent SVG variants so the lockup looks correct on both
+       GitHub's dark and light README themes — the opaque PNG had
+       its own #0A0D13 background baked in and read as a black panel
+       on the light theme. The <picture> element + prefers-color-scheme
+       is rendered by GitHub's markdown pipeline. -->
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="./assets/brand/lockup-crittable-dark-transparent.svg" />
+    <source media="(prefers-color-scheme: light)" srcset="./assets/brand/lockup-crittable-light-transparent.svg" />
+    <img src="./assets/brand/lockup-crittable-dark-transparent.svg" alt="CRITTABLE — ROLL · RESPOND · REVIEW" width="320" />
+  </picture>
 </p>
 
 # Crittable

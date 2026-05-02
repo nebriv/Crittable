@@ -75,9 +75,10 @@ export function Home() {
             data-spa-nav
           >
             <img
-              src="/logo/svg/lockup-crittable-dark.svg"
+              src="/logo/svg/lockup-crittable-dark-transparent.svg"
               alt="Crittable"
               height={28}
+              style={{ height: 28 }}
               className="block"
             />
           </a>

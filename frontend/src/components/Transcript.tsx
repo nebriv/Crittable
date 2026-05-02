@@ -278,6 +278,12 @@ export function Transcript({
                   alt=""
                   width={26}
                   height={26}
+                  // Inline ``style`` rather than the HTML attrs alone:
+                  // Tailwind preflight resets ``img { height: auto }``
+                  // which overrides the height attribute and forces
+                  // the image back to its intrinsic SVG viewBox size.
+                  // Inline style wins over preflight specificity-wise.
+                  style={{ height: 26, width: 26 }}
                   className="block"
                 />
               </div>
