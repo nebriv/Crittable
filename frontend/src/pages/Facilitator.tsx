@@ -25,7 +25,10 @@ import { DieLoader } from "../components/brand/DieLoader";
 import { HudGauges } from "../components/brand/HudGauges";
 import { TurnStateRail } from "../components/brand/TurnStateRail";
 import { SetupWizard } from "../components/setup/SetupWizard";
-import { buildImpersonateOptions } from "../lib/proxy";
+import {
+  buildImpersonateOptions,
+  countUnjoinedImpersonateOptions,
+} from "../lib/proxy";
 import { useStickyScroll } from "../lib/useStickyScroll";
 import { ServerEvent, WsClient } from "../lib/ws";
 
@@ -1195,14 +1198,22 @@ export function Facilitator() {
                   snapshot.state === "AWAITING_PLAYERS" && !busy;
                 const canSelfSpeak = isMyTurn && !busy;
                 const canProxy = impersonateOptions.length > 0 && !busy;
+                // Issue #103: the tip used to fire whenever the
+                // "Respond as" dropdown had any entries — but the
+                // dropdown also includes joined-and-actively-playing
+                // roles that simply haven't submitted on the current
+                // turn. Only nudge the creator about invite links when
+                // there's actually a player role with no live tabs.
+                const unjoinedImpersonateCount =
+                  countUnjoinedImpersonateOptions(impersonateOptions, presence);
                 return (
                   <>
-                    {canProxy && impersonateOptions.length > 0 ? (
+                    {canProxy && unjoinedImpersonateCount > 0 ? (
                       // One-line hint addressing the user-agent CRITICAL —
                       // a fresh creator should know WHY a "Respond as"
                       // dropdown just appeared and that it's optional.
                       <p className="mb-1 text-[11px] text-ink-400">
-                        Tip: {impersonateOptions.length === 1 ? "1 role hasn't" : `${impersonateOptions.length} roles haven't`}{" "}
+                        Tip: {unjoinedImpersonateCount === 1 ? "1 role hasn't" : `${unjoinedImpersonateCount} roles haven't`}{" "}
                         joined yet — share their invite link, or use
                         "Respond as" to answer for them while solo-testing.
                       </p>

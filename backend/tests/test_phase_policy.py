@@ -51,10 +51,13 @@ def test_play_policy_shape() -> None:
     # changes more frequently than the policy.
     assert "broadcast" in p.allowed_tool_names
     assert "set_active_roles" in p.allowed_tool_names
-    assert "end_session" in p.allowed_tool_names
     # Setup-only tools must NOT be in the play set.
     assert "ask_setup_question" not in p.allowed_tool_names
     assert "finalize_setup" not in p.allowed_tool_names
+    # Issue #104: ``end_session`` was removed from the play palette.
+    # Only the creator can end an exercise; this assertion locks the
+    # palette in case a future refactor re-adds the tool.
+    assert "end_session" not in p.allowed_tool_names
     assert p.tool_choice is None
     assert p.bare_text_allowed is True
 

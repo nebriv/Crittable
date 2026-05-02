@@ -348,18 +348,18 @@ PLAY_TOOLS: list[dict[str, Any]] = [
     # we want a player-visible timeline pin in the future, it should
     # be a side-effect of a critical inject or an end-of-beat
     # broadcast, not a standalone tool.
-    {
-        "name": "end_session",
-        "description": "Terminate the exercise. Triggers the AAR generation pipeline.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "reason": {"type": "string"},
-                "summary": {"type": "string"},
-            },
-            "required": ["reason"],
-        },
-    },
+    #
+    # Note: ``end_session`` was removed in the 2026-05-02 cleanup
+    # (issue #104). The AI was occasionally narrating "I'll end the
+    # session here" without actually calling the tool, which gave
+    # creators the false impression that the AI had wrapped up. Beyond
+    # that signal-loss, ending an exercise is a creator-shaped
+    # decision: it commits everyone to the AAR pipeline and there's no
+    # undo. The creator surface (POST /api/sessions/{id}/end + the WS
+    # ``request_end_session`` event) remains the only path. The
+    # dispatcher / turn-driver still carry the ``end_session_reason``
+    # plumbing as defensive dead code — if a future regression
+    # re-adds the tool the engine still wires it correctly.
 ]
 
 

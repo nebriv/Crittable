@@ -1045,10 +1045,10 @@ _KICKOFF_USER_MSG = (
 _TURN_REMINDER = (
     "[system] Your turn. Emit your tool calls in ONE response: a player-"
     "facing tool (`broadcast`, `address_role`, or `share_data`) AND "
-    "`set_active_roles` (or `end_session`). A short text block with "
-    "your reasoning is fine; the engine harvests it as the creator-only "
-    "rationale. Stopping after a single tool call is a bug — players "
-    "see no message and the turn never advances."
+    "`set_active_roles`. A short text block with your reasoning is fine; "
+    "the engine harvests it as the creator-only rationale. Stopping "
+    "after a single tool call is a bug — players see no message and the "
+    "turn never advances."
 )
 
 

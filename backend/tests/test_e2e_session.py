@@ -905,13 +905,17 @@ def test_strict_retry_recovers_when_ai_skips_yield(
     # ``inject_event`` and ``mark_timeline_point`` were removed from the
     # standard play palette in the 2026-04-30 redesign — they were
     # perpetual attractors for "do something easy and stop" misfires.
-    # The dispatcher handlers remain as defensive dead code.
+    # ``end_session`` was removed in the 2026-05-02 cleanup (issue
+    # #104) — only the creator can end an exercise. The dispatcher
+    # handlers remain as defensive dead code.
     assert first_tools >= {
         "broadcast",
         "share_data",
         "set_active_roles",
-        "end_session",
     }, f"first attempt should expose the full play tool list; got {first_tools}"
+    assert "end_session" not in first_tools, (
+        "issue #104: end_session must not be exposed to the play tier"
+    )
 
     # The yield-recovery pass MUST appear somewhere after the first
     # call: pinned to ``set_active_roles`` only, narrowed tools.

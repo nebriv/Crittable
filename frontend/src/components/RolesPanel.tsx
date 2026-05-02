@@ -251,8 +251,13 @@ export function RolesPanel({
             key={r.id}
             className="flex flex-col gap-1 rounded-r-1 border border-ink-600 bg-ink-800 p-2"
           >
-            <div className="flex items-baseline justify-between gap-2">
-              <div className="flex items-baseline gap-2">
+            {/* Issue #105: row laid out as a flex-wrap header (so the
+                three action buttons drop onto a second line on the
+                narrow 260px creator rail) plus min-w-0 + break-words on
+                the label half, so long role labels can shrink/wrap
+                instead of pushing the buttons off the right edge. */}
+            <div className="flex flex-wrap items-baseline justify-between gap-x-2 gap-y-1">
+              <div className="flex min-w-0 flex-1 flex-wrap items-baseline gap-x-2 gap-y-0.5">
                 {connectedRoleIds ? (
                   <span
                     aria-hidden="true"
@@ -263,9 +268,13 @@ export function RolesPanel({
                     }
                   />
                 ) : null}
-                <span className="mono font-bold uppercase tracking-[0.06em] text-ink-100">{r.label}</span>
+                <span className="mono break-words font-bold uppercase tracking-[0.06em] text-ink-100">
+                  {r.label}
+                </span>
                 {r.display_name ? (
-                  <span className="text-xs text-ink-200">{r.display_name}</span>
+                  <span className="break-words text-xs text-ink-200">
+                    {r.display_name}
+                  </span>
                 ) : null}
                 {r.is_creator ? (
                   <span className="text-xs text-warn" title="Creator">
@@ -282,7 +291,7 @@ export function RolesPanel({
                 ) : null}
               </div>
               {!r.is_creator ? (
-                <div className="flex flex-wrap gap-1">
+                <div className="flex shrink-0 flex-wrap gap-1">
                   <button
                     type="button"
                     onClick={() => copyExistingLink(r.id, r.label)}
