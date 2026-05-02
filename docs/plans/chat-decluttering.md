@@ -47,7 +47,7 @@ Five chat-clutter directions were prototyped as standalone HTML mockups (see `do
 
 ### 1.3 Why this is a Phase-3 candidate, not a quick-fix
 
-The scope spans backend (tool schema, message model, dispatch validation), prompts (system + tool descriptions), frontend (composer autocomplete, filter UI, rail tabs, notepad placement), and the AAR pipeline (export shape). A "tags-only" version (mockup D) could ship in a day, but doesn't address the structural issue: the AI is the only entity that knows *why* it routed a message to a given role, and that routing intent is the right source for categorization. Surfacing that intent cleanly is what makes the downstream UI affordances stable.
+The scope spans backend (tool schema, message model, dispatch validation), prompts (system + tool descriptions), and frontend (composer autocomplete, filter UI, rail tabs, notepad placement). **The AAR pipeline is intentionally out of scope** — workstreams are a live-exercise affordance, not a post-mortem artifact (see §6.9). A "tags-only" version (mockup D) could ship in a day, but doesn't address the structural issue: the AI is the only entity that knows *why* it routed a message to a given role, and that routing intent is the right source for categorization. Surfacing that intent cleanly is what makes the downstream UI affordances stable.
 
 ---
 
@@ -61,14 +61,14 @@ A **workstream** is a long-running parallel concern within a single tabletop ses
 - A short `label` (1–3 words, shown on filter pills and the colored stripe — e.g. "Containment", "Disclosure", "Comms").
 - A `lead_role_id` (the role primarily responsible — used for default inheritance).
 - A `state` (`open` / `closed`) for lifecycle.
-- A `created_at` / `closed_at` for the AAR timeline.
+- A `created_at` / `closed_at` (for the live timeline rail and the operator's `timeline.md` export — not the AAR; see §6.9).
 - A color (assigned by frontend from a fixed 6-color palette in workstream-declaration order; not stored server-side).
 
 A workstream is declared by the AI (typically once during setup, occasionally mid-session) and lives until session end. The set is bounded — soft cap of 5, hard cap of 8.
 
 ### 2.2 Why not "track" — collision with `track_role_followup`
 
-`backend/app/llm/tools.py:307` already defines a tool named `track_role_followup` — a per-role to-do list of unanswered asks. That tool's verb-sense of "track" ("keep tabs on this open question") collides with the noun-sense we'd want for the chat-declutter primitive ("which workstream is this message part of"). Reusing the word would be exactly the kind of spaghetti the operator flagged. We use **workstream** as the canonical noun in code, schemas, prompts, and the AAR. The UI may surface a different *label* (e.g. just the `label` string with no prefix), but the data model word is `workstream` everywhere.
+`backend/app/llm/tools.py:307` already defines a tool named `track_role_followup` — a per-role to-do list of unanswered asks. That tool's verb-sense of "track" ("keep tabs on this open question") collides with the noun-sense we'd want for the chat-declutter primitive ("which workstream is this message part of"). Reusing the word would be exactly the kind of spaghetti the operator flagged. We use **workstream** as the canonical noun in code, schemas, and prompts (the AAR doesn't see the word — see §6.9). The UI may surface a different *label* (e.g. just the `label` string with no prefix), but the data model word is `workstream` everywhere.
 
 ### 2.3 Anatomy of a workstream — what's in scope, what's out
 
@@ -80,7 +80,8 @@ A workstream is declared by the AI (typically once during setup, occasionally mi
 | Manual override (move-to-workstream) | Per-workstream visibility / privacy controls |
 | Filter UI: pick one or many workstreams | Workstream-scoped sub-channels |
 | Workstream-scoped colored stripe in chat + rail | Workstream-scoped notepad sections |
-| Rendered in the AAR timeline as a lifecycle event | Workstream-as-thread (no parent/child semantics) |
+| Rendered in the live Timeline rail tab + the operator's `timeline.md` export | Rendered in the AAR (intentionally — see §6.9) |
+| | Workstream-as-thread (no parent/child semantics) |
 
 A workstream is an **annotation**, not a container. Messages live in the same flat session-scoped log as today; the workstream is metadata on each message that the UI can filter on.
 
@@ -125,6 +126,7 @@ All four extensions are **optional** — the field defaults to `None` and the me
 | `lookup_resource` / `use_extension_tool` | `tools.py:286,298` | Extension/RAG layer. Adding workstream coupling here would tangle two sub-systems. |
 | `end_session` | `tools.py:352` | Session-wide. |
 | `ask_setup_question` / `propose_scenario_plan` / `finalize_setup` | `tools.py:368+` | Setup tier. Workstreams are declared *as part of* `propose_scenario_plan` (see §4.2) — but the existing tool stays intact; we add a field. |
+| `finalize_report` (AAR_TOOL) | `tools.py:471` | The AAR pipeline is intentionally workstream-blind. See §6.9 — the AAR doesn't see `workstream_id`, the AAR system prompt doesn't mention workstreams, and the AAR markdown output is structurally identical with the feature flag on vs off. |
 
 ### 3.4 Models we extend
 
@@ -405,6 +407,24 @@ The frontend renders these as: no filter pills (or just All/@Me/Critical), every
 
 When `False`, the entire feature is invisible; `Message.workstream_id` and `Message.mentions` still serialize but nothing reads them. This gives us a single emergency kill-switch if the AI behaves badly post-launch.
 
+### 6.9 AAR is workstream-blind
+
+The AAR pipeline (`finalize_report` tool, AAR system prompt, AAR markdown shape) **does not see workstreams**. Concretely:
+
+- The AAR's serialization of `Message` objects strips `workstream_id` before passing to the AAR-tier LLM. The AAR sees the same flat chronological log as today.
+- The AAR system prompt makes no mention of workstreams, doesn't ask the model to group by them, and doesn't include a workstream section in the output template.
+- The AAR markdown output has no per-workstream appendix, no "workstreams declared" header, no workstream-tagged messages.
+- The `Workstream` model itself never enters the AAR pipeline's serialization — it's a session-runtime artifact only.
+
+Reasoning:
+
+- **The AAR is a narrative document.** Its readers (post-incident, days later) want decisions, outcomes, and a timeline — not the live-exercise UI scaffolding. Workstream tags are how the chat got *organized*; they're not what *happened*.
+- **The AAR shape should be stable across UI iterations.** If we restructure or rename workstreams in the UI in 6 months, AARs already written shouldn't suddenly look stale or broken.
+- **Coupling the AAR to a UI feature is a spaghetti vector.** It creates a path where "fix the categorization UI" requires re-running the AAR pipeline tests; that's exactly the tangle we're avoiding.
+- **The operator's `timeline.md` export is the workstream-aware artifact**, not the AAR. The export is a deterministic dump for live-exercise debugging or hand-off; the AAR is the authored narrative. Different artifacts, different shapes.
+
+Test: an AAR generated for a session with declared workstreams and an AAR generated for the same session with the workstream feature flag off must produce structurally identical output (allowing for LLM non-determinism in prose). If they differ in shape, §6.9 has been violated.
+
 ---
 
 ## 7. Failure modes + recovery
@@ -509,19 +529,18 @@ Four phases; each is a separate PR and can land independently. Earlier phases ha
 
 **Estimated PR size:** ~250 LoC frontend + ~50 LoC backend.
 
-### Phase D — Polish + AAR integration
+### Phase D — Polish + manual override + operator exports
 
-**Scope:** nice-to-haves and the AAR shape.
+**Scope:** nice-to-haves that finish the live-exercise affordance. **The AAR is intentionally not in scope** (see §6.9).
 
 - Right-rail tabs (Artifacts / Action items / Timeline) replace the current `<Timeline>` flat list.
-- Manual workstream override on each message (right-click contextmenu + creator-only "Move to #X" submenu).
-- AAR pipeline: workstreams listed with their lifecycle in the report header; messages grouped by workstream in a per-workstream appendix (the linear chronology stays primary).
-- Timeline-export markdown buttons (per the iter-3 mockup).
+- Manual workstream override on each message (right-click contextmenu + creator-only "Move to #X" submenu, plus the message-of-record's role can override their own messages).
+- `timeline.md` and `full-record.md` export buttons (per the iter-3 mockup) — operator-facing, NOT the AAR. These are deterministic markdown dumps from the message data, useful for live-exercise hand-offs and post-exercise debugging. They include workstream tags; the AAR doesn't.
 - Feature flag `workstreams_enabled` flipped to `True` by default.
 
-**Exit criteria:** AAR for a multi-track exercise contains a "Workstreams" header section + appendix; export round-trips correctly; flag flip is reversible.
+**Exit criteria:** export round-trips correctly with workstream tags; manual override fans out via WS event and updates the rail tabs; flag flip is reversible; AAR for a multi-track exercise is structurally identical to an AAR for the same session with the flag off (per §6.9 test).
 
-**Estimated PR size:** ~300 LoC backend (AAR) + ~200 LoC frontend.
+**Estimated PR size:** ~150 LoC backend (export endpoints + override route) + ~250 LoC frontend.
 
 ---
 
@@ -581,9 +600,9 @@ These are intentionally surfaced so we can settle them in review rather than dis
 3. **Closing workstreams mid-session?** Plan says: no v1 lifecycle transitions. Once open, stays open until session end. Simpler.
 4. **Color palette for workstreams?** Plan says: 6-color palette assigned in declaration order. Question: do we want a 7th/8th color reserved for `#main` and overflow? Recommendation: yes — slate gray for `#main`, dim purple for "More tracks" overflow.
 5. **`#tag` autocomplete in composer?** Plan §4.6 mentions it. Question: ship in Phase C alongside `@` mentions, or defer to Phase D? Recommendation: defer — `@` is the primary use case for the iter-4 feedback; `#` can wait.
-6. **AAR appendix per workstream — verbatim or summarized?** Plan §Phase-D says "messages grouped by workstream in a per-workstream appendix." Question: is that a verbatim message list or an AI-summarized recap? Recommendation: verbatim list (cheap, deterministic, no extra LLM call); summarization is a later AAR enhancement under a different proposal.
-7. **Workstream label conflicts across sessions?** Plan §6.5 says session-scoped, no globals. Question: do we want to suggest common labels across scenarios for cross-session AAR analytics? Recommendation: not v1 — analytics is a Phase 3+ concern and shouldn't drive v1 schema.
-8. **`broadcast` and workstream context** — plan §7.7 says broadcasts are unscoped. Question: should `broadcast` get an *optional* `relevant_workstreams: list[str]` field for "this is a general beat but is most actionable for X and Y"? Recommendation: defer — start with the cleaner unscoped semantics; revisit only if the AAR shape needs it.
+6. ~~**AAR appendix per workstream**~~ — **resolved** (see §6.9). The AAR is workstream-blind. No appendix, no header section, no per-workstream grouping. The AAR shape stays exactly as it is today. The operator's `timeline.md` / `full-record.md` exports are the workstream-aware artifacts, not the AAR.
+7. **Workstream label conventions across sessions?** Plan §6.5 says session-scoped, no globals. Question: do we want a curated set of common labels (e.g. "Containment", "Disclosure", "Comms") that a creator could pick from in setup, vs the AI free-forming each session? Recommendation: not v1 — let the AI propose names per scenario; revisit if creator surveys show it's a friction point. Cross-session analytics is not a goal of this work.
+8. **`broadcast` and workstream context** — plan §7.7 says broadcasts are unscoped. Question: should `broadcast` get an *optional* `relevant_workstreams: list[str]` field for "this is a general beat but is most actionable for X and Y"? Recommendation: defer — start with the cleaner unscoped semantics. The original framing of this question referenced "if the AAR shape needs it"; now that §6.9 makes the AAR workstream-blind, that justification is gone, so this should not be revisited unless an actual UI use case appears.
 
 ---
 
@@ -618,6 +637,7 @@ For the eventual Phase-A reviewer:
 - [ ] Feature flag `workstreams_enabled=False` makes the feature invisible end-to-end (no UI changes, no prompt changes seen by the model).
 - [ ] No global state added (workstreams session-scoped only).
 - [ ] No new audit kind required to debug a stuck session beyond what §7 names.
+- [ ] **AAR pipeline is workstream-blind** (§6.9) — `Message.workstream_id` is stripped before serialization to the AAR-tier LLM; AAR system prompt makes no mention of workstreams; AAR markdown output structurally identical with the feature flag on vs off.
 - [ ] Live-API smoke test passes with current production prompts.
 - [ ] Six sub-agent reviews (CLAUDE.md) all green for BLOCK / CRITICAL / HIGH.
 
