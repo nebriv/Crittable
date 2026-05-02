@@ -39,6 +39,41 @@
 .artifact-card-mini:hover { border-color: #475569; background: #1e293b; }
 .artifact-card-mini .title { font-weight: 600; color: #e2e8f0; font-size: 12px; }
 .artifact-card-mini .meta { color: #64748b; font-size: 10px; margin-top: 2px; }
+/* Synthetic track-lifecycle row — IR Lead's ask. Renders before the first
+ * message in a previously-unseen track so the AAR has a "track opened"
+ * landmark instead of inferring from the first message timestamp. */
+.track-open-row {
+  display: flex; align-items: center; gap: 6px;
+  padding: 4px 6px; margin: 4px 0;
+  border-left: 3px solid var(--track, #475569);
+  background: rgba(255,255,255,0.02);
+  font-size: 11px;
+  color: #cbd5e1;
+}
+.track-open-row strong { color: #e2e8f0; font-weight: 600; }
+.track-open-row .when { font-family: ui-monospace, monospace; color: #64748b; }
+
+/* Hidden-by-filter @-mention summary banner — CISO ask. Shows when a
+ * filter is active and there are @-mentions for the viewer that the
+ * filter is hiding right now. Click to clear filters. */
+.unread-cta {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  background: rgba(251, 191, 36, 0.12);
+  border: 1px solid rgba(251, 191, 36, 0.45);
+  color: #fde68a;
+  padding: 8px 10px; border-radius: 6px;
+  font-size: 12px;
+}
+.unread-cta button {
+  background: rgba(251, 191, 36, 0.25);
+  color: #fef3c7;
+  padding: 3px 10px; border-radius: 4px;
+  font-size: 11px; font-weight: 600;
+  border: 1px solid rgba(251, 191, 36, 0.5);
+  cursor: pointer;
+}
+.unread-cta button:hover { background: rgba(251, 191, 36, 0.4); }
+
 /* Human-marked AAR-moment affordance */
 .btn-mark {
   font-size: 10px; padding: 2px 6px; border-radius: 4px;
@@ -67,6 +102,8 @@
     <span class="ml-2 rounded bg-emerald-900/60 px-2 py-0.5 text-[10px] font-semibold text-emerald-200">HYBRID — synthesis from iter 1</span>
   </div>
   <div class="flex items-center gap-3 text-xs">
+    <button id="btn-export-timeline" class="rounded border border-slate-700 bg-slate-800 px-2 py-1 text-slate-200 hover:border-slate-500" title="Export AAR-ready timeline (anchors + injects + decisions + artifacts)">Export timeline (md)</button>
+    <button id="btn-export-full" class="rounded border border-slate-700 bg-slate-800 px-2 py-1 text-slate-200 hover:border-slate-500" title="Export full chronological record">Export full record (md)</button>
     <span class="text-slate-400">Viewing as</span>
     <select id="viewer-switcher" class="rounded border border-slate-700 bg-slate-800 px-2 py-1 text-slate-100"></select>
     <a href="index.html" class="text-sky-400 hover:underline">← all mockups</a>
@@ -128,7 +165,10 @@
 <script>
 let state = {
   filter: "all",
-  trackFilter: null,
+  // SOC iter-2 ask: track pills are multi-select. Empty Set = no track filter
+  // (everything passes); non-empty = message must belong to one of the picked
+  // tracks. Replaces the prior single-string trackFilter.
+  trackFilter: new Set(),
   rail: "artifacts",
   // Human-marked AAR moments — what counts as a decision worth citing in the
   // post-incident write-up. CISO and IR both asked for an attributed primitive
@@ -207,9 +247,33 @@ function renderArtifactStrip() {
     : `<span class="text-xs text-slate-500 px-2 py-1">No artifacts pinned yet.</span>`;
 }
 
+// Render a synthetic "[#track opened by ROLE at HH:MM:SS]" row before the
+// first message in each track. IR Lead's iter-2 ask: don't make me infer
+// track origin from message timestamps.
+function trackOpenRow(m) {
+  const r = byRole(m.from) || { label: "System" };
+  const t = trackInfo(m.track);
+  const hex = trackColorHex(m.track);
+  return `<div class="track-open-row" style="--track:${hex}" data-track="${m.track}" data-track-open="1">
+    <span class="track-chip track-${m.track}">${t.label}</span>
+    <span><strong>opened</strong> by ${actorLabel(r)}</span>
+    <span class="when">at ${m.ts}</span>
+  </div>`;
+}
+
 function renderChat() {
   let prevMinute = "";
-  const html = MESSAGES.map((m) => { const out = chatItem(m, prevMinute); prevMinute = tsMinute(m.ts); return out; }).join("");
+  const seenTracks = new Set();
+  const html = MESSAGES.map((m) => {
+    let openRow = "";
+    if (m.track !== "main" && !seenTracks.has(m.track)) {
+      seenTracks.add(m.track);
+      openRow = trackOpenRow(m);
+    }
+    const out = chatItem(m, prevMinute);
+    prevMinute = tsMinute(m.ts);
+    return openRow + out;
+  }).join("");
   document.getElementById("chat").innerHTML = html;
   applyFilters();
 }
@@ -217,6 +281,8 @@ function renderChat() {
 function applyFilters() {
   const items = document.querySelectorAll("#chat > article");
   let cAll = 0, cMe = 0, cCrit = 0, cDec = 0, cVisible = 0;
+  let hiddenMentions = 0;
+  const hiddenTracksWithMe = new Set();
   items.forEach((el) => {
     const me = el.dataset.me === "1";
     const crit = el.dataset.critical === "1";
@@ -227,20 +293,52 @@ function applyFilters() {
     if (state.filter === "me" && !me) show = false;
     if (state.filter === "critical" && !crit) show = false;
     if (state.filter === "decisions" && !dec) show = false;
-    if (state.trackFilter && trk !== state.trackFilter) show = false;
+    if (state.trackFilter.size > 0 && !state.trackFilter.has(trk)) show = false;
     el.classList.toggle("hidden-by-filter", !show);
     if (show) cVisible++;
+    if (!show && me) { hiddenMentions++; hiddenTracksWithMe.add(trk); }
+  });
+  // Hide synthetic track-open rows that reference a track currently filtered out.
+  document.querySelectorAll('[data-track-open="1"]').forEach((el) => {
+    const trk = el.dataset.track;
+    const hide = state.trackFilter.size > 0 && !state.trackFilter.has(trk);
+    el.classList.toggle("hidden-by-filter", hide);
   });
   document.getElementById("cnt-all").textContent = cAll;
   document.getElementById("cnt-me").textContent = cMe;
   document.getElementById("cnt-critical").textContent = cCrit;
   document.getElementById("cnt-decisions").textContent = cDec;
-  // Filter summary line
+  // Filter summary line — uses AND-joined parts so a CISO with 3 of 47 visible
+  // messages can read why at a glance.
   const parts = [];
   if (state.filter !== "all") parts.push(state.filter);
-  if (state.trackFilter) parts.push("#" + state.trackFilter);
-  document.getElementById("filter-summary").textContent = parts.length ? `${cVisible} of ${cAll} · ${parts.join(" + ")}` : `${cAll} messages`;
+  if (state.trackFilter.size > 0) parts.push([...state.trackFilter].map((t) => "#" + t).join(" + "));
+  document.getElementById("filter-summary").textContent =
+    parts.length ? `${cVisible} of ${cAll} · ${parts.join(" + ")}` : `${cAll} messages`;
+  // Unread-mentions banner: surfaces @-mentions hidden by the active filter.
+  // Click to clear filters.
+  const banner = document.getElementById("unread-banner");
+  if (hiddenMentions > 0) {
+    const tracks = [...hiddenTracksWithMe].map((t) => "#" + t).join(", ");
+    banner.className = "m-3";
+    banner.innerHTML = `<div class="unread-cta">
+      <span><strong>${hiddenMentions}</strong> @-mention${hiddenMentions === 1 ? "" : "s"} for you hidden by the current filter (${tracks}).</span>
+      <button onclick="clearFilters()">Show all</button>
+    </div>`;
+  } else {
+    banner.className = "m-3 hidden";
+    banner.innerHTML = "";
+  }
 }
+
+function clearFilters() {
+  state.filter = "all";
+  state.trackFilter = new Set();
+  document.querySelectorAll(".pill[data-filter]").forEach((b) => b.dataset.active = b.dataset.filter === "all" ? "1" : "0");
+  document.querySelectorAll(".pill[data-track]").forEach((b) => b.dataset.active = "0");
+  applyFilters();
+}
+window.clearFilters = clearFilters;
 
 function renderRail() {
   const body = document.getElementById("rail-body");
@@ -322,13 +420,18 @@ document.querySelectorAll(".pill[data-filter]").forEach((b) => {
     applyFilters();
   });
 });
+// Track pills are multi-select (SOC iter-2 ask): click toggles inclusion in
+// the trackFilter Set so Containment + Lateral can be visible together,
+// each pill independently. Filter is applied as OR within the set
+// (any-of-selected) and AND against the quality filter.
 document.querySelectorAll(".pill[data-track]").forEach((b) => {
   b.addEventListener("click", () => {
     const t = b.dataset.track;
-    if (state.trackFilter === t) { state.trackFilter = null; b.dataset.active = "0"; }
-    else {
-      state.trackFilter = t;
-      document.querySelectorAll(".pill[data-track]").forEach((x) => x.dataset.active = "0");
+    if (state.trackFilter.has(t)) {
+      state.trackFilter.delete(t);
+      b.dataset.active = "0";
+    } else {
+      state.trackFilter.add(t);
       b.dataset.active = "1";
     }
     applyFilters();
@@ -343,6 +446,96 @@ document.querySelectorAll(".rail-tab").forEach((b) => {
     renderRail();
   });
 });
+
+// AAR-ready timeline export: minute anchors + track-opens + injects + decisions
+// + pinned artifacts. Curated subset, in event order. IR Lead's iter-2 ask.
+function exportTimelineMd() {
+  const lines = [];
+  lines.push("# Tabletop AAR timeline", "");
+  lines.push("Ransomware exercise · turn 7/12 · " + new Date().toLocaleString());
+  lines.push("");
+  // Track opens
+  const seen = new Set();
+  const opens = [];
+  for (const m of MESSAGES) {
+    if (m.track !== "main" && !seen.has(m.track)) {
+      seen.add(m.track);
+      const r = byRole(m.from); const t = trackInfo(m.track);
+      opens.push({ ts: m.ts, line: `- **${m.ts}** · #${m.track} (${t.label}) opened by ${r ? actorLabel(r) : "?"}` });
+    }
+  }
+  lines.push("## Track lifecycle", "");
+  for (const o of opens) lines.push(o.line);
+  lines.push("");
+  // Critical events
+  const crits = MESSAGES.filter((m) => m.kind === "critical");
+  if (crits.length) {
+    lines.push("## Critical events (injects)", "");
+    for (const c of crits) lines.push(`- **${c.ts}** · INJECT — ${c.body}`);
+    lines.push("");
+  }
+  // Decisions
+  const dec = Object.entries(state.humanDecisions);
+  if (dec.length) {
+    lines.push("## Decisions / AAR moments", "");
+    for (const [mid, info] of dec) {
+      const m = MESSAGES.find((x) => x.id === mid);
+      const r = byRole(info.decider);
+      lines.push(`- **${info.ts}** · #${m.track} · ${r ? actorLabel(r) : "?"} marked: "${m.body.replace(/\n/g, " ")}"`);
+    }
+    lines.push("");
+  }
+  // Pinned artifacts
+  const arts = pinnedCards();
+  if (arts.length) {
+    lines.push("## Pinned artifacts", "");
+    for (const a of arts) {
+      const r = byRole(a.from);
+      lines.push(`- **${a.ts}** · #${a.track} · ${r ? r.label : "?"} — **${a.title}**: ${a.body}`);
+    }
+    lines.push("");
+  }
+  // Action items
+  if (state.actionItems.length) {
+    lines.push("## Action items", "");
+    for (const a of state.actionItems) {
+      const r = byRole(a.owner);
+      lines.push(`- [${a.status === "done" ? "x" : " "}] **${r ? r.label : "?"}** (${a.status.replace("_", " ")}): ${a.text} _(from ${a.msgId})_`);
+    }
+    lines.push("");
+  }
+  download("tabletop-timeline.md", lines.join("\n"));
+}
+
+// Full chronological dump of every message with track + role + ts + flags.
+function exportFullMd() {
+  const lines = ["# Tabletop full record", ""];
+  lines.push("Ransomware exercise · turn 7/12 · " + new Date().toLocaleString(), "");
+  let prev = "";
+  for (const m of MESSAGES) {
+    const minute = tsMinute(m.ts);
+    if (minute !== prev) { lines.push("", `### ${minute}`, ""); prev = minute; }
+    const r = byRole(m.from);
+    const flags = [];
+    if (m.kind === "critical") flags.push("INJECT");
+    if (state.humanDecisions[m.id]) flags.push("DECISION");
+    const flagStr = flags.length ? ` [${flags.join(", ")}]` : "";
+    lines.push(`- **${m.ts}** · #${m.track} · ${r ? actorLabel(r) : "System"}${flagStr}: ${m.body.replace(/\n/g, " ")}`);
+  }
+  download("tabletop-full-record.md", lines.join("\n"));
+}
+
+function download(filename, content) {
+  const blob = new Blob([content], { type: "text/markdown;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = filename;
+  document.body.appendChild(a); a.click();
+  setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(url); }, 0);
+}
+
+document.getElementById("btn-export-timeline").addEventListener("click", exportTimelineMd);
+document.getElementById("btn-export-full").addEventListener("click", exportFullMd);
 
 renderViewerSwitcher();
 rerender();
