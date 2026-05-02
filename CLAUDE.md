@@ -184,6 +184,18 @@ Read it before adding a new structured-output tool.
 - All config through `pydantic-settings` env vars; never hard-code.
 - Commit style: `<area>: <imperative subject>` (e.g. `backend: add session repository`). Body explains *why*. Phase-1 bootstrap can use `chore:` / `docs:` / `ci:`.
 
+## React: refs vs state for render-gating
+
+**If render output depends on whether a `useRef` value is set, mirror the ref into `useState`.** `useRef` assignments do NOT trigger a re-render — `someRef.current = value` mutates the ref object in place and React stays unaware. JSX gated on `someRef.current` (e.g. `{wsRef.current ? <Foo/> : null}`) will look stale until something *else* nudges React to re-render. Pages with frequent state churn (the creator path on `Facilitator.tsx`) mask this; quieter paths (the player path on `Play.tsx`) leave the slot null forever.
+
+The bug shipped in PR #115 (issue #98 shared notepad) and only surfaced during manual smoke. `wsRef.current` was set inside the WS-connect effect, but the player view had no follow-up state change to trigger a re-render, so the notepad slot stayed `null` indefinitely. Fix landed in commit `44b0606`: mirror the WS client into a `useState` (`wsClient`) alongside the ref; gate the slot on the state value.
+
+**Rule of thumb when reaching for `useRef`:**
+- Reading the ref's value inside an **event handler** or **effect** → `useRef` is correct (e.g. `wsRef.current?.send(...)`).
+- Reading the ref's value inside **render** (anywhere in `return ( ... )`) → use `useState`. If you need both — a stable identity for handlers and a render-trigger — keep both: a ref for handlers, a state mirror for render. Update them together at the assignment site.
+
+There is no ESLint rule for this — refs are legitimately read in render for non-JSX-gating purposes (DOM measurements, passing to children). Audit grep when reviewing a React PR: `grep -rEn 'Ref\.current\s*(\?\s*\(|\&\&)' frontend/src --include="*.tsx"`. Any hit gating JSX needs to move to state.
+
 ## Closing GitHub issues via PRs
 
 GitHub auto-closes issues on merge **only when each issue number is preceded by its own closing keyword**. The keyword applies to one reference at a time — listing several issues after a single keyword silently leaves all but the first open. This has bitten this repo twice: PR #29 (Phase 2 epics #11–#19, none auto-closed because the body just listed bare `#11 #12 …` with no keyword) and PR #57 (`Closes #52, #53, #54, #55, #56` — only #52 closed; the rest had to be closed manually).
