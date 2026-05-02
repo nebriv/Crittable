@@ -122,7 +122,6 @@
       <button class="pill" data-filter="all" data-active="1">All <span class="count" id="cnt-all"></span></button>
       <button class="pill" data-filter="me">@Me <span class="count" id="cnt-me"></span></button>
       <button class="pill" data-filter="critical">Critical <span class="count" id="cnt-critical"></span></button>
-      <button class="pill" data-filter="decisions">Decisions <span class="count" id="cnt-decisions"></span></button>
       <span class="mx-2 h-4 w-px bg-slate-700"></span>
       <span class="text-[11px] uppercase tracking-wide text-slate-500">AND track</span>
       <button class="pill" data-track="containment"><span style="color:#f43f5e">●</span> Containment</button>
@@ -147,11 +146,13 @@
     </div>
   </main>
 
-  <!-- Right rail: Artifacts | Decisions | Action items | Critical -->
+  <!-- Right rail: Artifacts | Action items | Critical
+       (a "Decisions / AAR moments" tab would have lived here too, but that
+       affordance is intentionally shelved — see issue #117 — to avoid
+       duplicating PR #115's highlight-to-notepad flow.) -->
   <aside class="w-80 flex-shrink-0 border-l border-slate-800 bg-slate-900/30 flex flex-col min-h-0">
     <div class="flex border-b border-slate-800 text-[11px]">
       <button class="rail-tab flex-1 px-2 py-2 font-semibold text-slate-100 border-b-2 border-sky-500" data-rail="artifacts">Artifacts</button>
-      <button class="rail-tab flex-1 px-2 py-2 text-slate-400 hover:text-slate-200" data-rail="decisions">Decisions</button>
       <button class="rail-tab flex-1 px-2 py-2 text-slate-400 hover:text-slate-200" data-rail="actions">Action items</button>
       <button class="rail-tab flex-1 px-2 py-2 text-slate-400 hover:text-slate-200" data-rail="critical">Critical</button>
     </div>
@@ -170,15 +171,6 @@ let state = {
   // tracks. Replaces the prior single-string trackFilter.
   trackFilter: new Set(),
   rail: "artifacts",
-  // Human-marked AAR moments — what counts as a decision worth citing in the
-  // post-incident write-up. CISO and IR both asked for an attributed primitive
-  // (decider + ts + jump-to-message) so the post-mortem doesn't depend on
-  // memory. Pre-seeded with three obvious-in-retrospect calls to demonstrate.
-  humanDecisions: {
-    m21: { decider: "ir",   ts: "14:36:55" },
-    m25: { decider: "ciso", ts: "14:37:50" },
-    m37: { decider: "ciso", ts: "14:41:20" },
-  },
   // Action items extracted by IR-Lead role. Each entry is a tracked TODO
   // surfaced in the rail so they don't get lost in chat scroll.
   actionItems: [
@@ -200,22 +192,14 @@ function chatItem(m, prevMinute) {
   const minute = tsMinute(m.ts);
   // Sticky minute-anchor row when minute changes
   const anchor = (minute !== prevMinute) ? `<div class="ts-anchor">${minute}</div>` : "";
-  const isHumanDecision = !!state.humanDecisions[m.id];
   const ringCls = isMe && (m.kind === "ai_text" || isCritical) ? "awaiting-me" : "";
   const critCls = isCritical ? "border-red-500/60 bg-red-950/40" : "border-slate-800 bg-slate-900/40";
   const meBadge = isMe ? `<span class="ml-2 rounded bg-amber-500/20 px-1.5 py-0.5 text-[10px] font-semibold text-amber-200">@you</span>` : "";
-  const decBadge = isHumanDecision
-    ? `<span class="ml-2 rounded border border-violet-500/60 bg-violet-900/40 px-1.5 py-0.5 text-[10px] font-semibold text-violet-200" title="Marked AAR moment by ${(byRole(state.humanDecisions[m.id].decider)||{}).label} at ${state.humanDecisions[m.id].ts}">DECISION · ${(byRole(state.humanDecisions[m.id].decider)||{}).short}</span>`
-    : "";
   const critBadge = isCritical ? `<span class="ml-2 rounded border border-red-500/60 bg-red-900/40 px-1.5 py-0.5 text-[10px] font-semibold text-red-200">INJECT</span>` : "";
-  // Mark-as-decision is available to anyone — it's an AAR-curation primitive,
-  // not a litigation artifact. Anyone in the exercise can flag a moment they
-  // think the post-mortem should call out, and the click stamps decider + ts.
-  const decisionBtn = `<button class="btn-mark ${isHumanDecision ? "active" : ""}" onclick="toggleDecision('${m.id}')">${isHumanDecision ? "✓ AAR moment" : "+ mark for AAR"}</button>`;
   return anchor + `
     <article id="msg-${m.id}" class="flex gap-3 rounded border ${critCls} ${ringCls} p-3"
       data-mid="${m.id}" data-track="${m.track}" data-me="${isMe?1:0}"
-      data-critical="${isCritical?1:0}" data-decision="${isHumanDecision?1:0}">
+      data-critical="${isCritical?1:0}">
       <div class="track-bar" style="background:${trackHex}"></div>
       <div class="avatar ${bg} ${bd} ${tx} border">${initials(role)}</div>
       <div class="min-w-0 flex-1">
@@ -223,12 +207,11 @@ function chatItem(m, prevMinute) {
           <span class="flex flex-wrap items-center gap-1">
             <span class="font-semibold text-slate-200">${actorLabel(role)}</span>
             <span class="track-chip track-${m.track}">${trackInfo(m.track).label}</span>
-            ${meBadge}${decBadge}${critBadge}
+            ${meBadge}${critBadge}
           </span>
           <span class="font-mono text-slate-500">${m.ts}</span>
         </header>
         <p class="mt-1 whitespace-pre-wrap text-sm leading-relaxed">${renderBody(m, VIEWER)}</p>
-        <div class="mt-2 flex items-center gap-2">${decisionBtn}</div>
       </div>
     </article>`;
 }
@@ -280,19 +263,17 @@ function renderChat() {
 
 function applyFilters() {
   const items = document.querySelectorAll("#chat > article");
-  let cAll = 0, cMe = 0, cCrit = 0, cDec = 0, cVisible = 0;
+  let cAll = 0, cMe = 0, cCrit = 0, cVisible = 0;
   let hiddenMentions = 0;
   const hiddenTracksWithMe = new Set();
   items.forEach((el) => {
     const me = el.dataset.me === "1";
     const crit = el.dataset.critical === "1";
-    const dec = el.dataset.decision === "1";
     const trk = el.dataset.track;
-    cAll++; if (me) cMe++; if (crit) cCrit++; if (dec) cDec++;
+    cAll++; if (me) cMe++; if (crit) cCrit++;
     let show = true;
     if (state.filter === "me" && !me) show = false;
     if (state.filter === "critical" && !crit) show = false;
-    if (state.filter === "decisions" && !dec) show = false;
     if (state.trackFilter.size > 0 && !state.trackFilter.has(trk)) show = false;
     el.classList.toggle("hidden-by-filter", !show);
     if (show) cVisible++;
@@ -307,7 +288,6 @@ function applyFilters() {
   document.getElementById("cnt-all").textContent = cAll;
   document.getElementById("cnt-me").textContent = cMe;
   document.getElementById("cnt-critical").textContent = cCrit;
-  document.getElementById("cnt-decisions").textContent = cDec;
   // Filter summary line — uses AND-joined parts so a CISO with 3 of 47 visible
   // messages can read why at a glance.
   const parts = [];
@@ -355,20 +335,6 @@ function renderRail() {
         </div>
       </div>`;
     }).join("") || `<div class="text-xs text-slate-500">No artifacts pinned.</div>`;
-  } else if (state.rail === "decisions") {
-    const entries = Object.entries(state.humanDecisions);
-    body.innerHTML = entries.length ? entries.map(([mid, info]) => {
-      const m = MESSAGES.find((x) => x.id === mid);
-      const decider = byRole(info.decider);
-      return `<div class="rail-card cursor-pointer" onclick="scrollToMsg('${mid}')">
-        <div class="track-bar" style="background:${trackColorHex(m.track)}"></div>
-        <div class="min-w-0 flex-1">
-          <div class="text-[11px] uppercase tracking-wide text-violet-300">decision · marked by ${decider ? decider.label : "?"}</div>
-          <div class="mt-1 text-sm text-slate-100">${m.body.length > 140 ? m.body.slice(0,140) + "…" : m.body}</div>
-          <div class="mt-1 text-[10px] text-slate-500">marked ${info.ts} · #${m.track} · jump →</div>
-        </div>
-      </div>`;
-    }).join("") : `<div class="text-xs text-slate-500">Nothing marked yet. Click "+ mark for AAR" on any message to flag it for the post-mortem.</div>`;
   } else if (state.rail === "actions") {
     body.innerHTML = state.actionItems.map((a) => {
       const owner = byRole(a.owner);
@@ -402,13 +368,6 @@ function renderRail() {
       </div>`).join("") : `<div class="text-xs text-slate-500">No injects fired.</div>`;
   }
 }
-
-function toggleDecision(mid) {
-  if (state.humanDecisions[mid]) delete state.humanDecisions[mid];
-  else state.humanDecisions[mid] = { decider: VIEWER, ts: new Date().toLocaleTimeString().slice(0,8) };
-  rerender();
-}
-window.toggleDecision = toggleDecision;
 
 function rerender() { renderArtifactStrip(); renderChat(); renderRail(); }
 
@@ -474,17 +433,9 @@ function exportTimelineMd() {
     for (const c of crits) lines.push(`- **${c.ts}** · INJECT — ${c.body}`);
     lines.push("");
   }
-  // Decisions
-  const dec = Object.entries(state.humanDecisions);
-  if (dec.length) {
-    lines.push("## Decisions / AAR moments", "");
-    for (const [mid, info] of dec) {
-      const m = MESSAGES.find((x) => x.id === mid);
-      const r = byRole(info.decider);
-      lines.push(`- **${info.ts}** · #${m.track} · ${r ? actorLabel(r) : "?"} marked: "${m.body.replace(/\n/g, " ")}"`);
-    }
-    lines.push("");
-  }
+  // (Decisions / AAR moments are intentionally NOT in this export — see
+  // issue #117. AAR-curation is handled by the highlight-to-notepad flow
+  // in PR #115; the notepad's verbatim items are the AAR priority pool.)
   // Pinned artifacts
   const arts = pinnedCards();
   if (arts.length) {
@@ -516,10 +467,7 @@ function exportFullMd() {
     const minute = tsMinute(m.ts);
     if (minute !== prev) { lines.push("", `### ${minute}`, ""); prev = minute; }
     const r = byRole(m.from);
-    const flags = [];
-    if (m.kind === "critical") flags.push("INJECT");
-    if (state.humanDecisions[m.id]) flags.push("DECISION");
-    const flagStr = flags.length ? ` [${flags.join(", ")}]` : "";
+    const flagStr = m.kind === "critical" ? " [INJECT]" : "";
     lines.push(`- **${m.ts}** · #${m.track} · ${r ? actorLabel(r) : "System"}${flagStr}: ${m.body.replace(/\n/g, " ")}`);
   }
   download("tabletop-full-record.md", lines.join("\n"));
