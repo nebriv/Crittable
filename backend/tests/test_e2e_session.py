@@ -684,6 +684,43 @@ def test_ws_tab_focus_event_emits_presence_with_focused_field(
         # doesn't expose.
 
 
+def test_ws_tab_focus_rejects_non_boolean_focused_field(
+    client: TestClient,
+) -> None:
+    """A malformed ``tab_focus`` with a string / int / null in the
+    ``focused`` field must be rejected with an ``error`` frame, not
+    silently coerced via Python truthiness (``bool("false") == True``
+    would otherwise let a malformed client flip its role to focused).
+    """
+
+    seats = _create_and_seat(client, role_count=2)
+    sid = seats["session_id"]
+    other_token = seats["role_tokens"][seats["role_ids"][1]]
+
+    bad_values: list[Any] = ["false", "true", 0, 1, None, "yes"]
+    with client.websocket_connect(
+        f"/ws/sessions/{sid}?token={other_token}"
+    ) as ws:
+        for bad in bad_values:
+            ws.send_json({"type": "tab_focus", "focused": bad})
+            saw_error = False
+            for _ in range(32):
+                try:
+                    evt = ws.receive_json()
+                except Exception:
+                    break
+                if (
+                    evt.get("type") == "error"
+                    and evt.get("scope") == "tab_focus"
+                ):
+                    saw_error = True
+                    break
+            assert saw_error, (
+                f"tab_focus.focused={bad!r} should have produced an error "
+                "frame, not been silently coerced"
+            )
+
+
 def test_ws_presence_snapshot_includes_focused_role_ids(
     client: TestClient,
 ) -> None:

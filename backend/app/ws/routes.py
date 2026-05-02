@@ -386,7 +386,29 @@ async def _client_pump(
                 # connected and the focus signal is purely informational
                 # (no mutation, no fan-out amplification beyond the one
                 # ``presence`` frame this triggers).
-                focused_in = bool(payload.get("focused", False))
+                #
+                # Strict ``isinstance`` check at the WS boundary: a naive
+                # ``bool(payload.get("focused"))`` would coerce the
+                # string ``"false"`` to ``True`` (non-empty string is
+                # truthy in Python) and let a malformed client flip the
+                # presence aggregate incorrectly. Reject anything that
+                # isn't a real bool with a typed error frame so the
+                # client can self-correct.
+                raw_focused = payload.get("focused")
+                if not isinstance(raw_focused, bool):
+                    await websocket.send_json(
+                        {
+                            "type": "error",
+                            "scope": "tab_focus",
+                            "message": (
+                                "tab_focus.focused must be a JSON boolean "
+                                "(true/false), not "
+                                f"{type(raw_focused).__name__}"
+                            ),
+                        }
+                    )
+                    continue
+                focused_in = raw_focused
                 changed = await connections.set_focus(conn, focused_in)
                 # Debug-level boundary log so an operator investigating
                 # "did the tab actually report blurred?" can grep the
