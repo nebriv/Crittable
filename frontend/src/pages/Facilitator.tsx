@@ -168,6 +168,16 @@ export function Facilitator() {
   // creator needs to know which invites have actually been opened
   // before kicking off the exercise.
   const [presence, setPresence] = useState<Set<string>>(() => new Set());
+  // Issue #103 follow-up (Copilot review on PR #114): until the first
+  // ``presence_snapshot`` lands the empty set above is indistinguishable
+  // from "nobody has joined", and the "Tip: N roles haven't joined yet"
+  // banner would briefly fire on initial load / reconnect even when
+  // every role is actually connected. Tracked separately from the set
+  // itself so other consumers (RolesPanel dot, RoleRoster online dot)
+  // keep their existing presence-aware behaviour. Reset to false on
+  // session change and on every WS reconnect so a stale "ready" flag
+  // can't outlive a dropped socket.
+  const [presenceReady, setPresenceReady] = useState(false);
   // Real-time AI-thinking tracking — same shape as Play.tsx. ``aiCalls``
   // maps in-flight LLM ``call_id`` → tier (``setup`` / ``play`` / ``aar``
   // / ``guardrail`` / ``interject``) from ``ai_thinking`` boundary
@@ -367,7 +377,14 @@ export function Facilitator() {
       sessionId: state.sessionId,
       token: state.token,
       onEvent: handleEvent,
-      onStatus: (s) => setWsStatus(s),
+      onStatus: (s) => {
+        setWsStatus(s);
+        // Issue #103 follow-up: drop the "presence is authoritative"
+        // flag whenever the socket isn't open, so the next reconnect
+        // has to wait for a fresh ``presence_snapshot`` before the
+        // tip can fire again.
+        if (s !== "open") setPresenceReady(false);
+      },
     });
     ws.connect();
     wsRef.current = ws;
@@ -487,6 +504,7 @@ export function Facilitator() {
         break;
       case "presence_snapshot":
         setPresence(new Set(evt.role_ids));
+        setPresenceReady(true);
         if (typeof evt.connection_count === "number") {
           setConnectionCount(evt.connection_count);
         }
@@ -736,6 +754,7 @@ export function Facilitator() {
     setCriticalBanner(null);
     setDecisionLog([]);
     setPresence(new Set());
+    setPresenceReady(false);
     setCost(null);
     setLastEventAt(null);
     setConnectionCount(null);
@@ -1204,8 +1223,17 @@ export function Facilitator() {
                 // roles that simply haven't submitted on the current
                 // turn. Only nudge the creator about invite links when
                 // there's actually a player role with no live tabs.
-                const unjoinedImpersonateCount =
-                  countUnjoinedImpersonateOptions(impersonateOptions, presence);
+                //
+                // ``presenceReady`` (Copilot review on PR #114) keeps
+                // the tip suppressed during the brief window between
+                // WS connect and the first ``presence_snapshot`` —
+                // without it, the empty initial set would briefly
+                // count every joined role as "unjoined" on initial
+                // load and on every reconnect, regressing into the
+                // exact misleading behavior this issue fixed.
+                const unjoinedImpersonateCount = presenceReady
+                  ? countUnjoinedImpersonateOptions(impersonateOptions, presence)
+                  : 0;
                 return (
                   <>
                     {canProxy && unjoinedImpersonateCount > 0 ? (
