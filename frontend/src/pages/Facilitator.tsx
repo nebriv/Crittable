@@ -1467,6 +1467,7 @@ export function Facilitator() {
         <GodModePanel
           sessionId={state.sessionId}
           creatorToken={state.token}
+          sessionState={snapshot?.state ?? "CREATED"}
           onClose={() => setGodMode(false)}
         />
       ) : null}

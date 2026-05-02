@@ -287,6 +287,24 @@ class Settings(BaseSettings):
     # tokens or waiting for setup turns. **Never set this in production.**
     dev_fast_setup: bool = Field(default=False, alias="DEV_FAST_SETUP")
 
+    # When true, the ``/api/dev/scenarios/...`` endpoints (scenario list,
+    # play, record) become available to creator-token holders. These let
+    # a single dev drive a multi-participant session by replaying a
+    # canned JSON scenario through the live engine, plus dump a finished
+    # session as a replayable scenario. The endpoints are gated because
+    # a leaked creator token plus this flag would let an attacker spawn
+    # arbitrary sessions and read their join links — nothing critical
+    # but more than a deployed instance should expose. ``TEST_MODE`` also
+    # implies this. **Never set this in production.**
+    dev_tools_enabled: bool = Field(default=False, alias="DEV_TOOLS_ENABLED")
+    # Filesystem path the dev-tools scenario loader scans for ``*.json``
+    # files. Defaults to ``backend/scenarios/`` relative to the working
+    # directory; operators running from a different cwd should set this
+    # explicitly so the picker doesn't show an empty list.
+    dev_scenarios_path: str = Field(
+        default="backend/scenarios", alias="DEV_SCENARIOS_PATH"
+    )
+
     # ---- Extensions ----------------------------------------------------
     extensions_tools_json: str | None = Field(default=None, alias="EXTENSIONS_TOOLS_JSON")
     extensions_tools_path: str | None = Field(default=None, alias="EXTENSIONS_TOOLS_PATH")

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "../api/client";
+import { ScenarioPanel } from "./ScenarioPanel";
 
 interface DebugSnapshot {
   session: Record<string, unknown>;
@@ -14,6 +15,10 @@ interface DebugSnapshot {
 interface Props {
   sessionId: string;
   creatorToken: string;
+  /** Current ``SessionState``; used to gate dev-tools record button so
+   * the operator can't dump a SETUP/CREATED-state session that has no
+   * meaningful transcript to record. */
+  sessionState: string;
   onClose: () => void;
 }
 
@@ -26,7 +31,12 @@ interface Props {
  * dominate the page. Polling pauses while ``document.hidden`` to avoid the
  * 1.2 MB/min bandwidth cost when the creator switches tabs.
  */
-export function GodModePanel({ sessionId, creatorToken, onClose }: Props) {
+export function GodModePanel({
+  sessionId,
+  creatorToken,
+  sessionState,
+  onClose,
+}: Props) {
   const [data, setData] = useState<DebugSnapshot | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [filter, setFilter] = useState("");
@@ -84,8 +94,16 @@ export function GodModePanel({ sessionId, creatorToken, onClose }: Props) {
     <dialog
       ref={dialogRef}
       aria-labelledby="god-mode-heading"
-      className="z-50 w-[min(96vw,1400px)] max-w-none rounded border border-info bg-ink-900/95 p-4 text-ink-100 backdrop:bg-ink-900/80"
+      className="z-50 flex max-h-[90vh] w-[min(96vw,1400px)] max-w-none flex-col rounded border border-info bg-ink-900/95 p-4 text-ink-100 backdrop:bg-ink-900/80"
     >
+      {/* Single overflow container: previously the inner debug grid had
+          its own ``max-h-[70vh] overflow-y-auto`` which trapped scroll
+          inside the grid AND clipped the content above it (header +
+          BackendControls + ScenarioPanel) on a 768-pixel-tall viewport.
+          The fix is dialog-level overflow with the children stacked
+          flow-naturally, so a creator can scroll the ENTIRE panel
+          including the new Scenarios section without focus / wheel
+          getting trapped on the inner debug grid. */}
       <header className="flex flex-wrap items-center justify-between gap-2 border-b border-ink-600 pb-2">
         <div>
           <h2 id="god-mode-heading" className="text-lg font-semibold">
@@ -115,11 +133,19 @@ export function GodModePanel({ sessionId, creatorToken, onClose }: Props) {
           </button>
         </div>
       </header>
+      <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
       {error ? (
         <p className="mt-2 text-sm text-crit">poll: {error}</p>
       ) : null}
       <BackendControls sessionId={sessionId} creatorToken={creatorToken} />
-      <div className="mt-3 grid max-h-[70vh] grid-cols-1 gap-3 overflow-y-auto md:grid-cols-2">
+      <div className="mt-3">
+        <ScenarioPanel
+          sessionId={sessionId}
+          creatorToken={creatorToken}
+          sessionState={sessionState}
+        />
+      </div>
+      <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-2">
         <DebugBlock heading="Session" data={data?.session} filter={filter} defaultOpen />
         <DebugBlock heading="In-flight LLM" data={data?.in_flight_llm} filter={filter} defaultOpen />
         <DebugBlock heading="Turns" data={data?.turns} filter={filter} />
@@ -127,6 +153,7 @@ export function GodModePanel({ sessionId, creatorToken, onClose }: Props) {
         <DebugBlock heading="Messages" data={data?.messages} filter={filter} />
         <DebugBlock heading="Setup notes" data={data?.setup_notes} filter={filter} />
         <DebugBlock heading="Extensions" data={data?.extensions} filter={filter} />
+      </div>
       </div>
     </dialog>
   );

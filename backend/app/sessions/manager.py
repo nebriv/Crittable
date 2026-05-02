@@ -11,7 +11,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Iterable
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from ..auth.audit import AuditEvent, AuditLog
 from ..auth.authn import HMACAuthenticator
@@ -128,7 +128,23 @@ class SessionManager:
                 k: v
                 for k, v in payload.items()
                 # ``event`` is reserved by structlog as the message key.
-                if k != "event" and not _is_oversized(v)
+                # ``audit_kind`` / ``session_id`` / ``state`` /
+                # ``turn_index`` are set explicitly above; ``open_turn``
+                # passes ``turn_index=`` in payload, which used to
+                # collide silently while structlog cached its bound
+                # logger but raises ``TypeError: got multiple values
+                # for keyword argument 'turn_index'`` on the per-call
+                # path under ``test_mode``. Filter so the explicit
+                # values win.
+                if k
+                not in {
+                    "event",
+                    "audit_kind",
+                    "session_id",
+                    "state",
+                    "turn_index",
+                }
+                and not _is_oversized(v)
             },
         )
 
@@ -1145,6 +1161,89 @@ class SessionManager:
             )
             session.messages.append(msg)
             await self._repo.save(session)
+        return msg
+
+    async def append_recorded_message(
+        self,
+        *,
+        session_id: str,
+        kind: MessageKind,
+        body: str,
+        tool_name: str | None,
+        tool_args: dict[str, Any] | None,
+        role_id: str | None,
+        is_interjection: bool,
+        visibility: list[str] | Literal["all"],
+    ) -> Message:
+        """Boundary for the dev-tools deterministic replay path.
+
+        This is the ONE place a scenario JSON's ``ai_messages`` lands
+        in ``session.messages`` — it intentionally does NOT call
+        ``run_play_turn`` / ``submit_response`` (those are for live
+        engine flow), so we own the validation here:
+
+          * ``kind`` is restricted to ``ai_text`` / ``ai_tool_call`` /
+            ``ai_tool_result`` / ``system`` / ``critical_inject``.
+            ``player`` is forbidden — replayed player content goes
+            through ``submit_response`` so the input-side guardrail
+            sees it.
+          * ``body`` is capped at the same
+            ``max_participant_submission_chars`` participant text
+            uses; truncated bodies get an explicit marker.
+          * Broadcasts go through ``connections.broadcast`` so
+            connected dev tabs see ``message_complete`` events.
+          * Audit emission happens here so the replay path is
+            distinguishable in the audit log
+            (``recorded_message_injected``).
+
+        Returns the persisted ``Message``.
+        """
+
+        from .models import MessageKind as _MK
+
+        forbidden = {_MK.PLAYER}
+        if kind in forbidden:
+            raise ValueError(
+                f"append_recorded_message refuses kind={kind.value!r} — "
+                "replayed player content must go through submit_response"
+            )
+        cap = self._settings.max_participant_submission_chars
+        if len(body) > cap:
+            body = body[:cap] + "\n[recorded body truncated by replay]"
+        async with await self._lock_for(session_id):
+            session = await self._repo.get(session_id)
+            turn = session.current_turn
+            msg = Message(
+                kind=kind,
+                body=body,
+                tool_name=tool_name,
+                tool_args=tool_args,
+                role_id=role_id,
+                is_interjection=is_interjection,
+                visibility=visibility,
+                turn_id=turn.id if turn is not None else None,
+            )
+            session.messages.append(msg)
+            await self._repo.save(session)
+        await self._connections.broadcast(
+            session_id,
+            {
+                "type": "message_complete",
+                "kind": kind.value,
+                "body": body,
+                "tool_name": tool_name,
+                "role_id": role_id,
+                "is_interjection": is_interjection,
+            },
+        )
+        self._emit(
+            "recorded_message_injected",
+            session,
+            message_kind=kind.value,
+            tool_name=tool_name,
+            body_preview=body[:120],
+            role_id=role_id,
+        )
         return msg
 
     async def record_critical_inject(self, *, session_id: str) -> bool:

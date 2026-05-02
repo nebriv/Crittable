@@ -330,6 +330,78 @@ export const api = {
       `/api/sessions/${sessionId}/debug?token=${encodeURIComponent(token)}`,
     );
   },
+
+  /**
+   * Dev-tools: list scenarios available for replay. Returns ``[]`` when
+   * dev tools are disabled (the route 404s — surfaced as ``[]`` so the
+   * caller can render a "no scenarios" empty state instead of crashing).
+   */
+  async listScenarios(): Promise<{
+    scenarios: Array<{
+      id: string;
+      name: string;
+      description: string;
+      tags: string[];
+      roster_size: number;
+      play_turns: number;
+      skip_setup: boolean;
+    }>;
+    path?: string;
+  }> {
+    try {
+      return (await request("GET", "/api/dev/scenarios")) as never;
+    } catch {
+      return { scenarios: [] };
+    }
+  },
+
+  /**
+   * Dev-tools: replay a scenario in a NEW session. Returns the new
+   * session id + per-role tokens so the dev can open each role's tab
+   * via ``/play/{token}`` and watch the replay unfold.
+   *
+   * Pass any valid token (creator-typically). The backend doesn't
+   * bind the token to the new session — it only verifies the caller
+   * is authenticated to *some* session, which closes the
+   * ``DEV_TOOLS_ENABLED + unauth'd ingress`` exposure.
+   */
+  async playScenario(
+    scenarioId: string,
+    token: string,
+  ): Promise<{
+    ok: boolean;
+    session_id: string | null;
+    error: string | null;
+    log: string[];
+    role_tokens: Record<string, string>;
+    role_label_to_id: Record<string, string>;
+  }> {
+    return request(
+      "POST",
+      `/api/dev/scenarios/${encodeURIComponent(scenarioId)}/play?token=${encodeURIComponent(token)}`,
+    );
+  },
+
+  /**
+   * Dev-tools: dump the current session state as a Scenario JSON. The
+   * dev is expected to save the response to ``backend/scenarios/`` if
+   * they want it to show up in the picker on next boot.
+   */
+  async recordScenario(
+    sessionId: string,
+    creatorToken: string,
+    body: { name: string; description?: string; tags?: string[] },
+  ): Promise<{
+    ok: boolean;
+    scenario_json: unknown;
+    stats: { roster_size: number; setup_replies: number; play_turns: number };
+  }> {
+    return request(
+      "POST",
+      `/api/dev/sessions/${sessionId}/record?token=${encodeURIComponent(creatorToken)}`,
+      body,
+    );
+  },
 };
 
 /**

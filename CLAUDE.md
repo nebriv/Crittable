@@ -336,6 +336,84 @@ We have repeatedly hit "is the app stuck or working?" mysteries during manual te
 
 When a manual-test issue requires more telemetry than the current logs provide, **add the log line first** (so the next operator finds it), then fix the bug. Don't fix-and-forget — the log is the regression detector.
 
+## Scenario replay (solo-dev testing harness)
+
+This repo ships a scenario record/replay system under `backend/app/devtools/`
++ `backend/scenarios/`. A scenario is a JSON file describing a full session
+lifecycle (creation → setup → play → end → AAR) plus, for recordings, the
+exact AI / system / inject messages that drove the original UI. The
+`ScenarioRunner` plays it back through the **live** `SessionManager` so the
+same code path runs in pytest, in the dev-tools API, and in God Mode.
+
+Two replay modes:
+
+- **`engine`** — the runner submits player input through `submit_response`
+  and lets `run_play_turn` produce the AI side via the live LLM (or whatever
+  `MockAnthropic` transport an external test installed). Used for prompt
+  experimentation and live-LLM regression tests. Re-records may differ run
+  to run.
+- **`deterministic`** — the runner submits player input the same way, but
+  for each turn it **injects** the recorded AI fallout (every `ai_text`,
+  `ai_tool_call`, `critical_inject`, `system` message) directly into
+  `session.messages` and opens the next turn with the role-set the
+  recording captured. The LLM is never called during play. The transcript,
+  highlights, broadcast/share_data icons, role colours, and filtering all
+  reproduce byte-for-byte. The recorder defaults to this mode whenever AI
+  fallout was captured.
+
+### Commit rule (load-bearing)
+
+**Any commit that adds a new `SessionState` transition, a new turn-pump
+path, a new player-input gate, or a new `MessageKind` / tool-name / message
+field that the frontend keys off MUST add or update a scenario in
+`backend/scenarios/` exercising it.** The scenario file in the diff proves
+the dev thought about the replay path; `pytest backend/tests/scenarios/`
+then catches drift automatically.
+
+This is a **review-blocking** rule the same way the sub-agent reviews are.
+Phrase the carve-out explicitly in the commit body when the change
+genuinely doesn't affect lifecycle (e.g. a CSS-only tweak, a static-asset
+swap, a docstring fix). Don't carve out for "this prompt change won't
+matter" — it almost always matters once a recorded scenario hits it.
+
+### Known fragility seams
+
+The runner's contract is durable for most feature shapes (new tools,
+prompt edits, AI-behaviour changes), but three seams require the runner
+itself to be updated when they move:
+
+1. **Lifecycle order** — `runner.run()` hardcodes
+   `create → skip-or-setup → start → play → end`. If a new state
+   slots in between (e.g. a "lobby-locked" gate), the runner needs an
+   explicit handler.
+2. **Active-set contract** — the deterministic driver opens the next turn
+   with the role-set inferred from `play_turns[i+1].submissions`. A
+   feature that decouples the active-set from the submission roles
+   (e.g. AI-driven "watch but don't ask") needs the recorder to capture
+   the active-set explicitly.
+3. **Visibility per role** — `RecordedMessage.visibility` is widened to
+   `"all"` on capture because role_ids change between sessions. A feature
+   that depends on per-role visibility round-tripping needs a label-based
+   visibility encoding.
+
+Updating the runner for any of these counts as a "load-bearing" change;
+flag in the PR description so reviewers know to re-record the existing
+scenarios.
+
+### Where to look
+
+- `backend/app/devtools/scenario.py` — schema (Pydantic, JSON-serialisable).
+- `backend/app/devtools/runner.py` — driver. Two-mode dispatch.
+- `backend/app/devtools/recorder.py` — Session → Scenario.
+- `backend/app/devtools/api.py` — gated REST surface
+  (`/api/dev/scenarios/...`); requires `DEV_TOOLS_ENABLED=true` or
+  `TEST_MODE=true`.
+- `backend/scenarios/*.json` — preset scenarios.
+- `backend/tests/scenarios/` — runner + API tests (incl. the
+  AI-fidelity round-trip).
+- `frontend/src/components/ScenarioPanel.tsx` — God Mode picker /
+  recorder.
+
 ## Stream Timeout Prevention
 
 This helps guard against the below error:
