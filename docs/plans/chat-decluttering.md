@@ -101,14 +101,21 @@ Before extending anything, make sure we don't conflict.
 
 ### 3.1 Tools we extend
 
-| Tool | File | Extension |
-|---|---|---|
-| `address_role` | `backend/app/llm/tools.py:62` | Add optional `workstream_id` field (enum-constrained against current declared set). |
-| `pose_choice` | `backend/app/llm/tools.py:126` | Add optional `workstream_id` (same enum). Decisions tend to belong to a workstream (e.g. Disclosure's notification clock decision). |
-| `share_data` | `backend/app/llm/tools.py:173` | Add optional `workstream_id`. Data shares (IOC dumps, log tables) cluster by workstream. |
-| `inject_critical_event` | `backend/app/llm/tools.py:212` | Add optional `workstream_id`. Most injects target one workstream (press inject → Comms; new IOC → Containment). |
+| Tool | File | Extension | Phase |
+|---|---|---|---|
+| `address_role` | `backend/app/llm/tools.py:62` | Add optional `workstream_id` field (enum-constrained against current declared set). | A |
+| `pose_choice` | `backend/app/llm/tools.py:126` | Same field. Decisions tend to belong to a workstream (e.g. Disclosure's notification clock decision). | B |
+| `share_data` | `backend/app/llm/tools.py:173` | Same field. Data shares (IOC dumps, log tables) cluster by workstream. | B |
+| `inject_critical_event` | `backend/app/llm/tools.py:212` | Same field. Most injects target one workstream (press inject → Comms; new IOC → Containment). | B |
 
-All four extensions are **optional** — the field defaults to `None` and the message renders under the synthetic `#main` workstream if absent. Mandating it would create a new failure mode (tool call rejected → strict-retry loop → wasted tokens) for a metadata field that isn't load-bearing.
+**Phase A only extends `address_role`** — three tools deferred to Phase B to limit blast radius. Reasoning:
+
+- `address_role` is the strongest categorization signal: the AI is explicitly routing work to a specific person, which is the clearest possible hint about which workstream the beat belongs to.
+- Each tool extension is a place for the schema wording to drift across tools and the model to apply the field inconsistently. Four near-identical schema diffs at once is four chances for prompt-tax compounding.
+- `share_data` is often genuinely cross-cutting (an IOC dump can be relevant to two workstreams); `inject_critical_event` is creator-driven (the AI is just executing — categorization is debatable). Both deserve a real-session look at how the data flows before we extend them.
+- Messages from the three deferred tools render under `#main` in Phase A. UI-wise that's fine — the data share / pose-choice / inject is visible, just not workstream-tagged. The track filter is intentionally less complete in Phase A as the cost of the smaller risk surface.
+
+All extensions are **optional** — the field defaults to `None` and the message renders under the synthetic `#main` workstream if absent. Mandating it would create a new failure mode (tool call rejected → strict-retry loop → wasted tokens) for a metadata field that isn't load-bearing.
 
 ### 3.2 Tool we add
 
@@ -248,7 +255,7 @@ Backwards compatibility: existing messages have `workstream_id=None` and `mentio
 
 Tier: `SETUP` — and an additional, narrower variant in `PLAY` if we want mid-exercise additions (deferred to Phase D — the simpler model is "declare once at setup, freeze for play"). Phase A ships setup-only.
 
-### 4.3 Extending `address_role` (and siblings)
+### 4.3 Extending `address_role` (Phase A only)
 
 ```diff
  # backend/app/llm/tools.py — address_role
@@ -270,7 +277,7 @@ Tier: `SETUP` — and an additional, narrower variant in `PLAY` if we want mid-e
  }
 ```
 
-Identical extension to `pose_choice`, `share_data`, `inject_critical_event`. The field is optional. Strict enum on the *value* is enforced at dispatch time (§4.5), not in the JSON schema, so a bad value yields a structured `tool_result is_error=True` the strict-retry loop can recover from — same path as today's other validation errors.
+`pose_choice` / `share_data` / `inject_critical_event` get the same field shape in **Phase B** — see §3.1 for why those are deferred. The field is optional in all four. Strict enum on the *value* is enforced at dispatch time (§4.5), not in the JSON schema, so a bad value yields a structured `tool_result is_error=True` the strict-retry loop can recover from — same path as today's other validation errors.
 
 ### 4.4 Inheritance for player replies
 
@@ -351,27 +358,25 @@ The frontend renders the amber `@-mention` highlight from `Message.mentions[]`, 
 
 This is the single most important architectural decision in this plan — it's what makes the rest of the prompt-side reinforcement *soft* rather than load-bearing.
 
-### 5.2 Soft reinforcement of `@`-syntax in body text
+### 5.2 No body-text `@`-syntax directive (deliberately omitted)
 
-Add to `address_role`'s tool description in `tools.py`:
+An earlier draft of this plan added a soft "lead the prompt with `@<role_label>`" instruction to both `address_role`'s tool description and Block 6 of `prompts.py`. **It's intentionally omitted.** Reasoning:
 
-> *"Phrase the prompt so it begins with `@<role_label>` (e.g. `@CISO`, `@Legal`). Players see this; the explicit `@`-token signals 'this is for you' even when readers are scanning, and matches how the UI badges the message. Skipping the `@` doesn't break anything — the highlight is driven from the `role_id` field above — but the prose reads better with it."*
+- §5.1 already settled that the `@`-highlight is structural, not body-parsed. The body `@`-token is purely cosmetic — it makes prose read nicer for humans but adds zero correctness to the highlight feature.
+- Every prompt directive is a place the model can drift, conflict with another directive, or interpret strictly. Block 6 is already busy (CLAUDE.md flags it as a load-bearing block, and the 2026-04-30 cleanup miss documented in the prompt-tool consistency test was exactly this class of bug).
+- Adding a directive whose only effect is "AI prose reads slightly nicer" is pure prompt-tax for negligible benefit. If users complain in production that the prose feels off, we add the directive in a follow-up — but defaulting to YES on a soft style nudge is the wrong default for a brittle LLM pipeline.
 
-Add to Block 6 of `prompts.py` (tool-use protocol — the routing-discipline block) a single line:
-
-> *"When you address a role with `address_role`, lead the prompt with `@<role_label>`. This is a style note, not a tool-use rule — the highlight works either way."*
-
-The phrasing matters: *"This is a style note, not a tool-use rule"* is deliberate. The Prompt Expert review (CLAUDE.md sub-agent #6) flags conflicting instructions — phrasing this as "must" would conflict with the structural-source reality and waste tokens on retries when the model interprets it strictly.
+The only soft-`@` reinforcement left is in `address_role`'s existing description (the human-readable rationale of what the tool is *for*). Players who type in the composer get autocomplete (§4.6) so their prose includes `@`-tokens naturally; the AI's prose is structurally-driven highlight regardless.
 
 ### 5.3 Workstream declaration in setup
 
 Add to Block 4 (or wherever the setup-flow guidance lives in `prompts.py`):
 
-> *"After you've finalized the scenario plan, call `declare_workstreams` with 2–5 entries reflecting the parallel concerns the team will manage. Workstreams help the UI filter chat for participants who are only working one concern; they don't change the scenario or the turn structure. Examples: a ransomware scenario typically has Containment, Disclosure, Comms; an insider-threat scenario typically has Investigation, HR, Legal. Skip the call entirely if the scenario is single-track."*
+> *"After ``propose_scenario_plan`` is finalized and before ``finalize_setup``, optionally call `declare_workstreams` with 2–5 entries reflecting the parallel concerns the team will manage. Skip the call when the scenario is small or sequential — the @Me, Critical, and hidden-mentions filters all work without workstreams. Examples that warrant workstreams: a ransomware scenario typically has Containment, Disclosure, Comms; a multi-region outage has separate site teams. Examples that don't: phishing-triage with sequential investigate-then-remediate; a 2-person tabletop."*
 
-Block 6 (tool use during play) gets one line:
+Block 6 (tool use during play) gets a minimal addition — one optional field on one tool, no other directives:
 
-> *"Each `address_role` / `pose_choice` / `share_data` / `inject_critical_event` call may include a `workstream_id` from the declared set — pick the one that best fits the beat. Omit it for cross-cutting messages."*
+> *"`address_role` accepts an optional `workstream_id` from the declared set. Use it when the beat clearly belongs to one workstream; omit for cross-cutting beats. Workstream metadata is a UI-filter affordance, not a play-correctness requirement."*
 
 ### 5.4 Regression nets
 
@@ -432,7 +437,7 @@ The frontend renders these as: no filter pills (or just All/@Me/Critical), every
 
 ### 6.8 One feature flag at most
 
-`workstreams_enabled` (default `False` initially, flip to `True` after Phase A merges and bakes for a sprint). Controls:
+`workstreams_enabled` (default `False` initially, flip to `True` whenever Phase A's audit logs look sane on a few real exercises — no formal soak gate, this is a side project). Controls:
 - Whether `declare_workstreams` is included in `SETUP_TOOLS` exposed to the model.
 - Whether the frontend shows the workstream filter UI.
 
@@ -513,34 +518,38 @@ Each numbered failure mode pairs the symptom, the recovery, and the audit-log br
 
 Four phases; each is a separate PR and can land independently. Earlier phases have no UI without later phases — they're foundational metadata first, affordances second.
 
-### Phase A — Foundation (data + tool extension)
+### Phase A — Foundation (backend metadata + minimal AI directive)
 
-**Scope:** the metadata layer and the AI-side directive. No new UI yet (the data flows but nothing renders differently).
+**Scope:** the metadata layer for **only `address_role`**. **Zero frontend changes.** The data flows through the backend and lands in the audit logs, but nothing renders differently in the UI. This is deliberate — putting visuals on top of an LLM-driven feature before the underlying data has been observed in real sessions creates user-confusion bugs (a wrong filter pill) that are harder to debug than the equivalent backend-only bugs (a wrong audit log line).
 
 - `Workstream` Pydantic model.
 - `Message.workstream_id` and `Message.mentions` fields.
 - `ScenarioPlan.workstreams` field.
 - `declare_workstreams` tool added to `SETUP_TOOLS`.
-- `address_role` / `pose_choice` / `share_data` / `inject_critical_event` extended with optional `workstream_id`.
-- Dispatch validation (§4.5).
-- Prompt edits per §5.
+- **`address_role` only** extended with optional `workstream_id`. Other tool extensions deferred to Phase B (see §3.1 reasoning).
+- Dispatch validation (§4.5) for `address_role.workstream_id` only.
+- Prompt edits — Block 4 (declare workflow) + Block 6 (one-line `address_role` field note). No `@`-syntax body-text directive (see §5.2).
 - Regression nets per §5.4.
 - WS event payload extended (§4.8).
 - Feature flag `workstreams_enabled` defaulting `False`.
 
-**Exit criteria:** all existing tests pass; new tests for the data model + dispatch validation pass; live-API smoke run shows the AI declaring 2–5 workstreams on a multi-track scenario; `mentions[]` is correctly populated on AI messages addressing a role.
+**Exit criteria:** all existing tests pass; new tests for the data model + dispatch validation pass; live-API smoke run shows the AI declaring workstreams on at least one multi-track scenario fixture and skipping declaration on a small / sequential fixture; `mentions[]` is correctly populated on AI `address_role` calls. **No frontend changes shipped.**
 
-**Estimated PR size:** ~600 LoC backend + ~50 LoC schema/test edits. No frontend changes.
+**Estimated PR size:** ~400 LoC backend + ~50 LoC schema/test edits. Zero frontend.
 
-### Phase B — Filter UI + colored chat stripe
+### Phase B — Remaining tool extensions + Filter UI + colored chat stripe
 
-**Scope:** make the metadata visible. Frontend-heavy, backend-light.
+**Scope:** absorb the three deferred tools, then make the metadata visible. Backend-light, frontend-heavy.
 
+- Extend `pose_choice`, `share_data`, `inject_critical_event` with `workstream_id` (the deferred set from §3.1).
+- Dispatch validation extends to the three new tool-arg sites (same single-conditional pattern as Phase A).
 - `TranscriptFilters` component (filter pills + multi-select track pills + hidden-mentions banner) above the existing `Transcript`.
 - Colored stripe + per-message workstream rendering (track-bar, no chip per the iter-4 noise reduction).
 - `@`-highlight rendered from `Message.mentions[]` (the structural source).
 - Synthetic "track opened" rows (frontend-computed).
 - Sticky minute-anchor rows (frontend-computed).
+
+Phase B ships only after Phase A's audit logs show `declare_workstreams` and `address_role.workstream_id` behaving sanely across some live exercises. There's no fixed soak duration — this is a side project, not a production rollout — but the principle holds: don't add UI on top of metadata that hasn't been observed flowing correctly.
 
 **Exit criteria:** mockup E iter-4 reproduces in-app, against real session data, on a 1080p and 1440p viewport, with no regressions in existing E2E tests; manual smoke against a live session shows pills counting correctly when a creator filters.
 
