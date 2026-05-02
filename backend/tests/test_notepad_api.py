@@ -18,7 +18,6 @@ from fastapi.testclient import TestClient
 
 from .test_e2e_session import _create_and_seat, client  # noqa: F401
 
-
 # ----------------------------------------------------- snapshot endpoint
 
 
@@ -179,6 +178,91 @@ def test_notepad_export_works_after_lock(client: TestClient) -> None:
     assert out.status_code == 200
     assert "Locked: yes" in out.text
     assert "Ransom: declined" in out.text
+
+
+def test_notepad_template_rejects_unknown_id(client: TestClient) -> None:
+    """QA review on PR #115: the endpoint must reject unknown
+    template ids rather than silently persist them on the session."""
+    seats = _create_and_seat(client, role_count=2)
+    sid = seats["session_id"]
+    cr = seats["creator_token"]
+    r = client.post(
+        f"/api/sessions/{sid}/notepad/template?token={cr}",
+        json={"template_id": "haxor"},
+    )
+    assert r.status_code == 400, r.text
+
+
+def test_notepad_template_accepts_custom(client: TestClient) -> None:
+    """``custom`` is reserved for creators who paste their own template."""
+    seats = _create_and_seat(client, role_count=2)
+    sid = seats["session_id"]
+    cr = seats["creator_token"]
+    r = client.post(
+        f"/api/sessions/{sid}/notepad/template?token={cr}",
+        json={"template_id": "custom"},
+    )
+    assert r.status_code == 204, r.text
+
+
+def test_notepad_pin_returns_409_after_lock(client: TestClient) -> None:
+    """QA review: pin endpoint should refuse writes once the notepad
+    is locked at session end."""
+    seats = _create_and_seat(client, role_count=2)
+    sid = seats["session_id"]
+    cr = seats["creator_token"]
+    import asyncio
+
+    async def _lock() -> None:
+        notepad_svc = client.app.state.manager.notepad()
+        session = await client.app.state.manager.get_session(sid)
+        notepad_svc.lock(session)
+
+    asyncio.run(_lock())
+    r = client.post(
+        f"/api/sessions/{sid}/notepad/pin?token={cr}",
+        json={"text": "after lock", "source_message_id": "msg_post_lock"},
+    )
+    assert r.status_code == 409, r.text
+
+
+def test_end_session_locks_notepad_and_broadcasts(client: TestClient) -> None:
+    """Integration test for the manager → notepad lock path
+    (QA review HIGH on PR #115). Calls end_session with no
+    countdown delay (test path) and asserts the notepad ends up
+    locked + the audit channel saw both ``session_ended`` and
+    ``notepad_locked`` events."""
+    seats = _create_and_seat(client, role_count=2)
+    sid = seats["session_id"]
+    cr = seats["creator_token"]
+    creator_role_id = seats["creator_role_id"]
+
+    # Skip setup → READY so end_session is allowed.
+    client.post(f"/api/sessions/{sid}/setup/skip?token={cr}")
+
+    import asyncio
+
+    async def _end_with_no_delay() -> None:
+        # Pass ``notepad_lock_pending_seconds=0`` so the lock fires
+        # synchronously instead of via the 10s background task.
+        await client.app.state.manager.end_session(
+            session_id=sid,
+            by_role_id=creator_role_id,
+            notepad_lock_pending_seconds=0,
+        )
+
+    asyncio.run(_end_with_no_delay())
+
+    async def _check() -> None:
+        session = await client.app.state.manager.get_session(sid)
+        assert session.notepad.locked is True
+
+        audit = client.app.state.audit
+        kinds = {e.kind for e in audit.dump(sid)}
+        assert "session_ended" in kinds, f"audit kinds: {kinds}"
+        assert "notepad_locked" in kinds, f"audit kinds: {kinds}"
+
+    asyncio.run(_check())
 
 
 def test_notepad_snapshot_rejected_after_lock(client: TestClient) -> None:

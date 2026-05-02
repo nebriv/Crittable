@@ -822,6 +822,7 @@ def register_api_routes(app: FastAPI) -> None:
         Auth: creator only.
         """
         from ..sessions.notepad import NotepadLockedError
+        from ..templates.notepad import get_template
 
         manager = _manager(request)
         token = await _bind_token(request, session_id)
@@ -829,6 +830,15 @@ def register_api_routes(app: FastAPI) -> None:
             require_creator(token)
         except AuthorizationError as exc:
             raise HTTPException(status.HTTP_403_FORBIDDEN, str(exc)) from exc
+
+        # Validate against the catalog. ``"custom"`` is reserved for
+        # creators who paste their own template; everything else has
+        # to match a known starter id (QA review on PR #115).
+        if body.template_id != "custom" and get_template(body.template_id) is None:
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                f"unknown template_id: {body.template_id}",
+            )
 
         notepad = manager.notepad()
         async with await manager.with_lock(session_id):

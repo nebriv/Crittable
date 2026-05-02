@@ -475,6 +475,15 @@ async def _client_pump(
                 "request_end_session",
                 "typing_start",
                 "typing_stop",
+                # Issue #98: notepad writes must be gated on
+                # require_participant — spectators can read the
+                # broadcast fan-out (the relay sends update events to
+                # everyone) but they MUST NOT be able to mutate the
+                # canonical Yjs doc. Without this gate a spectator
+                # could rewrite the markdown that participants
+                # subsequently re-serialize and push via /snapshot.
+                "notepad_sync_request",
+                "notepad_update",
             ):
                 try:
                     require_participant(token_payload)

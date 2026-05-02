@@ -24,6 +24,7 @@ import time
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from typing import Any
 
 from pycrdt import Doc
 
@@ -63,9 +64,14 @@ class NotepadRoleNotAllowedError(NotepadError):
 
 @dataclass
 class _DocEntry:
-    """Per-session in-memory state: the Yjs Doc plus rate-limit windows."""
+    """Per-session in-memory state: the Yjs Doc plus rate-limit windows.
 
-    doc: Doc
+    ``Doc`` is generic in pycrdt 0.12+; we don't define a model schema
+    server-side (the relay is opaque per path C), so the type arg is
+    ``Any``.
+    """
+
+    doc: Doc[Any]
     update_timestamps: dict[str, deque[float]] = field(default_factory=dict)
     pin_timestamps: dict[str, deque[float]] = field(default_factory=dict)
 
@@ -83,7 +89,7 @@ class NotepadService:
         self._docs: dict[str, _DocEntry] = {}
 
     # ------------------------------------------------------------------ basics
-    def get_or_create(self, session_id: str) -> Doc:
+    def get_or_create(self, session_id: str) -> Doc[Any]:
         entry = self._docs.get(session_id)
         if entry is None:
             entry = _DocEntry(doc=Doc())
@@ -213,19 +219,40 @@ class NotepadService:
     # --------------------------------------------------------------- pinning
     _PIN_LINK_RE = re.compile(r"!?\[([^\]]*)\]\(([^)]*)\)")
     _PIN_HTML_RE = re.compile(r"<[^>]+>")
-    _PIN_LEADING_RE = re.compile(r"^[\s>#-]+")
+    _PIN_FENCE_RE = re.compile(r"```[^`]*```", re.DOTALL)
+    _PIN_BACKTICK_RE = re.compile(r"`+")
+    # ``re.MULTILINE`` so leading-marker stripping fires on every line,
+    # not just the first. Without this a player can pin
+    # ``\nsomething\n# Heading injected`` and the second line stays a
+    # heading in the Timeline.
+    _PIN_LEADING_RE = re.compile(r"^[\s>#\-*+]+", re.MULTILINE)
 
     @classmethod
     def sanitize_pin_text(cls, raw: str) -> str:
-        """Strip markdown link/image/HTML and leading list/blockquote/heading
-        markers from text that came from a chat selection. Prevents a
-        player from smuggling clickable links or formatting into the
-        Timeline (which feeds into the AAR generation prompt)."""
+        """Strip markdown link/image/HTML, code fences, backticks, and
+        leading list/blockquote/heading markers from text that came
+        from a chat selection. Prevents a player from smuggling
+        clickable links or formatting into the Timeline (which feeds
+        into the AAR generation prompt). The link / image regex is
+        applied **until fixed-point** so nested markup like
+        ``[![img](x)](http://evil.com)`` collapses fully."""
 
-        without_links = cls._PIN_LINK_RE.sub(lambda m: m.group(1), raw)
-        without_html = cls._PIN_HTML_RE.sub("", without_links)
-        without_leading = cls._PIN_LEADING_RE.sub("", without_html)
-        return without_leading.strip()
+        out = raw
+        # Strip code fences first so backticks inside them don't escape
+        # the fence-stripping pass.
+        out = cls._PIN_FENCE_RE.sub("", out)
+        # Loop image/link strip until stable — single-pass
+        # ``re.sub`` keeps the inner alt-text of nested markdown links
+        # which can itself be a link/image.
+        for _ in range(8):
+            new = cls._PIN_LINK_RE.sub(lambda m: m.group(1), out)
+            if new == out:
+                break
+            out = new
+        out = cls._PIN_HTML_RE.sub("", out)
+        out = cls._PIN_BACKTICK_RE.sub("", out)
+        out = cls._PIN_LEADING_RE.sub("", out)
+        return out.strip()
 
     def can_pin(
         self,

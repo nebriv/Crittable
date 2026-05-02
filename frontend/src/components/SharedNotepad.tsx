@@ -163,11 +163,15 @@ function timestampHotkeyExtension(sessionStartedAt: string): Extension {
   // Drops `T+MM:SS — ` at the cursor. Computes against
   // session.created_at, which is plenty close to "session start" for
   // tabletop purposes (we don't need to align with the AI's first turn).
+  //
+  // We use ``Mod-Shift-T`` rather than ``Mod-T`` because Cmd/Ctrl+T is
+  // owned by the browser ("open new tab") and the page cannot
+  // intercept it — picked up in the UI/UX review.
   return {
     name: "notepad-timestamp-hotkey",
     addKeyboardShortcuts() {
       return {
-        "Mod-t": () => {
+        "Mod-Shift-t": () => {
           const start = new Date(sessionStartedAt).getTime();
           const elapsedMs = Date.now() - start;
           const minutes = Math.max(0, Math.floor(elapsedMs / 60000));
@@ -338,6 +342,17 @@ export function SharedNotepad({
 
   function handleApplyTemplate(t: NotepadTemplate): void {
     if (!editor) return;
+    // Confirm before clobbering. The empty-state picker only shows
+    // when ``isEmpty`` is true, but a remote teammate may have started
+    // typing in the gap between render and click. The confirm step
+    // (per User Agent review) prevents silent loss of their work.
+    const currentMd = editorToMarkdown(editor).trim();
+    if (currentMd.length > 0) {
+      const ok = window.confirm(
+        `The notepad already has content. Replace it with the "${t.label}" template?`,
+      );
+      if (!ok) return;
+    }
     applyTemplateLocally(editor, t);
     applyTemplate(sessionId, token, t.id).catch((err) =>
       console.warn("[notepad] template POST failed", err),
@@ -390,12 +405,12 @@ export function SharedNotepad({
           <StatusChip
             tone="warn"
             label="SHARED"
-            value={
+            value={locked ? "LOCKED · export available" : "HIDDEN FROM AI"}
+            title={
               locked
-                ? "LOCKED · export still available"
-                : "AI can't see this during play, only in the final report"
+                ? "Notepad is read-only; the export link still works."
+                : "Hidden from the AI during play; the AI reads it only at the end of the session, when generating the final report. Plan and debrief freely."
             }
-            title="Hidden from the AI so you can plan and debrief freely without the model reacting to your notes."
           />
           <a
             href={exportMarkdownUrl(sessionId, token)}
@@ -416,9 +431,13 @@ export function SharedNotepad({
       </header>
 
       {lockPendingSecs !== null && !locked ? (
-        <div className="rounded-r-1 border border-warn bg-warn-bg px-2 py-1 text-[12px] text-warn">
-          Session ending — notepad locks in {lockPendingSecs}s. Save your
-          last thought.
+        <div
+          role="status"
+          aria-live="polite"
+          className="rounded-r-1 border border-warn bg-warn-bg px-2 py-1 text-[12px] text-warn"
+        >
+          Session ending — notepad locks in {lockPendingSecs}s. Notes will
+          export regardless.
         </div>
       ) : null}
 
@@ -437,6 +456,18 @@ export function SharedNotepad({
           {errorMsg.toLowerCase().includes("too large")
             ? "That edit was too large to sync — break it into smaller paste chunks."
             : errorMsg}
+        </div>
+      ) : null}
+
+      {/* Coachmark: visible to ALL roles, even non-creators. Empty
+          notepad on first visit needs the highlight-to-pin tip; non-
+          creators don't get the picker, but they do get this hint. */}
+      {isEmpty ? (
+        <div className="text-[11px] text-ink-400">
+          Tip: highlight any chat message to pin it here.
+          <span className="mono ml-2 text-ink-500">
+            (Ctrl/⌘+Shift+T inserts a T+MM:SS timestamp.)
+          </span>
         </div>
       ) : null}
 
@@ -473,14 +504,11 @@ export function SharedNotepad({
           >
             OR START TYPING
           </button>
-          <div className="text-[11px] text-ink-400">
-            Tip: highlight any chat message to pin it to the Timeline.
-          </div>
         </div>
       ) : null}
 
       <div
-        className="min-h-[12rem] rounded-r-1 border border-ink-600 bg-ink-900 p-2"
+        className="min-h-[12rem] max-h-[60vh] overflow-y-auto rounded-r-1 border border-ink-600 bg-ink-900 p-2"
         onClick={() => editor?.chain().focus().run()}
       >
         <EditorContent editor={editor} />

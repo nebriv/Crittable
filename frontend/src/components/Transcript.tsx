@@ -240,6 +240,8 @@ export function Transcript({
               id={`msg-${m.id}`}
               data-kind={m.kind}
               data-message-id={m.id}
+              data-highlightable="true"
+              data-message-kind="system"
               className="mono scroll-mt-24 select-text border-y border-dashed border-ink-600 px-2 py-1.5 text-center text-[10px] font-bold uppercase tracking-[0.16em] text-ink-400"
             >
               <span className="tabular-nums text-ink-500">
@@ -302,6 +304,12 @@ export function Transcript({
                 </header>
                 <div
                   className={`min-w-0 break-words rounded-r-2 px-4 py-3 text-ink-100 ${borderClass}`}
+                  // Issue #98: AI / inject bubbles must be highlight-pinnable
+                  // — they're the artifact users most want to capture into
+                  // their notepad timeline.
+                  data-highlightable="true"
+                  data-message-id={m.id}
+                  data-message-kind="ai"
                 >
                   <MarkdownBody body={m.body} />
                   {m.tool_name ? (
