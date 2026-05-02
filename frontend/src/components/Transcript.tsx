@@ -365,6 +365,9 @@ export function Transcript({
               </header>
               <div
                 className={`min-w-0 break-words rounded-r-2 px-4 py-3 text-left text-sm leading-relaxed text-ink-100 ${bubbleColour}`}
+                data-highlightable="true"
+                data-message-id={m.id}
+                data-message-kind={isPlayer ? "chat" : m.kind === "ai_text" ? "ai" : "system"}
               >
                 <p className="whitespace-pre-wrap">{m.body}</p>
                 {m.tool_name ? (

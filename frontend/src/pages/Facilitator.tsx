@@ -30,6 +30,8 @@ import {
   countUnjoinedImpersonateOptions,
 } from "../lib/proxy";
 import { useStickyScroll } from "../lib/useStickyScroll";
+import { HighlightActionPopover } from "../components/HighlightActionPopover";
+import { SharedNotepad } from "../components/SharedNotepad";
 import { ServerEvent, WsClient } from "../lib/ws";
 
 export type Phase = "intro" | "setup" | "ready" | "play" | "ended";
@@ -1285,14 +1287,30 @@ export function Facilitator() {
           <RightSidebar
             messages={snapshot.messages}
             roles={snapshot.roles}
-            notesStorageKey={(() => {
-              const role = snapshot.roles.find((r) => r.id === state.creatorRoleId);
-              const v = role?.token_version ?? 0;
-              return `atf-notes:${state.sessionId}:${state.creatorRoleId}:v${v}`;
-            })()}
+            notepad={
+              wsRef.current ? (
+                <SharedNotepad
+                  sessionId={state.sessionId}
+                  token={state.token}
+                  ws={wsRef.current}
+                  subscribe={(handler) =>
+                    wsRef.current?.subscribe(handler) ?? (() => {})
+                  }
+                  isCreator={true}
+                  sessionStartedAt={snapshot.created_at}
+                />
+              ) : null
+            }
           />
         </aside>
       </div>
+      {wsRef.current ? (
+        <HighlightActionPopover
+          sessionId={state.sessionId}
+          roleId={state.creatorRoleId}
+          token={state.token}
+        />
+      ) : null}
       <BottomActionBar
         phase={phase}
         backendState={snapshot.state}

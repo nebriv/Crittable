@@ -2,8 +2,10 @@ import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "re
 import { api, SessionSnapshot } from "../api/client";
 import { Composer } from "../components/Composer";
 import { CriticalEventBanner } from "../components/CriticalEventBanner";
+import { HighlightActionPopover } from "../components/HighlightActionPopover";
 import { RightSidebar } from "../components/RightSidebar";
 import { RoleRoster } from "../components/RoleRoster";
+import { SharedNotepad } from "../components/SharedNotepad";
 import { Transcript } from "../components/Transcript";
 import { DieLoader } from "../components/brand/DieLoader";
 import { HudGauges } from "../components/brand/HudGauges";
@@ -1042,15 +1044,32 @@ export function Play({ sessionId, token }: Props) {
           <RightSidebar
             messages={snapshot.messages}
             roles={snapshot.roles}
-            notesStorageKey={(() => {
-              if (!selfRoleId) return null;
-              const role = snapshot.roles.find((r) => r.id === selfRoleId);
-              const v = role?.token_version ?? 0;
-              return `atf-notes:${sessionId}:${selfRoleId}:v${v}`;
-            })()}
+            notepad={
+              wsRef.current && selfRoleId ? (
+                <SharedNotepad
+                  sessionId={sessionId}
+                  token={token}
+                  ws={wsRef.current}
+                  subscribe={(handler) =>
+                    wsRef.current?.subscribe(handler) ?? (() => {})
+                  }
+                  isCreator={
+                    snapshot.roles.find((r) => r.id === selfRoleId)?.is_creator ?? false
+                  }
+                  sessionStartedAt={snapshot.created_at}
+                />
+              ) : null
+            }
           />
         </aside>
       </div>
+      {selfRoleId && wsRef.current ? (
+        <HighlightActionPopover
+          sessionId={sessionId}
+          roleId={selfRoleId}
+          token={token}
+        />
+      ) : null}
     </main>
   );
 }

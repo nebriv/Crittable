@@ -267,6 +267,10 @@ def register_api_routes(app: FastAPI) -> None:
             "id": session.id,
             "state": session.state.value,
             "scenario_prompt": session.scenario_prompt,
+            # Session-start timestamp surfaced so the frontend can render
+            # ``T+MM:SS`` relative timestamps in the shared notepad
+            # (issue #98). ISO 8601 string; UTC.
+            "created_at": session.created_at.isoformat(),
             "plan": session.plan.model_dump() if (session.plan and is_creator) else None,
             "roles": [
                 {

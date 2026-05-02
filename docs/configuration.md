@@ -61,10 +61,25 @@ rationale for each default lives in `backend/app/config.py`
 | `MAX_TURNS_PER_SESSION` | `40` | Soft warning at 80%, hard stop at limit |
 | `AI_TURN_SOFT_WARN_PCT` | `80` | Threshold for the wrap-up nudge in the system prompt |
 | `MAX_CRITICAL_INJECTS_PER_5_TURNS` | `1` | Rate limit on `inject_critical_event` |
-| `EXPORT_RETENTION_MIN` | `60` | Minutes to keep an ENDED session's export available |
+| `EXPORT_RETENTION_MIN` | `60` | Minutes to keep an ENDED session's export available (covers AAR markdown, structured AAR JSON, **and the shared notepad** — `notepad/export.md` is reachable for the same window). |
 | `WS_HEARTBEAT_S` | `20` | WebSocket heartbeat interval |
 | `INPUT_GUARDRAIL_ENABLED` | `true` | Toggle the Haiku off-topic pre-classifier |
 | `DEV_FAST_SETUP` | `false` | Dev/testing only: skip the AI setup dialogue at session creation, drop a generic default plan, and land in `READY`. **Never enable in production.** A creator can also trigger this mid-flow via `POST /api/sessions/{id}/setup/skip`. |
+
+### Shared notepad (issue #98)
+
+The shared markdown notepad (`/api/sessions/{id}/notepad/*`) lives on
+the same lifecycle as the session — it's locked when the creator ends
+the session and stays exportable until the session is reaped per
+`EXPORT_RETENTION_MIN` above. There is **no separate retention TTL in
+v1**; a `NOTEPAD_RETENTION_DAYS` knob is tracked as a follow-up for
+deployments with longer compliance windows. The notepad never appears
+in play / setup / interject / guardrail prompts; only the AAR pipeline
+reads it (`<player_notepad>` block; see [prompts.md](prompts.md)).
+
+| Var | Default | Effect |
+|---|---|---|
+| _(none in v1)_ | — | Notepad lifecycle currently inherits `EXPORT_RETENTION_MIN`. |
 
 ## Frontend (Vite build-time)
 
