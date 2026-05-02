@@ -25,7 +25,10 @@ import { DieLoader } from "../components/brand/DieLoader";
 import { HudGauges } from "../components/brand/HudGauges";
 import { TurnStateRail } from "../components/brand/TurnStateRail";
 import { SetupWizard } from "../components/setup/SetupWizard";
-import { buildImpersonateOptions } from "../lib/proxy";
+import {
+  buildImpersonateOptions,
+  countUnjoinedImpersonateOptions,
+} from "../lib/proxy";
 import { useStickyScroll } from "../lib/useStickyScroll";
 import { ServerEvent, WsClient } from "../lib/ws";
 
@@ -165,6 +168,16 @@ export function Facilitator() {
   // creator needs to know which invites have actually been opened
   // before kicking off the exercise.
   const [presence, setPresence] = useState<Set<string>>(() => new Set());
+  // Issue #103 follow-up (Copilot review on PR #114): until the first
+  // ``presence_snapshot`` lands the empty set above is indistinguishable
+  // from "nobody has joined", and the "Tip: N roles haven't joined yet"
+  // banner would briefly fire on initial load / reconnect even when
+  // every role is actually connected. Tracked separately from the set
+  // itself so other consumers (RolesPanel dot, RoleRoster online dot)
+  // keep their existing presence-aware behaviour. Reset to false on
+  // session change and on every WS reconnect so a stale "ready" flag
+  // can't outlive a dropped socket.
+  const [presenceReady, setPresenceReady] = useState(false);
   // Real-time AI-thinking tracking — same shape as Play.tsx. ``aiCalls``
   // maps in-flight LLM ``call_id`` → tier (``setup`` / ``play`` / ``aar``
   // / ``guardrail`` / ``interject``) from ``ai_thinking`` boundary
@@ -364,7 +377,14 @@ export function Facilitator() {
       sessionId: state.sessionId,
       token: state.token,
       onEvent: handleEvent,
-      onStatus: (s) => setWsStatus(s),
+      onStatus: (s) => {
+        setWsStatus(s);
+        // Issue #103 follow-up: drop the "presence is authoritative"
+        // flag whenever the socket isn't open, so the next reconnect
+        // has to wait for a fresh ``presence_snapshot`` before the
+        // tip can fire again.
+        if (s !== "open") setPresenceReady(false);
+      },
     });
     ws.connect();
     wsRef.current = ws;
@@ -484,6 +504,7 @@ export function Facilitator() {
         break;
       case "presence_snapshot":
         setPresence(new Set(evt.role_ids));
+        setPresenceReady(true);
         if (typeof evt.connection_count === "number") {
           setConnectionCount(evt.connection_count);
         }
@@ -733,6 +754,7 @@ export function Facilitator() {
     setCriticalBanner(null);
     setDecisionLog([]);
     setPresence(new Set());
+    setPresenceReady(false);
     setCost(null);
     setLastEventAt(null);
     setConnectionCount(null);
@@ -1195,14 +1217,31 @@ export function Facilitator() {
                   snapshot.state === "AWAITING_PLAYERS" && !busy;
                 const canSelfSpeak = isMyTurn && !busy;
                 const canProxy = impersonateOptions.length > 0 && !busy;
+                // Issue #103: the tip used to fire whenever the
+                // "Respond as" dropdown had any entries — but the
+                // dropdown also includes joined-and-actively-playing
+                // roles that simply haven't submitted on the current
+                // turn. Only nudge the creator about invite links when
+                // there's actually a player role with no live tabs.
+                //
+                // ``presenceReady`` (Copilot review on PR #114) keeps
+                // the tip suppressed during the brief window between
+                // WS connect and the first ``presence_snapshot`` —
+                // without it, the empty initial set would briefly
+                // count every joined role as "unjoined" on initial
+                // load and on every reconnect, regressing into the
+                // exact misleading behavior this issue fixed.
+                const unjoinedImpersonateCount = presenceReady
+                  ? countUnjoinedImpersonateOptions(impersonateOptions, presence)
+                  : 0;
                 return (
                   <>
-                    {canProxy && impersonateOptions.length > 0 ? (
+                    {canProxy && unjoinedImpersonateCount > 0 ? (
                       // One-line hint addressing the user-agent CRITICAL —
                       // a fresh creator should know WHY a "Respond as"
                       // dropdown just appeared and that it's optional.
                       <p className="mb-1 text-[11px] text-ink-400">
-                        Tip: {impersonateOptions.length === 1 ? "1 role hasn't" : `${impersonateOptions.length} roles haven't`}{" "}
+                        Tip: {unjoinedImpersonateCount === 1 ? "1 role hasn't" : `${unjoinedImpersonateCount} roles haven't`}{" "}
                         joined yet — share their invite link, or use
                         "Respond as" to answer for them while solo-testing.
                       </p>

@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { buildImpersonateOptions, isMidSessionJoiner } from "../lib/proxy";
+import {
+  buildImpersonateOptions,
+  countUnjoinedImpersonateOptions,
+  isMidSessionJoiner,
+} from "../lib/proxy";
 import type { RoleView } from "../api/client";
 
 // Issue #80 helpers — both extracted as pure functions so the
@@ -143,6 +147,45 @@ describe("buildImpersonateOptions — issue #80 (dropdown roster source)", () =>
         submittedRoleIds: [],
       }),
     ).toEqual([]);
+  });
+});
+
+describe("countUnjoinedImpersonateOptions — issue #103 (tip gating)", () => {
+  it("counts only options whose roles are absent from the presence set", () => {
+    const options = [
+      { id: "r-soc", label: "SOC Analyst", offTurn: false },
+      { id: "r-legal", label: "Legal", offTurn: false },
+      { id: "r-comms", label: "Comms", offTurn: true },
+    ];
+    // soc + comms have tabs open, legal hasn't joined
+    const presence = new Set(["r-soc", "r-comms"]);
+    expect(countUnjoinedImpersonateOptions(options, presence)).toBe(1);
+  });
+
+  it("returns 0 when every option's role is currently connected", () => {
+    // Pre-fix scenario: all roles joined and active, but none has
+    // submitted on this turn yet — the tip used to lie that they
+    // hadn't joined. The helper now correctly suppresses it.
+    const options = [
+      { id: "r-soc", label: "SOC Analyst", offTurn: false },
+      { id: "r-legal", label: "Legal", offTurn: false },
+    ];
+    const presence = new Set(["r-soc", "r-legal", "r-creator"]);
+    expect(countUnjoinedImpersonateOptions(options, presence)).toBe(0);
+  });
+
+  it("returns the full length when presence is empty (solo-testing)", () => {
+    const options = [
+      { id: "r-soc", label: "SOC Analyst", offTurn: false },
+      { id: "r-legal", label: "Legal", offTurn: true },
+    ];
+    expect(countUnjoinedImpersonateOptions(options, new Set())).toBe(2);
+  });
+
+  it("returns 0 for an empty option list", () => {
+    expect(
+      countUnjoinedImpersonateOptions([], new Set(["r-soc"])),
+    ).toBe(0);
   });
 });
 

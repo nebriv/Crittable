@@ -135,7 +135,7 @@ Two ad-hoc paths the validator replaced:
 | `NARRATE` | `inject_event` | Stage-direction system note |
 | `PIN` | `mark_timeline_point` | Sidebar timeline pin (no chat bubble) |
 | `ESCALATE` | `inject_critical_event` | Headline-grade banner — must chain to DRIVE+YIELD |
-| `TERMINATE` | `end_session` | Ends the exercise; satisfies YIELD |
+| `TERMINATE` | ~~`end_session`~~ | Removed from the AI palette in 2026-05-02 (issue #104). Slot retained as defensive dead code; only the creator can end the exercise (REST + WS). |
 | `BOOKKEEPING` | `track_role_followup` / `resolve_role_followup` / `request_artifact` / `lookup_resource` / `use_extension_tool` / extension tools | Side effects that neither drive nor yield |
 
 ### Contracts (play tier)
@@ -264,7 +264,10 @@ Built-ins (play tier):
   list the AI maintains across turns; surfaced back to the model as
   Block 11 of the system prompt.
 - `use_extension_tool`, `lookup_resource` — operator extensions.
-- `end_session` — wrap the exercise.
+
+(`end_session` was removed in 2026-05-02 / issue #104; only the creator
+can wrap the exercise, via `POST /api/sessions/{id}/end` or the WS
+`request_end_session` event.)
 
 Setup-only:
 

@@ -62,6 +62,22 @@ export function buildImpersonateOptions({
 }
 
 /**
+ * Issue #103: how many "Respond as" options correspond to roles whose
+ * tabs aren't currently connected. The "share their invite link, or
+ * use Respond as while solo-testing" tip should ONLY fire when at
+ * least one role is genuinely absent — pre-fix it ran off
+ * ``impersonateOptions.length``, which also includes
+ * already-joined-and-active players that simply haven't submitted on
+ * the current turn (so the tip would lie about them).
+ */
+export function countUnjoinedImpersonateOptions(
+  options: ReadonlyArray<Pick<ImpersonateOption, "id">>,
+  presentRoleIds: ReadonlySet<string>,
+): number {
+  return options.filter((opt) => !presentRoleIds.has(opt.id)).length;
+}
+
+/**
  * Issue #80 bonus: predicate for the "Just joined? You'll be brought
  * into the next turn" chip in the participant Play view.
  *
