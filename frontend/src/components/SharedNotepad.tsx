@@ -539,7 +539,7 @@ export function SharedNotepad({
               another status chip alongside the SHARED chip. */}
           <a
             href={exportMarkdownUrl(sessionId, token)}
-            target="_blank"
+            download
             rel="noopener noreferrer"
             className="mono whitespace-nowrap rounded-r-1 border border-signal-deep bg-signal-tint px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-signal hover:border-signal hover:bg-signal/20 focus-visible:outline focus-visible:outline-2 focus-visible:outline-signal"
           >
