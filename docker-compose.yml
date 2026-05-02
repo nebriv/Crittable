@@ -10,4 +10,19 @@ services:
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       LOG_LEVEL: ${LOG_LEVEL:-DEBUG}
       LOG_FORMAT: ${LOG_FORMAT:-json}
+      # Dev-only flags. Compose's ``.env`` auto-load only fills
+      # ``${...}`` interpolation in this file — variables not listed
+      # here are NOT propagated to the container. Without these
+      # passthroughs, ``DEV_TOOLS_ENABLED=true`` in ``.env`` lands
+      # in the host shell but never reaches uvicorn, so the
+      # scenarios panel renders empty regardless.
+      # Each ``${VAR:-}`` defaults to empty (gate closed) when
+      # unset, matching the production-safe defaults in
+      # ``backend/app/config.py``.
+      DEV_TOOLS_ENABLED: ${DEV_TOOLS_ENABLED:-}
+      DEV_FAST_SETUP: ${DEV_FAST_SETUP:-}
+      DEV_SCENARIOS_PATH: ${DEV_SCENARIOS_PATH:-}
+      TEST_MODE: ${TEST_MODE:-}
+      INPUT_GUARDRAIL_ENABLED: ${INPUT_GUARDRAIL_ENABLED:-}
+      SESSION_SECRET: ${SESSION_SECRET:-}
     restart: unless-stopped
