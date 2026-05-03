@@ -531,16 +531,18 @@ def register_api_routes(app: FastAPI) -> None:
                     "use the normal submit endpoint for your own role",
                 )
             # Wave 1 (issue #134): proxy-respond mirrors the WS
-            # ``submit_response`` payload, including the per-turn intent.
-            # Defaults to ``"ready"`` (the historical "submit-and-advance"
-            # behaviour) so the God-mode UI keeps working without a
-            # client change; pass ``"discuss"`` to inject a discussion
-            # message that doesn't trip the ready-quorum gate.
-            intent_raw = body.get("intent", "ready")
+            # ``submit_response`` payload contract — ``intent`` is a
+            # required field. Per CLAUDE.md "no backwards compat",
+            # missing or malformed values are rejected here so a
+            # stale client surfaces the mismatch loudly instead of
+            # silently advancing on a coerced default. The Composer
+            # ALWAYS sends an explicit value; any caller hitting
+            # this gate is a contract violation, not a flow.
+            intent_raw = body.get("intent")
             if intent_raw not in ("ready", "discuss"):
                 raise HTTPException(
                     status.HTTP_400_BAD_REQUEST,
-                    "intent must be 'ready' or 'discuss'",
+                    "intent is required and must be 'ready' or 'discuss'",
                 )
             cap = manager.settings().max_participant_submission_chars
             # Mirror the WS submit path: when truncating, append a server

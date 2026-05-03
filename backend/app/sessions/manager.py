@@ -109,6 +109,43 @@ class SessionManager:
                 self._locks[session_id] = lock
             return lock
 
+    def _enforce_submission_cap(
+        self, session: Session, *, turn_id: str, role_id: str, turn_index: int
+    ) -> None:
+        """Wave 1 (issue #134) security review H2: per-role per-turn
+        submission cap. Counts how many non-interjection PLAYER
+        messages this role already has on the given turn and rejects
+        the new one if the cap is met. Shared across
+        ``submit_response``, ``proxy_submit_as``, and the per-role
+        loop in ``proxy_submit_pending`` so the operator escape
+        hatches can't bypass the flood backstop. Caller must hold
+        the per-session lock.
+        """
+
+        role_msg_count = sum(
+            1
+            for m in session.messages
+            if m.turn_id == turn_id
+            and m.role_id == role_id
+            and m.kind == MessageKind.PLAYER
+            and not m.is_interjection
+        )
+        cap = self._settings.max_submissions_per_role_per_turn
+        if role_msg_count >= cap:
+            _logger.warning(
+                "submission_rate_exceeded",
+                session_id=session.id,
+                role_id=role_id,
+                turn_index=turn_index,
+                count=role_msg_count,
+                cap=cap,
+            )
+            raise IllegalTransitionError(
+                f"too many submissions on this turn "
+                f"({role_msg_count}/{cap}); wait for the AI to "
+                "advance or ask the creator to force-advance."
+            )
+
     def _emit(self, kind: str, session: Session, **payload: Any) -> None:
         evt = AuditEvent(
             kind=kind,
@@ -677,40 +714,18 @@ class SessionManager:
                 raise IllegalTransitionError("no current turn")
             is_turn_submission = can_submit(turn, role_id)
             # Wave 1 (issue #134) security review H2: per-role per-turn
-            # submission cap. ``can_submit`` was relaxed for discussion
-            # follow-ups; this is the new ceiling against a flood.
-            # Counted by walking ``messages`` for this turn-id + role
-            # + ``MessageKind.PLAYER`` so a role's submitted_role_ids
-            # membership (single entry) isn't load-bearing for the
-            # count. Checked BEFORE ``session.messages.append`` so a
+            # cap, checked BEFORE ``session.messages.append`` so a
             # rejected submission never lands in the transcript.
-            # Interjections are exempt — they don't count toward the
+            # Interjections are exempt (they don't count toward the
             # ready quorum and are gated by the active-set check
-            # upstream, not the cap.
+            # upstream, not the cap).
             if is_turn_submission:
-                role_msg_count = sum(
-                    1
-                    for m in session.messages
-                    if m.turn_id == turn.id
-                    and m.role_id == role_id
-                    and m.kind == MessageKind.PLAYER
-                    and not m.is_interjection
+                self._enforce_submission_cap(
+                    session,
+                    turn_id=turn.id,
+                    role_id=role_id,
+                    turn_index=turn.index,
                 )
-                cap = self._settings.max_submissions_per_role_per_turn
-                if role_msg_count >= cap:
-                    _logger.warning(
-                        "submission_rate_exceeded",
-                        session_id=session.id,
-                        role_id=role_id,
-                        turn_index=turn.index,
-                        count=role_msg_count,
-                        cap=cap,
-                    )
-                    raise IllegalTransitionError(
-                        f"too many submissions on this turn "
-                        f"({role_msg_count}/{cap}); wait for the AI to "
-                        "advance or ask the creator to force-advance."
-                    )
             self._enforce_dedupe_window(session, role_id=role_id, content=content)
             session.messages.append(
                 Message(
@@ -943,6 +958,18 @@ class SessionManager:
                     f"role {as_role_id!r} is not a player role; cannot proxy-submit"
                 )
             is_turn_submission = can_submit(turn, as_role_id)
+            # Wave 1 (issue #134) security review (Copilot follow-up):
+            # mirror the ``submit_response`` per-role cap so the
+            # solo-test escape hatch can't bypass the flood backstop.
+            # Pre-fix the cap only ran on the WS path; a creator
+            # could repeatedly proxy-submit to grief the transcript.
+            if is_turn_submission:
+                self._enforce_submission_cap(
+                    session,
+                    turn_id=turn.id,
+                    role_id=as_role_id,
+                    turn_index=turn.index,
+                )
             # Apply the same dedupe scan ``submit_response`` runs.
             # Pre-issue-#78 the proxy path skipped this guard; once
             # proxy_submit_as became the documented out-of-turn
@@ -1045,13 +1072,28 @@ class SessionManager:
                 if rid != by_role_id and rid not in turn.submitted_role_ids
             ]
             for rid in pending:
+                # Wave 1 (issue #134) security review (Copilot follow-up):
+                # mirror the per-role cap on the bulk-fill path too.
+                # ``proxy_submit_pending`` only fires once for any
+                # given role per call (the ``pending`` list filters on
+                # ``not in turn.submitted_role_ids``), so under normal
+                # use the cap is moot — but a script repeatedly hitting
+                # this endpoint after a force-advance reset could
+                # otherwise sneak past the backstop. The cap applies
+                # uniformly across all three submission paths.
+                self._enforce_submission_cap(
+                    session,
+                    turn_id=turn.id,
+                    role_id=rid,
+                    turn_index=turn.index,
+                )
                 turn.submitted_role_ids.append(rid)
-                # Wave 1 (issue #134): proxy_submit_pending is the
-                # creator's "advance now, fill in stub responses for
-                # everyone else" escape hatch. Auto-mark each filled
-                # seat as ready so the ready-quorum gate flips and the
-                # turn actually advances — leaving them in
-                # ``submitted_role_ids`` only would block forever.
+                # proxy_submit_pending is the creator's "advance now,
+                # fill in stub responses for everyone else" escape
+                # hatch. Auto-mark each filled seat as ready so the
+                # ready-quorum gate flips and the turn actually
+                # advances — leaving them in ``submitted_role_ids``
+                # only would block forever.
                 if rid not in turn.ready_role_ids:
                     turn.ready_role_ids.append(rid)
                 session.messages.append(

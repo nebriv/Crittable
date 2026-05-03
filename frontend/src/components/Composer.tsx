@@ -182,10 +182,12 @@ export function Composer({
     e.preventDefault();
     if (e.ctrlKey || e.metaKey) {
       // Ctrl+Enter (Win/Linux) or Cmd+Enter (macOS) → discuss.
-      // Hidden when ``hideDiscussButton`` / off-turn proxy — same
-      // visibility rule as the button itself, so we don't surface
-      // the shortcut where the affordance shouldn't exist.
-      if (!hideDiscussButton) {
+      // Gated on ``showDiscussButton`` (not ``hideDiscussButton``)
+      // so the shortcut matches the button's visibility exactly —
+      // the discuss button is also hidden for off-turn proxy
+      // submissions (``proxyIsOffTurn``), and the keyboard path
+      // must not surface a hidden affordance.
+      if (showDiscussButton) {
         submit("discuss");
       }
       return;

@@ -293,14 +293,15 @@ export const api = {
    *
    * ``intent`` (Wave 1, issue #134): ``"ready"`` mirrors the historical
    * "advance now" behaviour; ``"discuss"`` injects a discussion message
-   * that doesn't trip the ready-quorum gate.
+   * that doesn't trip the ready-quorum gate. Required — the backend
+   * rejects payloads without it (CLAUDE.md "no backwards compat").
    */
   async adminProxyRespond(
     sessionId: string,
     creatorToken: string,
     asRoleId: string,
     content: string,
-    intent: "ready" | "discuss" = "ready",
+    intent: "ready" | "discuss",
   ): Promise<{ ok: boolean }> {
     return request(
       "POST",
