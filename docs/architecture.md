@@ -61,13 +61,22 @@ CREATED ──▶ SETUP ◀──┐ creator ↔ AI dialogue
                      │
                      ▼
    AWAITING_PLAYERS(active_role_ids) ◀──┐
-                     │                  │ wait for ALL active roles,
-                     ▼                  │ OR a force-advance from
-                AI_PROCESSING            │ any participant. AI also
-                     │                  │ runs a side-channel
-                     │                  │ `run_interject` here when
-                     │                  │ a player asks a direct
-                     │                  │ question (trailing `?`).
+                     │                  │ wait for ALL active roles to
+                     ▼                  │ signal `intent="ready"` (Wave 1,
+                AI_PROCESSING            │ issue #134) — i.e.
+                     │                  │ `set(active) ⊆ set(ready_role_ids)`.
+                     │                  │ A `discuss`-intent submission
+                     │                  │ records the message but does
+                     │                  │ NOT add the role to the ready
+                     │                  │ quorum; a follow-up `discuss`
+                     │                  │ from a role who had marked
+                     │                  │ ready walks them back. Force-
+                     │                  │ advance from any participant
+                     │                  │ bypasses the quorum (operator
+                     │                  │ escape hatch). AI also runs a
+                     │                  │ side-channel `run_interject`
+                     │                  │ here when a player asks a
+                     │                  │ direct question (trailing `?`).
                      └──────────────────┘
                      │
                      ▼

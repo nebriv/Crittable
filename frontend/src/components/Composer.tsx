@@ -170,12 +170,26 @@ export function Composer({
   }, [submitErrorEpoch]);
 
   function handleKeyDown(e: KeyboardEvent<HTMLTextAreaElement>) {
-    // Enter submits; Shift+Enter inserts a newline. IME composition events
-    // (Japanese / Chinese / Korean input) keep the default newline behavior so
-    // accepting a candidate doesn't accidentally send the message.
+    // Enter submits as ready; Shift+Enter inserts a newline.
+    // Ctrl/Cmd+Enter submits as discuss (Wave 1 / issue #134 UI/UX
+    // review HIGH — gives keyboard-only operators a path to the
+    // secondary action; pre-fix the discuss button was mouse-only).
+    // IME composition events (Japanese / Chinese / Korean input)
+    // keep the default newline behavior so accepting a candidate
+    // doesn't accidentally send the message.
     if (e.key !== "Enter" || e.shiftKey || e.nativeEvent.isComposing) return;
-    e.preventDefault();
     if (!enabled || !text.trim()) return;
+    e.preventDefault();
+    if (e.ctrlKey || e.metaKey) {
+      // Ctrl+Enter (Win/Linux) or Cmd+Enter (macOS) → discuss.
+      // Hidden when ``hideDiscussButton`` / off-turn proxy — same
+      // visibility rule as the button itself, so we don't surface
+      // the shortcut where the affordance shouldn't exist.
+      if (!hideDiscussButton) {
+        submit("discuss");
+      }
+      return;
+    }
     handle(e as unknown as FormEvent);
   }
 
@@ -391,10 +405,17 @@ export function Composer({
       <div className="flex flex-wrap items-center justify-between gap-2">
         <span className="mono text-[10px] uppercase tracking-[0.04em] text-ink-400">
           <kbd className="mono rounded-r-1 border border-ink-500 bg-ink-800 px-1 text-[10px] text-ink-100">Enter</kbd>{" "}
-          to send,{" "}
+          ready,{" "}
+          {showDiscussButton ? (
+            <>
+              <kbd className="mono rounded-r-1 border border-ink-500 bg-ink-800 px-1 text-[10px] text-ink-100">Ctrl</kbd>+
+              <kbd className="mono rounded-r-1 border border-ink-500 bg-ink-800 px-1 text-[10px] text-ink-100">Enter</kbd>{" "}
+              discuss,{" "}
+            </>
+          ) : null}
           <kbd className="mono rounded-r-1 border border-ink-500 bg-ink-800 px-1 text-[10px] text-ink-100">Shift</kbd>+
           <kbd className="mono rounded-r-1 border border-ink-500 bg-ink-800 px-1 text-[10px] text-ink-100">Enter</kbd>{" "}
-          for a new line
+          newline
           {isCurrentlyReady && showDiscussButton ? (
             <>
               {" · "}

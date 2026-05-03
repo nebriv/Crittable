@@ -368,6 +368,83 @@ def test_active_role_can_submit_multiple_messages(client: TestClient) -> None:
     assert a in session.current_turn.ready_role_ids  # type: ignore[union-attr]
 
 
+def test_per_role_submission_cap_blocks_flood(client: TestClient) -> None:
+    """Wave 1 (issue #134) security review H2: ``can_submit`` was
+    relaxed for discussion follow-ups; the per-role per-turn cap is
+    the new ceiling against a flood / griefing loop. Default cap is
+    20; we override to 3 here for a tractable test."""
+
+    # Override the cap via the manager's settings reference. The
+    # autouse env fixture ran before this test; we mutate the live
+    # Settings instance so we don't have to recreate the manager.
+    manager = client.app.state.manager
+    manager._settings.max_submissions_per_role_per_turn = 3
+    seats = _seat_session(client, role_count=2)
+    sid = seats["session_id"]
+    a, _b = seats["role_ids"]
+
+    async def _go() -> None:
+        # 3 discuss submissions land (each different content).
+        for i in range(3):
+            await manager.submit_response(
+                session_id=sid,
+                role_id=a,
+                content=f"discussion {i}",
+                intent="discuss",
+            )
+        # 4th must fail.
+        try:
+            await manager.submit_response(
+                session_id=sid,
+                role_id=a,
+                content="discussion 4",
+                intent="discuss",
+            )
+        except Exception as exc:
+            assert "too many submissions" in str(exc).lower()
+            return
+        raise AssertionError(
+            "expected per-role cap to reject the 4th submission"
+        )
+
+    asyncio.run(_go())
+
+
+def test_walk_back_emits_dedicated_audit(client: TestClient) -> None:
+    """Wave 1 (issue #134) security review H3: a ``ready → discuss``
+    transition emits ``ready_walk_back`` so the creator's activity
+    panel can spot a griefer re-flipping ready after every peer
+    signals. The audit fires only on actual transitions — a fresh
+    discuss without prior ready does not trip it."""
+
+    seats = _seat_session(client, role_count=2)
+    sid = seats["session_id"]
+    a, _b = seats["role_ids"]
+    manager = client.app.state.manager
+
+    async def _go() -> None:
+        # Fresh discuss without prior ready — must NOT emit walk-back.
+        await manager.submit_response(
+            session_id=sid, role_id=a, content="thinking", intent="discuss"
+        )
+        # Ready, then walk back — emits walk-back exactly once.
+        await manager.submit_response(
+            session_id=sid, role_id=a, content="ready now", intent="ready"
+        )
+        await manager.submit_response(
+            session_id=sid, role_id=a, content="actually wait", intent="discuss"
+        )
+
+    asyncio.run(_go())
+    events = manager.audit().dump(sid)
+    walk_back_events = [e for e in events if e.kind == "ready_walk_back"]
+    assert len(walk_back_events) == 1, (
+        f"expected exactly one ready_walk_back; got "
+        f"{[e.kind for e in events]}"
+    )
+    assert walk_back_events[0].payload["role_id"] == a
+
+
 def test_snapshot_exposes_ready_role_ids(client: TestClient) -> None:
     """The REST snapshot surfaces ``current_turn.ready_role_ids`` so the
     frontend HUD can render the readiness count without an extra

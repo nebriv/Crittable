@@ -63,8 +63,8 @@ Authoritative schema: `backend/app/devtools/scenario.py`. Quick reference:
   "play_turns": [
     {
       "submissions": [
-        {"role_label": "CISO", "content": "isolate now"},
-        {"role_label": "SOC Analyst", "content": "acknowledged"}
+        {"role_label": "CISO", "content": "isolate now", "intent": "ready"},
+        {"role_label": "SOC Analyst", "content": "acknowledged", "intent": "ready"}
       ]
     }
   ],
@@ -72,6 +72,13 @@ Authoritative schema: `backend/app/devtools/scenario.py`. Quick reference:
   "mock_llm_script": null
 }
 ```
+
+`intent` (Wave 1, issue #134) is per-submission and defaults to
+``"ready"`` so legacy scenarios round-trip with the historical
+"submit-and-advance" semantics. Hand-author multi-submission turns
+that exercise discussion mode by setting ``intent: "discuss"`` on
+the early submissions and ``intent: "ready"`` on the closing one
+— see `discussion_then_ready.json` for an example.
 
 Notes:
 
@@ -87,10 +94,22 @@ Notes:
 ## Existing scenarios
 
 - **`smoke_2role.json`** — fastest path: skips setup, 2 roles, 3 play
-  turns. ~$0.10 per run against real LLM.
+  turns. ~$0.10 per run against real LLM. All submissions default
+  `intent="ready"` (legacy "submit-and-advance" flow).
 - **`full_5role_phishing.json`** — full lifecycle including setup
   dialogue, 5 roles, 6 play turns. ~$0.20 per run; exercises the
-  multi-role active-set narrowing and per-role AAR scoring.
+  multi-role active-set narrowing and per-role AAR scoring. All
+  submissions default `intent="ready"`.
+- **`discussion_then_ready.json`** — Wave 1 (issue #134) demo of
+  the per-submission intent + ready-quorum gate. Two-role
+  discussion: a `discuss`-intent submission opens the turn for
+  team discussion, follow-up `ready` closes the quorum. Tested via
+  `tests/scenarios/test_scenario_runner.py::test_discussion_then_ready_scenario_runs`,
+  which drives every recorded submission through the live pipeline
+  (asserts intent flows end-to-end on multi-role discussion).
+  Engine-mode scenario; no `ai_messages` captured (deterministic
+  byte-for-byte replay would require a recording run, tracked as a
+  follow-up).
 
 ## What replays actually exercise (and what they don't)
 

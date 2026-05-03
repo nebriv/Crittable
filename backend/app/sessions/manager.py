@@ -676,6 +676,41 @@ class SessionManager:
             if turn is None:
                 raise IllegalTransitionError("no current turn")
             is_turn_submission = can_submit(turn, role_id)
+            # Wave 1 (issue #134) security review H2: per-role per-turn
+            # submission cap. ``can_submit`` was relaxed for discussion
+            # follow-ups; this is the new ceiling against a flood.
+            # Counted by walking ``messages`` for this turn-id + role
+            # + ``MessageKind.PLAYER`` so a role's submitted_role_ids
+            # membership (single entry) isn't load-bearing for the
+            # count. Checked BEFORE ``session.messages.append`` so a
+            # rejected submission never lands in the transcript.
+            # Interjections are exempt — they don't count toward the
+            # ready quorum and are gated by the active-set check
+            # upstream, not the cap.
+            if is_turn_submission:
+                role_msg_count = sum(
+                    1
+                    for m in session.messages
+                    if m.turn_id == turn.id
+                    and m.role_id == role_id
+                    and m.kind == MessageKind.PLAYER
+                    and not m.is_interjection
+                )
+                cap = self._settings.max_submissions_per_role_per_turn
+                if role_msg_count >= cap:
+                    _logger.warning(
+                        "submission_rate_exceeded",
+                        session_id=session.id,
+                        role_id=role_id,
+                        turn_index=turn.index,
+                        count=role_msg_count,
+                        cap=cap,
+                    )
+                    raise IllegalTransitionError(
+                        f"too many submissions on this turn "
+                        f"({role_msg_count}/{cap}); wait for the AI to "
+                        "advance or ask the creator to force-advance."
+                    )
             self._enforce_dedupe_window(session, role_id=role_id, content=content)
             session.messages.append(
                 Message(
@@ -692,6 +727,7 @@ class SessionManager:
                     intent=intent if is_turn_submission else None,
                 )
             )
+            walked_back = False
             if is_turn_submission:
                 if role_id not in turn.submitted_role_ids:
                     turn.submitted_role_ids.append(role_id)
@@ -700,13 +736,17 @@ class SessionManager:
                 # within a turn; ``"discuss"`` walks it back so a
                 # player who marked ready prematurely can re-open
                 # discussion by sending a new message with discuss
-                # intent.
+                # intent. Wave 1 (issue #134) security review H3:
+                # walk-backs get a dedicated audit kind so the
+                # creator's activity panel can spot a griefer
+                # re-flipping ready after every peer signals.
                 if intent == "ready":
                     if role_id not in turn.ready_role_ids:
                         turn.ready_role_ids.append(role_id)
                 else:
                     if role_id in turn.ready_role_ids:
                         turn.ready_role_ids.remove(role_id)
+                        walked_back = True
                 ready_to_advance = all_ready(turn)
                 if ready_to_advance:
                     turn.status = "processing"
@@ -734,6 +774,18 @@ class SessionManager:
             ready_role_ids=ready_snapshot,
             submitted_role_ids=submitted_snapshot,
         )
+        if walked_back:
+            # Wave 1 (issue #134) security review H3: dedicated audit
+            # kind so the creator's /activity panel surfaces "X
+            # walked back ready N times" — a griefing detection
+            # signal the generic ``response_submitted`` line buries.
+            self._emit(
+                "ready_walk_back",
+                session,
+                role_id=role_id,
+                ready_role_ids=ready_snapshot,
+                active_role_ids=active_snapshot,
+            )
         await self._connections.broadcast(
             session.id,
             {

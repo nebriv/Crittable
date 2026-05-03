@@ -105,6 +105,8 @@ ai-tabletop-facilitator/
 
 `SETUP` is a private dialogue between the creator and the AI to tailor the exercise (see Setup Phase below). Other participants who have already joined sit in a "waiting for facilitator setup" view. Once the AI calls `finalize_setup(...)` and the creator confirms, the session enters `READY`; the creator then triggers `start` which transitions to `BRIEFING`.
 
+The `AWAITING_PLAYERS → AI_PROCESSING` flip gates on a **ready quorum** (Wave 1, issue #134, PR #148): every WS `submit_response` carries an explicit `intent: "ready" | "discuss"`, and the AI advances when `set(active_role_ids) ⊆ set(ready_role_ids)`. A `discuss`-intent submission records the message and adds the role to `submitted_role_ids` but does *not* trip the gate; a follow-up `discuss` from a role that had marked ready walks them back. Active roles can post any number of submissions on an awaiting turn (the cap of one-per-role lifted in Wave 1). Force-advance still bypasses the quorum. See `docs/turn-lifecycle.md` § 1c for the per-submission contract and the `Composer.tsx` two-button surface that drives it.
+
 `SessionManager` holds a per-session `asyncio.Lock` so transitions on one session never block another. A global lock is explicitly avoided. `TurnEngine` is a pure state machine (no I/O); the manager is the only thing that mutates session state and persists via the repository.
 
 ### Engine-side phase policy (do not trust the LLM)
@@ -286,7 +288,7 @@ Client → server events: `submit_response`, `request_force_advance`, `request_e
 ### AAA (built in, swappable)
 
 - **AuthN** (`auth/authn.py`) — `Authenticator` protocol. MVP impl validates HMAC-signed join tokens (`itsdangerous`). Tokens carry `session_id`, `role_id`, `display_name_required=True`. Pluggable for OAuth/SSO.
-- **AuthZ** (`auth/authz.py`) — role-based gates: any seated participant (player kind, not spectator) can `submit_response` while the session is `AWAITING_PLAYERS` — submissions from a role NOT on the active set (or already submitted) land as out-of-turn **interjections** (transcript-only, no turn-state change). See issue #78 and `docs/turn-lifecycle.md` §1 for the engine flow. Any participant can request force-advance/end. Spectators are rejected at the WS gate before reaching the manager.
+- **AuthZ** (`auth/authz.py`) — role-based gates: any seated participant (player kind, not spectator) can `submit_response` while the session is `AWAITING_PLAYERS`. Submissions from a role NOT on the active set land as out-of-turn **interjections** (transcript-only, intent=None, no turn-state change — issue #78). Active roles may submit multiple times on the same turn under the Wave 1 ready-quorum model — every submission carries `intent: "ready" | "discuss"` and updates `Turn.ready_role_ids` accordingly (see `docs/turn-lifecycle.md` § 1c). Any participant can request force-advance/end. Spectators are rejected at the WS gate before reaching the manager.
 - **Audit** (`audit/log.py`) — every state transition, tool call, participant message, and force-advance/end action emitted as a JSONL line to stdout (picked up by container logs) and held in an in-memory ring buffer for inclusion in the AAR.
 - Rate-limit middleware stub (`slowapi` or hand-rolled), default off in MVP.
 
