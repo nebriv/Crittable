@@ -657,6 +657,7 @@ class SessionManager:
         content: str,
         intent: SubmissionIntent = "ready",
         expected_token_version: int | None = None,
+        mentions: list[str] | None = None,
     ) -> bool:
         """Record a player's submission. Returns True if the turn is now complete.
 
@@ -668,7 +669,7 @@ class SessionManager:
         signalling ready). Non-active roles' posts are recorded as
         out-of-turn interjections — appended to the transcript so the
         AI sees them on the next turn (and so the WS layer can fire
-        ``run_interject`` for question-style content), but with no
+        ``run_interject`` for ``@facilitator`` mentions), but with no
         effect on ``submitted_role_ids`` / ``ready_role_ids`` /
         session state.
 
@@ -680,6 +681,11 @@ class SessionManager:
         active role has explicitly signalled ready (or the creator
         force-advances). Out-of-turn interjections never touch the
         ready quorum (they don't touch ``submitted_role_ids`` either).
+
+        ``mentions`` (Wave 2): cleaned list of mention targets — real
+        ``role_id`` values + the literal ``"facilitator"``. The
+        submission pipeline drops unknowns before this layer; we
+        trust the input here and just persist on ``Message.mentions``.
         """
 
         async with await self._lock_for(session_id):
@@ -740,6 +746,9 @@ class SessionManager:
                     # signals "not a ready/discuss decision" to the
                     # recorder + any audit consumer.
                     intent=intent if is_turn_submission else None,
+                    # Wave 2: cleaned by the submission pipeline; the
+                    # raw wire payload never reaches this layer.
+                    mentions=list(mentions) if mentions else [],
                 )
             )
             walked_back = False
@@ -819,10 +828,12 @@ class SessionManager:
                 # Phase A chat-declutter (plan §4.8). Player-side
                 # workstream-id inheritance (§4.4) lands in a later
                 # phase; for Phase A every player message reports
-                # ``None`` (the synthetic ``#main`` bucket) and an
-                # empty ``mentions`` list.
+                # ``None`` (the synthetic ``#main`` bucket).
                 "workstream_id": None,
-                "mentions": [],
+                # Wave 2: cleaned by the submission pipeline; clients
+                # render the @-highlight from this list rather than
+                # regex-scanning the body.
+                "mentions": list(mentions) if mentions else [],
             },
         )
         if ready_to_advance:
@@ -924,6 +935,7 @@ class SessionManager:
         as_role_id: str,
         content: str,
         intent: SubmissionIntent = "ready",
+        mentions: list[str] | None = None,
     ) -> bool:
         """Solo-test impersonation: submit ``content`` on behalf of
         ``as_role_id`` (creator-only at the route layer). Returns True if
@@ -938,6 +950,10 @@ class SessionManager:
         active and not yet submitted the post counts as a turn submission;
         otherwise it's recorded as an out-of-turn interjection (transcript
         only, no turn-state change).
+
+        ``mentions`` (Wave 2): mirror ``submit_response``. The REST
+        proxy route validates the list before passing through, same
+        as the WS pipeline path; this layer trusts the input.
         """
 
         async with await self._lock_for(session_id):
@@ -993,6 +1009,9 @@ class SessionManager:
                     turn_id=turn.id,
                     is_interjection=not is_turn_submission,
                     intent=intent if is_turn_submission else None,
+                    # Wave 2: mirror ``submit_response``. The REST
+                    # proxy endpoint validates before this layer.
+                    mentions=list(mentions) if mentions else [],
                 )
             )
             if is_turn_submission:
@@ -1034,7 +1053,9 @@ class SessionManager:
                 # Phase A chat-declutter (plan §4.8). Same shape as
                 # ``submit_response`` above.
                 "workstream_id": None,
-                "mentions": [],
+                # Wave 2: same source as ``submit_response``. The
+                # REST proxy validates the wire payload first.
+                "mentions": list(mentions) if mentions else [],
             },
         )
         self._emit(

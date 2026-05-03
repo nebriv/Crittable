@@ -372,6 +372,16 @@ class Session(BaseModel):
 
     notepad: NotepadState = Field(default_factory=NotepadState)
 
+    # Wave 2 (composer mentions + facilitator routing): when True, the
+    # WS routing branch in ``ws/routes.py`` skips ``run_interject`` for
+    # ``@facilitator`` mentions — the message still lands in the
+    # transcript with the highlight, but the AI does not respond.
+    # The toggle UI / endpoint that flips this flag is Wave 3 (issue
+    # #69) and intentionally not part of this PR; the model field is
+    # included now so the routing branch can structurally consume it
+    # and tests can flip it manually.
+    ai_paused: bool = False
+
     aar_markdown: str | None = None
     aar_status: AARStatus = "pending"
     aar_error: str | None = None

@@ -142,11 +142,11 @@ flowchart TD
     Start --> B[/"Force-advance<br/>(POST /force-advance or WS)"/]
     Start --> C[/"Creator hits Start<br/>(POST /start — first play turn)"/]
     Start --> D[/"Creator proxy-respond<br/>(POST /admin/proxy-respond)"/]
-    Start --> E[/"Player asks ?-question<br/>mid-turn — interject path"/]
+    Start --> E[/"Player @facilitator's<br/>mid-turn — interject path"/]
 
-    A --> Q1{"All active roles<br/>now submitted?"}
+    A --> Q1{"Ready quorum<br/>now met?"}
     Q1 -- "yes" --> RUN[run_play_turn]
-    Q1 -- "no" --> Q2{"Message ends in ?<br/>and looks like a question?"}
+    Q1 -- "no" --> Q2{"mentions[]<br/>contains 'facilitator'<br/>and not ai_paused?"}
     Q2 -- "yes" --> INTJ[run_interject]
     Q2 -- "no" --> WAIT[Wait for remaining roles]
 
@@ -169,13 +169,14 @@ flowchart TD
 
 | Entry | State going in | Triggers | Notes |
 |---|---|---|---|
-| Player submits last response | `AWAITING_PLAYERS` → `AI_PROCESSING` | `run_play_turn` | Only the last submitter's submission triggers the call. Earlier submitters just queue. |
+| Player submits last response | `AWAITING_PLAYERS` → `AI_PROCESSING` | `run_play_turn` | Only the submission that closes the ready quorum triggers the call. Earlier submitters just queue. |
 | Force-advance | `AWAITING_PLAYERS` → `AI_PROCESSING` | `run_play_turn` | Inserts `[system] Force-advanced by X; missing voices skipped`. |
 | `/start` | `READY` → `BRIEFING` → `AI_PROCESSING` | `run_play_turn` (briefing contract) | The first play turn uses `PLAY_CONTRACT_BRIEFING` — no soft carve-out. |
-| Proxy-respond | Same as submit | Same as submit | Creator types on behalf of an absent role; same code path. |
-| `?`-question mid-turn (active asker) | `AWAITING_PLAYERS` (stays) | `run_interject` | Side channel; doesn't advance the turn; uses its own contract (see §8). |
-| **Out-of-turn `?`-interjection (issue #78)** | `AWAITING_PLAYERS` (stays) | `run_interject` | A non-active role (or already-submitted active role) posts a question. Same `run_interject` path as the active-asker case; the asker's role_id is threaded through `for_role_id` and exposed to the model in a per-call system note. |
-| **Out-of-turn comment (issue #78)** | `AWAITING_PLAYERS` (stays) | none — transcript-only | A non-active role (or already-submitted active role) posts non-question text. The message lands in the transcript with `is_interjection=True` (rendered to the model with an `[OUT-OF-TURN]` prefix); no LLM call fires. The next normal `run_play_turn` reads it as context and Block 6 of the play prompt instructs the model not to add the speaker to `set_active_roles`. |
+| Proxy-respond | Same as submit | Same as submit | Creator types on behalf of an absent role; same code path including the structural `mentions[]` validation. |
+| **`@facilitator` mid-turn (active asker)** (Wave 2) | `AWAITING_PLAYERS` (stays) | `run_interject` | Player typed `@facilitator` (or alias `@ai` / `@gm` resolved client-side) in the composer. Side channel; doesn't advance the turn; uses its own contract (see §8). Suppressed when `Session.ai_paused=True` (Wave 3 stub) — the message still lands in the transcript with the @-highlight, but the AI does NOT respond. |
+| **Out-of-turn `@facilitator` interjection (issue #78 + Wave 2)** | `AWAITING_PLAYERS` (stays) | `run_interject` | A non-active role (or already-submitted active role) `@facilitator`s. Same `run_interject` path as the active-asker case; the asker's role_id is threaded through `for_role_id` and exposed to the model in a per-call system note. |
+| **Plain `@<role>` mention** (Wave 2) | `AWAITING_PLAYERS` (stays) | none — transcript-only | Player addressed a teammate, not the AI. Message lands in the transcript with the @-highlight rendered for the addressed role from `Message.mentions[]`; no AI side effect. The next `run_play_turn` reads the body as context. |
+| **Out-of-turn comment** (issue #78) | `AWAITING_PLAYERS` (stays) | none — transcript-only | A non-active role (or already-submitted active role) posts text without `@facilitator`. The message lands in the transcript with `is_interjection=True` (rendered to the model with an `[OUT-OF-TURN]` prefix); no LLM call fires. The next normal `run_play_turn` reads it as context and Block 6 of the play prompt instructs the model not to add the speaker to `set_active_roles`. |
 
 > **The inverted carve-out only ever applied on the `run_play_turn` path.**
 > `run_interject` has its own narrowed tool surface and never silently yields.
@@ -202,16 +203,26 @@ The pipeline does, in order:
    AI doesn't read a clipped sentence as a real fragment).
    `outcome.truncated=True` and `outcome.original_len` let the WS handler
    emit a `submission_truncated` info frame.
-3. **Input-side guardrail classification** → only `prompt_injection`
+3. **`mentions[]` validation** (Wave 2) → ``_validate_mentions`` drops
+   any entry that isn't either a current `role_id` on the session or
+   the literal `"facilitator"` token. Non-string / empty entries are
+   dropped. The list is capped at `_MENTIONS_CAP = 16` entries; excess
+   is truncated. Drops emit a `mention_dropped` WARNING audit with
+   `submitted` / `dropped` / `kept` so an operator can debug a "the AI
+   didn't pick up my @-mention" report from the audit log alone. The
+   cleaned list is what `submit_response` persists on
+   `Message.mentions` and what the WS routing branch reads to decide
+   whether to fire `run_interject`.
+4. **Input-side guardrail classification** → only `prompt_injection`
    blocks. `outcome.blocked=True`, `submit_response` is NOT called, and
    the message never lands in the transcript. The WS handler emits a
    `guardrail_blocked` info frame; the runner just logs.
-4. **`manager.submit_response`** → records the message with its
-   `intent`, mutates `submitted_role_ids` if the role is active,
-   updates `ready_role_ids` based on intent (Wave 1 — see § 1c
-   below), flips state to `AI_PROCESSING` when the ready-quorum gate
-   closes. The dedupe window lives inside `submit_response` itself,
-   so both call sites inherit it.
+5. **`manager.submit_response`** → records the message with its
+   `intent` + cleaned `mentions[]`, mutates `submitted_role_ids` if
+   the role is active, updates `ready_role_ids` based on intent
+   (Wave 1 — see § 1c below), flips state to `AI_PROCESSING` when
+   the ready-quorum gate closes. The dedupe window lives inside
+   `submit_response` itself, so both call sites inherit it.
 
 ### 1c. Per-submission intent + ready-quorum gate (Wave 1, issue #134)
 
@@ -501,8 +512,8 @@ flowchart TD
     A1 -- "true" --> A2{"contract.soft_drive_when_open_question<br/>(per-contract, only NORMAL)"}
     A2 -- "false" --> Recover
     A2 -- "true" --> A3{"_most_recent_unreplied_player_question(session)<br/>returns a non-None body?"}
-    A3 -- "no — most recent reply was AI<br/>or last player msg has no '?'" --> Recover
-    A3 -- "yes — player message ends in ?" --> A4{"_new_beat_fired(slots)?<br/>(NARRATE / PIN / ESCALATE in slots)"}
+    A3 -- "no — most recent reply was AI<br/>or no recent @facilitator mention" --> Recover
+    A3 -- "yes — player @facilitator'd" --> A4{"_new_beat_fired(slots)?<br/>(NARRATE / PIN / ESCALATE in slots)"}
     A4 -- "yes — story moved" --> Recover
     A4 -- "no" --> Downgrade["DOWNGRADE — warning only<br/>(legacy buggy behavior)"]:::downgrade
 
@@ -512,31 +523,35 @@ flowchart TD
 ```
 
 > **Why the carve-out is wrong** (the heart of the regression):
-> The third condition fires on a *player's* trailing `?`. The carve-out's stated
-> intent was "the AI's prior question is still open and players are mid-discussion
-> answering it." But the predicate matches the *player asking the AI* a question.
-> So the carve-out was downgrading the violation **exactly when the AI was
-> required to answer** — the inverse of its intent. Default-disabling it removes
-> the failure mode entirely, and the explicit Pause-AI control (Phase B) is the
-> correct way to permit player-only discussion.
+> The third condition fires on an unanswered ``@facilitator`` mention.
+> The carve-out's stated intent was "the AI's prior question is still
+> open and players are mid-discussion answering it." But the predicate
+> matches the *player asking the AI* a question. So the carve-out was
+> downgrading the violation **exactly when the AI was required to
+> answer** — the inverse of its intent. Default-disabling it removes
+> the failure mode entirely, and the explicit Pause-AI control
+> (Wave 3) is the correct way to permit player-only discussion.
 
 ### 5b. What `_most_recent_unreplied_player_question` returns
 
-Walks the transcript backwards. Returns the message body string if the most-recent
-non-AI-broadcast/non-AI-address_role event is a player message ending in `?`.
-Otherwise returns `None`.
+Walks the transcript backwards. Returns the message body string if the
+most-recent non-AI-broadcast/non-AI-address_role event is a player
+message that carried an ``@facilitator`` mention. Otherwise returns
+`None`. (Wave 2 swapped the trailing-`?` heuristic for the structural
+mention signal — see § 1a.)
 
 | Transcript head (newest last) | Return value |
 |---|---|
-| `… AI:broadcast(…), Player:"contained"` | `None` (no `?`) |
-| `… AI:broadcast(…), Player:"What do we see?"` | `"What do we see?"` |
-| `… Player:"contained?", AI:broadcast("yes — …")` | `None` (AI already replied) |
-| `… AI:broadcast("act now?"), Player:"isolating"` | `None` (last player has no `?`) |
+| `… AI:broadcast(…), Player:"contained"` (no mentions) | `None` |
+| `… AI:broadcast(…), Player:"@facilitator what do we see?"` | The body |
+| `… Player:"@facilitator …", AI:broadcast("yes — …")` | `None` (AI already replied) |
+| `… AI:broadcast("act now?"), Player:"isolating"` (no mentions) | `None` |
 
-This same function is now **also** used to ground the drive-recovery user nudge —
-when DRIVE recovery fires and a player `?`-question exists, its body is embedded
-verbatim in the recovery prompt so the model can't broadcast a generic "what's the
-move?" to satisfy the slot.
+This same function is now **also** used to ground the drive-recovery
+user nudge — when DRIVE recovery fires and a player ``@facilitator``
+mention exists, its body is embedded verbatim in the recovery prompt
+so the model can't broadcast a generic "what's the move?" to satisfy
+the slot.
 
 ---
 

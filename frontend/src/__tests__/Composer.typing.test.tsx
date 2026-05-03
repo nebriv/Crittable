@@ -236,7 +236,9 @@ describe("Composer typing indicator (issue #77, heartbeat mode)", () => {
     fireEvent.keyDown(textarea, { key: "Enter" });
     // Wave 1 (issue #134): submit now carries an explicit intent
     // ("ready" / "discuss"). Enter maps to "ready".
-    expect(onSubmit).toHaveBeenCalledWith("answer", "ready", undefined);
+    // Wave 2: the third positional arg is the structural mentions
+    // list — empty when the player didn't @ anyone.
+    expect(onSubmit).toHaveBeenCalledWith("answer", "ready", [], undefined);
     expect(onTypingChange).toHaveBeenLastCalledWith(false);
     // QA review MEDIUM: post-submit re-typing fires start again.
     fireEvent.change(textarea, { target: { value: "n" } });

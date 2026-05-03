@@ -134,6 +134,29 @@ export type ClientEvent =
        * rejects payloads without it.
        */
       intent: "ready" | "discuss";
+      /**
+       * Wave 2 (composer mentions + facilitator routing).
+       *
+       * Structural mention targets parsed from the composer's
+       * marks. Order-preserving + de-duplicated. Each entry is
+       * either a real ``role_id`` from the session roster or the
+       * literal ``"facilitator"`` token (synthetic AI target;
+       * client-side aliases ``@ai`` / ``@gm`` resolve to this same
+       * string before the payload is built).
+       *
+       * The backend's WS handler calls
+       * ``run_interject`` iff ``"facilitator"`` is present AND
+       * ``Session.ai_paused`` is False. Plain ``role_id`` entries
+       * are player-to-player only — they surface the @-highlight to
+       * the addressed role but trigger no AI side effect. Empty
+       * list when the player didn't tag anyone.
+       *
+       * The server validates this list at the submission pipeline:
+       * unknown / non-string entries are dropped with a
+       * ``mention_dropped`` WARNING audit; the cleaned list is the
+       * one persisted on ``Message.mentions``.
+       */
+      mentions: string[];
     }
   | { type: "request_force_advance" }
   | { type: "request_end_session"; reason?: string }

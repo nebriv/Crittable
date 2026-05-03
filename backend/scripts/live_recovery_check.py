@@ -113,7 +113,8 @@ def _build_session() -> Session:
     )
     # Transcript matching the captured production trace — AI's prior
     # broadcast asked CISO/SOC for triage, both replied, and SOC's last
-    # message ends in `?`.
+    # message ``@facilitator``s the AI (Wave 2 replaced the legacy
+    # trailing-`?` heuristic with the structural mention).
     s.messages.append(
         Message(
             kind=MessageKind.AI_TEXT,
@@ -131,7 +132,8 @@ def _build_session() -> Session:
         Message(
             kind=MessageKind.PLAYER,
             role_id=soc.id,
-            body="Yeah we can pull account activity via Defender. What do we see?",
+            body="@facilitator yeah we can pull account activity via Defender. What do we see?",
+            mentions=["facilitator"],
         )
     )
     return s

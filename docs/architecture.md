@@ -75,8 +75,8 @@ CREATED ──▶ SETUP ◀──┐ creator ↔ AI dialogue
                      │                  │ bypasses the quorum (operator
                      │                  │ escape hatch). AI also runs a
                      │                  │ side-channel `run_interject`
-                     │                  │ here when a player asks a
-                     │                  │ direct question (trailing `?`).
+                     │                  │ here when a player explicitly
+                     │                  │ `@facilitator`s the AI (Wave 2).
                      └──────────────────┘
                      │
                      ▼

@@ -930,6 +930,7 @@ export function Facilitator() {
   async function handleSubmit(
     text: string,
     intent: "ready" | "discuss",
+    mentions: string[],
     asRoleId?: string,
   ) {
     if (!state) return;
@@ -941,13 +942,18 @@ export function Facilitator() {
         // Creator impersonation — go through the REST proxy endpoint so
         // the backend records the correct role_id (the WS submit_response
         // is hard-pinned to the connection's own role).
-        console.info("[facilitator] proxy submit", { asRoleId, intent });
+        console.info("[facilitator] proxy submit", {
+          asRoleId,
+          intent,
+          mentions,
+        });
         await api.adminProxyRespond(
           state.sessionId,
           state.token,
           asRoleId,
           text,
           intent,
+          mentions,
         );
         return;
       }
@@ -956,6 +962,9 @@ export function Facilitator() {
         type: "submit_response",
         content: text,
         intent,
+        // Wave 2: structural mention list from the composer's marks.
+        // See ``Play.tsx::handleSubmit`` for the routing semantics.
+        mentions,
       });
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -1374,6 +1383,21 @@ export function Facilitator() {
                 const selfRole = snapshot.roles.find(
                   (r) => r.id === state.creatorRoleId,
                 );
+                // Wave 2: roster the @-popover offers. Excludes the
+                // creator's own role and spectators. Synthetic
+                // facilitator entry is rendered by the popover itself.
+                const mentionRoster = snapshot.roles
+                  .filter(
+                    (r) =>
+                      r.id !== state.creatorRoleId &&
+                      r.kind !== "spectator",
+                  )
+                  .map((r) => ({
+                    target: r.id,
+                    insertLabel: r.label,
+                    displayLabel: r.label,
+                    secondary: r.display_name ?? undefined,
+                  }));
                 // Issue #78: the creator can post any time the session
                 // is awaiting players — even when they're not on the
                 // active set. Out-of-turn submissions land as
@@ -1438,6 +1462,7 @@ export function Facilitator() {
                       onTypingChange={handleTypingChange}
                       impersonateOptions={impersonateOptions}
                       selfLabel={selfRole?.label}
+                      mentionRoster={mentionRoster}
                     />
                   </>
                 );
