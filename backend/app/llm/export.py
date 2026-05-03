@@ -169,6 +169,31 @@ def _extract_action_items_verbatim(markdown: str) -> list[str]:
     return list(seen.keys())
 
 
+def _strip_workstream_keys(payload: dict[str, Any] | Any) -> dict[str, Any] | Any:
+    """Drop workstream-related keys from an audit payload.
+
+    docs/plans/chat-decluttering.md §6.9 — the AAR pipeline must be
+    workstream-blind. Audit events such as ``tool_use`` carry
+    ``args_keys`` that include ``"workstream_id"`` when the AI tagged
+    a beat; this helper removes those keys so the AAR LLM sees the
+    same audit shape regardless of the feature flag.
+
+    Non-dict payloads pass through unchanged. Dict payloads are
+    shallow-copied so the audit ring buffer (in-memory, shared across
+    callers) is never mutated in place.
+    """
+
+    if not isinstance(payload, dict):
+        return payload
+    out = dict(payload)
+    keys = out.get("args_keys")
+    if isinstance(keys, list):
+        out["args_keys"] = [k for k in keys if k != "workstream_id"]
+    out.pop("workstream_id", None)
+    out.pop("mentions", None)
+    return out
+
+
 def _user_payload(session: Session, audit: AuditLog) -> str:
     transcript = "\n".join(
         f"[{m.kind.value}] role={m.role_id or 'AI'}: {m.body}" for m in session.messages
@@ -177,8 +202,17 @@ def _user_payload(session: Session, audit: AuditLog) -> str:
         f"[{n.speaker}] {n.topic or '-'}: {n.content}" for n in session.setup_notes
     )
     audit_lines = "\n".join(
-        json.dumps({"kind": e.kind, "ts": e.ts.isoformat(), "payload": e.payload})
+        json.dumps(
+            {"kind": e.kind, "ts": e.ts.isoformat(), "payload": _strip_workstream_keys(e.payload)}
+        )
         for e in audit.dump(session.id)
+        # Phase A chat-declutter (docs/plans/chat-decluttering.md §6.9).
+        # The AAR pipeline is workstream-blind by contract — strip the
+        # only audit kind that names workstreams as a first-class
+        # concept. The ``Message`` serialization above is already
+        # workstream-blind because it formats body/kind/role_id only,
+        # not a full ``model_dump``.
+        if e.kind != "workstream_declared"
     )
 
     # Player notepad. Wrapped in nonced delimiters so a player cannot
@@ -484,7 +518,18 @@ def _render_markdown(
     lines.append("## Appendix B — Frozen scenario plan")
     if plan:
         lines.append("```json")
-        lines.append(json.dumps(plan.model_dump(), indent=2, sort_keys=True))
+        # Phase A chat-declutter (docs/plans/chat-decluttering.md §6.9).
+        # Strip ``workstreams`` so the AAR markdown is structurally
+        # identical regardless of the ``workstreams_enabled`` flag —
+        # the workstream model is a live-exercise affordance, not a
+        # post-mortem artifact.
+        lines.append(
+            json.dumps(
+                plan.model_dump(exclude={"workstreams"}),
+                indent=2,
+                sort_keys=True,
+            )
+        )
         lines.append("```")
     else:
         lines.append("_(no plan was finalized)_")

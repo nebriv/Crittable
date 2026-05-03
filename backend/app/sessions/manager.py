@@ -816,6 +816,13 @@ class SessionManager:
                 # ready_role_ids. ``None`` for interjections (intent
                 # doesn't apply to out-of-turn posts).
                 "intent": intent if is_turn_submission else None,
+                # Phase A chat-declutter (plan §4.8). Player-side
+                # workstream-id inheritance (§4.4) lands in a later
+                # phase; for Phase A every player message reports
+                # ``None`` (the synthetic ``#main`` bucket) and an
+                # empty ``mentions`` list.
+                "workstream_id": None,
+                "mentions": [],
             },
         )
         if ready_to_advance:
@@ -1024,6 +1031,10 @@ class SessionManager:
                 "body": content,
                 "is_interjection": not is_turn_submission,
                 "intent": intent if is_turn_submission else None,
+                # Phase A chat-declutter (plan §4.8). Same shape as
+                # ``submit_response`` above.
+                "workstream_id": None,
+                "mentions": [],
             },
         )
         self._emit(
@@ -1124,6 +1135,9 @@ class SessionManager:
                     # the whole point of the helper — auto-advance the
                     # turn).
                     "intent": "ready",
+                    # Phase A chat-declutter (plan §4.8).
+                    "workstream_id": None,
+                    "mentions": [],
                 },
             )
         self._emit(
@@ -1526,6 +1540,12 @@ class SessionManager:
                 "role_id": role_id,
                 "is_interjection": is_interjection,
                 "turn_id": turn_id,
+                # Phase A chat-declutter (plan §4.8). Recorded scenarios
+                # don't carry workstream metadata in Phase A — replays
+                # surface ``None`` / ``[]`` so live clients see the
+                # same shape as live sessions.
+                "workstream_id": msg.workstream_id,
+                "mentions": list(msg.mentions),
             },
         )
         self._emit(

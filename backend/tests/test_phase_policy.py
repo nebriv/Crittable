@@ -28,7 +28,18 @@ def test_setup_policy_shape() -> None:
     p = POLICIES["setup"]
     assert p.allowed_states == frozenset({SessionState.SETUP})
     assert p.allowed_tool_names == frozenset(
-        {"ask_setup_question", "propose_scenario_plan", "finalize_setup"}
+        {
+            "ask_setup_question",
+            "propose_scenario_plan",
+            "finalize_setup",
+            # Phase A chat-declutter (docs/plans/chat-decluttering.md
+            # §3.5): ``declare_workstreams`` is a setup-tier tool. It's
+            # feature-flagged at the call site (``setup_tools_for``)
+            # rather than included in ``SETUP_TOOLS``, so the
+            # phase-policy filter is unconditional — the gate "is the
+            # tool present in the request" lives one layer up.
+            "declare_workstreams",
+        }
     )
     assert p.tool_choice == {"type": "any"}
     assert p.bare_text_allowed is False

@@ -440,10 +440,19 @@ _GUARDRAIL_CLASSIFIER = (
 )
 
 
+_WORKSTREAMS_PLAY_NOTE = (
+    "\n\n**Workstream metadata.** `address_role` accepts an optional "
+    "`workstream_id` from the set declared in setup. Use it when the "
+    "beat clearly belongs to one workstream; omit for cross-cutting "
+    "beats. UI-filter affordance, not a play-correctness requirement."
+)
+
+
 def build_play_system_blocks(
     session: Session,
     *,
     registry: FrozenRegistry,
+    workstreams_enabled: bool = False,
 ) -> list[dict[str, Any]]:
     """Compose the play-tier system block list."""
 
@@ -451,9 +460,22 @@ def build_play_system_blocks(
     if session.roster_size == "large":
         style += _STYLE_LARGE_OVERRIDE
 
-    plan_json = json.dumps(
-        session.plan.model_dump() if session.plan else {}, indent=2, sort_keys=True
-    )
+    # ``mode="json"`` serializes datetime / enum fields to JSON-friendly
+    # strings — needed since the Phase A chat-declutter ``Workstream``
+    # entries on ``ScenarioPlan.workstreams`` carry ``datetime`` fields
+    # that the default ``model_dump`` would leave as Python objects.
+    # When ``workstreams_enabled`` is False, exclude the field entirely
+    # so the play prompt is structurally identical to its pre-Phase-A
+    # shape (plan §6.8 — feature is invisible end-to-end when off).
+    plan_dump: dict[str, Any] = {}
+    if session.plan is not None:
+        if workstreams_enabled:
+            plan_dump = session.plan.model_dump(mode="json")
+        else:
+            plan_dump = session.plan.model_dump(
+                mode="json", exclude={"workstreams"}
+            )
+    plan_json = json.dumps(plan_dump, indent=2, sort_keys=True)
 
     extension_block_lines: list[str] = []
     for prompt_name in session.active_extension_prompts:
@@ -514,13 +536,23 @@ def build_play_system_blocks(
         "the inject."
     )
 
+    # Phase A chat-declutter (docs/plans/chat-decluttering.md §5.3):
+    # Block 6 picks up an optional one-paragraph note when the flag
+    # is on. Off → the model never sees the field name, so a stale
+    # cache or an unrelated test fixture doesn't have to think about
+    # it. On → soft directive, never mandatory (plan §3.1 ships the
+    # field as optional).
+    tool_use_protocol = _TOOL_USE_PROTOCOL + (
+        _WORKSTREAMS_PLAY_NOTE if workstreams_enabled else ""
+    )
+
     blocks: list[str] = [
         "## Block 1 — Identity\n" + _IDENTITY,
         "## Block 2 — Mission\n" + _MISSION,
         "## Block 3 — Plan adherence\n" + _PLAN_ADHERENCE,
         "## Block 4 — Hard boundaries\n" + _HARD_BOUNDARIES,
         "## Block 5 — Style\n" + style,
-        "## Block 6 — Tool-use protocol\n" + _TOOL_USE_PROTOCOL,
+        "## Block 6 — Tool-use protocol\n" + tool_use_protocol,
         "## Block 7 — Frozen scenario plan\n```json\n" + plan_json + "\n```",
         "## Block 8 — Active extension prompts\n" + extension_block,
         "## Block 9 — Roster-size strategy\n" + _ROSTER_STRATEGY[session.roster_size],
@@ -589,12 +621,54 @@ def _build_followup_block(session: Session) -> str:
     return "\n".join(lines)
 
 
-def build_setup_system_blocks(session: Session) -> list[dict[str, Any]]:
+_WORKSTREAMS_SETUP_DIRECTIVE = (
+    "\n\n**Workstream declaration (optional). Default action: skip.** "
+    "After `propose_scenario_plan` is finalized and before "
+    "`finalize_setup`, you MAY call `declare_workstreams` — but only "
+    "when 3+ participants will work on 2+ distinct concerns "
+    "**concurrently**, sustained across multiple beats. The "
+    "@Me / Critical / hidden-mentions filters all work without "
+    "workstreams; skipping costs the user nothing.\n\n"
+    "**Call when concurrent.** Ransomware with parallel Containment + "
+    "Disclosure + Comms tracks. Multi-region outage with separate site "
+    "teams. Supply-chain breach with investigation + customer-comms + "
+    "vendor-management.\n\n"
+    "**Skip when sequential or small.** Phishing-triage with "
+    "investigate-then-remediate flow (sequential, even with 4 roles). "
+    "A 3-role insider-threat investigation where HR + Legal + IT "
+    "collaborate on one thread. A 2-person tabletop.\n\n"
+    "**When you do call:** declare 2–5 entries (hard cap 8 in the "
+    "schema; never invent thin workstreams to hit a minimum). One "
+    "concern per entry — don't split `containment` into `containment_1` "
+    "and `containment_2`. Good output: snake_case ids "
+    "(`containment`, `disclosure`, `comms`), labels ≤3 words "
+    "(`Containment`, `Disclosure`, `Comms`). Use the **scenario's own** "
+    "track names — don't reflexively copy these examples if the seed "
+    "names different concerns. `lead_role_id` is OPTIONAL: at declare "
+    "time only the creator role is seated (other roles join later), so "
+    "set it only when the creator obviously owns the workstream; "
+    "otherwise omit (an unknown role_id is dropped to None server-side)."
+)
+
+
+def build_setup_system_blocks(
+    session: Session,
+    *,
+    workstreams_enabled: bool = False,
+) -> list[dict[str, Any]]:
+    # Phase A chat-declutter (docs/plans/chat-decluttering.md §5.3):
+    # the setup-flow directive only ships when the flag is on, in line
+    # with the matching ``setup_tools_for(workstreams_enabled=...)``
+    # gate — the model never sees a directive that references a tool
+    # absent from its palette.
+    setup_block = _SETUP_SYSTEM + (
+        _WORKSTREAMS_SETUP_DIRECTIVE if workstreams_enabled else ""
+    )
     text = "\n\n".join(
         [
             "## Block 1 — Identity\n" + _IDENTITY,
             "## Block 4 — Hard boundaries\n" + _HARD_BOUNDARIES,
-            "## Setup-phase instructions\n" + _SETUP_SYSTEM,
+            "## Setup-phase instructions\n" + setup_block,
             "## Scenario seed prompt from creator\n" + session.scenario_prompt,
         ]
     )
@@ -602,9 +676,17 @@ def build_setup_system_blocks(session: Session) -> list[dict[str, Any]]:
 
 
 def build_aar_system_blocks(session: Session) -> list[dict[str, Any]]:
-    plan_json = json.dumps(
-        session.plan.model_dump() if session.plan else {}, indent=2, sort_keys=True
+    # Phase A chat-declutter (docs/plans/chat-decluttering.md §6.9):
+    # the AAR pipeline is workstream-blind by contract. Strip the
+    # ``workstreams`` field from the plan dump so the AAR system prompt
+    # never references workstreams — the AAR shape stays stable across
+    # the feature flag.
+    plan_dump: dict[str, Any] = (
+        session.plan.model_dump(mode="json", exclude={"workstreams"})
+        if session.plan
+        else {}
     )
+    plan_json = json.dumps(plan_dump, indent=2, sort_keys=True)
     # Canonical roster block. The model must echo these exact role_ids
     # back in `per_role_scores`; the extractor drops anything else. We
     # include the AI Facilitator + any spectators here only as
