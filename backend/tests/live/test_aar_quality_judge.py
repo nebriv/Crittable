@@ -52,9 +52,18 @@ def judge_client() -> AsyncAnthropic:
     than ``os.environ`` directly — see ``conftest.py`` for the
     rationale (matches the production resolution path; ``.env`` works
     the same as a shell env var).
+
+    Asserts ``not test_mode`` defensively — the conftest auto-skip
+    should have caught a test-mode run already, but the placeholder
+    string ``"test-mode-no-key"`` slipping into a real API call is
+    exactly the failure mode the multi-layer guard exists to prevent.
     """
 
     settings = get_settings()
+    assert not settings.test_mode, (
+        "judge_client fixture must not run with test_mode=True; "
+        "the live conftest's auto-skip should have intercepted this."
+    )
     return AsyncAnthropic(
         api_key=settings.require_anthropic_key(),
         base_url=settings.anthropic_base_url,

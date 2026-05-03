@@ -355,12 +355,21 @@ def _build_user_payload(session: Session, audit: AuditLog) -> str:
 
 
 # Suite-level guard — the directory-level conftest skips when the API key
-# is missing, but defending in depth here gives a clearer error if someone
-# runs the file directly with ``pytest tests/live/test_aar_generation.py``.
-# Resolves through ``Settings.anthropic_api_key`` (pydantic-settings) so a
-# key in ``.env`` is honoured the same as a shell-exported env var —
-# matches the production resolution path.
-if get_settings().anthropic_api_key is None:  # pragma: no cover - import-time guard
+# is missing OR when ``TEST_MODE`` is set, but defending in depth here
+# gives a clearer error if someone runs the file directly with
+# ``pytest tests/live/test_aar_generation.py``.  Resolves through
+# ``Settings`` (pydantic-settings) so a key in ``.env`` is honoured the
+# same as a shell-exported env var — matches the production resolution
+# path. ``test_mode`` is also gated because the parent conftest force-
+# sets ``TEST_MODE=true`` for unit-test convenience; with it on, the
+# placeholder ``"test-mode-no-key"`` would reach the API and 401.
+_settings = get_settings()
+if _settings.anthropic_api_key is None or _settings.test_mode:  # pragma: no cover - import-time guard
     pytestmark.append(
-        pytest.mark.skip(reason="live-API tests require ANTHROPIC_API_KEY")
+        pytest.mark.skip(
+            reason=(
+                "live-API tests require ANTHROPIC_API_KEY and "
+                "TEST_MODE unset"
+            )
+        )
     )
