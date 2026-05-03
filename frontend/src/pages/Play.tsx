@@ -12,6 +12,7 @@ import { CollapsibleRailPanel } from "../components/brand/CollapsibleRailPanel";
 import { HudGauges } from "../components/brand/HudGauges";
 import { confirmLeaveSession } from "../lib/leaveGuard";
 import { isMidSessionJoiner } from "../lib/proxy";
+import { classifySnapshotError } from "../lib/snapshotError";
 import { useSessionTitle } from "../lib/useSessionTitle";
 import { useStickyScroll } from "../lib/useStickyScroll";
 import { useTabFocusReporter } from "../lib/useTabFocusReporter";
@@ -385,19 +386,17 @@ export function Play({ sessionId, token }: Props) {
       setSnapshot(snap);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      // Issue #127: a returning kicked player whose localStorage was
-      // cleared won't have a ``displayName`` yet, so the WS stays
-      // gated and never observes the 4401 close. The snapshot fetch
-      // is the only signal in that path. Detect 401 / "revoked" /
-      // "no longer exists" here and flip to the same dead-end view
-      // so they don't get trapped on JoinIntro.
-      if (
-        /\b401\b/.test(msg) ||
-        /revoked/i.test(msg) ||
-        /no longer exists/i.test(msg)
-      ) {
+      const terminal = classifySnapshotError(msg);
+      if (terminal === "kicked") {
         console.info("[play] snapshot 401 — treating as kicked", { msg });
         setWsStatus("kicked");
+        return;
+      }
+      if (terminal === "session-gone") {
+        console.info("[play] snapshot 404/410 — treating as session-gone", {
+          msg,
+        });
+        setWsStatus("session-gone");
         return;
       }
       setError(msg);
