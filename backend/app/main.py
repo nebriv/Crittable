@@ -42,10 +42,6 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     configure_logging(settings)
     logger = get_logger("startup")
 
-    if not settings.test_mode:
-        # Validates ``ANTHROPIC_API_KEY`` is present in production-ish runs.
-        settings.require_anthropic_key()
-
     secret = settings.resolve_session_secret()
     authn = HMACAuthenticator(secret)
     audit = AuditLog(ring_size=settings.audit_ring_size)
@@ -167,6 +163,28 @@ def create_app(
 
         _cfg.get_settings.cache_clear()
 
+    cfg = settings or get_settings()
+
+    # Validate critical runtime config eagerly — at import time, before any
+    # FastAPI machinery is constructed. Doing this in the lifespan instead
+    # leaves uvicorn printing "Started server process", then swallowing the
+    # lifespan traceback and exiting with code 0; under
+    # ``docker compose restart: unless-stopped`` that produces a silent
+    # restart loop (issue #118). Failing in ``create_app`` propagates as an
+    # import-time exception so uvicorn never binds the port and exits
+    # non-zero with a clear, single-line error.
+    #
+    # Configure logging here too so the gate emits a structured success line
+    # (and any failure traceback is captured by structlog, not by stderr).
+    # ``configure_logging`` is idempotent; the lifespan re-runs it harmlessly.
+    configure_logging(cfg)
+    _bootstrap_log = get_logger("startup")
+    if not cfg.test_mode:
+        cfg.require_anthropic_key()
+        _bootstrap_log.info("anthropic_api_key_present", test_mode=False)
+    else:
+        _bootstrap_log.info("anthropic_api_key_check_skipped", test_mode=True)
+
     app = FastAPI(
         title="Crittable",
         version="0.0.2",
@@ -177,7 +195,6 @@ def create_app(
     # ``request_id`` shows up in CORS-preflight log lines too.
     app.add_middleware(RequestContextMiddleware)
 
-    cfg = settings or get_settings()
     cors = cfg.cors_origin_list()
     app.add_middleware(
         CORSMiddleware,

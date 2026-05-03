@@ -418,6 +418,58 @@ def test_empty_env_vars_fall_back_to_defaults(
     assert resolved.endswith("backend/scenarios")
 
 
+def test_create_app_refuses_without_anthropic_api_key() -> None:
+    """Issue #118: importing ``app.main`` (which evaluates
+    ``app = create_app()`` at module level) must fail at the process
+    boundary when ``ANTHROPIC_API_KEY`` is unset and ``TEST_MODE`` is
+    off.
+
+    Pre-fix the check lived in the lifespan, so uvicorn printed
+    ``Started server process``, swallowed the lifespan traceback, then
+    exited with code 0 — silently restart-looping under
+    ``docker compose restart: unless-stopped``. Post-fix the import
+    itself raises so uvicorn never binds the port and exits non-zero.
+
+    Runs in a subprocess for two reasons:
+
+    * The pytest process imports ``app.main`` once at startup with
+      ``TEST_MODE=true`` (set in ``conftest.py``). Re-asserting against
+      that already-imported module would skip the actual import-time
+      gate. A subprocess gives us a fresh, never-imported module space.
+    * ``create_app`` calls ``configure_logging(cfg)`` which, when
+      ``test_mode=False``, reconfigures structlog into production mode
+      (logger caching + ``sys.stdout`` pin). Running that in-process
+      would break subsequent ``capsys``-based tests (see
+      ``test_logging_setup_test_mode.py`` for the failure mode).
+    """
+
+    import os
+    import subprocess
+    import sys
+
+    env = os.environ.copy()
+    env.pop("ANTHROPIC_API_KEY", None)
+    env["TEST_MODE"] = "false"
+    env.setdefault("SESSION_SECRET", "x" * 32)
+
+    result = subprocess.run(
+        [sys.executable, "-c", "import app.main"],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode != 0, (
+        "Expected import of ``app.main`` to fail with a non-zero exit, "
+        f"got {result.returncode}.\nstdout:\n{result.stdout}\n"
+        f"stderr:\n{result.stderr}"
+    )
+    assert "ANTHROPIC_API_KEY" in result.stderr, (
+        "Error message must name the missing variable so the operator "
+        f"knows what to fix. stderr:\n{result.stderr}"
+    )
+
+
 def test_app_boots_with_empty_env_vars(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
