@@ -418,6 +418,28 @@ def test_empty_env_vars_fall_back_to_defaults(
     assert resolved.endswith("backend/scenarios")
 
 
+def test_create_app_refuses_without_anthropic_api_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Issue #118: ``create_app()`` must raise at import / construction time
+    when ``ANTHROPIC_API_KEY`` is unset and ``TEST_MODE`` is off. Pre-fix the
+    check lived in the lifespan, so uvicorn printed ``Started server
+    process``, swallowed the lifespan traceback, then exited with code 0 —
+    silently restart-looping under ``docker compose restart: unless-stopped``.
+    Failing eagerly in ``create_app`` propagates as an import-time exception
+    and uvicorn exits non-zero."""
+
+    from app.config import reset_settings_cache
+    from app.main import create_app
+
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setenv("TEST_MODE", "false")
+    reset_settings_cache()
+
+    with pytest.raises(RuntimeError, match="ANTHROPIC_API_KEY"):
+        create_app()
+
+
 def test_app_boots_with_empty_env_vars(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
