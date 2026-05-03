@@ -38,26 +38,26 @@ jobs:
           python-version: "3.12"
           cache: "pip"
           cache-dependency-path: backend/pyproject.toml
-      - name: Install (incl. dev) so pip-audit sees the full graph
+      - name: Install (incl. dev + coverage) so pip-audit sees the full CI graph
+        # Mirrors the install in ``ci.yml`` exactly: ``.[dev]`` plus the
+        # ad-hoc ``coverage>=7,<8`` pin. If ci.yml diverges from this
+        # set, the audit stops covering what CI actually runs and a CVE
+        # in the missed dep slips through silently. Keep these in sync.
         run: |
           python -m pip install --upgrade pip
           python -m pip install -e ".[dev]"
+          python -m pip install "coverage>=7,<8"
           python -m pip install "pip-audit>=2.7,<3"
       - name: pip-audit
-        # Audits the active environment (the install above), so this
-        # covers the runtime + dev graph the way CI actually runs it.
-        # Scheduled and main-branch runs use --strict to surface every
-        # finding; PRs default to non-strict so an unrelated upstream
-        # advisory doesn't block an in-flight review. Use the
-        # ignore-vuln allow-list (one ID per line, with a justification
-        # comment) for genuinely unfixable transitive issues — never
-        # blanket-disable.
-        run: |
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            pip-audit --progress-spinner off
-          else
-            pip-audit --strict --progress-spinner off
-          fi
+        # Audits the active environment (runtime + dev + coverage,
+        # matching ci.yml). Same gate on every trigger — pip-audit's
+        # ``--strict`` flag controls dependency-resolution failures, NOT
+        # vulnerability findings, so there is no built-in "warn-only"
+        # mode. If a newly-disclosed CVE blocks an unrelated PR, fix
+        # forward (bump the dep) or add an entry to ``--ignore-vuln``
+        # with a justification comment in the same PR — never blanket
+        # disable.
+        run: pip-audit --strict --progress-spinner off
 
   frontend-audit:
     runs-on: ubuntu-latest
