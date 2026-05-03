@@ -2,8 +2,9 @@
 
 These tests hit the real Anthropic API once each. Cost: roughly $0.01 per
 test (~5K input + ~500 output tokens each). They are SKIPPED unless
-``ANTHROPIC_API_KEY`` is set in the environment, so normal CI / dev
-loops never accidentally spend money.
+``Settings.anthropic_api_key`` resolves (via env var OR ``.env`` file —
+the production code path through ``pydantic-settings``), so normal CI /
+dev loops never accidentally spend money.
 
 Run them explicitly:
 
@@ -16,11 +17,17 @@ Or as part of a release gate:
 The suite is the authoritative regression net for tool-routing
 behavior — every new tool, prompt edit, or recovery directive should
 add a case here.
+
+**Do NOT read ``os.environ["ANTHROPIC_API_KEY"]`` directly in this
+suite.** Use ``get_settings().require_anthropic_key()`` instead so the
+test uses the same key-resolution path the production code uses (env
+var → ``.env`` → fail).  ``test_live_fixtures.py`` source-greps every
+file under ``tests/live/`` and fails the suite if the bad pattern
+re-appears — see the test for the rationale.
 """
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
 import pytest
@@ -45,12 +52,23 @@ from app.sessions.turn_driver import _play_messages
 
 
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
-    """Auto-skip the entire `tests/live/` directory unless the API key is set."""
+    """Auto-skip the entire `tests/live/` directory unless the API key is set.
 
-    if os.environ.get("ANTHROPIC_API_KEY"):
+    Resolves through ``Settings.anthropic_api_key`` (pydantic-settings)
+    so a key in ``.env`` counts the same as a shell-exported env var —
+    matching the production resolution path.  Reading ``os.environ``
+    directly here would force every contributor to export the var into
+    their shell, which silently diverged from how the production code
+    reads it.
+    """
+
+    if get_settings().anthropic_api_key is not None:
         return
     skip_marker = pytest.mark.skip(
-        reason="live-API tests require ANTHROPIC_API_KEY (cost ~$0.01/test)"
+        reason=(
+            "live-API tests require ANTHROPIC_API_KEY (env var or .env; "
+            "cost ~$0.01/test)"
+        )
     )
     for item in items:
         if "tests/live" in str(item.fspath):
@@ -66,13 +84,23 @@ def empty_registry() -> Any:
 
 @pytest.fixture
 def anthropic_client() -> Any:
-    """Async Anthropic client wired to the configured base URL."""
+    """Async Anthropic client wired to the configured base URL.
+
+    Reads the API key via ``Settings.require_anthropic_key()`` — the
+    same resolution path the production ``LLMClient`` uses.  Reading
+    ``os.environ["ANTHROPIC_API_KEY"]`` directly here would diverge:
+    a contributor with the key in ``.env`` (which production reads
+    fine) would see ``KeyError`` on the fixture even though the
+    application boots cleanly.  The auto-skip in
+    ``pytest_collection_modifyitems`` ensures this fixture only
+    instantiates when a key is available.
+    """
 
     from anthropic import AsyncAnthropic
 
     settings = get_settings()
     return AsyncAnthropic(
-        api_key=os.environ["ANTHROPIC_API_KEY"],
+        api_key=settings.require_anthropic_key(),
         base_url=settings.anthropic_base_url,
     )
 

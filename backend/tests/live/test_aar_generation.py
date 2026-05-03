@@ -31,8 +31,6 @@ they regress on prompt edits, tool-schema edits, and any
 
 from __future__ import annotations
 
-import os
-
 import pytest
 
 from app.auth.audit import AuditLog
@@ -356,10 +354,13 @@ def _build_user_payload(session: Session, audit: AuditLog) -> str:
     )
 
 
-# Suite-level guard — the directory-level conftest skips when the API key is
-# missing, but defending in depth here gives a clearer error if someone runs
-# the file directly with ``pytest tests/live/test_aar_generation.py``.
-if not os.environ.get("ANTHROPIC_API_KEY"):  # pragma: no cover - import-time guard
+# Suite-level guard — the directory-level conftest skips when the API key
+# is missing, but defending in depth here gives a clearer error if someone
+# runs the file directly with ``pytest tests/live/test_aar_generation.py``.
+# Resolves through ``Settings.anthropic_api_key`` (pydantic-settings) so a
+# key in ``.env`` is honoured the same as a shell-exported env var —
+# matches the production resolution path.
+if get_settings().anthropic_api_key is None:  # pragma: no cover - import-time guard
     pytestmark.append(
         pytest.mark.skip(reason="live-API tests require ANTHROPIC_API_KEY")
     )

@@ -46,13 +46,18 @@ def aar_client() -> LLMClient:
 def judge_client() -> AsyncAnthropic:
     """Shared judge transport — reused across all judge calls in a
     test so the cached system block (``cache_control: ephemeral``)
-    actually hits on the second + Nth invocation."""
+    actually hits on the second + Nth invocation.
 
-    import os
+    Reads the API key via ``Settings.require_anthropic_key()`` rather
+    than ``os.environ`` directly — see ``conftest.py`` for the
+    rationale (matches the production resolution path; ``.env`` works
+    the same as a shell env var).
+    """
 
+    settings = get_settings()
     return AsyncAnthropic(
-        api_key=os.environ["ANTHROPIC_API_KEY"],
-        base_url=get_settings().anthropic_base_url,
+        api_key=settings.require_anthropic_key(),
+        base_url=settings.anthropic_base_url,
     )
 
 

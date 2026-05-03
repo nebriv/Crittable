@@ -129,6 +129,28 @@ def _settings_base_url() -> str | None:
         return None
 
 
+def _settings_api_key() -> str:
+    """Resolve the Anthropic API key the same way the production code
+    does — pydantic-settings reads ``.env`` + the shell env var.
+    Falls back to ``os.environ`` only if the app settings layer
+    can't import (defensive — preserves judge.py's "usable as a leaf
+    utility" property documented above).
+
+    Reading ``os.environ["ANTHROPIC_API_KEY"]`` directly here would
+    silently force every contributor to export the var into their
+    shell, diverging from how the production code reads it; a key in
+    ``.env`` would yield a confusing ``KeyError`` even though the
+    application boots cleanly.
+    """
+
+    try:
+        from app.config import get_settings
+
+        return get_settings().require_anthropic_key()
+    except Exception:
+        return os.environ["ANTHROPIC_API_KEY"]
+
+
 async def judge(
     *,
     rubric: str,
@@ -149,7 +171,7 @@ async def judge(
     """
 
     client = client or AsyncAnthropic(
-        api_key=os.environ["ANTHROPIC_API_KEY"],
+        api_key=_settings_api_key(),
         # Thread the configured base_url through so a test runner
         # pointed at a proxy / self-hosted Anthropic gateway routes
         # the judge call to the same place as the production calls.
