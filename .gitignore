@@ -7,6 +7,10 @@ venv/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
 # uv generates uv.lock when running ``uv sync`` locally. The repo
 # does not currently pin a lockfile (decision deferred until we have
 # a CI pipeline that needs reproducible installs); ignore the local
