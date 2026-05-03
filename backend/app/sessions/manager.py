@@ -32,7 +32,8 @@ from .models import (
 from .repository import SessionRepository
 from .turn_engine import (
     IllegalTransitionError,
-    all_submitted,
+    SubmissionIntent,
+    all_ready,
     assert_plan_edit_field,
     assert_transition,
     can_submit,
@@ -585,6 +586,7 @@ class SessionManager:
         session_id: str,
         role_id: str,
         content: str,
+        intent: SubmissionIntent = "ready",
         expected_token_version: int | None = None,
     ) -> bool:
         """Record a player's submission. Returns True if the turn is now complete.
@@ -598,6 +600,15 @@ class SessionManager:
         the transcript so the AI sees it on the next turn (and so the
         WS layer can fire ``run_interject`` for question-style content),
         but with no effect on ``submitted_role_ids`` or session state.
+
+        Wave 1 (issue #134): ``intent`` controls the ready-quorum gate.
+        ``"ready"`` adds the role to ``turn.ready_role_ids``;
+        ``"discuss"`` removes them if previously ready. The state-flip
+        predicate now reads ``all_ready(turn)`` rather than
+        ``all_submitted(turn)``, so the AI only advances once every
+        active role has explicitly signalled ready (or the creator
+        force-advances). Out-of-turn interjections never touch the
+        ready quorum (they don't touch ``submitted_role_ids`` either).
         """
 
         async with await self._lock_for(session_id):
@@ -639,30 +650,55 @@ class SessionManager:
                     body=content,
                     turn_id=turn.id,
                     is_interjection=not is_turn_submission,
+                    # Only record intent on actual turn submissions —
+                    # interjections (out-of-turn) don't participate in
+                    # the ready-quorum gate, so leaving it None
+                    # signals "not a ready/discuss decision" to the
+                    # recorder + any audit consumer.
+                    intent=intent if is_turn_submission else None,
                 )
             )
             if is_turn_submission:
-                turn.submitted_role_ids.append(role_id)
-                ready_to_advance = all_submitted(turn)
+                if role_id not in turn.submitted_role_ids:
+                    turn.submitted_role_ids.append(role_id)
+                # Update the per-role ready signal based on this
+                # submission's intent. ``"ready"`` is sticky once set
+                # within a turn; ``"discuss"`` walks it back so a
+                # player who marked ready prematurely can re-open
+                # discussion by sending a new message with discuss
+                # intent.
+                if intent == "ready":
+                    if role_id not in turn.ready_role_ids:
+                        turn.ready_role_ids.append(role_id)
+                else:
+                    if role_id in turn.ready_role_ids:
+                        turn.ready_role_ids.remove(role_id)
+                ready_to_advance = all_ready(turn)
                 if ready_to_advance:
                     turn.status = "processing"
                     session.state = SessionState.AI_PROCESSING
             else:
                 # Out-of-turn interjection: the message is in the
                 # transcript so the AI sees it next turn, but the role
-                # is not added to ``submitted_role_ids`` and the turn
-                # cannot advance off the back of it.
+                # is not added to ``submitted_role_ids`` (or
+                # ``ready_role_ids``) and the turn cannot advance off
+                # the back of it.
                 ready_to_advance = False
             active_snapshot = list(turn.active_role_ids)
+            ready_snapshot = list(turn.ready_role_ids)
+            submitted_snapshot = list(turn.submitted_role_ids)
             await self._repo.save(session)
         self._emit(
             "response_submitted" if is_turn_submission else "interjection_submitted",
             session,
             role_id=role_id,
             content_preview=content[:120],
+            intent=intent if is_turn_submission else None,
             ready_to_advance=ready_to_advance,
             interjection=not is_turn_submission,
             active_role_ids=active_snapshot,
+            ready_role_ids=ready_snapshot,
+            submitted_role_ids=submitted_snapshot,
         )
         await self._connections.broadcast(
             session.id,
@@ -766,7 +802,13 @@ class SessionManager:
         await self._broadcast_state(session)
 
     async def proxy_submit_as(
-        self, *, session_id: str, by_role_id: str, as_role_id: str, content: str
+        self,
+        *,
+        session_id: str,
+        by_role_id: str,
+        as_role_id: str,
+        content: str,
+        intent: SubmissionIntent = "ready",
     ) -> bool:
         """Solo-test impersonation: submit ``content`` on behalf of
         ``as_role_id`` (creator-only at the route layer). Returns True if
@@ -823,16 +865,27 @@ class SessionManager:
                     body=content,
                     turn_id=turn.id,
                     is_interjection=not is_turn_submission,
+                    intent=intent if is_turn_submission else None,
                 )
             )
             if is_turn_submission:
-                turn.submitted_role_ids.append(as_role_id)
-                ready_to_advance = all_submitted(turn)
-                # Mirror submit_response: when this fills the last seat we
-                # MUST flip state to AI_PROCESSING so the route knows to
-                # drive the next AI turn. Pre-fix the proxy path left the
-                # session stuck in AWAITING_PLAYERS even though every active
-                # role had submitted.
+                if as_role_id not in turn.submitted_role_ids:
+                    turn.submitted_role_ids.append(as_role_id)
+                # Wave 1 (issue #134): mirror ``submit_response``'s ready
+                # quorum logic so the proxy path advances on the same
+                # gate as the real player path.
+                if intent == "ready":
+                    if as_role_id not in turn.ready_role_ids:
+                        turn.ready_role_ids.append(as_role_id)
+                else:
+                    if as_role_id in turn.ready_role_ids:
+                        turn.ready_role_ids.remove(as_role_id)
+                ready_to_advance = all_ready(turn)
+                # Mirror submit_response: when the ready quorum is met
+                # we MUST flip state to AI_PROCESSING so the route
+                # knows to drive the next AI turn. Pre-fix the proxy
+                # path left the session stuck in AWAITING_PLAYERS even
+                # though every active role was ready.
                 if ready_to_advance:
                     turn.status = "processing"
                     session.state = SessionState.AI_PROCESSING
@@ -890,16 +943,28 @@ class SessionManager:
             ]
             for rid in pending:
                 turn.submitted_role_ids.append(rid)
+                # Wave 1 (issue #134): proxy_submit_pending is the
+                # creator's "advance now, fill in stub responses for
+                # everyone else" escape hatch. Auto-mark each filled
+                # seat as ready so the ready-quorum gate flips and the
+                # turn actually advances — leaving them in
+                # ``submitted_role_ids`` only would block forever.
+                if rid not in turn.ready_role_ids:
+                    turn.ready_role_ids.append(rid)
                 session.messages.append(
                     Message(
                         kind=MessageKind.PLAYER,
                         role_id=rid,
                         body=content,
                         turn_id=turn.id,
+                        intent="ready",
                     )
                 )
                 filled.append(rid)
-            ready_to_advance = all_submitted(turn)
+            ready_to_advance = all_ready(turn)
+            if ready_to_advance:
+                turn.status = "processing"
+                session.state = SessionState.AI_PROCESSING
             await self._repo.save(session)
         for rid in filled:
             await self.connections().broadcast(

@@ -6,6 +6,15 @@ import type { ImpersonateOption } from "../lib/proxy";
 // the shape of ``offTurn`` (issue #80, Copilot review on PR #91).
 // See ``lib/proxy.ts`` for the field-by-field contract.
 
+/**
+ * Wave 1 (issue #134): per-submission intent. ``"ready"`` means the
+ * player is signalling "I'm done — AI may advance once everyone
+ * else is ready"; ``"discuss"`` means "I'm contributing to discussion,
+ * keep my seat open". The composer's two submit buttons map 1:1 onto
+ * these values.
+ */
+export type SubmissionIntent = "ready" | "discuss";
+
 interface Props {
   enabled: boolean;
   placeholder: string;
@@ -19,8 +28,29 @@ interface Props {
    * participant's role). When the creator picks a different role from
    * the impersonate dropdown, that role's id is forwarded so the parent
    * can call the proxy endpoint.
+   *
+   * ``intent`` (Wave 1): the player's per-submission ready signal.
+   * Always one of ``"ready"`` / ``"discuss"`` — never undefined, the
+   * composer always knows which button was pressed. The parent forwards
+   * this to the WS payload.
    */
-  onSubmit: (text: string, asRoleId?: string) => void;
+  onSubmit: (text: string, intent: SubmissionIntent, asRoleId?: string) => void;
+  /**
+   * When ``true``, the local participant has already signalled ready
+   * for the current turn. The composer surfaces this as a small
+   * "Currently ready ✓" hint and primes the secondary button to
+   * "Walk back ready" so the player can re-open discussion if needed.
+   * Wave 1 (issue #134).
+   */
+  isCurrentlyReady?: boolean;
+  /**
+   * When ``true``, the composer hides the "Submit, still discussing"
+   * button. Used for out-of-turn / interjection submissions where
+   * intent doesn't apply (the message lands in the transcript and is
+   * never part of the ready quorum). Defaults to ``false`` so a normal
+   * active-turn composer always shows both buttons.
+   */
+  hideDiscussButton?: boolean;
   /** Optional callback fired on debounced typing start/stop transitions. */
   onTypingChange?: (typing: boolean) => void;
   /**
@@ -50,6 +80,8 @@ export function Composer({
   impersonateOptions,
   selfLabel,
   submitErrorEpoch,
+  isCurrentlyReady = false,
+  hideDiscussButton = false,
 }: Props) {
   const [text, setText] = useState("");
   // Empty string == speak as the local participant. Anything else is a
@@ -99,12 +131,11 @@ export function Composer({
   // on initial mount.
   const handledErrorEpochRef = useRef<number | undefined>(submitErrorEpoch);
 
-  function handle(e: FormEvent) {
-    e.preventDefault();
+  function submit(intent: SubmissionIntent) {
     if (!enabled || !text.trim()) return;
     const trimmed = text.trim();
     lastAttemptedRef.current = trimmed;
-    onSubmit(trimmed, asRoleId || undefined);
+    onSubmit(trimmed, intent, asRoleId || undefined);
     setText("");
     // Reset back to "speak as me" after every submit so the next message
     // doesn't accidentally post under the previous proxy role. Sticky
@@ -114,6 +145,15 @@ export function Composer({
     // typing_stop so peers don't keep showing us as typing for
     // the length of TYPING_VISIBLE_MS after we just submitted.
     emitTypingStop("submit");
+  }
+
+  function handle(e: FormEvent) {
+    // Form-submit (Enter key in textarea, primary button click) maps
+    // to the "ready" intent — the standard "I'm done, AI may advance"
+    // signal. The "Submit, still discussing" button calls
+    // ``submit("discuss")`` directly and bypasses this handler.
+    e.preventDefault();
+    submit("ready");
   }
 
   // Restore the last-attempted text when the parent signals a submit
@@ -336,33 +376,68 @@ export function Composer({
           asRoleId ? "border-warn" : "border-signal-deep"
         }`}
       />
-      <div className="flex items-center justify-between gap-2">
+      <div className="flex flex-wrap items-center justify-between gap-2">
         <span className="mono text-[10px] uppercase tracking-[0.04em] text-ink-400">
           <kbd className="mono rounded-r-1 border border-ink-500 bg-ink-800 px-1 text-[10px] text-ink-100">Enter</kbd>{" "}
           to send,{" "}
           <kbd className="mono rounded-r-1 border border-ink-500 bg-ink-800 px-1 text-[10px] text-ink-100">Shift</kbd>+
           <kbd className="mono rounded-r-1 border border-ink-500 bg-ink-800 px-1 text-[10px] text-ink-100">Enter</kbd>{" "}
           for a new line
+          {isCurrentlyReady && !hideDiscussButton ? (
+            <>
+              {" · "}
+              <span className="text-signal" aria-live="polite">
+                You're marked ready
+              </span>
+            </>
+          ) : null}
         </span>
-        <button
-          type="submit"
-          disabled={!enabled || !text.trim()}
-          className={`mono rounded-r-1 px-4 py-1.5 text-[11px] font-bold uppercase tracking-[0.18em] focus-visible:outline focus-visible:outline-2 disabled:cursor-not-allowed disabled:opacity-50 ${
-            asRoleId
-              ? "bg-warn text-ink-900 hover:bg-warn/80 focus-visible:outline-warn"
-              : "bg-signal text-ink-900 hover:bg-signal-bright focus-visible:outline-signal-bright"
-          }`}
-        >
-          {(() => {
-            if (!asRoleId) return "SUBMIT →";
-            const selected = (impersonateOptions ?? []).find(
-              (o) => o.id === asRoleId,
-            );
-            return selected?.offTurn
-              ? "SUBMIT (SIDEBAR) →"
-              : "SUBMIT (PROXY) →";
-          })()}
-        </button>
+        <div className="flex flex-wrap items-center gap-2">
+          {!hideDiscussButton ? (
+            <button
+              type="button"
+              onClick={() => submit("discuss")}
+              disabled={!enabled || !text.trim()}
+              title={
+                isCurrentlyReady
+                  ? "Send this message and walk back your ready signal — keeps the team discussing"
+                  : "Send this message without signalling ready — keeps the turn open for more discussion"
+              }
+              className="mono rounded-r-1 border border-ink-400 bg-ink-800 px-3 py-1.5 text-[11px] font-bold uppercase tracking-[0.18em] text-ink-100 hover:bg-ink-700 focus-visible:outline focus-visible:outline-2 focus-visible:outline-ink-300 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {isCurrentlyReady
+                ? "WALK BACK READY ↺"
+                : "STILL DISCUSSING →"}
+            </button>
+          ) : null}
+          <button
+            type="submit"
+            disabled={!enabled || !text.trim()}
+            title={
+              hideDiscussButton
+                ? "Send this sidebar message"
+                : "Send this message AND mark yourself ready — AI advances once everyone is ready"
+            }
+            className={`mono rounded-r-1 px-4 py-1.5 text-[11px] font-bold uppercase tracking-[0.18em] focus-visible:outline focus-visible:outline-2 disabled:cursor-not-allowed disabled:opacity-50 ${
+              asRoleId
+                ? "bg-warn text-ink-900 hover:bg-warn/80 focus-visible:outline-warn"
+                : "bg-signal text-ink-900 hover:bg-signal-bright focus-visible:outline-signal-bright"
+            }`}
+          >
+            {(() => {
+              if (asRoleId) {
+                const selected = (impersonateOptions ?? []).find(
+                  (o) => o.id === asRoleId,
+                );
+                return selected?.offTurn
+                  ? "SUBMIT (SIDEBAR) →"
+                  : "SUBMIT (PROXY) →";
+              }
+              if (hideDiscussButton) return "SUBMIT →";
+              return "SUBMIT & READY →";
+            })()}
+          </button>
+        </div>
       </div>
     </form>
   );

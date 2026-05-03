@@ -7,12 +7,21 @@ legal?" decisions, then performs the mutation itself.
 
 from __future__ import annotations
 
+from typing import Literal
+
 from .models import (
     PLAN_EDITABLE_FIELDS,
     Session,
     SessionState,
     Turn,
 )
+
+# Wave 1 (issue #134): per-submission intent. A "ready" submission
+# adds the role to ``Turn.ready_role_ids`` and may flip the state to
+# ``AI_PROCESSING`` once the quorum is met; a "discuss" submission
+# leaves space for further team discussion (and removes the role from
+# the quorum if they had previously signalled ready).
+SubmissionIntent = Literal["ready", "discuss"]
 
 
 class IllegalTransitionError(RuntimeError):
@@ -45,17 +54,43 @@ def assert_transition(current: SessionState, target: SessionState) -> None:
 
 
 def can_submit(turn: Turn, role_id: str) -> bool:
-    """A role may submit only if it's named active and hasn't already submitted."""
+    """A role may submit only if it's named active on an awaiting turn.
+
+    Wave 1 (issue #134): we no longer cap submissions at one per role
+    per turn. The ready-quorum gate replaces "submitted once" as the
+    advance signal — a role can post multiple discussion messages
+    before signalling ``intent="ready"``, and all of them count as
+    turn submissions (each updates ``ready_role_ids`` based on the
+    submission's intent). Non-active roles (or active roles on a
+    non-awaiting turn) still land as out-of-turn interjections.
+    """
 
     if turn.status != "awaiting":
         return False
-    return role_id in turn.active_role_ids and role_id not in turn.submitted_role_ids
+    return role_id in turn.active_role_ids
 
 
 def all_submitted(turn: Turn) -> bool:
     """Have *all* active roles submitted (or equivalent forced-advance state)?"""
 
     return turn.status == "awaiting" and set(turn.submitted_role_ids) >= set(
+        turn.active_role_ids
+    )
+
+
+def all_ready(turn: Turn) -> bool:
+    """Have *all* active roles signalled ``intent="ready"`` on their most
+    recent submission this turn?
+
+    This is the Wave-1 (issue #134) replacement for ``all_submitted`` as
+    the gate that flips ``AWAITING_PLAYERS → AI_PROCESSING``.
+    Force-advance still bypasses this check via the existing
+    ``force_advance`` path. Discussion-only submissions accumulate in
+    ``submitted_role_ids`` (so the AI sees them on its next turn and the
+    UI shows "X spoke") without triggering an advance.
+    """
+
+    return turn.status == "awaiting" and set(turn.ready_role_ids) >= set(
         turn.active_role_ids
     )
 

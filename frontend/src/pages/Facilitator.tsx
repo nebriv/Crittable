@@ -927,7 +927,11 @@ export function Facilitator() {
     }
   }
 
-  async function handleSubmit(text: string, asRoleId?: string) {
+  async function handleSubmit(
+    text: string,
+    intent: "ready" | "discuss",
+    asRoleId?: string,
+  ) {
     if (!state) return;
     // Force scroll-to-bottom on the next render so the user sees their
     // own message commit. Mirrors what every chat client does on send.
@@ -937,12 +941,22 @@ export function Facilitator() {
         // Creator impersonation — go through the REST proxy endpoint so
         // the backend records the correct role_id (the WS submit_response
         // is hard-pinned to the connection's own role).
-        console.info("[facilitator] proxy submit", { asRoleId });
-        await api.adminProxyRespond(state.sessionId, state.token, asRoleId, text);
+        console.info("[facilitator] proxy submit", { asRoleId, intent });
+        await api.adminProxyRespond(
+          state.sessionId,
+          state.token,
+          asRoleId,
+          text,
+          intent,
+        );
         return;
       }
       if (!wsRef.current) return;
-      wsRef.current.send({ type: "submit_response", content: text });
+      wsRef.current.send({
+        type: "submit_response",
+        content: text,
+        intent,
+      });
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
@@ -1337,6 +1351,9 @@ export function Facilitator() {
                   activeRoleIds={activeRoleIds}
                   submittedRoleIds={
                     snapshot.current_turn?.submitted_role_ids ?? []
+                  }
+                  readyRoleIds={
+                    snapshot.current_turn?.ready_role_ids ?? []
                   }
                   roles={snapshot.roles}
                 />
@@ -1770,29 +1787,45 @@ function ActiveRolesHint({
 export function WaitingChip({
   activeRoleIds,
   submittedRoleIds,
+  readyRoleIds,
   roles,
 }: {
   activeRoleIds: string[];
+  /** Roles who have spoken at all on this turn (any number of messages). */
   submittedRoleIds: string[];
+  /**
+   * Wave 1 (issue #134): roles who have signalled ``intent="ready"``
+   * on their most recent submission. The AI advances when this set
+   * covers ``activeRoleIds``. ``undefined`` for legacy snapshots
+   * (treated as empty — i.e. nobody is ready yet).
+   */
+  readyRoleIds?: string[];
   roles: RoleView[];
 }) {
   const submitted = new Set(submittedRoleIds);
-  const pending = activeRoleIds.filter((id) => !submitted.has(id));
+  const ready = new Set(readyRoleIds ?? []);
+  // "Pending" = not yet ready (the gate that flips the AI). A role
+  // who submitted a discussion message is still pending — they've
+  // spoken but haven't signalled the team is ready to advance.
+  const pending = activeRoleIds.filter((id) => !ready.has(id));
   if (pending.length === 0) return null;
   const labels = pending.map((id) => {
     const r = roles.find((x) => x.id === id);
     if (!r) return id;
-    return r.display_name ? `${r.label} (${r.display_name})` : r.label;
+    const tail = submitted.has(id) ? " — discussing" : "";
+    const base = r.display_name ? `${r.label} (${r.display_name})` : r.label;
+    return `${base}${tail}`;
   });
   let phrase: string;
   if (labels.length === 1) {
-    phrase = `Waiting on ${labels[0]} to respond.`;
+    phrase = `Waiting on ${labels[0]} to mark ready.`;
   } else if (labels.length === 2) {
     phrase = `Waiting on ${labels[0]} and ${labels[1]}.`;
   } else {
     const head = labels.slice(0, 2).join(", ");
     phrase = `Waiting on ${head} and ${labels.length - 2} more.`;
   }
+  const readyCount = activeRoleIds.length - pending.length;
 
   return (
     <div
@@ -1802,7 +1835,7 @@ export function WaitingChip({
     >
       <span>{phrase}</span>
       <span className="text-ink-400">
-        ({pending.length} of {activeRoleIds.length})
+        ({readyCount} of {activeRoleIds.length} ready)
       </span>
     </div>
   );

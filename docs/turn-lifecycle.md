@@ -117,6 +117,20 @@ valid output?"). Phase policy never imports the validator and vice-versa.
 
 ## 1. Entry points
 
+> **Wave 1 (issue #134) — per-submission intent + ready-quorum gate.** The
+> ``AWAITING_PLAYERS → AI_PROCESSING`` flip no longer happens when every
+> active role has *submitted at least once*; it now happens when every
+> active role has signalled ``intent="ready"`` on a recent submission
+> (or the creator force-advances). A submission with ``intent="discuss"``
+> contributes to the transcript and adds the role to ``submitted_role_ids``
+> but does **not** trip the gate; a follow-up ``intent="ready"`` adds the
+> role to ``Turn.ready_role_ids``, and a follow-up ``intent="discuss"``
+> walks them back. ``can_submit`` now allows multiple submissions per
+> active role on an awaiting turn (drops the one-and-done cap) — every
+> such submission is a turn submission, not an interjection. The wire
+> field is REQUIRED on the WS ``submit_response`` payload; the handler
+> rejects payloads without ``intent`` rather than coercing to a default.
+
 Five paths can fire a play turn. Knowing which path you're on determines which
 contract gets picked and which guard rails apply.
 

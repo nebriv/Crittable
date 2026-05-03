@@ -394,6 +394,7 @@ class ScenarioRunner:
                     session_id=sid,
                     role_id=role_id,
                     content=step.content,
+                    intent=step.intent,
                 )
             except EmptySubmissionError:
                 self._log(
@@ -553,6 +554,7 @@ class ScenarioRunner:
                     session_id=sid,
                     role_id=role_id,
                     content=step.content,
+                    intent=step.intent,
                 )
             except EmptySubmissionError:
                 self._log(

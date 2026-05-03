@@ -56,6 +56,15 @@ export interface TurnView {
   active_role_ids: string[];
   /** Role-ids that have already submitted on this turn. */
   submitted_role_ids?: string[];
+  /**
+   * Wave 1 (issue #134): role-ids that have signalled
+   * ``intent="ready"`` on their most recent submission this turn. The
+   * AI advances when ``set(active_role_ids) ⊆ set(ready_role_ids)``
+   * (or the creator force-advances). A role can walk back ready by
+   * sending another submission with ``intent="discuss"``, which
+   * removes them from this list.
+   */
+  ready_role_ids?: string[];
   status: string;
 }
 
@@ -280,17 +289,23 @@ export const api = {
     );
   },
 
-  /** Creator-only solo-test helper: submit on behalf of a specific role. */
+  /** Creator-only solo-test helper: submit on behalf of a specific role.
+   *
+   * ``intent`` (Wave 1, issue #134): ``"ready"`` mirrors the historical
+   * "advance now" behaviour; ``"discuss"`` injects a discussion message
+   * that doesn't trip the ready-quorum gate.
+   */
   async adminProxyRespond(
     sessionId: string,
     creatorToken: string,
     asRoleId: string,
     content: string,
+    intent: "ready" | "discuss" = "ready",
   ): Promise<{ ok: boolean }> {
     return request(
       "POST",
       `/api/sessions/${sessionId}/admin/proxy-respond?token=${encodeURIComponent(creatorToken)}`,
-      { as_role_id: asRoleId, content },
+      { as_role_id: asRoleId, content, intent },
     );
   },
 

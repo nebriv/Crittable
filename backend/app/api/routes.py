@@ -293,6 +293,12 @@ def register_api_routes(app: FastAPI) -> None:
                     # Surfaced so the frontend WaitingChip can show "waiting
                     # on N of M" without an extra round-trip to /activity.
                     "submitted_role_ids": session.current_turn.submitted_role_ids,
+                    # Wave 1 (issue #134): per-role ready signal. The HUD
+                    # renders "N of M ready" off this list, distinct from
+                    # ``submitted_role_ids`` (which counts every message a
+                    # role has spoken on this turn — including discussion
+                    # contributions that don't yet flip the AI to advance).
+                    "ready_role_ids": session.current_turn.ready_role_ids,
                     "status": session.current_turn.status,
                 }
                 if session.current_turn
@@ -524,6 +530,18 @@ def register_api_routes(app: FastAPI) -> None:
                     status.HTTP_400_BAD_REQUEST,
                     "use the normal submit endpoint for your own role",
                 )
+            # Wave 1 (issue #134): proxy-respond mirrors the WS
+            # ``submit_response`` payload, including the per-turn intent.
+            # Defaults to ``"ready"`` (the historical "submit-and-advance"
+            # behaviour) so the God-mode UI keeps working without a
+            # client change; pass ``"discuss"`` to inject a discussion
+            # message that doesn't trip the ready-quorum gate.
+            intent_raw = body.get("intent", "ready")
+            if intent_raw not in ("ready", "discuss"):
+                raise HTTPException(
+                    status.HTTP_400_BAD_REQUEST,
+                    "intent must be 'ready' or 'discuss'",
+                )
             cap = manager.settings().max_participant_submission_chars
             # Mirror the WS submit path: when truncating, append a server
             # marker so the AI doesn't read a clipped sentence as a real
@@ -550,6 +568,7 @@ def register_api_routes(app: FastAPI) -> None:
                 by_role_id=token["role_id"],
                 as_role_id=as_role_id,
                 content=posted,
+                intent=intent_raw,
             )
         except AuthorizationError as exc:
             raise HTTPException(status.HTTP_403_FORBIDDEN, str(exc)) from exc
@@ -1397,10 +1416,11 @@ def register_api_routes(app: FastAPI) -> None:
                     "status": session.current_turn.status,
                     "active_role_ids": session.current_turn.active_role_ids,
                     "submitted_role_ids": session.current_turn.submitted_role_ids,
+                    "ready_role_ids": session.current_turn.ready_role_ids,
                     "waiting_on_role_ids": [
                         rid
                         for rid in session.current_turn.active_role_ids
-                        if rid not in session.current_turn.submitted_role_ids
+                        if rid not in session.current_turn.ready_role_ids
                     ],
                     "error_reason": session.current_turn.error_reason,
                     "retried_with_strict": session.current_turn.retried_with_strict,
@@ -1485,6 +1505,7 @@ def register_api_routes(app: FastAPI) -> None:
                     "status": t.status,
                     "active_role_ids": t.active_role_ids,
                     "submitted_role_ids": t.submitted_role_ids,
+                    "ready_role_ids": t.ready_role_ids,
                     "started_at": t.started_at.isoformat(),
                     "ended_at": t.ended_at.isoformat() if t.ended_at else None,
                     "error_reason": t.error_reason,

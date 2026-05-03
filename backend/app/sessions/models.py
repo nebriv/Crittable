@@ -88,6 +88,14 @@ class Message(BaseModel):
     # transcript UI uses the same flag to render a "sidebar" badge so
     # human players don't confuse an interjection with a turn answer.
     is_interjection: bool = False
+    # Wave 1 (issue #134): per-submission intent for player messages.
+    # ``"ready"`` means "I'm done; AI may advance once the quorum is
+    # met"; ``"discuss"`` means "I'm contributing to discussion, don't
+    # advance on my behalf yet". ``None`` for AI / system / interjection
+    # messages where the concept doesn't apply. The recorder reads this
+    # field to round-trip per-submission intent into ``PlayStep.intent``
+    # for deterministic replay.
+    intent: Literal["ready", "discuss"] | None = None
 
     def is_visible_to(self, role_id: str | None, *, is_creator: bool = False) -> bool:
         if self.visibility == "all":
@@ -107,6 +115,14 @@ class Turn(BaseModel):
     index: int
     active_role_ids: list[str] = Field(default_factory=list)
     submitted_role_ids: list[str] = Field(default_factory=list)
+    # Ready-quorum gate (Wave 1, issue #134). A role lands here when its
+    # most recent submission on this turn carried ``intent="ready"``; a
+    # subsequent ``intent="discuss"`` submission removes it. The play
+    # engine advances ``AWAITING_PLAYERS → AI_PROCESSING`` only when
+    # ``set(active_role_ids) ⊆ set(ready_role_ids)``. Force-advance
+    # bypasses this check entirely. Briefing turns never gate on it
+    # (they fire from ``/start``, not from ``submit_response``).
+    ready_role_ids: list[str] = Field(default_factory=list)
     status: TurnStatus = "awaiting"
     started_at: datetime = Field(default_factory=_now)
     ended_at: datetime | None = None

@@ -46,9 +46,15 @@ def test_can_submit_and_all_submitted() -> None:
     assert can_submit(turn, "rX") is False
     turn.submitted_role_ids = ["r1"]
     assert all_submitted(turn) is False
-    assert can_submit(turn, "r1") is False  # already submitted
+    # Wave 1 (issue #134): an active role can submit again on the same
+    # turn (e.g. a discussion follow-up before signalling ready).
+    # ``can_submit`` no longer caps at one-per-role.
+    assert can_submit(turn, "r1") is True
     turn.submitted_role_ids = ["r1", "r2"]
     assert all_submitted(turn) is True
+    # Once status flips off "awaiting", nobody can submit anymore.
+    turn.status = "processing"
+    assert can_submit(turn, "r1") is False
 
 
 def test_plan_edit_allow_list() -> None:
