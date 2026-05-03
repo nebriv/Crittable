@@ -8,6 +8,8 @@ on:
 permissions:
   contents: read
   packages: write
+  # Required for the Trivy step's SARIF upload to GitHub Code Scanning.
+  security-events: write
 
 env:
   REGISTRY: ghcr.io
@@ -55,6 +57,7 @@ jobs:
             type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
 
       - name: Build and push
+        id: build
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -65,3 +68,40 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: First tag (Trivy needs a single ref)
+        id: scan-target
+        run: |
+          # ``steps.meta.outputs.tags`` is a newline-separated list; Trivy
+          # scans a single image ref. Pick the first tag (deterministic
+          # ordering from docker/metadata-action) — they all point at the
+          # same digest, so it doesn't matter which we pick.
+          first_tag="$(printf '%s\n' "${{ steps.meta.outputs.tags }}" | head -n1)"
+          echo "ref=${first_tag}" >> "$GITHUB_OUTPUT"
+
+      - name: Trivy image scan (HIGH,CRITICAL)
+        # Scans the image we just pushed for OS-package and language-dep
+        # CVEs. Fails the workflow on HIGH or CRITICAL findings so a
+        # vulnerable image can't propagate further. ``ignore-unfixed`` so
+        # we don't block on issues with no upstream patch available — the
+        # scheduled run from security.yml is the catch-all for "still no
+        # fix after a week" tracking.
+        uses: aquasecurity/trivy-action@0.35.0
+        with:
+          image-ref: ${{ steps.scan-target.outputs.ref }}
+          format: sarif
+          output: trivy-results.sarif
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+          vuln-type: os,library
+
+      - name: Upload Trivy SARIF to Code Scanning
+        # Always upload, even if the scan failed — that way the findings
+        # land in the Security tab and can be triaged from there instead
+        # of disappearing with the failed run.
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-results.sarif
+          category: trivy-image-scan

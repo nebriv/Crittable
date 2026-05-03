@@ -1,0 +1,81 @@
+name: Security
+
+# Supply-chain CVE gating for the dependencies CI doesn't already check.
+# pip-audit and npm audit catch known-vulnerable transitive deps that
+# ruff/mypy/pytest/eslint/typecheck never look at. Runs on every PR so a
+# new vulnerable dep can't merge silently, on push to main as a tripwire,
+# and weekly so newly-disclosed CVEs in already-installed deps surface
+# without anyone touching the lockfile.
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+  schedule:
+    # Mondays 13:00 UTC — same cadence as Dependabot, so the audit
+    # tripwire fires before the week's bump PRs land.
+    - cron: "0 13 * * 1"
+  workflow_dispatch:
+
+concurrency:
+  group: security-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  backend-audit:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+          cache-dependency-path: backend/pyproject.toml
+      - name: Install (incl. dev) so pip-audit sees the full graph
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+          python -m pip install "pip-audit>=2.7,<3"
+      - name: pip-audit
+        # Audits the active environment (the install above), so this
+        # covers the runtime + dev graph the way CI actually runs it.
+        # Scheduled and main-branch runs use --strict to surface every
+        # finding; PRs default to non-strict so an unrelated upstream
+        # advisory doesn't block an in-flight review. Use the
+        # ignore-vuln allow-list (one ID per line, with a justification
+        # comment) for genuinely unfixable transitive issues — never
+        # blanket-disable.
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            pip-audit --progress-spinner off
+          else
+            pip-audit --strict --progress-spinner off
+          fi
+
+  frontend-audit:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+      - name: npm audit (high+critical)
+        # ``--audit-level=high`` matches the CLAUDE.md dep-intake bar:
+        # high+critical fail the build; medium/low are surfaced in the
+        # log but don't gate. ``--omit=dev`` would shrink scope but the
+        # vite/vitest toolchain runs in CI on PR diffs, so dev deps
+        # genuinely matter here.
+        run: npm audit --audit-level=high
