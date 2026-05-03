@@ -56,9 +56,12 @@ export default defineConfig({
     globals: true,
     setupFiles: ["./src/test-setup.ts"],
     coverage: {
-      // ``v8`` is built into Node 20+; no extra dependency needed,
-      // unlike istanbul. Coverage runs only when ``--coverage`` is
-      // passed (e.g. in CI) so dev loops stay fast.
+      // ``v8`` uses Node's built-in V8 coverage instrumentation
+      // (faster + more accurate than the istanbul provider), but
+      // vitest still needs the ``@vitest/coverage-v8`` adapter
+      // package to wire it up — declared in package.json devDeps.
+      // Coverage runs only when ``--coverage`` is passed (e.g. in
+      // CI) so dev loops stay fast.
       provider: "v8",
       reporter: ["text", "lcov"],
       include: ["src/**/*.{ts,tsx}"],

@@ -116,6 +116,19 @@ def _judge_model() -> str:
     return os.environ.get("CLAUDE_JUDGE_MODEL", "claude-haiku-4-5-20251001")
 
 
+def _settings_base_url() -> str | None:
+    """Best-effort fetch of ``Settings.anthropic_base_url``. Returns
+    ``None`` if the app settings layer can't be imported (keeps this
+    leaf module usable without booting the FastAPI app)."""
+
+    try:
+        from app.config import get_settings
+
+        return get_settings().anthropic_base_url
+    except Exception:
+        return None
+
+
 async def judge(
     *,
     rubric: str,
@@ -137,6 +150,12 @@ async def judge(
 
     client = client or AsyncAnthropic(
         api_key=os.environ["ANTHROPIC_API_KEY"],
+        # Thread the configured base_url through so a test runner
+        # pointed at a proxy / self-hosted Anthropic gateway routes
+        # the judge call to the same place as the production calls.
+        # Lazy import keeps this module importable without the app
+        # settings layer (judge.py is a leaf utility).
+        base_url=_settings_base_url(),
     )
     # Per-call random nonce — a forged ``</artifact>`` in the body
     # can't end this wrapper. ``token_hex(4)`` = 8 hex chars, enough
