@@ -170,6 +170,37 @@ class ScenarioMeta(BaseModel):
     tags: list[str] = Field(default_factory=list)
 
 
+class RecordedDecisionEntry(BaseModel):
+    """One ``record_decision_rationale`` entry captured for replay.
+
+    ``turn_index`` is preserved verbatim (it's a 0-based int our own
+    state machine controls — no risk of identity drift across
+    replays). ``ts`` is the wall-clock for ordering only; replay
+    applies all entries in one batch at end-of-play, not paced.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+    turn_index: int | None = None
+    rationale: str = Field(min_length=1, max_length=4_000)
+    ts: str | None = None
+
+
+class RecordedCost(BaseModel):
+    """Session-level token usage snapshot for the cost banner.
+
+    Mirrors ``app.sessions.models.TokenUsage`` but kept as a separate
+    type so the scenario JSON file is decoupled from the engine's
+    pydantic model.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cache_read_tokens: int = 0
+    cache_creation_tokens: int = 0
+    estimated_usd: float = 0.0
+
+
 class Scenario(BaseModel):
     """A full session lifecycle, reproducibly.
 
@@ -197,6 +228,24 @@ class Scenario(BaseModel):
     play_turns: list[PlayTurn] = Field(default_factory=list)
     end_reason: str | None = None
     mock_llm_script: dict[str, Any] | None = None
+    # Final shared-notepad markdown captured at end-of-recording.
+    # Replay applies it once at the end of ``play_phase`` so the dev
+    # sees the populated notepad on the spawned session, even though
+    # we don't (yet) replay each Yjs CRDT op individually. ``None``
+    # for hand-authored scenarios — the notepad stays empty.
+    notepad_snapshot: str | None = Field(default=None, max_length=128_000)
+    # Creator-only AI rationale entries (one per
+    # ``record_decision_rationale`` tool call). Recorded sessions
+    # captured them as ``session.decision_log`` rows; replay applies
+    # them at end-of-play so the creator's "Why did the AI do X?"
+    # panel is populated on the spawned session.
+    decision_log: list[RecordedDecisionEntry] = Field(default_factory=list)
+    # Final session cost (token usage + estimated USD). Empty in
+    # deterministic replay (no LLM calls fire), but populated when
+    # the recorder dumps it from the original session — surfaced on
+    # the creator's cost banner so the spawned session matches the
+    # original's spend rather than reading $0.00.
+    cost: RecordedCost | None = None
     # ``deterministic`` — replay AI messages from ``play_turns[*].ai_messages``
     # verbatim, never call the LLM during play. Required for UI-fidelity
     # tests (highlighting, colours, filtering all depend on message kind

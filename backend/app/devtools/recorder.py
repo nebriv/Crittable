@@ -36,6 +36,8 @@ from ..sessions.models import Message, MessageKind, Session
 from .scenario import (
     PlayStep,
     PlayTurn,
+    RecordedCost,
+    RecordedDecisionEntry,
     RecordedMessage,
     RecordedMessageKind,
     RoleSpec,
@@ -177,6 +179,37 @@ class SessionRecorder:
         # we didn't (avoids the runner injecting an empty AI side and
         # leaving the transcript stuck in AWAITING_PLAYERS forever).
         has_ai_capture = any(turn.ai_messages for turn in play_turns)
+        # Capture the final notepad snapshot. This is the markdown
+        # the AAR pipeline reads, and it's what a connected dev tab
+        # sees in the right-rail panel after replay completes. Only
+        # the FINAL state — not the per-edit Yjs op stream — so the
+        # notepad pops in fully populated rather than typing-out
+        # live. Tracked as follow-up: capture + replay the op stream
+        # for full edit-by-edit fidelity.
+        notepad_snapshot = session.notepad.markdown_snapshot or None
+        # Decision-log entries (creator-only AI rationale). Captured
+        # by ``record_decision_rationale`` tool calls during the
+        # original run; replay applies them at end-of-play so the
+        # spawned session's creator panel renders the same "Why did
+        # the AI do X?" appendix the original did.
+        decision_log = [
+            RecordedDecisionEntry(
+                turn_index=entry.turn_index,
+                rationale=entry.rationale,
+                ts=entry.ts.isoformat() if entry.ts else None,
+            )
+            for entry in session.decision_log
+        ]
+        # Final cost snapshot. Empty in deterministic replay (no LLM
+        # fires) — capturing it here lets the spawned session's cost
+        # banner show what the original run actually spent.
+        cost = RecordedCost(
+            input_tokens=session.cost.input_tokens,
+            output_tokens=session.cost.output_tokens,
+            cache_read_tokens=session.cost.cache_read_tokens,
+            cache_creation_tokens=session.cost.cache_creation_tokens,
+            estimated_usd=session.cost.estimated_usd,
+        )
         return Scenario(
             meta=ScenarioMeta(
                 name=name,
@@ -193,6 +226,9 @@ class SessionRecorder:
             end_reason="recorded",
             mock_llm_script=mock_script,
             replay_mode="deterministic" if has_ai_capture else "engine",
+            notepad_snapshot=notepad_snapshot,
+            decision_log=decision_log,
+            cost=cost,
         )
 
 

@@ -315,6 +315,13 @@ class ScenarioRunner:
                 f"play turn {turn_idx + 1}/{len(play_turns)} done"
             )
             await asyncio.sleep(0)  # yield so other tasks (WS pump) drain
+        # End-of-play side-channels: notepad snapshot + decision log
+        # + cost. These are all session-level state that doesn't fit
+        # the per-turn message stream — apply once at the end so the
+        # creator's view sees the populated right-rail panel + cost
+        # meter + AI rationale appendix without us having to replay
+        # every Yjs op or per-turn rationale entry.
+        await self._apply_session_side_channels()
 
     async def _drive_turn_engine(self, *, turn: Any) -> None:
         """Engine-mode driver: submit each submission via the shared
@@ -336,6 +343,7 @@ class ScenarioRunner:
             session = await self._manager.get_session(sid)
             if session.state == SessionState.ENDED:
                 return
+            await self._simulate_typing(role_id=role_id, content=step.content)
             try:
                 outcome = await prepare_and_submit_player_response(
                     manager=self._manager,
@@ -408,6 +416,52 @@ class ScenarioRunner:
         clamped = max(self._PACE_FLOOR_S, min(self._PACE_CEILING_S, delta))
         await asyncio.sleep(clamped)
 
+    # Synthetic-typing parameters. Real users send ``typing_start`` →
+    # heartbeat for ~1s/keystroke → ``typing_stop`` (see Composer.tsx).
+    # We don't have keystroke timing in the recording, so we
+    # synthesise a length-proportional pause: a player would typically
+    # take ~30ms per character (~2000 chars/min), clamped so a
+    # one-word response still flashes the indicator and a 4000-char
+    # post-mortem doesn't stall the replay for two minutes.
+    _TYPING_MS_PER_CHAR = 30
+    _TYPING_FLOOR_S = 0.6
+    _TYPING_CEILING_S = 4.0
+
+    async def _simulate_typing(self, *, role_id: str, content: str) -> None:
+        """Broadcast a ``typing_start`` / sleep / ``typing_stop`` pair
+        before the actual submission lands, so a connected dev tab sees
+        the same "Player X is typing…" indicator a real participant
+        would have triggered. Without this, replayed submissions
+        appear instantly with no typing chrome — the watching tab
+        feels like a teleport, not live play.
+
+        We deliberately don't broadcast the typing event with
+        ``record=True``: the WS handler's typing path uses
+        ``record=False`` to keep the replay buffer free of high-
+        volume ephemeral signals, and we mirror that here.
+        """
+
+        connections = self._manager.connections()
+        sid = self._must_session_id()
+        await connections.broadcast(
+            sid,
+            {"type": "typing", "role_id": role_id, "typing": True},
+            record=False,
+        )
+        delay_s = max(
+            self._TYPING_FLOOR_S,
+            min(
+                self._TYPING_CEILING_S,
+                (len(content) * self._TYPING_MS_PER_CHAR) / 1000.0,
+            ),
+        )
+        await asyncio.sleep(delay_s)
+        await connections.broadcast(
+            sid,
+            {"type": "typing", "role_id": role_id, "typing": False},
+            record=False,
+        )
+
     async def _drive_turn_deterministic(
         self, *, turn: Any, next_turn: Any | None
     ) -> None:
@@ -442,6 +496,7 @@ class ScenarioRunner:
             session = await self._manager.get_session(sid)
             if session.state == SessionState.ENDED:
                 return
+            await self._simulate_typing(role_id=role_id, content=step.content)
             # Route through the same validation / truncation /
             # guardrail pipeline the WS handler uses, so a regression
             # in any of those gates trips the replay before
@@ -542,7 +597,88 @@ class ScenarioRunner:
                 is_interjection=record.is_interjection,
                 visibility=record.visibility,
             )
+            # Critical-inject messages get a separate ``critical_event``
+            # WS broadcast in the live engine (see
+            # ``llm/dispatch.py::_dispatch_one``); the message itself
+            # lands in the transcript, AND a separate banner-firing
+            # frame goes out so connected tabs render the red alert.
+            # Replay must mirror both — without this, the recorded
+            # CRITICAL_INJECT message renders in the transcript but
+            # the banner never fires.
+            if kind == MessageKind.CRITICAL_INJECT:
+                args = record.tool_args or {}
+                await self._manager.connections().broadcast(
+                    sid,
+                    {
+                        "type": "critical_event",
+                        "severity": args.get("severity", "HIGH"),
+                        "headline": args.get("headline", ""),
+                        "body": args.get("body", ""),
+                    },
+                )
         self._log(f"injected {len(ai_messages)} ai_messages (deterministic)")
+
+    async def _apply_session_side_channels(self) -> None:
+        """Apply scenario-level side-channel state to the spawned
+        session: notepad markdown snapshot, decision-log entries,
+        cost banner.
+
+        These don't fit the per-turn message stream — they're
+        session-scoped and the original session emitted WS frames
+        for them at various points (notepad on every Yjs op, decision
+        log per ``record_decision_rationale`` tool call, cost on
+        every LLM call). Replaying every individual op would mean
+        capturing the full event stream, which the recorder doesn't
+        do today. The pragmatic alternative: apply the FINAL state
+        once at end-of-play. The creator's view sees the populated
+        notepad / decision log / cost; the per-edit cadence of the
+        original session is lost (tracked as follow-up).
+        """
+
+        from datetime import UTC, datetime
+
+        from ..sessions.models import DecisionLogEntry as _DecisionLogEntry
+
+        sid = self._must_session_id()
+        sc = self._scenario
+        # Acquire the session lock once and mutate fields in one pass.
+        async with await self._manager._lock_for(sid):
+            session = await self._manager._repo.get(sid)
+            if sc.notepad_snapshot:
+                session.notepad.markdown_snapshot = sc.notepad_snapshot
+                session.notepad.snapshot_updated_at = datetime.now(UTC)
+            if sc.decision_log:
+                for entry in sc.decision_log:
+                    session.decision_log.append(
+                        _DecisionLogEntry(
+                            turn_index=entry.turn_index,
+                            rationale=entry.rationale,
+                        )
+                    )
+            if sc.cost is not None:
+                session.cost.input_tokens = sc.cost.input_tokens
+                session.cost.output_tokens = sc.cost.output_tokens
+                session.cost.cache_read_tokens = sc.cost.cache_read_tokens
+                session.cost.cache_creation_tokens = sc.cost.cache_creation_tokens
+                session.cost.estimated_usd = sc.cost.estimated_usd
+            await self._manager._repo.save(session)
+        # Broadcast a state_changed so connected creator tabs poll
+        # the snapshot and pick up the populated side channels. The
+        # cost banner is creator-only and read off the snapshot, so
+        # this single nudge is enough to refresh all three.
+        await self._manager.connections().broadcast(
+            sid,
+            {"type": "snapshot_invalidated", "reason": "scenario_replay_finalised"},
+        )
+        applied = []
+        if sc.notepad_snapshot:
+            applied.append(f"notepad ({len(sc.notepad_snapshot)} chars)")
+        if sc.decision_log:
+            applied.append(f"{len(sc.decision_log)} decision-log entries")
+        if sc.cost is not None and sc.cost.estimated_usd > 0:
+            applied.append(f"cost (${sc.cost.estimated_usd:.4f})")
+        if applied:
+            self._log("applied side-channels: " + ", ".join(applied))
 
     async def end_phase(self) -> None:
         self.progress.current_phase = "ending"
