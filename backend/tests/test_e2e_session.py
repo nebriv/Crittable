@@ -2135,6 +2135,101 @@ def test_remove_role_non_creator_rejected(client: TestClient) -> None:
     assert r.status_code == 403
 
 
+def test_revoke_role_force_closes_open_websocket(client: TestClient) -> None:
+    """Issue #127 regression: kicking a player must terminate their
+    already-open WebSocket. Pre-fix the token-version bump only
+    blocked future connects / REST polls, leaving the kicked tab a
+    live channel they could keep submitting through.
+    """
+
+    from starlette.websockets import WebSocketDisconnect
+
+    seats = _create_and_seat(client, role_count=2)
+    sid = seats["session_id"]
+    cr = seats["creator_token"]
+    rid = seats["role_ids"][1]
+    old = seats["role_tokens"][rid]
+
+    with client.websocket_connect(f"/ws/sessions/{sid}?token={old}") as ws:
+        # Drain the initial presence_snapshot so the recv buffer is clean.
+        first = ws.receive_json()
+        assert first["type"] in {"presence_snapshot", "presence"}
+
+        # Creator kicks the player.
+        r = client.post(f"/api/sessions/{sid}/roles/{rid}/revoke?token={cr}")
+        assert r.status_code == 200, r.text
+
+        # The kicked tab's WS must observe a disconnect rather than
+        # remain a live channel. ``WebSocketDisconnect`` may surface on
+        # the next ``receive_json`` (or any subsequent send / receive).
+        with pytest.raises(WebSocketDisconnect):
+            for _ in range(64):
+                ws.receive_json()
+
+
+def test_remove_role_force_closes_open_websocket(client: TestClient) -> None:
+    """Removing the role (DELETE) must also close any open WS for that
+    role — same threat model as revoke (issue #127).
+    """
+
+    from starlette.websockets import WebSocketDisconnect
+
+    seats = _create_and_seat(client, role_count=3)
+    sid = seats["session_id"]
+    cr = seats["creator_token"]
+    rid = seats["role_ids"][1]
+    old = seats["role_tokens"][rid]
+
+    with client.websocket_connect(f"/ws/sessions/{sid}?token={old}") as ws:
+        first = ws.receive_json()
+        assert first["type"] in {"presence_snapshot", "presence"}
+
+        r = client.delete(f"/api/sessions/{sid}/roles/{rid}?token={cr}")
+        assert r.status_code == 200, r.text
+
+        with pytest.raises(WebSocketDisconnect):
+            for _ in range(64):
+                ws.receive_json()
+
+
+def test_submit_response_rejects_removed_role(client: TestClient) -> None:
+    """Defense-in-depth: even if an in-flight ``submit_response`` raced
+    the WS-close, ``manager.submit_response`` must refuse to land a
+    message from a role no longer in ``session.roles`` (issue #127).
+    """
+
+    import asyncio
+
+    from app.sessions.turn_engine import IllegalTransitionError
+
+    seats = _create_and_seat(client, role_count=2)
+    _install_mock_and_drive(
+        client, role_ids=seats["role_ids"], extension="lookup_threat_intel"
+    )
+    sid = seats["session_id"]
+    cr = seats["creator_token"]
+    rid = seats["role_ids"][1]
+
+    client.post(f"/api/sessions/{sid}/setup/skip?token={cr}")
+    client.post(f"/api/sessions/{sid}/start?token={cr}")
+
+    manager = client.app.state.manager
+
+    async def _kick_then_submit() -> None:
+        await manager.remove_role(
+            session_id=sid, role_id=rid, by_role_id=seats["creator_role_id"]
+        )
+        # Even though the WS would normally have been closed by now,
+        # any racing in-flight ``submit_response`` must still be
+        # rejected at the session-state boundary.
+        with pytest.raises(IllegalTransitionError):
+            await manager.submit_response(
+                session_id=sid, role_id=rid, content="ghost"
+            )
+
+    asyncio.run(_kick_then_submit())
+
+
 def test_activity_endpoint_creator_only(client: TestClient) -> None:
     seats = _create_and_seat(client, role_count=2)
     sid = seats["session_id"]

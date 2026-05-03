@@ -175,7 +175,7 @@ export function Facilitator() {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [busyMessage, setBusyMessage] = useState<string | null>(null);
-  const [wsStatus, setWsStatus] = useState<"connecting" | "open" | "closed" | "error">("connecting");
+  const [wsStatus, setWsStatus] = useState<"connecting" | "open" | "closed" | "error" | "kicked" | "rejected" | "session-gone">("connecting");
 
   // Live AI text streaming was producing visible mid-flight rewrites:
   // the green "streaming…" bubble showed concatenated chunks, then the
@@ -1540,7 +1540,7 @@ export function Facilitator() {
 export function TopBar(props: {
   phase: Phase;
   backendState: string;
-  wsStatus: "connecting" | "open" | "closed" | "error";
+  wsStatus: "connecting" | "open" | "closed" | "error" | "kicked" | "rejected" | "session-gone";
   godMode: boolean;
   onToggleGodMode: () => void;
   // Session-action props (was SessionActionBar):

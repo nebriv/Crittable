@@ -1004,7 +1004,10 @@ def register_api_routes(app: FastAPI) -> None:
         try:
             require_creator(token)
             new_token = await manager.reissue_role_token(
-                session_id=session_id, role_id=role_id, revoke_previous=False
+                session_id=session_id,
+                role_id=role_id,
+                revoke_previous=False,
+                by_role_id=token["role_id"],
             )
         except AuthorizationError as exc:
             raise HTTPException(status.HTTP_403_FORBIDDEN, str(exc)) from exc
@@ -1027,7 +1030,10 @@ def register_api_routes(app: FastAPI) -> None:
         try:
             require_creator(token)
             new_token = await manager.reissue_role_token(
-                session_id=session_id, role_id=role_id, revoke_previous=True
+                session_id=session_id,
+                role_id=role_id,
+                revoke_previous=True,
+                by_role_id=token["role_id"],
             )
         except AuthorizationError as exc:
             raise HTTPException(status.HTTP_403_FORBIDDEN, str(exc)) from exc

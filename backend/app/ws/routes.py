@@ -167,6 +167,7 @@ def register_ws_routes(app: FastAPI) -> None:
             session_id=session_id,
             role_id=payload["role_id"],
             is_creator=is_creator,
+            websocket=websocket,
         )
         _logger.info(
             "ws_connected",
@@ -217,6 +218,7 @@ def register_ws_routes(app: FastAPI) -> None:
                 session_id=session_id,
                 role_id=payload["role_id"],
                 kind=payload["kind"],
+                token_version=int(payload.get("v", 0)),
                 conn=conn,
                 connections=connections,
             )
@@ -489,6 +491,7 @@ async def _client_pump(
     session_id: str,
     role_id: str,
     kind: ParticipantKindLiteral,
+    token_version: int,
     conn: _Connection,
     connections: ConnectionManager,
 ) -> None:
@@ -507,6 +510,64 @@ async def _client_pump(
         "kind": kind,
         "v": 0,
     }
+
+    async def _role_still_authorized() -> bool:
+        """Issue #127: re-check the role's existence + token_version
+        before processing each mutating event.
+
+        The WS upgrade gate (``session_socket`` above) only fires
+        once. After that the recv pump can in principle process events
+        for milliseconds-to-seconds while the creator is in the
+        middle of revoking / removing this role. The
+        ``ConnectionManager.disconnect_role`` call from
+        ``SessionManager`` will close this socket asynchronously, but
+        a frame already in the local recv buffer can still race ahead.
+        Without this gate, a kicked player can squeeze in a
+        ``submit_response`` / ``request_force_advance`` /
+        ``notepad_update`` / ``notepad_awareness`` between the
+        token-version bump and the close landing.
+
+        On detection: send a typed error frame, then close the
+        socket so the recv loop exits immediately rather than
+        looping on subsequent buffered frames. The error frame is
+        intentionally vague — we don't tell a kicked attacker
+        whether the role was removed vs revoked.
+        """
+
+        try:
+            session = await manager.get_session(session_id)
+        except SessionNotFoundError:
+            try:
+                await websocket.close(code=CLOSE_NOT_FOUND)
+            except Exception:
+                pass
+            return False
+        role = session.role_by_id(role_id)
+        if role is None or role.token_version != token_version:
+            _logger.warning(
+                "ws_role_authorization_revoked",
+                session_id=session_id,
+                role_id=role_id,
+                upgrade_version=token_version,
+                current_version=(role.token_version if role else None),
+                role_present=role is not None,
+            )
+            try:
+                await websocket.send_json(
+                    {
+                        "type": "error",
+                        "scope": "auth",
+                        "message": "your seat was removed by the facilitator",
+                    }
+                )
+            except Exception:
+                pass
+            try:
+                await websocket.close(code=CLOSE_BAD_TOKEN)
+            except Exception:
+                pass
+            return False
+        return True
     try:
         while True:
             try:
@@ -614,6 +675,17 @@ async def _client_pump(
                         }
                     )
                     continue
+                # Issue #127: every mutating event re-checks that the
+                # role still exists with the version this socket was
+                # upgraded with. ``disconnect_role`` is fire-and-forget
+                # (the close lands milliseconds later); without this
+                # gate a kicked player can squeeze a final
+                # ``submit_response`` / ``force_advance`` / notepad
+                # write through the race window. ``_role_still_authorized``
+                # closes the socket on failure so subsequent buffered
+                # frames are not processed.
+                if not await _role_still_authorized():
+                    return
             if event_type == "submit_response":
                 # Validation / truncation / guardrail / submit live in
                 # ``submission_pipeline`` so the dev-tools scenario
@@ -637,6 +709,7 @@ async def _client_pump(
                         session_id=session_id,
                         role_id=role_id,
                         content=content,
+                        expected_token_version=token_version,
                     )
                 except EmptySubmissionError:
                     await websocket.send_json(

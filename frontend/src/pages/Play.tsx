@@ -153,7 +153,13 @@ export function Play({ sessionId, token }: Props) {
   // backgrounded before a transient disconnect would otherwise show as
   // active in the creator's roster after reconnect.
   const [wsStatus, setWsStatus] = useState<
-    "connecting" | "open" | "closed" | "error"
+    | "connecting"
+    | "open"
+    | "closed"
+    | "error"
+    | "kicked"
+    | "rejected"
+    | "session-gone"
   >("connecting");
 
   // WebSocket is gated on displayName because we want the intro page
@@ -378,7 +384,23 @@ export function Play({ sessionId, token }: Props) {
       const snap = await api.getSession(sessionId, token);
       setSnapshot(snap);
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      const msg = err instanceof Error ? err.message : String(err);
+      // Issue #127: a returning kicked player whose localStorage was
+      // cleared won't have a ``displayName`` yet, so the WS stays
+      // gated and never observes the 4401 close. The snapshot fetch
+      // is the only signal in that path. Detect 401 / "revoked" /
+      // "no longer exists" here and flip to the same dead-end view
+      // so they don't get trapped on JoinIntro.
+      if (
+        /\b401\b/.test(msg) ||
+        /revoked/i.test(msg) ||
+        /no longer exists/i.test(msg)
+      ) {
+        console.info("[play] snapshot 401 — treating as kicked", { msg });
+        setWsStatus("kicked");
+        return;
+      }
+      setError(msg);
     }
   }
 
@@ -683,6 +705,59 @@ export function Play({ sessionId, token }: Props) {
   // session transitions to AWAITING_PLAYERS / AI_PROCESSING / etc.
   const isWaitingForSessionStart =
     snapshot?.state === "SETUP" || snapshot?.state === "BRIEFING";
+
+  // Issue #127: terminal WS close codes must short-circuit BEFORE
+  // the JoinIntro guard. Pre-fix a kicked player who reopened the
+  // URL with localStorage cleared landed on JoinIntro forever
+  // because the WS connect was gated on ``displayName`` and the
+  // snapshot fetch silently 401'd into a generic error. Render the
+  // dead-end view here regardless of whether we know their name.
+  if (
+    wsStatus === "kicked" ||
+    wsStatus === "rejected" ||
+    wsStatus === "session-gone"
+  ) {
+    const headline =
+      wsStatus === "kicked"
+        ? "JOIN LINK REVOKED"
+        : wsStatus === "session-gone"
+          ? "SESSION NOT FOUND"
+          : "CONNECTION REJECTED";
+    const body =
+      wsStatus === "kicked"
+        ? "The facilitator removed this seat. Ask them for a new join link."
+        : wsStatus === "session-gone"
+          ? "The exercise this link points to has ended or expired. Ask the facilitator to create a new session."
+          : "The server refused this connection. If you forwarded this link from another window, try opening it directly.";
+    return (
+      <main className="dotgrid flex min-h-screen items-center justify-center bg-ink-900 px-6 text-ink-200">
+        <div
+          role="alert"
+          aria-live="assertive"
+          className="card mono flex max-w-md flex-col gap-3 p-6 text-center"
+          style={{
+            borderColor: "var(--crit)",
+            background: "var(--ink-850)",
+          }}
+        >
+          <h1
+            className="mono text-[12px] font-bold uppercase tracking-[0.22em]"
+            style={{ color: "var(--crit)" }}
+          >
+            {headline}
+          </h1>
+          <p className="text-[12px] leading-relaxed text-ink-300">{body}</p>
+          <a
+            href="/"
+            autoFocus
+            className="btn mt-2 inline-flex items-center justify-center self-center px-4 py-2 text-[11px] font-bold uppercase tracking-[0.16em] focus-visible:outline focus-visible:outline-2 focus-visible:outline-signal"
+          >
+            Return home
+          </a>
+        </div>
+      </main>
+    );
+  }
 
   if (!effectiveDisplayName || isWaitingForSessionStart) {
     // Pre-fix this was a tiny "what's your name?" dialog that operators

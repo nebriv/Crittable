@@ -37,7 +37,14 @@ export function useTabFocusReporter(
    * If omitted, the hook only sends on visibility/focus events plus
    * the initial mount.
    */
-  wsStatus?: "connecting" | "open" | "closed" | "error",
+  wsStatus?:
+    | "connecting"
+    | "open"
+    | "closed"
+    | "error"
+    | "kicked"
+    | "rejected"
+    | "session-gone",
 ): void {
   const lastSentRef = useRef<boolean | null>(null);
 

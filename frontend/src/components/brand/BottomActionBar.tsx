@@ -22,7 +22,14 @@ type Phase = "intro" | "setup" | "ready" | "play" | "ended";
 interface Props {
   phase: Phase;
   backendState: string;
-  wsStatus: "connecting" | "open" | "closed" | "error";
+  wsStatus:
+    | "connecting"
+    | "open"
+    | "closed"
+    | "error"
+    | "kicked"
+    | "rejected"
+    | "session-gone";
   godMode: boolean;
   onToggleGodMode: () => void;
   onStart: () => void;
