@@ -276,7 +276,51 @@ class ScenarioRunner:
             await TurnDriver(manager=self._manager).run_play_turn(
                 session=session, turn=turn
             )
+        # Synthesize presence so the watching dev tab sees every
+        # replayed role as online + focused. The connection_manager
+        # only tracks REAL WS connections — during replay only the
+        # creator's tab is connected, so without this broadcast the
+        # roster shows "1 online / N joined" with every other role
+        # offline. Frame shape matches what the WS handler emits on
+        # connect, so the existing client-side handler picks it up
+        # without changes.
+        await self._synthesize_presence(initial=True)
         self._log(f"play started (mode={self._scenario.replay_mode})")
+
+    async def _synthesize_presence(self, *, initial: bool = False) -> None:
+        """Broadcast a ``presence_snapshot`` listing every non-creator
+        replayed role as online + focused.
+
+        Real participants would have their own WS tabs open; during
+        replay there's no second connection so the connection_manager
+        reports them as offline. Synthesizing presence keeps the
+        roster panel honest — the dev sees a live-feeling session
+        with everyone "here", not a graveyard of offline rows.
+
+        Idempotent: safe to call multiple times. We don't fan out
+        per-turn (the connection_manager doesn't track replayed roles
+        anywhere; another snapshot would just resend the same set);
+        instead we hit ``presence_snapshot`` once at start_phase and
+        let the per-message broadcasts (typing / message_complete)
+        carry the per-turn signal.
+        """
+
+        sid = self._must_session_id()
+        # Every role we know about — creator's role_id is stored
+        # under both "creator" and the creator's label, so de-dupe.
+        all_role_ids = sorted({rid for rid in self._role_ids.values()})
+        await self._manager.connections().broadcast(
+            sid,
+            {
+                "type": "presence_snapshot",
+                "role_ids": all_role_ids,
+                "focused_role_ids": all_role_ids,
+                "connection_count": len(all_role_ids),
+            },
+            record=False,
+        )
+        if initial:
+            self._log(f"synthesized presence — {len(all_role_ids)} roles online")
 
     async def play_phase(self) -> None:
         """Replay each scripted play turn.
@@ -647,6 +691,25 @@ class ScenarioRunner:
             if sc.notepad_snapshot:
                 session.notepad.markdown_snapshot = sc.notepad_snapshot
                 session.notepad.snapshot_updated_at = datetime.now(UTC)
+            # Pinned-message-id round-trip: dedupe + skip unknown
+            # ids the spawned session never saw. The dedupe matters
+            # because hand-authored scenarios could repeat ids and
+            # the live session's idempotency check uses set-membership.
+            if sc.notepad_pinned_message_ids:
+                already = set(session.notepad.pinned_message_ids)
+                for mid in sc.notepad_pinned_message_ids:
+                    if mid not in already:
+                        session.notepad.pinned_message_ids.append(mid)
+                        already.add(mid)
+            # Contributor role labels resolve to fresh role_ids on
+            # the spawned session. Unresolved labels (roster
+            # mismatch) are skipped — same identity-resolution
+            # discipline the AI-message inject path uses.
+            if sc.notepad_contributor_role_labels:
+                for label in sc.notepad_contributor_role_labels:
+                    rid = self._role_ids.get(label)
+                    if rid and rid not in session.notepad.contributor_role_ids:
+                        session.notepad.contributor_role_ids.append(rid)
             if sc.decision_log:
                 for entry in sc.decision_log:
                     session.decision_log.append(
