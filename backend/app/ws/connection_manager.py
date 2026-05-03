@@ -10,8 +10,10 @@ from __future__ import annotations
 import asyncio
 from collections import defaultdict
 from collections.abc import AsyncIterator, Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
+
+from fastapi import WebSocket
 
 from ..logging_setup import get_logger
 
@@ -31,6 +33,11 @@ class _Connection:
     # at least one of its open connections has ``focused=True`` —
     # see ``role_has_focused_connection``.
     focused: bool = True
+    # Live socket reference used by ``disconnect_role`` to force-close
+    # a kicked / removed user's still-open tab. Optional so unit tests
+    # that exercise the connection manager directly (without a real
+    # WebSocket) keep working.
+    websocket: WebSocket | None = field(default=None, repr=False)
 
 
 class ConnectionManager:
@@ -52,12 +59,14 @@ class ConnectionManager:
         session_id: str,
         role_id: str,
         is_creator: bool,
+        websocket: WebSocket | None = None,
     ) -> _Connection:
         conn = _Connection(
             session_id=session_id,
             role_id=role_id,
             is_creator=is_creator,
             queue=asyncio.Queue(maxsize=self._MAX_QUEUE),
+            websocket=websocket,
         )
         async with self._lock:
             self._connections[session_id].append(conn)
@@ -104,6 +113,79 @@ class ConnectionManager:
             ]
         for conn in recipients:
             await self._enqueue(conn, event)
+
+    async def disconnect_role(
+        self,
+        session_id: str,
+        role_id: str,
+        *,
+        code: int = 4401,
+        reason: str = "kicked",
+    ) -> int:
+        """Force-close every open WebSocket held by ``(session_id, role_id)``.
+
+        Called by ``SessionManager`` when a creator kicks a player or
+        removes a role: bumping ``role.token_version`` only blocks
+        *future* connect / API attempts, but the player's existing tab
+        keeps its socket and can keep submitting until the close lands.
+        Without this primitive a kicked player can keep posting through
+        their already-open tab — see issue #127.
+
+        Returns the number of sockets we issued ``close()`` against.
+        Matching ``_Connection`` records are *not* unregistered here —
+        the per-connection recv loop will see ``WebSocketDisconnect``
+        and run its normal teardown (``unregister`` + presence
+        broadcast). Calling close twice is a no-op for the underlying
+        socket; doing the unregister here would race that pump.
+        """
+
+        async with self._lock:
+            targets = [
+                c
+                for c in self._connections.get(session_id, ())
+                if c.role_id == role_id
+            ]
+        if not targets:
+            return 0
+        closed = 0
+        for conn in targets:
+            ws = conn.websocket
+            if ws is None:
+                # Test fixture connection (no live socket attached). Best
+                # effort: drop it from the registry so subsequent broadcasts
+                # don't fan out to a "ghost" subscriber.
+                async with self._lock:
+                    try:
+                        self._connections[conn.session_id].remove(conn)
+                    except ValueError:
+                        pass
+                closed += 1
+                continue
+            try:
+                await ws.close(code=code, reason=reason)
+                closed += 1
+            except Exception as exc:  # pragma: no cover - best-effort close
+                # Log but keep going — every other tab on this role
+                # still needs to be closed. A failed close on one tab
+                # (already-closed socket, transport error) must not
+                # leave a peer tab alive.
+                _logger.warning(
+                    "ws_force_close_failed",
+                    session_id=session_id,
+                    role_id=role_id,
+                    code=code,
+                    reason=reason,
+                    error=str(exc),
+                )
+        _logger.info(
+            "ws_role_disconnected",
+            session_id=session_id,
+            role_id=role_id,
+            code=code,
+            reason=reason,
+            closed_count=closed,
+        )
+        return closed
 
     async def shutdown(self) -> None:
         async with self._lock:

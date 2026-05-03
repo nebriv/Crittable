@@ -141,11 +141,46 @@ export type ClientEvent =
   | { type: "notepad_update"; update: string }
   | { type: "notepad_awareness"; awareness: string };
 
+/** Close codes the server uses to reject the WS upgrade (or terminate
+ *  it post-kick). Reconnecting with the same token will fail the same
+ *  way, so the client stops the auto-reconnect loop and surfaces a
+ *  status the page can render specifically.
+ *
+ *  - 4401: bad / revoked token. The creator kicked this seat (issue
+ *    #127) OR the join URL was forged. From the player's view both
+ *    look the same — the link no longer works.
+ *  - 4403: forbidden origin. CORS_ORIGINS doesn't include this
+ *    origin. Unlike "kicked", this is usually an operator
+ *    misconfiguration; the player can't fix it by getting a fresh
+ *    link. Render distinct copy so the operator's screenshot of the
+ *    UI doesn't get mistakenly triaged as "the player was kicked".
+ *  - 4404: session not found. The GC reaper evicted the session
+ *    (long-idle), or the operator restarted the in-memory store. A
+ *    fresh creator session would be needed; a fresh link won't help.
+ */
+const CLOSE_CODE_BAD_TOKEN = 4401;
+const CLOSE_CODE_FORBIDDEN_ORIGIN = 4403;
+const CLOSE_CODE_SESSION_GONE = 4404;
+const TERMINAL_CLOSE_CODES = new Set([
+  CLOSE_CODE_BAD_TOKEN,
+  CLOSE_CODE_FORBIDDEN_ORIGIN,
+  CLOSE_CODE_SESSION_GONE,
+]);
+
+export type TerminalCloseStatus = "kicked" | "rejected" | "session-gone";
+
 export interface WsClientOptions {
   sessionId: string;
   token: string;
   onEvent: (event: ServerEvent) => void;
-  onStatus?: (status: "connecting" | "open" | "closed" | "error") => void;
+  onStatus?: (
+    status:
+      | "connecting"
+      | "open"
+      | "closed"
+      | "error"
+      | TerminalCloseStatus,
+  ) => void;
   heartbeatMs?: number;
 }
 
@@ -330,8 +365,38 @@ export class WsClient {
 
     ws.addEventListener("close", (evt) => {
       this._teardownHeartbeat();
-      this.opts.onStatus?.("closed");
       console.debug("[ws] close", { code: evt.code, reason: evt.reason });
+      // Server-initiated terminal closes will fail the same way on
+      // reconnect — looping with backoff just spams the server and
+      // logs. Map each terminal code to a distinct status so the
+      // page can render the right copy (a kicked player and a
+      // CORS-misconfigured origin should NOT see the same banner).
+      // Flip the closed-by-caller flag so any subsequent close
+      // events on this socket also stay out of the reconnect path.
+      if (TERMINAL_CLOSE_CODES.has(evt.code) && !this.closedByCaller) {
+        this.closedByCaller = true;
+        let status: TerminalCloseStatus;
+        switch (evt.code) {
+          case CLOSE_CODE_BAD_TOKEN:
+            status = "kicked";
+            break;
+          case CLOSE_CODE_FORBIDDEN_ORIGIN:
+            status = "rejected";
+            break;
+          case CLOSE_CODE_SESSION_GONE:
+            status = "session-gone";
+            break;
+          default:
+            status = "kicked";
+        }
+        console.info("[ws] terminal close — disabling reconnect", {
+          code: evt.code,
+          status,
+        });
+        this.opts.onStatus?.(status);
+        return;
+      }
+      this.opts.onStatus?.("closed");
       if (!this.closedByCaller) {
         this._scheduleReconnect();
       }

@@ -254,6 +254,7 @@ class SessionManager:
         session_id: str,
         role_id: str,
         revoke_previous: bool,
+        by_role_id: str | None = None,
     ) -> str:
         """Re-mint a role's join token.
 
@@ -290,7 +291,22 @@ class SessionManager:
             session,
             role_id=role_id,
             label=role.label,
+            # Issue #127 follow-up (Product review): operator-action
+            # audit lines must record WHO performed the action, not
+            # just the target. Defaults to None for non-API callers.
+            by=by_role_id,
         )
+        if revoke_previous:
+            # Bumping token_version only blocks *future* connect / API
+            # attempts. The kicked player's existing WebSocket stays
+            # open until we close it explicitly, so they could keep
+            # posting through their already-open tab (issue #127).
+            # Force-close every open socket for this role; the close
+            # is fire-and-forget — the per-connection recv pump runs
+            # its normal teardown when the close lands.
+            await self._connections.disconnect_role(
+                session_id, role_id, code=4401, reason="kicked"
+            )
         return token
 
     async def set_role_display_name(
@@ -381,6 +397,14 @@ class SessionManager:
         await self._connections.broadcast(
             session.id,
             {"type": "participant_left", "role_id": role_id},
+        )
+        # Same reasoning as the revoke path in ``reissue_role_token``:
+        # the removed player's already-open WS would otherwise let them
+        # keep submitting messages until the next reconnect (issue #127).
+        # ``_bind_token`` rejects the next REST poll because the role no
+        # longer exists, but the live socket has no equivalent gate.
+        await self._connections.disconnect_role(
+            session_id, role_id, code=4401, reason="removed"
         )
 
     # ------------------------------------------------------- setup-phase API
@@ -556,7 +580,12 @@ class SessionManager:
             return
 
     async def submit_response(
-        self, *, session_id: str, role_id: str, content: str
+        self,
+        *,
+        session_id: str,
+        role_id: str,
+        content: str,
+        expected_token_version: int | None = None,
     ) -> bool:
         """Record a player's submission. Returns True if the turn is now complete.
 
@@ -575,6 +604,29 @@ class SessionManager:
             session = await self._repo.get(session_id)
             if session.state != SessionState.AWAITING_PLAYERS:
                 raise IllegalTransitionError("session is not awaiting player input")
+            # Defense-in-depth for issue #127: even if the kicked /
+            # removed player's WebSocket close raced with an in-flight
+            # ``submit_response`` (the close is fire-and-forget; the
+            # submit was already on the wire), the role lookup here
+            # rejects it before it lands in the transcript. The
+            # ``expected_token_version`` covers the kick (revoke) path
+            # — the role is still in ``session.roles`` post-revoke, so
+            # the existence check alone would miss it; the version
+            # match closes the gap. Callers that don't carry a token
+            # version (scenario runner, test helpers) pass None and
+            # only get the existence check.
+            existing = session.role_by_id(role_id)
+            if existing is None:
+                raise IllegalTransitionError(
+                    f"role no longer exists in session: {role_id}"
+                )
+            if (
+                expected_token_version is not None
+                and existing.token_version != expected_token_version
+            ):
+                raise IllegalTransitionError(
+                    "token has been revoked; rejoin with the new join link"
+                )
             turn = session.current_turn
             if turn is None:
                 raise IllegalTransitionError("no current turn")

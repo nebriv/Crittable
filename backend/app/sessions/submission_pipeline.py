@@ -81,6 +81,7 @@ async def prepare_and_submit_player_response(
     session_id: str,
     role_id: str,
     content: str,
+    expected_token_version: int | None = None,
 ) -> SubmissionOutcome:
     """Validate, truncate, classify, and submit one player response.
 
@@ -130,7 +131,10 @@ async def prepare_and_submit_player_response(
         )
 
     advanced = await manager.submit_response(
-        session_id=session_id, role_id=role_id, content=content
+        session_id=session_id,
+        role_id=role_id,
+        content=content,
+        expected_token_version=expected_token_version,
     )
     return SubmissionOutcome(
         content=content,
