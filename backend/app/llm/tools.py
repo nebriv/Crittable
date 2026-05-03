@@ -82,12 +82,12 @@ PLAY_TOOLS: list[dict[str, Any]] = [
                     "type": "string",
                     "description": (
                         "Optional. Workstream this beat belongs to. Must "
-                        "match an id from your earlier ``declare_workstreams`` "
-                        "call. Omit (or pass empty string) for cross-cutting "
-                        "/ general beats; the message renders under the "
-                        "default ``#main`` bucket. **If no workstreams were "
-                        "declared in setup, OMIT this field on every call — "
-                        "do not invent values like ``general`` or ``main``.** "
+                        "match an id from the session's declared workstreams "
+                        "(declared during setup). Omit (or pass empty string) "
+                        "for cross-cutting / general beats; the message "
+                        "renders under the default unscoped bucket. **If no "
+                        "workstreams were declared for this session, OMIT "
+                        "this field on every call — do not invent values.** "
                         "UI-filter affordance only; not load-bearing for "
                         "play correctness."
                     ),

@@ -283,14 +283,22 @@ class ToolDispatcher:
             payload: dict[str, Any] = {"name": name, "reason": str(exc)}
             # Phase A chat-declutter (docs/plans/chat-decluttering.md
             # §7.2). Validation paths can attach structured extras
-            # (``reason="unknown_workstream_id"``, ``attempted``,
-            # ``known``) so an operator grepping the audit ring for
-            # workstream rejections doesn't have to parse English prose
-            # out of ``reason``. The free-form ``reason`` stays as the
-            # human-readable summary; structured fields go alongside.
+            # (``reason_code``, ``attempted``, ``known``) so an operator
+            # grepping the audit ring for workstream rejections doesn't
+            # have to parse English prose. The human-readable
+            # ``reason`` is preserved verbatim — endpoints like
+            # ``/setup/reply`` surface it back to the creator as a
+            # diagnostic, and clobbering it with a short code would
+            # drop the recovery hint. ``audit_extras`` MUST NOT
+            # contain the key ``reason``; if it does we reroute it to
+            # ``reason_code`` defensively.
             extras = getattr(exc, "audit_extras", None)
             if isinstance(extras, dict):
-                payload.update(extras)
+                for key, value in extras.items():
+                    if key == "reason":
+                        payload.setdefault("reason_code", value)
+                    else:
+                        payload[key] = value
             self._audit.emit(
                 AuditEvent(
                     kind="tool_use_rejected",
@@ -905,16 +913,19 @@ def _validate_workstream_id(
     if value not in declared_ids:
         known = sorted(declared_ids)
         # Plan §7.2: surface structured fields on the audit payload so
-        # operators can grep ``reason="unknown_workstream_id"`` rather
-        # than parse the English prose. The free-form message stays as
-        # the model-facing recovery hint.
+        # operators can grep ``reason_code="unknown_workstream_id"``
+        # rather than parse the English prose. The human-readable
+        # ``reason`` is preserved by the dispatch-emit layer (it's
+        # what ``/setup/reply`` surfaces back to the creator); the
+        # structured code rides alongside as ``reason_code`` so neither
+        # consumer is starved.
         raise _DispatchError(
             f"unknown workstream_id {value!r} on {tool_name}. Known: "
             f"{', '.join(known)}. Pass an id from your earlier "
             "declare_workstreams call, or omit the field for a "
             "cross-cutting beat.",
             audit_extras={
-                "reason": "unknown_workstream_id",
+                "reason_code": "unknown_workstream_id",
                 "attempted": value,
                 "known": known,
             },

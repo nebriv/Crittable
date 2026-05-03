@@ -690,9 +690,12 @@ class TestAARWorkstreamBlind:
 
 
 class TestStructuredAuditReason:
-    """Plan §7.2 — `tool_use_rejected` payload carries `reason`,
-    `attempted`, and `known` fields so an operator can grep without
-    parsing English prose."""
+    """Plan §7.2 — `tool_use_rejected` payload carries
+    `reason_code`, `attempted`, and `known` fields so an operator can
+    grep without parsing English prose. The human-readable ``reason``
+    string is preserved verbatim alongside the structured fields so
+    endpoints like ``/setup/reply`` that surface ``reason`` to the
+    creator still get the recovery hint (Copilot review on PR #150)."""
 
     @pytest.mark.asyncio
     async def test_invalid_workstream_id_audit_payload_is_structured(self) -> None:
@@ -727,9 +730,42 @@ class TestStructuredAuditReason:
         assert len(rejected) == 1
         payload = rejected[0].payload
         assert payload["name"] == "address_role"
-        assert payload["reason"] == "unknown_workstream_id"
+        # Structured code for grep / dashboards.
+        assert payload["reason_code"] == "unknown_workstream_id"
         assert payload["attempted"] == "vendor_management"
         assert payload["known"] == ["comms", "containment"]
+        # Human-readable string preserved (the recovery hint surfaced
+        # to the creator). Must NOT have been clobbered by the
+        # structured code.
+        assert "vendor_management" in payload["reason"]
+        assert "Known:" in payload["reason"]
+        assert payload["reason"] != "unknown_workstream_id"
+
+    @pytest.mark.asyncio
+    async def test_audit_extras_with_reason_key_does_not_clobber(self) -> None:
+        """Defence-in-depth: even if a future caller misuses
+        ``audit_extras`` and includes a ``reason`` key, the original
+        human-readable string survives — the colliding entry is rerouted
+        to ``reason_code`` instead. Mirrors the merge logic in
+        ``_dispatch_one``."""
+
+        from app.llm.dispatch import _DispatchError
+
+        exc = _DispatchError(
+            "human-readable rejection",
+            audit_extras={"reason": "structured_code", "extra": "yes"},
+        )
+        payload: dict[str, Any] = {"name": "fake_tool", "reason": str(exc)}
+        extras = getattr(exc, "audit_extras", None)
+        assert isinstance(extras, dict)
+        for key, value in extras.items():
+            if key == "reason":
+                payload.setdefault("reason_code", value)
+            else:
+                payload[key] = value
+        assert payload["reason"] == "human-readable rejection"
+        assert payload["reason_code"] == "structured_code"
+        assert payload["extra"] == "yes"
 
 
 # ----------------------------------------------------------------------
