@@ -55,5 +55,34 @@ export default defineConfig({
     environment: "jsdom",
     globals: true,
     setupFiles: ["./src/test-setup.ts"],
+    coverage: {
+      // ``v8`` uses Node's built-in V8 coverage instrumentation
+      // (faster + more accurate than the istanbul provider), but
+      // vitest still needs the ``@vitest/coverage-v8`` adapter
+      // package to wire it up — declared in package.json devDeps.
+      // Coverage runs only when ``--coverage`` is passed (e.g. in
+      // CI) so dev loops stay fast.
+      provider: "v8",
+      reporter: ["text", "lcov"],
+      include: ["src/**/*.{ts,tsx}"],
+      exclude: [
+        "src/**/*.test.{ts,tsx}",
+        "src/__tests__/**",
+        "src/test-setup.ts",
+        "src/main.tsx",
+        "src/vite-env.d.ts",
+      ],
+      // Thresholds are conservative on the first land — set roughly at
+      // the measured floor (lines / statements / functions ~44%,
+      // branches ~36%) so a regression on the well-covered helpers
+      // trips CI but a routine fluctuation doesn't. Bump as coverage
+      // rises; never lower without a PR-body justification.
+      thresholds: {
+        lines: 40,
+        functions: 40,
+        branches: 33,
+        statements: 40,
+      },
+    },
   },
 });
