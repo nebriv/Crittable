@@ -1207,12 +1207,22 @@ class SessionManager:
                 f"append_recorded_message refuses kind={kind.value!r} — "
                 "replayed player content must go through submit_response"
             )
-        cap = self._settings.max_participant_submission_chars
-        if len(body) > cap:
-            body = body[:cap] + "\n[recorded body truncated by replay]"
+        # Body cap aligned with the scenario schema's
+        # ``RecordedMessage.body`` Field(max_length=64_000), NOT the
+        # player-submission cap. AI/system bodies in real sessions
+        # routinely run multi-KB (broadcast tool outputs, share_data
+        # blobs); using ``max_participant_submission_chars`` here
+        # would silently truncate them mid-replay and break
+        # deterministic-fidelity guarantees. The 64KB ceiling still
+        # protects against pathological scenario files (e.g. a
+        # corrupted JSON with a megabyte body).
+        _RECORDED_BODY_CAP = 64_000
+        if len(body) > _RECORDED_BODY_CAP:
+            body = body[:_RECORDED_BODY_CAP] + "\n[recorded body truncated by replay]"
         async with await self._lock_for(session_id):
             session = await self._repo.get(session_id)
             turn = session.current_turn
+            turn_id = turn.id if turn is not None else None
             msg = Message(
                 kind=kind,
                 body=body,
@@ -1221,10 +1231,14 @@ class SessionManager:
                 role_id=role_id,
                 is_interjection=is_interjection,
                 visibility=visibility,
-                turn_id=turn.id if turn is not None else None,
+                turn_id=turn_id,
             )
             session.messages.append(msg)
             await self._repo.save(session)
+        # WS frame shape mirrors the engine path's ``message_complete``
+        # contract — ``turn_id`` + ``tool_args`` included so a watching
+        # tab's handler can't tell a replayed message apart from an
+        # engine-emitted one (which is the whole point of fidelity).
         await self._connections.broadcast(
             session_id,
             {
@@ -1232,8 +1246,10 @@ class SessionManager:
                 "kind": kind.value,
                 "body": body,
                 "tool_name": tool_name,
+                "tool_args": tool_args,
                 "role_id": role_id,
                 "is_interjection": is_interjection,
+                "turn_id": turn_id,
             },
         )
         self._emit(

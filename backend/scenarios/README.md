@@ -11,11 +11,13 @@ dev-tools API exposes via `GET /api/dev/scenarios` (when
 hit Play. The runner spawns a fresh session and walks the entire
 lifecycle (setup → play → end → AAR) while the dev watches.
 
-**From pytest:** see `backend/tests/scenarios/test_scenario_replay.py` —
-each `*.json` in this directory becomes a parameterised test that drives
-the scenario with the deterministic `MockAnthropic` transport. Used as a
-regression net so the contract between scenarios and the engine doesn't
-silently rot.
+**From pytest:** see `backend/tests/scenarios/test_scenario_runner.py`
+(runner-level lifecycle + deterministic-replay fidelity) and
+`backend/tests/scenarios/test_scenario_api.py` (HTTP gating + async
+play + record). Both go through the same `ScenarioRunner` the dev
+mode panel uses, against the deterministic `MockAnthropic` transport.
+Together they're the regression net that catches contract drift
+between scenarios and the engine.
 
 **From the CLI:** the `app.devtools.runner.ScenarioRunner` is a plain
 async class — drive it from a notebook or a one-off script if you want
@@ -124,8 +126,16 @@ won't catch its regressions.
 
 ## Security gating
 
-The `/api/dev/scenarios/...` endpoints 404 unless
-`DEV_TOOLS_ENABLED=true` or `TEST_MODE=true`. Even with the flag on,
-the play and record endpoints require a creator token. **Never enable
-this on a deployed instance** — a leaked creator token plus the flag
-would let an attacker spin up sessions that consume model tokens.
+All `/api/dev/scenarios/...` endpoints 404 unless `DEV_TOOLS_ENABLED=true`
+or `TEST_MODE=true`. Beyond the flag, per-endpoint auth differs:
+
+| Endpoint | Auth required |
+|---|---|
+| `GET /api/dev/scenarios` | None (just metadata; the gate is the security boundary) |
+| `POST /api/dev/scenarios/{id}/play` | None when `DEV_TOOLS_ENABLED=true` (the wizard's no-token picker depends on this); valid token when only `TEST_MODE=true` (preview/CI safety) |
+| `POST /api/dev/sessions/{id}/record` | Creator token bound to the target session, with token-version check |
+
+**Never enable `DEV_TOOLS_ENABLED=true` on a deployed instance.** With
+the flag on, an unauthenticated caller can mint sessions and harvest
+their join tokens via `/play` — fine for solo dev work, fatal for any
+shared environment.

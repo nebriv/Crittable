@@ -154,11 +154,17 @@ export function Facilitator() {
             "[facilitator] DEV_TOOLS_ENABLED detected on backend — defaulting devMode to true",
           );
         }
-      } catch {
-        // Network error / unexpected status — leave devMode at false;
-        // listScenarios already swallows the 404 path so anything
-        // landing here is genuinely surprising and not actionable
-        // from the toggle.
+      } catch (err) {
+        // Network error / unexpected status — leave devMode at false.
+        // ``listScenarios`` already swallows the 404 path (gate
+        // closed) into a normal response, so anything landing here
+        // is genuinely surprising — log so the next operator
+        // chasing "why didn't dev mode default on?" has a
+        // breadcrumb in the console.
+        console.warn(
+          "[facilitator] dev-tools probe failed (devMode stays false)",
+          err,
+        );
       }
     })();
     return () => {

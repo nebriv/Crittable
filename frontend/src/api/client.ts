@@ -115,6 +115,32 @@ export interface SetupReplyResult {
   diagnostics?: BackendDiagnostic[];
 }
 
+/** One scenario entry in the dev-tools picker. Mirrors the
+ * backend's ``backend/app/devtools/api.py::list_scenarios`` shape;
+ * keep the two in sync when adding fields. */
+export interface DevScenarioMeta {
+  id: string;
+  name: string;
+  description: string;
+  tags: string[];
+  roster_size: number;
+  play_turns: number;
+  skip_setup: boolean;
+}
+
+/** Response shape from ``GET /api/dev/scenarios``. ``disabled`` is a
+ * frontend-synthesised flag for the "endpoint 404'd" case (the
+ * backend itself never returns disabled=true — the route just 404s
+ * when the gate is closed). ``play_token_required`` reflects the
+ * server's auth model: True in TEST_MODE-only environments, False
+ * when ``DEV_TOOLS_ENABLED=true`` opens the unauth path. */
+export interface DevScenarioList {
+  scenarios: DevScenarioMeta[];
+  path?: string;
+  disabled: boolean;
+  play_token_required: boolean;
+}
+
 /**
  * Strip query-string secrets ({@code token=...}) from a path before logging.
  * Tokens are bearer credentials — leaking them via console is a real bug.
@@ -336,31 +362,23 @@ export const api = {
    *
    * Returns ``{ scenarios: [], disabled: true }`` when the backend
    * gate is closed (route 404s — typically ``DEV_TOOLS_ENABLED`` /
-   * ``TEST_MODE`` not set). Returns ``{ scenarios: [], disabled:
-   * false, path: "..." }`` when the gate is open but the directory
-   * is empty. The caller renders distinct empty states for each so
-   * the dev can tell whether to flip the env var or drop a JSON
-   * file in the dir.
+   * ``TEST_MODE`` not set). Returns ``{ scenarios: [...], disabled:
+   * false, path: "...", play_token_required: bool }`` when the gate
+   * is open. ``play_token_required`` is True in TEST_MODE-only
+   * environments (CI/preview) where ``/play`` still demands a token
+   * — the wizard's no-token picker hides itself in that case.
    */
-  async listScenarios(): Promise<{
-    scenarios: Array<{
-      id: string;
-      name: string;
-      description: string;
-      tags: string[];
-      roster_size: number;
-      play_turns: number;
-      skip_setup: boolean;
-    }>;
-    path?: string;
-    disabled: boolean;
-  }> {
+  async listScenarios(): Promise<DevScenarioList> {
     try {
-      const body = (await request("GET", "/api/dev/scenarios")) as {
-        scenarios: never[];
-        path?: string;
+      const body = (await request(
+        "GET",
+        "/api/dev/scenarios",
+      )) as DevScenarioList;
+      return {
+        ...body,
+        disabled: false,
+        play_token_required: body.play_token_required ?? false,
       };
-      return { ...body, disabled: false };
     } catch (err) {
       // The route is 404 when dev tools are disabled. Other errors
       // (network, 500) bubble back up so the panel can show them.
@@ -369,7 +387,11 @@ export const api = {
         console.info(
           "[scenarios] /api/dev/scenarios returned 404 — DEV_TOOLS_ENABLED / TEST_MODE not set on backend",
         );
-        return { scenarios: [], disabled: true };
+        return {
+          scenarios: [],
+          disabled: true,
+          play_token_required: false,
+        };
       }
       throw err;
     }

@@ -20,10 +20,16 @@ The ``ScenarioRunner`` drives a scenario through the live ``SessionManager``
 the creator's God Mode panel — there's no "test-only" shortcut that could
 hide a real-app regression.
 
-The ``SessionRecorder`` walks the audit log + session state of a running
-session and emits a Scenario JSON suitable for replay later. Recording is
-the only way to capture a ``mock_llm`` script that exactly reproduces the
-real Anthropic responses observed during a manual run.
+The ``SessionRecorder`` walks the session state of a finished/in-flight
+session and emits a Scenario JSON suitable for replay later. It captures
+the player + AI message stream, notepad snapshot, decision log, cost,
+and pinned-message ids — enough for ``replay_mode="deterministic"`` to
+reproduce the transcript without calling the LLM. The
+``include_mock_script`` flag on ``to_scenario`` is currently a stub
+(returns ``None``); reconstructing a faithful ``mock_llm`` script from
+the audit log is tracked as follow-up. Today, replays of a recording
+either inject the captured AI messages directly (deterministic, no
+LLM) or re-drive the live LLM (engine mode).
 
 Gating: ``DEV_TOOLS_ENABLED=true`` (or ``TEST_MODE=true``) is required
 for the API surface; never wire these endpoints for unauthenticated

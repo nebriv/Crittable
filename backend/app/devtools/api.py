@@ -175,8 +175,15 @@ def register_devtools_routes(app: FastAPI) -> None:
         _require_dev_tools(request)
         scenarios = _safe_load_scenarios(request)
         path = _resolved_scenarios_path(request)
+        s = _settings(request)
+        # Surface whether ``/play`` requires a token in this
+        # environment so the wizard's no-token picker can hide
+        # itself in TEST_MODE-only deploys (CI / preview) where
+        # the call would 401. ``DEV_TOOLS_ENABLED`` opens the
+        # unauth path.
         return {
             "path": str(path),
+            "play_token_required": not s.dev_tools_enabled,
             "scenarios": [
                 {
                     "id": sid,

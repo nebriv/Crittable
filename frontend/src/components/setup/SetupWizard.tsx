@@ -776,9 +776,16 @@ interface ScenarioOption {
  * when ``DEV_TOOLS_ENABLED=true``); the backend returns IMMEDIATELY
  * with a session id + creator token, then runs the play / end /
  * AAR phases in a background task. We navigate the same tab to
- * ``/play/{creator_token}`` so the dev watches the replay unfold
- * live via the existing WS broadcasts — same code path, no new
- * routes to maintain.
+ * ``/play/:sessionId/:token`` (the App router's two-segment route;
+ * the one-segment shape silently falls through to the home page)
+ * so the dev watches the replay unfold live via the existing WS
+ * broadcasts — same code path, no new routes to maintain.
+ *
+ * Hidden when ``play_token_required`` is True (TEST_MODE-only
+ * environments where ``/play`` still demands a token). The wizard
+ * has no token to present at this point in the flow; the picker
+ * stays hidden and the dev can use the God Mode panel instead
+ * (which has the creator token).
  */
 function WizardScenarioPicker() {
   const [scenarios, setScenarios] = useState<ScenarioOption[]>([]);
@@ -786,6 +793,7 @@ function WizardScenarioPicker() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [disabled, setDisabled] = useState(false);
+  const [tokenRequired, setTokenRequired] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -795,9 +803,12 @@ function WizardScenarioPicker() {
         if (cancelled) return;
         setScenarios(body.scenarios);
         setDisabled(body.disabled);
+        setTokenRequired(body.play_token_required);
       } catch (err) {
         if (!cancelled) {
-          setError(err instanceof Error ? err.message : String(err));
+          const text = err instanceof Error ? err.message : String(err);
+          setError(text);
+          console.warn("[wizard-scenarios] list failed", text);
         }
       }
     })();
@@ -827,13 +838,9 @@ function WizardScenarioPicker() {
         return;
       }
       console.info("[wizard-scenarios] navigating to replayed session");
-      // Navigate the same tab — the dev sees the replay unfold via
-      // the live WS broadcasts as the background task progresses.
       // Route is ``/play/:sessionId/:token`` — both segments are
-      // required by the App router. Pre-fix this used
-      // ``/play/{token}`` (one segment), which the router didn't
-      // match, so the dev landed on the marketing home page instead
-      // of the replayed session.
+      // required by the App router (the one-segment shape silently
+      // falls through to the home page).
       window.location.href = `/play/${body.session_id}/${creatorToken}`;
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -842,8 +849,10 @@ function WizardScenarioPicker() {
     }
   }
 
-  if (disabled) {
-    // Dev tools off — picker hidden, dev mode still works.
+  if (disabled || tokenRequired) {
+    // Dev tools off → picker hidden; dev mode still works.
+    // Token required (TEST_MODE-only env) → picker hidden because
+    // the wizard has no token to send; God Mode panel still works.
     return null;
   }
 
@@ -854,8 +863,13 @@ function WizardScenarioPicker() {
         flexDirection: "column",
         gap: 8,
         padding: "10px 12px",
-        background: "rgba(38, 132, 255, 0.10)",
-        border: "1px solid rgba(38, 132, 255, 0.40)",
+        // ``--info`` is the design-system info-tint token; using
+        // ``color-mix`` keeps the alpha at the same level the
+        // hard-coded ``rgba(38, 132, 255, 0.10/0.40)`` originally
+        // produced but stays in sync with theme/contrast changes.
+        background: "color-mix(in srgb, var(--info) 10%, transparent)",
+        border:
+          "1px solid color-mix(in srgb, var(--info) 40%, transparent)",
         borderRadius: 4,
       }}
     >
@@ -916,7 +930,11 @@ function WizardScenarioPicker() {
               alignSelf: "flex-start",
               fontSize: 12,
               padding: "6px 14px",
-              background: "rgba(38, 132, 255, 0.20)",
+              // Token-derived info-tint, same pattern as the panel
+              // background above — matches the design system rather
+              // than hard-coding the ``rgba(38, 132, 255, 0.20)``
+              // numerals.
+              background: "color-mix(in srgb, var(--info) 20%, transparent)",
               border: "1px solid var(--info)",
               color: "var(--info)",
               borderRadius: 3,
