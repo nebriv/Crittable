@@ -118,7 +118,15 @@ export function ScenarioPanel({
           ? body.role_tokens[creatorRoleId]
           : undefined;
         if (creatorToken) {
-          const newTab = window.open(`/play/${creatorToken}`, "_blank");
+          // The SPA route is ``/play/:sessionId/:token`` — both
+          // segments are required. Pre-fix this used ``/play/{token}``
+          // (one segment), which the App router didn't match, and the
+          // dev landed on the marketing home page instead of the
+          // replayed session.
+          const newTab = window.open(
+            `/play/${body.session_id}/${creatorToken}`,
+            "_blank",
+          );
           if (!newTab) {
             console.info(
               "[scenarios] auto-open blocked by browser; use the link in the result block",
@@ -277,7 +285,7 @@ export function ScenarioPanel({
           {result.session_id && result.ok ? (
             <p className="mt-1 text-ink-200">
               <a
-                href={`/play/${result.role_tokens[result.role_label_to_id["creator"]]}`}
+                href={`/play/${result.session_id}/${result.role_tokens[result.role_label_to_id["creator"]]}`}
                 target="_blank"
                 rel="noreferrer"
                 className="text-info underline"
@@ -305,7 +313,7 @@ export function ScenarioPanel({
                   return (
                     <li key={roleId}>
                       <a
-                        href={`/play/${token}`}
+                        href={`/play/${result.session_id}/${token}`}
                         target="_blank"
                         rel="noreferrer"
                         className="text-info underline"

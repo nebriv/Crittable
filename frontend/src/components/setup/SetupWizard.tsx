@@ -829,7 +829,12 @@ function WizardScenarioPicker() {
       console.info("[wizard-scenarios] navigating to replayed session");
       // Navigate the same tab — the dev sees the replay unfold via
       // the live WS broadcasts as the background task progresses.
-      window.location.href = `/play/${creatorToken}`;
+      // Route is ``/play/:sessionId/:token`` — both segments are
+      // required by the App router. Pre-fix this used
+      // ``/play/{token}`` (one segment), which the router didn't
+      // match, so the dev landed on the marketing home page instead
+      // of the replayed session.
+      window.location.href = `/play/${body.session_id}/${creatorToken}`;
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
       setBusy(false);
