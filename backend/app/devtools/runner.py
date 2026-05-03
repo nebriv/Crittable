@@ -317,8 +317,18 @@ class ScenarioRunner:
             await asyncio.sleep(0)  # yield so other tasks (WS pump) drain
 
     async def _drive_turn_engine(self, *, turn: Any) -> None:
-        """Engine-mode driver: submit each submission and let
-        ``run_play_turn`` produce the AI side."""
+        """Engine-mode driver: submit each submission via the shared
+        pipeline, then let ``run_play_turn`` produce the AI side.
+
+        Pipeline-routing is the same as the deterministic driver —
+        validation / truncation / guardrail run on every replayed
+        submission, in BOTH modes, so a regression in any of those
+        gates trips the replay regardless of which mode was used."""
+
+        from ..sessions.submission_pipeline import (
+            EmptySubmissionError,
+            prepare_and_submit_player_response,
+        )
 
         sid = self._must_session_id()
         for step in turn.submissions:
@@ -326,10 +336,30 @@ class ScenarioRunner:
             session = await self._manager.get_session(sid)
             if session.state == SessionState.ENDED:
                 return
-            advanced = await self._manager.submit_response(
-                session_id=sid, role_id=role_id, content=step.content
-            )
-            if not advanced:
+            try:
+                outcome = await prepare_and_submit_player_response(
+                    manager=self._manager,
+                    session_id=sid,
+                    role_id=role_id,
+                    content=step.content,
+                )
+            except EmptySubmissionError:
+                self._log(
+                    f"replay step skipped (empty content) — role={step.role_label}"
+                )
+                continue
+            if outcome.truncated:
+                self._log(
+                    f"replay submission truncated — role={step.role_label} "
+                    f"original_len={outcome.original_len}"
+                )
+            if outcome.blocked:
+                self._log(
+                    f"replay submission blocked by guardrail — "
+                    f"role={step.role_label} verdict={outcome.blocked_verdict}"
+                )
+                continue
+            if not outcome.advanced:
                 continue
             session = await self._manager.get_session(sid)
             if session.current_turn is not None:
@@ -399,6 +429,11 @@ class ScenarioRunner:
         messages, then the next turn opens).
         """
 
+        from ..sessions.submission_pipeline import (
+            EmptySubmissionError,
+            prepare_and_submit_player_response,
+        )
+
         sid = self._must_session_id()
         for step in turn.submissions:
             await self._pace_from_ts(step.ts, self._last_event_ts)
@@ -407,9 +442,38 @@ class ScenarioRunner:
             session = await self._manager.get_session(sid)
             if session.state == SessionState.ENDED:
                 return
-            await self._manager.submit_response(
-                session_id=sid, role_id=role_id, content=step.content
-            )
+            # Route through the same validation / truncation /
+            # guardrail pipeline the WS handler uses, so a regression
+            # in any of those gates trips the replay before
+            # production. Empty submissions in a recording mean the
+            # original session had a guardrail-blocked or empty
+            # message — log + skip rather than crash the replay.
+            try:
+                outcome = await prepare_and_submit_player_response(
+                    manager=self._manager,
+                    session_id=sid,
+                    role_id=role_id,
+                    content=step.content,
+                )
+            except EmptySubmissionError:
+                self._log(
+                    f"replay step skipped (empty content) — role={step.role_label}"
+                )
+                continue
+            if outcome.truncated:
+                self._log(
+                    f"replay submission truncated — role={step.role_label} "
+                    f"original_len={outcome.original_len}"
+                )
+            if outcome.blocked:
+                # Recorded-input guardrail block is unusual but
+                # possible if the guardrail was re-tuned between
+                # recording and replay. Don't suppress — surface so
+                # a regression in the guardrail trips loudly.
+                self._log(
+                    f"replay submission blocked by guardrail — "
+                    f"role={step.role_label} verdict={outcome.blocked_verdict}"
+                )
         await self._inject_ai_messages(turn.ai_messages)
         if next_turn is None:
             return

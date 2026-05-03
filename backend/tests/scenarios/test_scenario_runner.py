@@ -226,3 +226,59 @@ async def test_recorder_round_trip(
     # (the recorder may add an extra turn for the final AI broadcast,
     # depending on how the mock script ends; assert >= not ==).
     assert len(recorded.play_turns) >= len(scenario.play_turns)
+
+
+@pytest.mark.asyncio
+async def test_runner_routes_player_submissions_through_pipeline(
+    install_mock_for_roles, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A scripted submission whose content exceeds
+    ``max_participant_submission_chars`` MUST be truncated by the
+    runner's pipeline call — proving runner submissions go through
+    the same gates the WS handler does.
+
+    Boots its own app instance because ``Settings`` is captured at
+    ``SessionManager`` construction time; the shared ``client``
+    fixture's manager has the default 4000-char cap baked in and
+    can't be retro-monkey-patched.
+    """
+
+    from app.config import reset_settings_cache
+    from app.main import create_app
+    from tests.mock_anthropic import MockAnthropic
+
+    monkeypatch.setenv("MAX_PARTICIPANT_SUBMISSION_CHARS", "50")
+    reset_settings_cache()
+    app = create_app()
+    with TestClient(app) as test_client:
+        test_client.app.state.llm.set_transport(MockAnthropic({}).messages)
+        scenario = _basic_scenario()
+        # Replace the first scripted submission with a too-long body.
+        scenario.play_turns[0].submissions[0] = PlayStep(
+            role_label="creator",
+            content="X" * 200,
+        )
+        manager = test_client.app.state.manager
+        runner = ScenarioRunner(manager, scenario)
+        await runner.create_session()
+        role_ids = list(runner.role_label_to_id.values())
+        install_mock_for_roles(test_client, role_ids[:2])
+        await runner._skip_setup()
+        await runner.start_phase()
+        await runner.play_phase()
+        sid = runner.progress.session_id
+        assert sid is not None
+        session = await manager.get_session(sid)
+        # The scripted oversize body must have been truncated by the
+        # pipeline before it landed in the transcript.
+        creator_id = runner.role_label_to_id["creator"]
+        creator_messages = [
+            m for m in session.messages if m.role_id == creator_id
+        ]
+        assert creator_messages, "expected at least one creator message"
+        first = creator_messages[0]
+        assert "[message truncated by server]" in (first.body or ""), (
+            "runner must route submissions through the truncation gate "
+            "the WS handler enforces"
+        )
+        assert len(first.body or "") < 200
