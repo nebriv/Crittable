@@ -42,15 +42,7 @@ from app.llm.export import AARGenerator, _extract_report
 from app.llm.prompts import build_aar_system_blocks
 from app.llm.tools import AAR_TOOL
 from app.sessions.models import (
-    Message,
-    MessageKind,
-    Role,
-    ScenarioBeat,
-    ScenarioInject,
-    ScenarioPlan,
     Session,
-    SessionState,
-    SetupNote,
 )
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.live]
@@ -59,98 +51,8 @@ pytestmark = [pytest.mark.asyncio, pytest.mark.live]
 # ---------------------------------------------------------------- fixtures
 
 
-@pytest.fixture
-def aar_session() -> Session:
-    """A short but complete tabletop transcript with two roles, three
-    beats of dialogue and one critical inject. The AAR generator should
-    produce a structured report with per-role scores, gaps, and
-    recommendations grounded in the transcript."""
-
-    ciso = Role(id="role-ciso", label="CISO", display_name="Alex", is_creator=True)
-    soc = Role(id="role-soc", label="SOC Analyst", display_name="Bo")
-    plan = ScenarioPlan(
-        title="Ransomware via vendor portal",
-        executive_summary="03:14 Wednesday. Ransomware on finance laptops.",
-        key_objectives=[
-            "Confirm scope before containment",
-            "Decide regulator-notification clock",
-            "Stage Comms draft for legal review",
-        ],
-        narrative_arc=[
-            ScenarioBeat(beat=1, label="Detection & triage", expected_actors=["SOC"]),
-            ScenarioBeat(
-                beat=2, label="Containment & comms", expected_actors=["CISO", "SOC"]
-            ),
-        ],
-        injects=[
-            ScenarioInject(
-                trigger="after beat 1",
-                type="critical",
-                summary="Reporter calls about leaked Slack screenshot.",
-            ),
-        ],
-        guardrails=["stay in scope", "no real exploit code"],
-        success_criteria=["containment before beat 3", "regulator clock decided"],
-        out_of_scope=["live exploitation", "specific CVE PoCs"],
-    )
-    s = Session(
-        scenario_prompt="Ransomware via vendor portal",
-        state=SessionState.ENDED,
-        roles=[ciso, soc],
-        creator_role_id=ciso.id,
-        plan=plan,
-    )
-    s.setup_notes.append(
-        SetupNote(speaker="creator", topic="scope", content="Finance org, 50 people."),
-    )
-    s.messages.extend(
-        [
-            Message(
-                kind=MessageKind.AI_TEXT,
-                tool_name="broadcast",
-                body=(
-                    "**Beat 1 — Detection.** Defender just lit up on three "
-                    "finance laptops. **CISO** — first call: isolate or "
-                    "monitor for scope?"
-                ),
-            ),
-            Message(
-                kind=MessageKind.PLAYER,
-                role_id=ciso.id,
-                body="Isolate now. Pull IR Lead in. Start the regulator clock.",
-            ),
-            Message(
-                kind=MessageKind.AI_TEXT,
-                tool_name="broadcast",
-                body=(
-                    "Acknowledged — isolation in progress. **SOC** — what "
-                    "does the alert queue actually show?"
-                ),
-            ),
-            Message(
-                kind=MessageKind.PLAYER,
-                role_id=soc.id,
-                body=(
-                    "Three FIN-* hosts with Defender alert + lateral SMB "
-                    "attempts to FIN-08. Pulling Defender logs now."
-                ),
-            ),
-            Message(
-                kind=MessageKind.CRITICAL_INJECT,
-                tool_name="inject_critical_event",
-                body="Reporter calls about leaked Slack screenshot.",
-            ),
-            Message(
-                kind=MessageKind.PLAYER,
-                role_id=ciso.id,
-                body=(
-                    "No comment to press. Have Comms draft a holding "
-                    "statement with Legal."
-                ),
-            ),
-        ]
-    )
-    return s
+# ``aar_session`` lives in conftest.py so the LLM-as-judge AAR-quality
+# suite can reuse it without duplicating the fixture.
 
 
 @pytest.fixture
