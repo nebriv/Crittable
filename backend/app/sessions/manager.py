@@ -32,7 +32,8 @@ from .models import (
 from .repository import SessionRepository
 from .turn_engine import (
     IllegalTransitionError,
-    all_submitted,
+    SubmissionIntent,
+    all_ready,
     assert_plan_edit_field,
     assert_transition,
     can_submit,
@@ -107,6 +108,43 @@ class SessionManager:
                 lock = asyncio.Lock()
                 self._locks[session_id] = lock
             return lock
+
+    def _enforce_submission_cap(
+        self, session: Session, *, turn_id: str, role_id: str, turn_index: int
+    ) -> None:
+        """Wave 1 (issue #134) security review H2: per-role per-turn
+        submission cap. Counts how many non-interjection PLAYER
+        messages this role already has on the given turn and rejects
+        the new one if the cap is met. Shared across
+        ``submit_response``, ``proxy_submit_as``, and the per-role
+        loop in ``proxy_submit_pending`` so the operator escape
+        hatches can't bypass the flood backstop. Caller must hold
+        the per-session lock.
+        """
+
+        role_msg_count = sum(
+            1
+            for m in session.messages
+            if m.turn_id == turn_id
+            and m.role_id == role_id
+            and m.kind == MessageKind.PLAYER
+            and not m.is_interjection
+        )
+        cap = self._settings.max_submissions_per_role_per_turn
+        if role_msg_count >= cap:
+            _logger.warning(
+                "submission_rate_exceeded",
+                session_id=session.id,
+                role_id=role_id,
+                turn_index=turn_index,
+                count=role_msg_count,
+                cap=cap,
+            )
+            raise IllegalTransitionError(
+                f"too many submissions on this turn "
+                f"({role_msg_count}/{cap}); wait for the AI to "
+                "advance or ask the creator to force-advance."
+            )
 
     def _emit(self, kind: str, session: Session, **payload: Any) -> None:
         evt = AuditEvent(
@@ -276,6 +314,23 @@ class SessionManager:
                 )
             if revoke_previous:
                 role.token_version += 1
+                # Wave 1 (issue #134) security review H1: scrub the kicked
+                # role from the active turn's ready/submitted lists. The
+                # WS gets force-closed below, but a stale ``ready`` entry
+                # would still trip the ready-quorum predicate after the
+                # role's effective absence shrinks the active set. Same
+                # treatment as ``remove_role``.
+                if session.current_turn is not None:
+                    session.current_turn.ready_role_ids = [
+                        r
+                        for r in session.current_turn.ready_role_ids
+                        if r != role_id
+                    ]
+                    session.current_turn.submitted_role_ids = [
+                        r
+                        for r in session.current_turn.submitted_role_ids
+                        if r != role_id
+                    ]
                 await self._repo.save(session)
             kind = "creator" if role.is_creator else (
                 "player" if role.kind == "player" else "spectator"
@@ -390,6 +445,21 @@ class SessionManager:
                 # on a kicked player.
                 session.current_turn.active_role_ids = [
                     r for r in session.current_turn.active_role_ids if r != role_id
+                ]
+            if session.current_turn:
+                # Wave 1 (issue #134) security review H1: scrub the kicked
+                # role from ``ready_role_ids`` and ``submitted_role_ids``
+                # too. Otherwise (a) a stale ``ready`` entry can flip the
+                # ready-quorum predicate after the active set shrinks,
+                # auto-advancing a turn the team didn't ask for, and
+                # (b) the snapshot leaks a role_id that no longer
+                # appears in ``roles`` — a side-channel that didn't
+                # exist before this PR.
+                session.current_turn.ready_role_ids = [
+                    r for r in session.current_turn.ready_role_ids if r != role_id
+                ]
+                session.current_turn.submitted_role_ids = [
+                    r for r in session.current_turn.submitted_role_ids if r != role_id
                 ]
             session.roles = [r for r in session.roles if r.id != role_id]
             await self._repo.save(session)
@@ -585,19 +655,31 @@ class SessionManager:
         session_id: str,
         role_id: str,
         content: str,
+        intent: SubmissionIntent = "ready",
         expected_token_version: int | None = None,
     ) -> bool:
         """Record a player's submission. Returns True if the turn is now complete.
 
-        Issue #78: a participant may post a message at any time while the
-        session is ``AWAITING_PLAYERS``, even when the engine isn't
-        explicitly waiting on them. If the role *is* in the current
-        turn's active set and hasn't yet submitted, the post counts as
-        their turn submission and may advance the turn. Otherwise the
-        post is recorded as an out-of-turn interjection — appended to
-        the transcript so the AI sees it on the next turn (and so the
-        WS layer can fire ``run_interject`` for question-style content),
-        but with no effect on ``submitted_role_ids`` or session state.
+        Issue #78 + Wave 1 (issue #134): a participant may post a message
+        at any time while the session is ``AWAITING_PLAYERS``. If the
+        role *is* in the current turn's active set, every post counts
+        as a turn submission (Wave 1 dropped the one-and-done cap — a
+        player can submit multiple messages on the same turn before
+        signalling ready). Non-active roles' posts are recorded as
+        out-of-turn interjections — appended to the transcript so the
+        AI sees them on the next turn (and so the WS layer can fire
+        ``run_interject`` for question-style content), but with no
+        effect on ``submitted_role_ids`` / ``ready_role_ids`` /
+        session state.
+
+        ``intent`` controls the ready-quorum gate.
+        ``"ready"`` adds the role to ``turn.ready_role_ids``;
+        ``"discuss"`` removes them if previously ready. The state-flip
+        predicate now reads ``all_ready(turn)`` rather than
+        ``all_submitted(turn)``, so the AI only advances once every
+        active role has explicitly signalled ready (or the creator
+        force-advances). Out-of-turn interjections never touch the
+        ready quorum (they don't touch ``submitted_role_ids`` either).
         """
 
         async with await self._lock_for(session_id):
@@ -631,6 +713,19 @@ class SessionManager:
             if turn is None:
                 raise IllegalTransitionError("no current turn")
             is_turn_submission = can_submit(turn, role_id)
+            # Wave 1 (issue #134) security review H2: per-role per-turn
+            # cap, checked BEFORE ``session.messages.append`` so a
+            # rejected submission never lands in the transcript.
+            # Interjections are exempt (they don't count toward the
+            # ready quorum and are gated by the active-set check
+            # upstream, not the cap).
+            if is_turn_submission:
+                self._enforce_submission_cap(
+                    session,
+                    turn_id=turn.id,
+                    role_id=role_id,
+                    turn_index=turn.index,
+                )
             self._enforce_dedupe_window(session, role_id=role_id, content=content)
             session.messages.append(
                 Message(
@@ -639,31 +734,73 @@ class SessionManager:
                     body=content,
                     turn_id=turn.id,
                     is_interjection=not is_turn_submission,
+                    # Only record intent on actual turn submissions —
+                    # interjections (out-of-turn) don't participate in
+                    # the ready-quorum gate, so leaving it None
+                    # signals "not a ready/discuss decision" to the
+                    # recorder + any audit consumer.
+                    intent=intent if is_turn_submission else None,
                 )
             )
+            walked_back = False
             if is_turn_submission:
-                turn.submitted_role_ids.append(role_id)
-                ready_to_advance = all_submitted(turn)
+                if role_id not in turn.submitted_role_ids:
+                    turn.submitted_role_ids.append(role_id)
+                # Update the per-role ready signal based on this
+                # submission's intent. ``"ready"`` is sticky once set
+                # within a turn; ``"discuss"`` walks it back so a
+                # player who marked ready prematurely can re-open
+                # discussion by sending a new message with discuss
+                # intent. Wave 1 (issue #134) security review H3:
+                # walk-backs get a dedicated audit kind so the
+                # creator's activity panel can spot a griefer
+                # re-flipping ready after every peer signals.
+                if intent == "ready":
+                    if role_id not in turn.ready_role_ids:
+                        turn.ready_role_ids.append(role_id)
+                else:
+                    if role_id in turn.ready_role_ids:
+                        turn.ready_role_ids.remove(role_id)
+                        walked_back = True
+                ready_to_advance = all_ready(turn)
                 if ready_to_advance:
                     turn.status = "processing"
                     session.state = SessionState.AI_PROCESSING
             else:
                 # Out-of-turn interjection: the message is in the
                 # transcript so the AI sees it next turn, but the role
-                # is not added to ``submitted_role_ids`` and the turn
-                # cannot advance off the back of it.
+                # is not added to ``submitted_role_ids`` (or
+                # ``ready_role_ids``) and the turn cannot advance off
+                # the back of it.
                 ready_to_advance = False
             active_snapshot = list(turn.active_role_ids)
+            ready_snapshot = list(turn.ready_role_ids)
+            submitted_snapshot = list(turn.submitted_role_ids)
             await self._repo.save(session)
         self._emit(
             "response_submitted" if is_turn_submission else "interjection_submitted",
             session,
             role_id=role_id,
             content_preview=content[:120],
+            intent=intent if is_turn_submission else None,
             ready_to_advance=ready_to_advance,
             interjection=not is_turn_submission,
             active_role_ids=active_snapshot,
+            ready_role_ids=ready_snapshot,
+            submitted_role_ids=submitted_snapshot,
         )
+        if walked_back:
+            # Wave 1 (issue #134) security review H3: dedicated audit
+            # kind so the creator's /activity panel surfaces "X
+            # walked back ready N times" — a griefing detection
+            # signal the generic ``response_submitted`` line buries.
+            self._emit(
+                "ready_walk_back",
+                session,
+                role_id=role_id,
+                ready_role_ids=ready_snapshot,
+                active_role_ids=active_snapshot,
+            )
         await self._connections.broadcast(
             session.id,
             {
@@ -672,6 +809,13 @@ class SessionManager:
                 "kind": "player",
                 "body": content,
                 "is_interjection": not is_turn_submission,
+                # Wave 1 (issue #134) QA review H3: surface intent on
+                # the per-message broadcast so connected clients can
+                # render a "discussing" affordance on the message
+                # bubble without re-fetching the snapshot for
+                # ready_role_ids. ``None`` for interjections (intent
+                # doesn't apply to out-of-turn posts).
+                "intent": intent if is_turn_submission else None,
             },
         )
         if ready_to_advance:
@@ -766,7 +910,13 @@ class SessionManager:
         await self._broadcast_state(session)
 
     async def proxy_submit_as(
-        self, *, session_id: str, by_role_id: str, as_role_id: str, content: str
+        self,
+        *,
+        session_id: str,
+        by_role_id: str,
+        as_role_id: str,
+        content: str,
+        intent: SubmissionIntent = "ready",
     ) -> bool:
         """Solo-test impersonation: submit ``content`` on behalf of
         ``as_role_id`` (creator-only at the route layer). Returns True if
@@ -808,6 +958,18 @@ class SessionManager:
                     f"role {as_role_id!r} is not a player role; cannot proxy-submit"
                 )
             is_turn_submission = can_submit(turn, as_role_id)
+            # Wave 1 (issue #134) security review (Copilot follow-up):
+            # mirror the ``submit_response`` per-role cap so the
+            # solo-test escape hatch can't bypass the flood backstop.
+            # Pre-fix the cap only ran on the WS path; a creator
+            # could repeatedly proxy-submit to grief the transcript.
+            if is_turn_submission:
+                self._enforce_submission_cap(
+                    session,
+                    turn_id=turn.id,
+                    role_id=as_role_id,
+                    turn_index=turn.index,
+                )
             # Apply the same dedupe scan ``submit_response`` runs.
             # Pre-issue-#78 the proxy path skipped this guard; once
             # proxy_submit_as became the documented out-of-turn
@@ -823,22 +985,35 @@ class SessionManager:
                     body=content,
                     turn_id=turn.id,
                     is_interjection=not is_turn_submission,
+                    intent=intent if is_turn_submission else None,
                 )
             )
             if is_turn_submission:
-                turn.submitted_role_ids.append(as_role_id)
-                ready_to_advance = all_submitted(turn)
-                # Mirror submit_response: when this fills the last seat we
-                # MUST flip state to AI_PROCESSING so the route knows to
-                # drive the next AI turn. Pre-fix the proxy path left the
-                # session stuck in AWAITING_PLAYERS even though every active
-                # role had submitted.
+                if as_role_id not in turn.submitted_role_ids:
+                    turn.submitted_role_ids.append(as_role_id)
+                # Wave 1 (issue #134): mirror ``submit_response``'s ready
+                # quorum logic so the proxy path advances on the same
+                # gate as the real player path.
+                if intent == "ready":
+                    if as_role_id not in turn.ready_role_ids:
+                        turn.ready_role_ids.append(as_role_id)
+                else:
+                    if as_role_id in turn.ready_role_ids:
+                        turn.ready_role_ids.remove(as_role_id)
+                ready_to_advance = all_ready(turn)
+                # Mirror submit_response: when the ready quorum is met
+                # we MUST flip state to AI_PROCESSING so the route
+                # knows to drive the next AI turn. Pre-fix the proxy
+                # path left the session stuck in AWAITING_PLAYERS even
+                # though every active role was ready.
                 if ready_to_advance:
                     turn.status = "processing"
                     session.state = SessionState.AI_PROCESSING
             else:
                 ready_to_advance = False
             active_snapshot = list(turn.active_role_ids)
+            ready_snapshot = list(turn.ready_role_ids)
+            submitted_snapshot = list(turn.submitted_role_ids)
             await self._repo.save(session)
         await self.connections().broadcast(
             session_id,
@@ -848,6 +1023,7 @@ class SessionManager:
                 "kind": "player",
                 "body": content,
                 "is_interjection": not is_turn_submission,
+                "intent": intent if is_turn_submission else None,
             },
         )
         self._emit(
@@ -856,8 +1032,15 @@ class SessionManager:
             by=by_role_id,
             as_role=as_role_id,
             content_preview=content[:120],
+            # Wave 1 (issue #134) QA review H4: mirror the audit
+            # payload from ``submit_response`` so an operator
+            # bisecting "the proxy advanced / didn't advance" sees
+            # the same fields whichever path produced the message.
+            intent=intent if is_turn_submission else None,
             interjection=not is_turn_submission,
             active_role_ids=active_snapshot,
+            ready_role_ids=ready_snapshot,
+            submitted_role_ids=submitted_snapshot,
         )
         if ready_to_advance:
             await self._broadcast_state(session)
@@ -889,17 +1072,44 @@ class SessionManager:
                 if rid != by_role_id and rid not in turn.submitted_role_ids
             ]
             for rid in pending:
+                # Wave 1 (issue #134) security review (Copilot follow-up):
+                # mirror the per-role cap on the bulk-fill path too.
+                # ``proxy_submit_pending`` only fires once for any
+                # given role per call (the ``pending`` list filters on
+                # ``not in turn.submitted_role_ids``), so under normal
+                # use the cap is moot — but a script repeatedly hitting
+                # this endpoint after a force-advance reset could
+                # otherwise sneak past the backstop. The cap applies
+                # uniformly across all three submission paths.
+                self._enforce_submission_cap(
+                    session,
+                    turn_id=turn.id,
+                    role_id=rid,
+                    turn_index=turn.index,
+                )
                 turn.submitted_role_ids.append(rid)
+                # proxy_submit_pending is the creator's "advance now,
+                # fill in stub responses for everyone else" escape
+                # hatch. Auto-mark each filled seat as ready so the
+                # ready-quorum gate flips and the turn actually
+                # advances — leaving them in ``submitted_role_ids``
+                # only would block forever.
+                if rid not in turn.ready_role_ids:
+                    turn.ready_role_ids.append(rid)
                 session.messages.append(
                     Message(
                         kind=MessageKind.PLAYER,
                         role_id=rid,
                         body=content,
                         turn_id=turn.id,
+                        intent="ready",
                     )
                 )
                 filled.append(rid)
-            ready_to_advance = all_submitted(turn)
+            ready_to_advance = all_ready(turn)
+            if ready_to_advance:
+                turn.status = "processing"
+                session.state = SessionState.AI_PROCESSING
             await self._repo.save(session)
         for rid in filled:
             await self.connections().broadcast(
@@ -909,9 +1119,23 @@ class SessionManager:
                     "role_id": rid,
                     "kind": "player",
                     "body": content,
+                    # Wave 1 (issue #134): proxy_submit_pending writes
+                    # ``intent="ready"`` for every filled seat (that's
+                    # the whole point of the helper — auto-advance the
+                    # turn).
+                    "intent": "ready",
                 },
             )
-        self._emit("proxy_submit", session, by=by_role_id, filled=filled)
+        self._emit(
+            "proxy_submit",
+            session,
+            by=by_role_id,
+            filled=filled,
+            # Wave 1 (issue #134) Security review M2: record that the
+            # auto-fill explicitly chose "ready" intent so a forensic
+            # reviewer can distinguish operator-chose vs system-chose.
+            intent="ready",
+        )
         if ready_to_advance:
             await self._broadcast_state(session)
         return len(filled)

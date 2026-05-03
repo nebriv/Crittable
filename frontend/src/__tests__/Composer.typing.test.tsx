@@ -234,7 +234,9 @@ describe("Composer typing indicator (issue #77, heartbeat mode)", () => {
       vi.advanceTimersByTime(START_DELAY_MS + 50);
     });
     fireEvent.keyDown(textarea, { key: "Enter" });
-    expect(onSubmit).toHaveBeenCalledWith("answer", undefined);
+    // Wave 1 (issue #134): submit now carries an explicit intent
+    // ("ready" / "discuss"). Enter maps to "ready".
+    expect(onSubmit).toHaveBeenCalledWith("answer", "ready", undefined);
     expect(onTypingChange).toHaveBeenLastCalledWith(false);
     // QA review MEDIUM: post-submit re-typing fires start again.
     fireEvent.change(textarea, { target: { value: "n" } });

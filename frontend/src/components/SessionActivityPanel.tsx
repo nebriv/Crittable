@@ -164,12 +164,17 @@ export function SessionActivityPanel({
           </p>
           {data.turn?.waiting_on_role_ids?.length ? (
             <p className="text-xs text-warn">
-              Waiting on:{" "}
+              {/* Wave 1 (issue #134): waiting_on_role_ids is now
+                  derived from ready_role_ids, not submitted_role_ids
+                  — i.e. "not yet ready", which can include roles who
+                  have spoken but haven't signalled ready yet. The
+                  copy reflects that. */}
+              Waiting on (not yet ready):{" "}
               {data.turn.waiting_on_role_ids.map(roleLabel).join(", ")}
             </p>
           ) : data.turn?.active_role_ids?.length ? (
             <p className="text-xs text-signal">
-              All active roles have submitted.
+              All active roles have signalled ready.
             </p>
           ) : null}
           {data.turn?.error_reason ? (

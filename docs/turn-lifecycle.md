@@ -117,6 +117,20 @@ valid output?"). Phase policy never imports the validator and vice-versa.
 
 ## 1. Entry points
 
+> **Wave 1 (issue #134) — per-submission intent + ready-quorum gate.** The
+> ``AWAITING_PLAYERS → AI_PROCESSING`` flip no longer happens when every
+> active role has *submitted at least once*; it now happens when every
+> active role has signalled ``intent="ready"`` on a recent submission
+> (or the creator force-advances). A submission with ``intent="discuss"``
+> contributes to the transcript and adds the role to ``submitted_role_ids``
+> but does **not** trip the gate; a follow-up ``intent="ready"`` adds the
+> role to ``Turn.ready_role_ids``, and a follow-up ``intent="discuss"``
+> walks them back. ``can_submit`` now allows multiple submissions per
+> active role on an awaiting turn (drops the one-and-done cap) — every
+> such submission is a turn submission, not an interjection. The wire
+> field is REQUIRED on the WS ``submit_response`` payload; the handler
+> rejects payloads without ``intent`` rather than coercing to a default.
+
 Five paths can fire a play turn. Knowing which path you're on determines which
 contract gets picked and which guard rails apply.
 
@@ -192,10 +206,73 @@ The pipeline does, in order:
    blocks. `outcome.blocked=True`, `submit_response` is NOT called, and
    the message never lands in the transcript. The WS handler emits a
    `guardrail_blocked` info frame; the runner just logs.
-4. **`manager.submit_response`** → records the message, mutates
-   `submitted_role_ids` if the role is active, flips state to
-   `AI_PROCESSING` when the last active role submits. The dedupe window
-   lives inside `submit_response` itself, so both call sites inherit it.
+4. **`manager.submit_response`** → records the message with its
+   `intent`, mutates `submitted_role_ids` if the role is active,
+   updates `ready_role_ids` based on intent (Wave 1 — see § 1c
+   below), flips state to `AI_PROCESSING` when the ready-quorum gate
+   closes. The dedupe window lives inside `submit_response` itself,
+   so both call sites inherit it.
+
+### 1c. Per-submission intent + ready-quorum gate (Wave 1, issue #134)
+
+Wave 1 (PR #148) replaced the implicit *"AI advances when every
+active role has submitted at least once"* predicate with an explicit
+per-submission **intent** signal. Every WS `submit_response` payload
+must carry `intent: "ready" | "discuss"`; the handler rejects missing
+or malformed values with a `submit_response` error frame (no silent
+default — see CLAUDE.md "no backwards compat").
+
+| Intent | Effect on `Turn.ready_role_ids` | Effect on `Turn.submitted_role_ids` |
+|---|---|---|
+| `"ready"` | Role added (if not already) | Role added (if not already) |
+| `"discuss"` | Role removed (if present) — walks back ready | Role added (if not already) |
+
+The state-flip predicate moves from `all_submitted(turn)` to
+`all_ready(turn)` — i.e. `set(active_role_ids) ⊆ set(ready_role_ids)`.
+Force-advance still bypasses this check (operator escape hatch
+preserved).
+
+**`can_submit` widened.** Active roles can now post **any number of
+submissions on an awaiting turn** before signalling ready. Pre-Wave-1
+the second message from an active role was treated as an
+out-of-turn interjection; under the ready-quorum model every
+submission from an active role on an awaiting turn is a turn
+submission. Out-of-turn behavior (issue #78) is preserved — a
+non-active role's message still lands as an interjection regardless
+of intent (which is recorded as `None` on the resulting `Message`).
+
+**Briefing turn unaffected.** The opening turn fires from `/start` →
+`start_session`, which never calls `submit_response`. Briefing
+plays through `run_play_turn` against an empty active-set turn the
+runner pre-creates; only post-briefing `AWAITING_PLAYERS` turns gate
+on the ready quorum.
+
+**Recorder + replay.** `Message.intent` is recorded on every player
+turn submission; the `SessionRecorder` round-trips it onto
+`PlayStep.intent` (default `"ready"` for legacy / pre-Wave-1
+recordings). The `ScenarioRunner` threads `intent` through
+`prepare_and_submit_player_response` in both engine and deterministic
+modes.
+
+**Audit trail.** `response_submitted` / `interjection_submitted` /
+`proxy_submit_as` audit lines all carry `intent`, `ready_role_ids`,
+and `submitted_role_ids` snapshots. The `message_complete` WS
+broadcast also includes `intent` so connected clients can render a
+"discussing" affordance per-message without re-fetching the
+snapshot. A walk-back from ready emits a dedicated
+`ready_walk_back` audit line (operator-visible signal for griefing
+detection).
+
+**Frontend wiring.** `Composer.tsx` exposes a two-button submit
+("SUBMIT & READY →" primary / "STILL DISCUSSING →" secondary,
+relabelling to "UNREADY ↺" when the player is currently ready).
+`Enter` maps to `ready`; `Ctrl/Cmd+Enter` maps to `discuss` so
+keyboard-only operators can pick the discussion path. Out-of-turn /
+proxy-off-turn composers hide the secondary button (intent doesn't
+apply when the message lands as an interjection). The `WaitingChip`
+HUD reads from `current_turn.ready_role_ids` and shows
+"Waiting on X to mark ready (N of M ready)" with a "discussing"
+annotation for roles who have spoken but not yet readied.
 
 What's deliberately **NOT** in the pipeline:
 

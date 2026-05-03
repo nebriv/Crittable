@@ -256,6 +256,18 @@ class Settings(BaseSettings):
     max_participant_submission_chars: int = Field(
         default=4000, alias="MAX_PARTICIPANT_SUBMISSION_CHARS", ge=1
     )
+    # Wave 1 (issue #134) security review H2: cap how many submissions a
+    # single role can post on a single turn. ``can_submit`` was relaxed to
+    # support discussion follow-ups (multiple discuss-intent messages
+    # before signalling ready), which removed the implicit one-and-done
+    # backstop. This cap is the new ceiling — defense against a buggy
+    # client looping ``submit_response`` or a griefing player flooding
+    # the transcript. The existing 30-second body-dedupe still applies
+    # for exact-content repeats; this cap covers the
+    # "appended-counter-bypass" case the dedupe doesn't.
+    max_submissions_per_role_per_turn: int = Field(
+        default=20, alias="MAX_SUBMISSIONS_PER_ROLE_PER_TURN", ge=1
+    )
 
     # ---- Session limits -----------------------------------------------
     max_sessions: int = Field(default=10, alias="MAX_SESSIONS", ge=1)

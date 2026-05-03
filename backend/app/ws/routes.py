@@ -703,12 +703,31 @@ async def _client_pump(
                 )
 
                 content = str(payload.get("content", ""))
+                # Wave 1 (issue #134): per-submission intent gates the
+                # ready-quorum advance. Composer always sends one of
+                # ``ready`` / ``discuss``; the handler rejects anything
+                # else so a stale-client mismatch surfaces as a clean
+                # error frame rather than silently coercing to a wrong
+                # default.
+                intent_raw = payload.get("intent")
+                if intent_raw not in ("ready", "discuss"):
+                    await websocket.send_json(
+                        {
+                            "type": "error",
+                            "scope": "submit_response",
+                            "message": (
+                                "intent must be 'ready' or 'discuss'"
+                            ),
+                        }
+                    )
+                    continue
                 try:
                     outcome = await prepare_and_submit_player_response(
                         manager=manager,
                         session_id=session_id,
                         role_id=role_id,
                         content=content,
+                        intent=intent_raw,
                         expected_token_version=token_version,
                     )
                 except EmptySubmissionError:

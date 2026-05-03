@@ -1,6 +1,12 @@
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, SessionSnapshot } from "../api/client";
 import { Composer } from "../components/Composer";
+// Wave 1 (issue #134): the creator's WaitingChip is the canonical
+// "N of M ready" component. Player view also surfaces it so a first-
+// time player gets the same readiness signal the creator does — without
+// it, players don't know whether to keep discussing or wait for the AI
+// (Product review HIGH).
+import { WaitingChip } from "./Facilitator";
 import { CriticalEventBanner } from "../components/CriticalEventBanner";
 import { HighlightActionPopover } from "../components/HighlightActionPopover";
 import { RightSidebar } from "../components/RightSidebar";
@@ -403,14 +409,21 @@ export function Play({ sessionId, token }: Props) {
     }
   }
 
-  function handleSubmit(text: string) {
+  function handleSubmit(text: string, intent: "ready" | "discuss") {
     setError(null);
     // Pin the chat to the bottom on the next render so the player sees
     // their own message commit, even if they happened to be reading
     // earlier content. Mirrors what every chat client does on send.
     forceScrollToBottom();
     try {
-      wsRef.current?.send({ type: "submit_response", content: text });
+      wsRef.current?.send({
+        type: "submit_response",
+        content: text,
+        // Wave 1 (issue #134): per-submission intent gates the
+        // ready-quorum advance. The Composer always sets this; never
+        // omit on the wire — the backend rejects payloads without it.
+        intent,
+      });
       // Issue #78: confirm out-of-turn submits inline so the user
       // doesn't think "did it post? did the AI hear me?" while waiting
       // on the active roles. ``isMyTurn`` is computed from the snapshot
@@ -856,13 +869,24 @@ export function Play({ sessionId, token }: Props) {
   })();
   const activeRoleIds = snapshot.current_turn?.active_role_ids ?? [];
   const submittedRoleIds = snapshot.current_turn?.submitted_role_ids ?? [];
+  // Wave 1 (issue #134): per-role ready signal. The composer surfaces
+  // whether the local participant is currently marked ready; the HUD
+  // counts "N of M ready" off this list (distinct from
+  // ``submittedRoleIds`` which counts every message a role has spoken
+  // on the turn — including discussion contributions that don't yet
+  // flip the AI to advance).
+  const readyRoleIds = snapshot.current_turn?.ready_role_ids ?? [];
   const iAmActive = selfRoleId !== null && activeRoleIds.includes(selfRoleId);
   const iHaveSubmitted = selfRoleId !== null && submittedRoleIds.includes(selfRoleId);
-  // "My turn" = the engine is waiting on me right now. Pre-fix this only
-  // checked the active set, so after a player submitted the green
-  // "Your turn" banner stayed pinned at the top until the AI replied —
-  // making it look like the submission hadn't gone through.
-  const isMyTurn = iAmActive && !iHaveSubmitted;
+  const iAmReady = selfRoleId !== null && readyRoleIds.includes(selfRoleId);
+  // "My turn" = the engine is waiting on me to signal ready. Wave 1
+  // changes this from "I haven't submitted" to "I haven't yet signalled
+  // ready" so the composer stays available for follow-up discussion
+  // submissions even after a first message lands. The composer's
+  // primary button still flips to "Walk back ready" via the
+  // ``isCurrentlyReady`` prop when ``iAmReady`` is true, so a player
+  // who marked ready prematurely can re-open discussion.
+  const isMyTurn = iAmActive && !iAmReady;
   const myRole = snapshot.roles.find((r) => r.id === selfRoleId);
   // Fail closed: an undefined ``myRole`` (token's role_id missing from
   // snapshot.roles, e.g. mid-rehydrate) must NOT light up the composer.
@@ -874,8 +898,13 @@ export function Play({ sessionId, token }: Props) {
   // everyone — backend now rejects that path too, but the button
   // shouldn't even render for non-creators.
   const isSelfCreator = myRole?.is_creator ?? false;
+  // Wave 1: "still pending" now means "not yet ready" rather than
+  // "not yet submitted". A teammate who's posting discussion messages
+  // is still pending from the AI's perspective (the turn won't advance
+  // until they signal ready); reading off ``readyRoleIds`` keeps the
+  // wait copy in lock-step with the actual gate.
   const otherPending = activeRoleIds
-    .filter((id) => id !== selfRoleId && !submittedRoleIds.includes(id))
+    .filter((id) => id !== selfRoleId && !readyRoleIds.includes(id))
     .map((id) => snapshot.roles.find((r) => r.id === id)?.label ?? id);
   // Issue #78: composer is enabled for any participant whenever the
   // session is ``AWAITING_PLAYERS`` so out-of-turn comments / follow-
@@ -1162,6 +1191,18 @@ export function Play({ sessionId, token }: Props) {
                 ⚠ Awaiting your response — {myRole?.label ?? "you"}
               </div>
             ) : null}
+            {/* Wave 1 (issue #134): readiness chip for players. Renders
+                the same "N of M ready" the creator sees so a first-time
+                player can tell the team is still mid-discussion vs the
+                AI is about to fire. Hidden when the session ended. */}
+            {snapshot.state === "AWAITING_PLAYERS" ? (
+              <WaitingChip
+                activeRoleIds={activeRoleIds}
+                submittedRoleIds={submittedRoleIds}
+                readyRoleIds={readyRoleIds}
+                roles={snapshot.roles}
+              />
+            ) : null}
             <Composer
               enabled={composerEnabled}
               label={composerLabel}
@@ -1169,6 +1210,13 @@ export function Play({ sessionId, token }: Props) {
               onSubmit={handleSubmit}
               onTypingChange={handleTypingChange}
               submitErrorEpoch={submitErrorEpoch}
+              isCurrentlyReady={iAmReady}
+              // Wave 1: out-of-turn / interjection submissions don't
+              // participate in the ready quorum (the backend records
+              // them with ``intent=None`` and they never touch
+              // ``ready_role_ids``). Hide the discuss button so the
+              // affordance only shows where it's load-bearing.
+              hideDiscussButton={!iAmActive}
             />
             {notice ? (
               <p

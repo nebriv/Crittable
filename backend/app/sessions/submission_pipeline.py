@@ -35,6 +35,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from ..logging_setup import get_logger
+from .turn_engine import SubmissionIntent
 
 if TYPE_CHECKING:
     from .manager import SessionManager
@@ -81,6 +82,7 @@ async def prepare_and_submit_player_response(
     session_id: str,
     role_id: str,
     content: str,
+    intent: SubmissionIntent = "ready",
     expected_token_version: int | None = None,
 ) -> SubmissionOutcome:
     """Validate, truncate, classify, and submit one player response.
@@ -89,6 +91,14 @@ async def prepare_and_submit_player_response(
     runner-driven submission goes through the same code path a real
     browser-tab submission would. See module docstring for what's
     NOT included.
+
+    ``intent`` (Wave 1, issue #134): "ready" signals the player is done
+    talking and the AI may advance once every active role has signalled
+    ready; "discuss" leaves the player in the turn so the team can
+    keep talking. Defaults to "ready" so legacy callers (test fixtures,
+    pre-Wave-1 scenarios) get the historical "submit-and-advance"
+    behaviour. The WS handler must always pass an explicit value
+    parsed from the wire payload.
     """
 
     if not content.strip():
@@ -134,6 +144,7 @@ async def prepare_and_submit_player_response(
         session_id=session_id,
         role_id=role_id,
         content=content,
+        intent=intent,
         expected_token_version=expected_token_version,
     )
     return SubmissionOutcome(

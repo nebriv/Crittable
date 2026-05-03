@@ -20,62 +20,84 @@ const ROSTER = [
   role("r-ir", "IR Lead", "Pat"),
 ];
 
-describe("WaitingChip — issue #88 (slate tone, no Copy invite, actor-led copy)", () => {
-  it("renders nothing when no roles are pending", () => {
+describe("WaitingChip — issue #88 + Wave 1 (issue #134, ready-quorum)", () => {
+  it("renders nothing when every active role is ready", () => {
     const { container } = render(
       <WaitingChip
         activeRoleIds={["r-soc"]}
         submittedRoleIds={["r-soc"]}
+        readyRoleIds={["r-soc"]}
         roles={ROSTER}
       />,
     );
     expect(container.firstChild).toBeNull();
   });
 
-  it("1 pending → 'Waiting on X (display_name) to respond.'", () => {
+  it("1 pending → 'Waiting on X (display_name) to mark ready.'", () => {
     render(
       <WaitingChip
         activeRoleIds={["r-soc", "r-legal"]}
         submittedRoleIds={["r-legal"]}
+        readyRoleIds={["r-legal"]}
         roles={ROSTER}
       />,
     );
     expect(
-      screen.getByText(/Waiting on SOC Analyst \(Bridget\) to respond\./),
+      screen.getByText(/Waiting on SOC Analyst \(Bridget\) to mark ready\./),
     ).toBeInTheDocument();
-    expect(screen.getByText(/\(1 of 2\)/)).toBeInTheDocument();
+    expect(screen.getByText(/\(1 of 2 ready\)/)).toBeInTheDocument();
   });
 
-  it("2 pending → 'Waiting on A and B.'", () => {
+  it("2 pending → 'Waiting on A and B to mark ready.'", () => {
     render(
       <WaitingChip
         activeRoleIds={["r-soc", "r-legal"]}
         submittedRoleIds={[]}
+        readyRoleIds={[]}
         roles={ROSTER}
       />,
     );
     expect(
       screen.getByText(
-        /Waiting on SOC Analyst \(Bridget\) and Legal \(Marcus\)\./,
+        /Waiting on SOC Analyst \(Bridget\) and Legal \(Marcus\) to mark ready\./,
       ),
     ).toBeInTheDocument();
-    expect(screen.getByText(/\(2 of 2\)/)).toBeInTheDocument();
+    expect(screen.getByText(/\(0 of 2 ready\)/)).toBeInTheDocument();
   });
 
-  it("3+ pending → 'Waiting on A, B and N more.'", () => {
+  it("3+ pending → 'Waiting on A, B and N more to mark ready.'", () => {
     render(
       <WaitingChip
         activeRoleIds={["r-soc", "r-legal", "r-comms", "r-ir"]}
         submittedRoleIds={[]}
+        readyRoleIds={[]}
         roles={ROSTER}
       />,
     );
     expect(
       screen.getByText(
-        /Waiting on SOC Analyst \(Bridget\), Legal \(Marcus\) and 2 more\./,
+        /Waiting on SOC Analyst \(Bridget\), Legal \(Marcus\) and 2 more to mark ready\./,
       ),
     ).toBeInTheDocument();
-    expect(screen.getByText(/\(4 of 4\)/)).toBeInTheDocument();
+    expect(screen.getByText(/\(0 of 4 ready\)/)).toBeInTheDocument();
+  });
+
+  it("submitted-but-not-ready surfaces a 'discussing' suffix", () => {
+    render(
+      <WaitingChip
+        activeRoleIds={["r-soc", "r-legal"]}
+        submittedRoleIds={["r-soc"]}
+        readyRoleIds={[]}
+        roles={ROSTER}
+      />,
+    );
+    // SOC Analyst submitted (so a discussion message landed) but
+    // hasn't signalled ready — annotated "discussing".
+    expect(
+      screen.getByText(
+        /Waiting on SOC Analyst \(Bridget\) — discussing and Legal \(Marcus\) to mark ready\./,
+      ),
+    ).toBeInTheDocument();
   });
 
   it("does not render any Copy invite button (issue #88 — duplicative with Roles panel)", () => {
@@ -83,6 +105,7 @@ describe("WaitingChip — issue #88 (slate tone, no Copy invite, actor-led copy)
       <WaitingChip
         activeRoleIds={["r-soc", "r-legal"]}
         submittedRoleIds={[]}
+        readyRoleIds={[]}
         roles={ROSTER}
       />,
     );
@@ -95,25 +118,30 @@ describe("WaitingChip — issue #88 (slate tone, no Copy invite, actor-led copy)
       <WaitingChip
         activeRoleIds={["r-comms"]}
         submittedRoleIds={[]}
-        roles={ROSTER}
-      />,
-    );
-    expect(screen.getByText(/Waiting on Comms to respond\./)).toBeInTheDocument();
-    expect(screen.queryByText(/\(\)/)).toBeNull();
-  });
-
-  it("multi-pending mix: prints display_name where present, label-only otherwise, no empty parens", () => {
-    render(
-      <WaitingChip
-        activeRoleIds={["r-soc", "r-comms"]}
-        submittedRoleIds={[]}
+        readyRoleIds={[]}
         roles={ROSTER}
       />,
     );
     expect(
-      screen.getByText(/Waiting on SOC Analyst \(Bridget\) and Comms\./),
+      screen.getByText(/Waiting on Comms to mark ready\./),
     ).toBeInTheDocument();
-    // No "Comms ()" empty-parens artefact.
+    expect(screen.queryByText(/\(\)/)).toBeNull();
+  });
+
+  it("multi-pending mix: display_name where present, label-only otherwise, no empty parens", () => {
+    render(
+      <WaitingChip
+        activeRoleIds={["r-soc", "r-comms"]}
+        submittedRoleIds={[]}
+        readyRoleIds={[]}
+        roles={ROSTER}
+      />,
+    );
+    expect(
+      screen.getByText(
+        /Waiting on SOC Analyst \(Bridget\) and Comms to mark ready\./,
+      ),
+    ).toBeInTheDocument();
     expect(screen.queryByText(/Comms \(\)/)).toBeNull();
   });
 
@@ -122,6 +150,7 @@ describe("WaitingChip — issue #88 (slate tone, no Copy invite, actor-led copy)
       <WaitingChip
         activeRoleIds={["r-soc"]}
         submittedRoleIds={[]}
+        readyRoleIds={[]}
         roles={ROSTER}
       />,
     );

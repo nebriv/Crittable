@@ -124,7 +124,17 @@ export type ServerEvent =
   | { type: "error"; scope: string; message: string };
 
 export type ClientEvent =
-  | { type: "submit_response"; content: string }
+  | {
+      type: "submit_response";
+      content: string;
+      /**
+       * Wave 1 (issue #134): per-submission intent. ``"ready"``
+       * signals the player is done; ``"discuss"`` keeps the seat
+       * open for further team discussion. Required — the backend
+       * rejects payloads without it.
+       */
+      intent: "ready" | "discuss";
+    }
   | { type: "request_force_advance" }
   | { type: "request_end_session"; reason?: string }
   | { type: "typing_start" }
