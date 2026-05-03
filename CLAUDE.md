@@ -402,6 +402,11 @@ scenarios.
 
 ### Where to look
 
+- `backend/app/sessions/submission_pipeline.py` — single source of truth
+  for player-side input validation / truncation / guardrail. Both the
+  WS handler and the scenario runner go through it; **any new input-side
+  gate must land here**, not in either call site, or replays won't
+  exercise it. See `docs/turn-lifecycle.md` § 1a for the full contract.
 - `backend/app/devtools/scenario.py` — schema (Pydantic, JSON-serialisable).
 - `backend/app/devtools/runner.py` — driver. Two-mode dispatch.
 - `backend/app/devtools/recorder.py` — Session → Scenario.

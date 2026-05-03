@@ -90,6 +90,38 @@ Notes:
   dialogue, 5 roles, 6 play turns. ~$0.20 per run; exercises the
   multi-role active-set narrowing and per-role AAR scoring.
 
+## What replays actually exercise (and what they don't)
+
+Player submissions in a replay go through the same
+`app/sessions/submission_pipeline.py::prepare_and_submit_player_response`
+helper the WebSocket handler uses. So a replayed scenario exercises:
+
+- Empty-content rejection.
+- The `max_participant_submission_chars` length cap and the
+  `[message truncated by server]` marker.
+- The input-side prompt-injection guardrail (only `prompt_injection`
+  blocks; other verdicts pass through).
+- The dedupe window inside `manager.submit_response`.
+- The full state machine — `AWAITING_PLAYERS` → `AI_PROCESSING`
+  transitions, turn rolls, active-set narrowing.
+- All `connections.broadcast()` events that fan out to connected
+  WebSocket clients (the watching tab really does see live message
+  events; the replay isn't post-hoc rendering).
+
+What replays do **NOT** exercise:
+
+- WebSocket framing / origin check / token-version check at upgrade
+  time. The runner is in-process; there's no socket to authenticate.
+  Tests in `tests/test_e2e_session.py` cover that path.
+- `run_play_turn` / `run_interject` in `deterministic` mode (no LLM
+  is called — the recorded AI messages are injected verbatim via
+  `manager.append_recorded_message`).
+
+If you add a new input-side gate (validator, classifier, anything
+between "the user typed something" and "it lands in
+`session.messages`"), put it in the pipeline. Otherwise replays
+won't catch its regressions.
+
 ## Security gating
 
 The `/api/dev/scenarios/...` endpoints 404 unless
