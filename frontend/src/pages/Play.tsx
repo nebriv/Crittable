@@ -1,6 +1,12 @@
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, SessionSnapshot } from "../api/client";
 import { Composer } from "../components/Composer";
+// Wave 1 (issue #134): the creator's WaitingChip is the canonical
+// "N of M ready" component. Player view also surfaces it so a first-
+// time player gets the same readiness signal the creator does — without
+// it, players don't know whether to keep discussing or wait for the AI
+// (Product review HIGH).
+import { WaitingChip } from "./Facilitator";
 import { CriticalEventBanner } from "../components/CriticalEventBanner";
 import { HighlightActionPopover } from "../components/HighlightActionPopover";
 import { RightSidebar } from "../components/RightSidebar";
@@ -1184,6 +1190,18 @@ export function Play({ sessionId, token }: Props) {
               >
                 ⚠ Awaiting your response — {myRole?.label ?? "you"}
               </div>
+            ) : null}
+            {/* Wave 1 (issue #134): readiness chip for players. Renders
+                the same "N of M ready" the creator sees so a first-time
+                player can tell the team is still mid-discussion vs the
+                AI is about to fire. Hidden when the session ended. */}
+            {snapshot.state === "AWAITING_PLAYERS" ? (
+              <WaitingChip
+                activeRoleIds={activeRoleIds}
+                submittedRoleIds={submittedRoleIds}
+                readyRoleIds={readyRoleIds}
+                roles={snapshot.roles}
+              />
             ) : null}
             <Composer
               enabled={composerEnabled}

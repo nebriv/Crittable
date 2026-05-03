@@ -1820,10 +1820,10 @@ export function WaitingChip({
   if (labels.length === 1) {
     phrase = `Waiting on ${labels[0]} to mark ready.`;
   } else if (labels.length === 2) {
-    phrase = `Waiting on ${labels[0]} and ${labels[1]}.`;
+    phrase = `Waiting on ${labels[0]} and ${labels[1]} to mark ready.`;
   } else {
     const head = labels.slice(0, 2).join(", ");
-    phrase = `Waiting on ${head} and ${labels.length - 2} more.`;
+    phrase = `Waiting on ${head} and ${labels.length - 2} more to mark ready.`;
   }
   const readyCount = activeRoleIds.length - pending.length;
 

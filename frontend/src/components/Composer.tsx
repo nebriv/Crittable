@@ -302,6 +302,18 @@ export function Composer({
   }, [enabled]);
 
   const hasImpersonate = (impersonateOptions?.length ?? 0) > 0;
+  // Wave 1 (issue #134) UI/UX review HIGH: when the creator
+  // impersonates an off-turn role via the proxy dropdown, that
+  // role is not part of the ready quorum — hide the discuss button
+  // so the creator can't accidentally mark an off-turn role
+  // "discussing" (the backend would record ``intent=None`` for an
+  // interjection regardless, but the UI shouldn't offer a button
+  // that won't move any visible quorum).
+  const proxyOptionSelected = asRoleId
+    ? (impersonateOptions ?? []).find((o) => o.id === asRoleId)
+    : undefined;
+  const proxyIsOffTurn = Boolean(proxyOptionSelected?.offTurn);
+  const showDiscussButton = !hideDiscussButton && !proxyIsOffTurn;
 
   return (
     <form
@@ -383,7 +395,7 @@ export function Composer({
           <kbd className="mono rounded-r-1 border border-ink-500 bg-ink-800 px-1 text-[10px] text-ink-100">Shift</kbd>+
           <kbd className="mono rounded-r-1 border border-ink-500 bg-ink-800 px-1 text-[10px] text-ink-100">Enter</kbd>{" "}
           for a new line
-          {isCurrentlyReady && !hideDiscussButton ? (
+          {isCurrentlyReady && showDiscussButton ? (
             <>
               {" · "}
               <span className="text-signal" aria-live="polite">
@@ -393,21 +405,19 @@ export function Composer({
           ) : null}
         </span>
         <div className="flex flex-wrap items-center gap-2">
-          {!hideDiscussButton ? (
+          {showDiscussButton ? (
             <button
               type="button"
               onClick={() => submit("discuss")}
               disabled={!enabled || !text.trim()}
               title={
                 isCurrentlyReady
-                  ? "Send this message and walk back your ready signal — keeps the team discussing"
-                  : "Send this message without signalling ready — keeps the turn open for more discussion"
+                  ? "Type a follow-up and submit it as discussion — clears your ready signal."
+                  : "Post without marking ready. Turn stays open for more discussion."
               }
-              className="mono rounded-r-1 border border-ink-400 bg-ink-800 px-3 py-1.5 text-[11px] font-bold uppercase tracking-[0.18em] text-ink-100 hover:bg-ink-700 focus-visible:outline focus-visible:outline-2 focus-visible:outline-ink-300 disabled:cursor-not-allowed disabled:opacity-50"
+              className="mono rounded-r-1 border border-ink-400 bg-ink-800 px-3 py-1.5 text-[11px] font-bold uppercase tracking-[0.18em] text-ink-100 hover:border-signal-deep hover:bg-ink-700 focus-visible:outline focus-visible:outline-2 focus-visible:outline-ink-300 disabled:cursor-not-allowed disabled:opacity-50"
             >
-              {isCurrentlyReady
-                ? "WALK BACK READY ↺"
-                : "STILL DISCUSSING →"}
+              {isCurrentlyReady ? "UNREADY ↺" : "STILL DISCUSSING →"}
             </button>
           ) : null}
           <button

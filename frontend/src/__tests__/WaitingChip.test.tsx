@@ -48,7 +48,7 @@ describe("WaitingChip — issue #88 + Wave 1 (issue #134, ready-quorum)", () => 
     expect(screen.getByText(/\(1 of 2 ready\)/)).toBeInTheDocument();
   });
 
-  it("2 pending (none ready, none submitted) → 'Waiting on A and B.'", () => {
+  it("2 pending → 'Waiting on A and B to mark ready.'", () => {
     render(
       <WaitingChip
         activeRoleIds={["r-soc", "r-legal"]}
@@ -59,13 +59,13 @@ describe("WaitingChip — issue #88 + Wave 1 (issue #134, ready-quorum)", () => 
     );
     expect(
       screen.getByText(
-        /Waiting on SOC Analyst \(Bridget\) and Legal \(Marcus\)\./,
+        /Waiting on SOC Analyst \(Bridget\) and Legal \(Marcus\) to mark ready\./,
       ),
     ).toBeInTheDocument();
     expect(screen.getByText(/\(0 of 2 ready\)/)).toBeInTheDocument();
   });
 
-  it("3+ pending → 'Waiting on A, B and N more.'", () => {
+  it("3+ pending → 'Waiting on A, B and N more to mark ready.'", () => {
     render(
       <WaitingChip
         activeRoleIds={["r-soc", "r-legal", "r-comms", "r-ir"]}
@@ -76,7 +76,7 @@ describe("WaitingChip — issue #88 + Wave 1 (issue #134, ready-quorum)", () => 
     );
     expect(
       screen.getByText(
-        /Waiting on SOC Analyst \(Bridget\), Legal \(Marcus\) and 2 more\./,
+        /Waiting on SOC Analyst \(Bridget\), Legal \(Marcus\) and 2 more to mark ready\./,
       ),
     ).toBeInTheDocument();
     expect(screen.getByText(/\(0 of 4 ready\)/)).toBeInTheDocument();
@@ -95,7 +95,7 @@ describe("WaitingChip — issue #88 + Wave 1 (issue #134, ready-quorum)", () => 
     // hasn't signalled ready — annotated "discussing".
     expect(
       screen.getByText(
-        /Waiting on SOC Analyst \(Bridget\) — discussing and Legal \(Marcus\)\./,
+        /Waiting on SOC Analyst \(Bridget\) — discussing and Legal \(Marcus\) to mark ready\./,
       ),
     ).toBeInTheDocument();
   });
@@ -138,7 +138,9 @@ describe("WaitingChip — issue #88 + Wave 1 (issue #134, ready-quorum)", () => 
       />,
     );
     expect(
-      screen.getByText(/Waiting on SOC Analyst \(Bridget\) and Comms\./),
+      screen.getByText(
+        /Waiting on SOC Analyst \(Bridget\) and Comms to mark ready\./,
+      ),
     ).toBeInTheDocument();
     expect(screen.queryByText(/Comms \(\)/)).toBeNull();
   });

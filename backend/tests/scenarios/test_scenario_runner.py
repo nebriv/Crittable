@@ -229,6 +229,86 @@ async def test_recorder_round_trip(
 
 
 @pytest.mark.asyncio
+async def test_discussion_then_ready_scenario_runs(
+    client: TestClient, install_mock_for_roles
+) -> None:
+    """Wave 1 (issue #134) QA review H1+H2: the
+    ``discussion_then_ready.json`` scenario file in
+    ``backend/scenarios/`` must (a) be valid Pydantic, (b) actually
+    drive without errors, and (c) preserve per-submission ``intent``
+    end-to-end so a regression in the wire / pipeline trips this test
+    rather than only the unit-level ``test_intent_ready_quorum`` paths.
+
+    Engine-mode runner with the standard 2-role mock. The mock's
+    ``set_active_roles`` opens each AI-emitted turn with one role
+    active, so only turn 0's full discussion sequence drives through
+    the multi-submission path; subsequent turns serialize differently
+    (engine-mode replay trusts the AI's yield, not the recorded
+    expected actors). We assert the scenario's intent diversity
+    survived turn 0 — that's the load-bearing claim.
+    """
+
+    import json
+    from pathlib import Path
+
+    from app.devtools.scenario import Scenario
+
+    scenarios_dir = Path(__file__).resolve().parents[2] / "scenarios"
+    raw = json.loads(
+        (scenarios_dir / "discussion_then_ready.json").read_text()
+    )
+    scenario = Scenario.model_validate(raw)
+
+    # (a) Sanity: the scenario file actually exercises discuss + ready.
+    intents = [
+        step.intent
+        for turn in scenario.play_turns
+        for step in turn.submissions
+    ]
+    assert "discuss" in intents, (
+        "scenario should include at least one discuss-intent submission"
+    )
+    assert "ready" in intents, (
+        "scenario should include at least one ready-intent submission"
+    )
+
+    # (b) Drive end-to-end through the runner.
+    manager = client.app.state.manager
+    runner = ScenarioRunner(manager, scenario)
+    await runner.create_session()
+    role_ids = list(runner.role_label_to_id.values())
+    install_mock_for_roles(client, role_ids[:2])
+    await runner._skip_setup()
+    await runner.start_phase()
+    await runner.play_phase()
+    await runner.end_phase()
+    assert runner.progress.error is None, runner.progress.error
+    sid = runner.progress.session_id
+    assert sid is not None
+    session = await manager.get_session(sid)
+
+    # (c) The end-to-end intent flow at least carried turn 0's
+    # discussion: at least one discuss-intent message landed in the
+    # transcript with the field set. Pre-Wave-1 every player message
+    # had ``intent=None``; this assertion fails immediately if the
+    # pipeline drops the field anywhere between WS / pipeline /
+    # manager / model.
+    player_intents = [
+        m.intent
+        for m in session.messages
+        if m.kind.value == "player" and m.intent is not None
+    ]
+    assert "discuss" in player_intents, (
+        "expected at least one discuss-intent message in the transcript "
+        f"(got intents={player_intents})"
+    )
+    assert "ready" in player_intents, (
+        "expected at least one ready-intent message in the transcript "
+        f"(got intents={player_intents})"
+    )
+
+
+@pytest.mark.asyncio
 async def test_runner_routes_player_submissions_through_pipeline(
     install_mock_for_roles, monkeypatch: pytest.MonkeyPatch
 ) -> None:
