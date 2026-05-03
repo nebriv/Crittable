@@ -50,14 +50,18 @@ jobs:
           python -m pip install "pip-audit>=2.7,<3"
       - name: pip-audit
         # Audits the active environment (runtime + dev + coverage,
-        # matching ci.yml). Same gate on every trigger — pip-audit's
-        # ``--strict`` flag controls dependency-resolution failures, NOT
-        # vulnerability findings, so there is no built-in "warn-only"
-        # mode. If a newly-disclosed CVE blocks an unrelated PR, fix
-        # forward (bump the dep) or add an entry to ``--ignore-vuln``
-        # with a justification comment in the same PR — never blanket
-        # disable.
-        run: pip-audit --strict --progress-spinner off
+        # matching ci.yml). ``--skip-editable`` skips our own
+        # ``crittable-backend`` package — it isn't on PyPI so pip-audit
+        # has nothing to look up for it, and without the skip the run
+        # errors out with "distribution marked as editable" before
+        # checking any real dep. ``--strict`` is intentionally NOT set:
+        # in pip-audit it gates dependency-resolution failures (not
+        # vuln findings), and our editable install would trip it. Vuln
+        # findings already produce a non-zero exit on every trigger.
+        # If a newly-disclosed CVE blocks an unrelated PR, fix forward
+        # (bump the dep) or add an entry to ``--ignore-vuln`` with a
+        # justification comment in the same PR — never blanket disable.
+        run: pip-audit --skip-editable --progress-spinner off
 
   frontend-audit:
     runs-on: ubuntu-latest
