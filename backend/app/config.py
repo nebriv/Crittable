@@ -332,6 +332,18 @@ class Settings(BaseSettings):
     # checked in elsewhere can still override.
     dev_scenarios_path: str = Field(default="", alias="DEV_SCENARIOS_PATH")
 
+    # ---- Chat declutter (Phase A) -------------------------------------
+    # docs/plans/chat-decluttering.md §6.8. When False (default), the
+    # ``declare_workstreams`` tool is hidden from the setup-tier model
+    # and the dispatch-time ``workstream_id`` validation never engages
+    # (the field is dropped to ``None`` instead of strict-checked).
+    # When True, the AI may declare 0–8 workstreams during setup and
+    # tag ``address_role`` calls with ``workstream_id``. Phase A is
+    # backend-only — no UI surface either way; toggle False if the
+    # AI behaves badly post-launch (single emergency kill-switch per
+    # plan §6.8).
+    workstreams_enabled: bool = Field(default=False, alias="WORKSTREAMS_ENABLED")
+
     # ---- Extensions ----------------------------------------------------
     extensions_tools_json: str | None = Field(default=None, alias="EXTENSIONS_TOOLS_JSON")
     extensions_tools_path: str | None = Field(default=None, alias="EXTENSIONS_TOOLS_PATH")

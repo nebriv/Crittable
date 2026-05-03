@@ -10,6 +10,8 @@ from __future__ import annotations
 import asyncio
 from typing import TYPE_CHECKING, Any
 
+from pydantic import ValidationError
+
 from ..auth.audit import AuditEvent, AuditLog
 from ..extensions.dispatch import ExtensionDispatcher, ExtensionDispatchError
 from ..extensions.registry import FrozenRegistry
@@ -23,6 +25,7 @@ from ..sessions.models import (
     Session,
     SessionState,
     SetupNote,
+    Workstream,
 )
 from ..sessions.slots import Slot, slot_for
 
@@ -42,6 +45,12 @@ class DispatchOutcome:
         self.end_session_reason: str | None = None
         self.proposed_plan: ScenarioPlan | None = None
         self.finalized_plan: ScenarioPlan | None = None
+        # Phase A chat-declutter (docs/plans/chat-decluttering.md §4.2):
+        # workstreams declared in this dispatch batch. The setup-outcome
+        # apply layer attaches them to ``session.plan.workstreams`` and
+        # emits the ``workstream_declared`` WS event. Empty list when
+        # the AI didn't declare any (or the feature flag is off).
+        self.declared_workstreams: list[Workstream] = []
         self.critical_inject_fired: bool = False
         self.had_yielding_call: bool = False
         # Set to True when ``broadcast`` or ``address_role`` fired
@@ -79,12 +88,21 @@ class ToolDispatcher:
         extension_dispatcher: ExtensionDispatcher,
         registry: FrozenRegistry,
         max_critical_injects_per_5_turns: int = 1,
+        workstreams_enabled: bool = False,
     ) -> None:
         self._connections = connections
         self._audit = audit
         self._extensions = extension_dispatcher
         self._registry = registry
         self._max_critical = max_critical_injects_per_5_turns
+        # Phase A chat-declutter (docs/plans/chat-decluttering.md §6.8).
+        # When False, ``declare_workstreams`` is rejected at dispatch
+        # (defence in depth — the tool is also absent from the
+        # ``setup_tools_for`` payload, so the model shouldn't be able
+        # to emit the call in the first place) and ``address_role``'s
+        # ``workstream_id`` is dropped to ``None`` instead of being
+        # strict-validated.
+        self._workstreams_enabled = workstreams_enabled
 
     async def dispatch(
         self,
@@ -262,12 +280,23 @@ class ToolDispatcher:
                 content=str(exc),
                 is_error=True,
             )
+            payload: dict[str, Any] = {"name": name, "reason": str(exc)}
+            # Phase A chat-declutter (docs/plans/chat-decluttering.md
+            # §7.2). Validation paths can attach structured extras
+            # (``reason="unknown_workstream_id"``, ``attempted``,
+            # ``known``) so an operator grepping the audit ring for
+            # workstream rejections doesn't have to parse English prose
+            # out of ``reason``. The free-form ``reason`` stays as the
+            # human-readable summary; structured fields go alongside.
+            extras = getattr(exc, "audit_extras", None)
+            if isinstance(extras, dict):
+                payload.update(extras)
             self._audit.emit(
                 AuditEvent(
                     kind="tool_use_rejected",
                     session_id=session.id,
                     turn_id=turn_id,
-                    payload={"name": name, "reason": str(exc)},
+                    payload=payload,
                 )
             )
 
@@ -284,13 +313,26 @@ class ToolDispatcher:
         turn_id: str | None,
         critical_inject_allowed_cb: Any,
     ) -> str:
+        # ``declare_workstreams`` (Phase A chat-declutter,
+        # docs/plans/chat-decluttering.md §3.3) is a setup-tier tool
+        # like the other three. Listed here as well so the SETUP /
+        # non-SETUP gates treat it consistently regardless of the
+        # ``workstreams_enabled`` flag (which gates *exposure*, not
+        # *handling* — defence in depth if a misconfigured extension
+        # somehow surfaces the name).
+        _SETUP_ONLY_TOOLS = {
+            "ask_setup_question",
+            "propose_scenario_plan",
+            "finalize_setup",
+            "declare_workstreams",
+        }
         if state == SessionState.SETUP:
-            if name not in {"ask_setup_question", "propose_scenario_plan", "finalize_setup"}:
+            if name not in _SETUP_ONLY_TOOLS:
                 raise _DispatchError(f"tool '{name}' not allowed during SETUP")
         elif state == SessionState.ENDED:
             raise _DispatchError("session is ended; no tools may run")
         else:
-            if name in {"ask_setup_question", "propose_scenario_plan", "finalize_setup"}:
+            if name in _SETUP_ONLY_TOOLS:
                 raise _DispatchError(f"tool '{name}' is setup-only")
 
         # ------------------ setup ------------------
@@ -329,6 +371,15 @@ class ToolDispatcher:
                     "(>=1 item) before calling propose_scenario_plan."
                 ) from exc
             _validate_plan_completeness(plan)
+            # Phase A chat-declutter (docs/plans/chat-decluttering.md
+            # §4.2): carry forward any cross-turn workstream
+            # declarations (e.g. AI declared on turn 1, proposes plan
+            # on turn 2). Same-turn declarations are merged in
+            # ``_apply_setup_outcome`` after this replacement lands —
+            # carrying them here would also work but the apply layer is
+            # the canonical seam.
+            if session.plan is not None and session.plan.workstreams:
+                plan.workstreams = list(session.plan.workstreams)
             outcome.proposed_plan = plan
             outcome.had_yielding_call = True
             return "plan proposed; creator will review or request edits"
@@ -344,9 +395,26 @@ class ToolDispatcher:
                     "item), and injects (>=1 item)."
                 ) from exc
             _validate_plan_completeness(plan)
+            # Phase A chat-declutter: preserve any workstreams already
+            # declared via ``declare_workstreams`` earlier in the same
+            # setup turn (or earlier turn) onto the finalized plan.
+            # The model isn't asked to re-emit them in
+            # ``finalize_setup`` — the dispatcher carries them forward
+            # so the AAR-blind / play-tier paths see a consistent
+            # ``session.plan.workstreams`` regardless of declare order.
+            if session.plan is not None and session.plan.workstreams:
+                plan.workstreams = list(session.plan.workstreams)
             outcome.finalized_plan = plan
             outcome.had_yielding_call = True
             return "plan finalized; session is now READY"
+
+        if name == "declare_workstreams":
+            return _handle_declare_workstreams(
+                session=session,
+                args=args,
+                outcome=outcome,
+                workstreams_enabled=self._workstreams_enabled,
+            )
 
         # ------------------ play ------------------
         if name == "broadcast":
@@ -373,6 +441,23 @@ class ToolDispatcher:
             target = session.role_by_id(target_id)
             label = target.label if target else target_id
             args["role_id"] = target_id  # canonicalise so tool_args stays clean
+            # Phase A chat-declutter (docs/plans/chat-decluttering.md
+            # §4.5): validate the optional ``workstream_id``. Three
+            # outcomes — valid id sticks, empty/missing → None, invalid
+            # id → ``tool_result is_error=True`` so the strict-retry
+            # loop can recover. The "after 3 retries fall back to
+            # None" failure mode (plan §7.3) is handled implicitly by
+            # the strict-retry caller: when retries exhaust, the model
+            # eventually drops the field and the call goes through with
+            # ``workstream_id=None``.
+            workstream_id = _validate_workstream_id(
+                session=session,
+                value=args.get("workstream_id"),
+                workstreams_enabled=self._workstreams_enabled,
+                tool_name="address_role",
+                session_id=session.id,
+            )
+            args["workstream_id"] = workstream_id
             outcome.appended_messages.append(
                 Message(
                     kind=MessageKind.AI_TEXT,
@@ -380,6 +465,12 @@ class ToolDispatcher:
                     turn_id=turn_id,
                     tool_name=name,
                     tool_args=args,
+                    workstream_id=workstream_id,
+                    # Phase A chat-declutter (plan §5.1): structural
+                    # source for the @-highlight. The frontend reads
+                    # ``mentions`` directly; the body's ``@<label>``
+                    # token is decorative.
+                    mentions=[target_id],
                 )
             )
             outcome.had_player_facing_message = True
@@ -679,7 +770,19 @@ class ToolDispatcher:
 
 
 class _DispatchError(RuntimeError):
-    pass
+    """Tool-result-as-error signal for the dispatcher.
+
+    Carries an optional ``audit_extras`` dict that the dispatch-emit
+    layer merges into the ``tool_use_rejected`` audit payload. Use it
+    when a validation path has structured data worth surfacing to
+    operators (e.g. ``reason="unknown_workstream_id"``,
+    ``attempted=...``, ``known=[...]``) per
+    docs/plans/chat-decluttering.md §7.2.
+    """
+
+    def __init__(self, message: str, *, audit_extras: dict[str, Any] | None = None) -> None:
+        super().__init__(message)
+        self.audit_extras: dict[str, Any] | None = audit_extras
 
 
 def _resolve_role_refs(
@@ -740,6 +843,190 @@ async def _maybe_call(cb: Any) -> Any:
     if asyncio.iscoroutine(result):
         return await result
     return result
+
+
+def _validate_workstream_id(
+    *,
+    session: Session,
+    value: Any,
+    workstreams_enabled: bool,
+    tool_name: str,
+    session_id: str,
+) -> str | None:
+    """Validate an optional ``workstream_id`` on a play-tier tool call.
+
+    docs/plans/chat-decluttering.md §4.5 — three outcomes:
+
+    * empty / missing / non-string → ``None`` (silently dropped)
+    * valid id (matches a declared workstream and feature flag is on)
+      → returned as-is so the call site stamps it on the message
+    * invalid id (string, but not in the declared set) → raise
+      ``_DispatchError`` so the strict-retry loop replays the
+      structured ``is_error=True`` ``tool_result`` to the model.
+
+    When the ``workstreams_enabled`` flag is off we never strict-check
+    the value — the field is silently dropped to ``None`` so an
+    upgraded model (or a stale prompt cache) emitting the field
+    against a flag-off backend doesn't error the whole tool call.
+    Drops are logged at DEBUG so the audit trail remains complete
+    (per CLAUDE.md "Logging rules — silent fallback path").
+    """
+
+    if value is None or value == "":
+        return None
+    if not isinstance(value, str):
+        # Schema-shape drift; treat as missing.
+        _logger.debug(
+            "workstream_id_dropped_non_string",
+            session_id=session_id,
+            tool_name=tool_name,
+            value_type=type(value).__name__,
+        )
+        return None
+    if not workstreams_enabled:
+        _logger.debug(
+            "workstream_id_dropped_flag_off",
+            session_id=session_id,
+            tool_name=tool_name,
+            attempted=value,
+        )
+        return None
+    declared_ids = {ws.id for ws in (session.plan.workstreams if session.plan else [])}
+    if not declared_ids:
+        # Feature flag is on but no workstreams declared this session
+        # — drop silently rather than fail every call.
+        _logger.debug(
+            "workstream_id_dropped_no_declarations",
+            session_id=session_id,
+            tool_name=tool_name,
+            attempted=value,
+        )
+        return None
+    if value not in declared_ids:
+        known = sorted(declared_ids)
+        # Plan §7.2: surface structured fields on the audit payload so
+        # operators can grep ``reason="unknown_workstream_id"`` rather
+        # than parse the English prose. The free-form message stays as
+        # the model-facing recovery hint.
+        raise _DispatchError(
+            f"unknown workstream_id {value!r} on {tool_name}. Known: "
+            f"{', '.join(known)}. Pass an id from your earlier "
+            "declare_workstreams call, or omit the field for a "
+            "cross-cutting beat.",
+            audit_extras={
+                "reason": "unknown_workstream_id",
+                "attempted": value,
+                "known": known,
+            },
+        )
+    return value
+
+
+_WORKSTREAM_ID_HINT = (
+    "ids must match ^[a-z][a-z0-9_]*$ (lowercase, snake_case), "
+    "max 32 chars; labels are 1–24 chars."
+)
+
+
+def _handle_declare_workstreams(
+    *,
+    session: Session,
+    args: dict[str, Any],
+    outcome: DispatchOutcome,
+    workstreams_enabled: bool,
+) -> str:
+    """Validate and stage workstreams declared by the AI in setup.
+
+    docs/plans/chat-decluttering.md §4.2. The model emits
+    ``{"workstreams": [{"id": "...", "label": "...",
+    "lead_role_id": "..."}]}``. We:
+
+    * Reject the call cleanly if the feature flag is off (defence in
+      depth — the tool also isn't exposed in that case).
+    * Validate each entry through the ``Workstream`` Pydantic model
+      (id regex, length caps, etc).
+    * Drop entries with unknown ``lead_role_id`` to ``None`` rather
+      than rejecting the whole call (per "identity drift" pattern in
+      CLAUDE.md model-output trust boundary — unknown ids are bugs in
+      the model's output, not in the user's intent).
+    * Stage the resulting list on ``outcome.declared_workstreams``;
+      the setup-outcome layer attaches them to ``session.plan`` and
+      fans out the ``workstream_declared`` WS event.
+    """
+
+    if not workstreams_enabled:
+        raise _DispatchError(
+            "declare_workstreams is gated by the WORKSTREAMS_ENABLED "
+            "flag and is not currently enabled. Skip the call."
+        )
+    raw = args.get("workstreams")
+    if not isinstance(raw, list):
+        raise _DispatchError(
+            "declare_workstreams requires a 'workstreams' array; "
+            f"got {type(raw).__name__}."
+        )
+    valid_role_ids = {r.id for r in session.roles}
+    seen_ids: set[str] = set()
+    declared: list[Workstream] = []
+    dropped_lead: list[tuple[str, str]] = []
+    for entry in raw:
+        if not isinstance(entry, dict):
+            raise _DispatchError(
+                f"declare_workstreams entry must be an object; "
+                f"got {type(entry).__name__}."
+            )
+        normalized = dict(entry)
+        lead = normalized.get("lead_role_id")
+        if isinstance(lead, str) and lead and lead not in valid_role_ids:
+            # Drop the bad lead — log the offence rather than reject
+            # the whole declaration. Mirror the dropped-count audit
+            # pattern from ``_extract_report`` in ``llm/export.py``.
+            dropped_lead.append((str(normalized.get("id", "")), lead))
+            normalized["lead_role_id"] = None
+        elif lead == "":
+            normalized["lead_role_id"] = None
+        try:
+            ws = Workstream.model_validate(normalized)
+        except ValidationError as exc:
+            # Narrow exception type: Pydantic surfaces all schema
+            # violations as ValidationError; anything else (TypeError,
+            # AttributeError) signals a bug worth letting bubble.
+            _logger.warning(
+                "workstream_validation_failed",
+                session_id=session.id,
+                entry_id=normalized.get("id"),
+                error=str(exc),
+            )
+            raise _DispatchError(
+                f"workstream entry rejected: {exc}. {_WORKSTREAM_ID_HINT}"
+            ) from exc
+        if ws.id in seen_ids:
+            raise _DispatchError(
+                f"duplicate workstream id '{ws.id}' in this call; "
+                "ids must be unique within the session."
+            )
+        seen_ids.add(ws.id)
+        declared.append(ws)
+    if dropped_lead:
+        _logger.warning(
+            "workstream_lead_role_dropped",
+            session_id=session.id,
+            dropped_count=len(dropped_lead),
+            dropped=dropped_lead,
+            valid_role_ids=sorted(valid_role_ids),
+        )
+    outcome.declared_workstreams = declared
+    if dropped_lead:
+        # Surface the drop to the model in the tool_result so it can
+        # self-correct on a subsequent call (e.g. by passing a real
+        # role_id or omitting the field). Mirrors the
+        # ``set_active_roles`` soft-success pattern.
+        bad = [f"{wid}->{lead}" for wid, lead in dropped_lead]
+        return (
+            f"declared {len(declared)} workstream(s); ignored unknown "
+            f"lead_role_id(s) {bad} (not in roster)"
+        )
+    return f"declared {len(declared)} workstream(s)"
 
 
 def _validate_plan_completeness(plan: ScenarioPlan) -> None:

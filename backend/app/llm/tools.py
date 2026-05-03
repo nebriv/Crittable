@@ -78,6 +78,20 @@ PLAY_TOOLS: list[dict[str, Any]] = [
             "properties": {
                 "role_id": {"type": "string"},
                 "message": {"type": "string"},
+                "workstream_id": {
+                    "type": "string",
+                    "description": (
+                        "Optional. Workstream this beat belongs to. Must "
+                        "match an id from your earlier ``declare_workstreams`` "
+                        "call. Omit (or pass empty string) for cross-cutting "
+                        "/ general beats; the message renders under the "
+                        "default ``#main`` bucket. **If no workstreams were "
+                        "declared in setup, OMIT this field on every call — "
+                        "do not invent values like ``general`` or ``main``.** "
+                        "UI-filter affordance only; not load-bearing for "
+                        "play correctness."
+                    ),
+                },
             },
             "required": ["role_id", "message"],
         },
@@ -363,6 +377,68 @@ PLAY_TOOLS: list[dict[str, Any]] = [
 ]
 
 
+_DECLARE_WORKSTREAMS_TOOL: dict[str, Any] = {
+    "name": "declare_workstreams",
+    "description": (
+        "Declare 0–5 parallel workstreams for this exercise. A workstream is a "
+        "long-running concern (e.g. 'Containment', 'Disclosure', 'Comms') that "
+        "groups related chat messages so participants can filter their view. "
+        "Each workstream has a stable id (lowercase, snake_case), a 1–3 word "
+        "label, and an optional lead role. Subsequent ``address_role`` calls "
+        "may reference the workstream via a ``workstream_id`` field; messages "
+        "without one render under the default '#main' bucket."
+        "\n\n"
+        "WHEN TO CALL THIS: only when you expect 3+ participants to work on "
+        "2+ distinct concerns concurrently for a sustained portion of the "
+        "exercise. Examples that warrant workstreams: ransomware with "
+        "parallel containment / disclosure / comms tracks; multi-region "
+        "outage with separate site teams; supply-chain breach with "
+        "investigation + customer-comms + vendor-management running at "
+        "once."
+        "\n\n"
+        "WHEN TO SKIP THIS: small or sequential scenarios where every actor "
+        "is working the same concern at any given moment. Examples that "
+        "don't need workstreams: phishing-triage with sequential "
+        "investigate-then-remediate; a 2-person tabletop; an insider-threat "
+        "investigation where HR + Legal + IT are collaborating on one "
+        "thread. Skipping is harmless — the @Me filter, the Critical filter, "
+        "and the hidden-mentions banner all still work without workstreams "
+        "(they read from message metadata, not workstream membership). The "
+        "user only loses the workstream pills, which would have been empty "
+        "or single-valued and therefore useless anyway."
+        "\n\n"
+        "Call this once during setup, after ``propose_scenario_plan`` is "
+        "finalized and before ``finalize_setup`` closes the setup tier. "
+        "Hard cap: 8 total per session. When in doubt, skip — the UI is "
+        "well-behaved either way."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "workstreams": {
+                "type": "array",
+                "minItems": 0,
+                "maxItems": 8,
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "id": {
+                            "type": "string",
+                            "pattern": "^[a-z][a-z0-9_]*$",
+                            "maxLength": 32,
+                        },
+                        "label": {"type": "string", "maxLength": 24},
+                        "lead_role_id": {"type": "string"},
+                    },
+                    "required": ["id", "label"],
+                },
+            },
+        },
+        "required": ["workstreams"],
+    },
+}
+
+
 SETUP_TOOLS: list[dict[str, Any]] = [
     {
         "name": "ask_setup_question",
@@ -521,4 +597,28 @@ def play_tools_with_extensions(extension_specs: list[dict[str, Any]]) -> list[di
     return list(PLAY_TOOLS) + list(extension_specs)
 
 
-__all__ = ["AAR_TOOL", "PLAY_TOOLS", "SETUP_TOOLS", "play_tools_with_extensions"]
+def setup_tools_for(*, workstreams_enabled: bool) -> list[dict[str, Any]]:
+    """Setup-tier tool list, gated on the ``workstreams_enabled`` flag.
+
+    docs/plans/chat-decluttering.md §6.8 — when the flag is False (the
+    default in Phase A), ``declare_workstreams`` is invisible to the
+    model. When True, it's appended to the standard setup palette so
+    the AI can declare workstreams between ``propose_scenario_plan``
+    and ``finalize_setup``. The phase-policy filter
+    (``filter_allowed_tools``) reads names from ``SETUP_TOOLS``; the
+    same flag-gated filter applies on the call site in
+    ``turn_driver.run_setup_turn``.
+    """
+
+    if workstreams_enabled:
+        return [*SETUP_TOOLS, _DECLARE_WORKSTREAMS_TOOL]
+    return list(SETUP_TOOLS)
+
+
+__all__ = [
+    "AAR_TOOL",
+    "PLAY_TOOLS",
+    "SETUP_TOOLS",
+    "play_tools_with_extensions",
+    "setup_tools_for",
+]

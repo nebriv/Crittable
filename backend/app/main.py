@@ -71,6 +71,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         extension_dispatcher=extension_dispatcher,
         registry=registry,
         max_critical_injects_per_5_turns=settings.max_critical_injects_per_5_turns,
+        workstreams_enabled=settings.workstreams_enabled,
     )
 
     manager = SessionManager(

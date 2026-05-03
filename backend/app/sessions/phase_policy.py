@@ -32,7 +32,7 @@ from dataclasses import dataclass
 from typing import Any, Final
 
 from ..config import ModelTier
-from ..llm.tools import AAR_TOOL, PLAY_TOOLS, SETUP_TOOLS
+from ..llm.tools import _DECLARE_WORKSTREAMS_TOOL, AAR_TOOL, PLAY_TOOLS, SETUP_TOOLS
 from .models import SessionState
 
 
@@ -69,7 +69,17 @@ class TierPolicy:
 
 
 _PLAY_TOOL_NAMES: Final[frozenset[str]] = frozenset(t["name"] for t in PLAY_TOOLS)
-_SETUP_TOOL_NAMES: Final[frozenset[str]] = frozenset(t["name"] for t in SETUP_TOOLS)
+# ``declare_workstreams`` (Phase A chat-declutter,
+# docs/plans/chat-decluttering.md §6.8) is feature-flagged at the call
+# site via ``setup_tools_for(workstreams_enabled=...)`` rather than
+# included in ``SETUP_TOOLS`` directly. The phase-policy filter
+# (``filter_allowed_tools``) still needs to recognize the name —
+# otherwise it would be dropped as "not in tier" the moment the flag
+# flips on. Including it here is unconditional; the gate is "is the
+# tool present in the request payload at all", which lives one layer up.
+_SETUP_TOOL_NAMES: Final[frozenset[str]] = frozenset(
+    [*(t["name"] for t in SETUP_TOOLS), _DECLARE_WORKSTREAMS_TOOL["name"]]
+)
 _AAR_TOOL_NAMES: Final[frozenset[str]] = frozenset({AAR_TOOL["name"]})
 
 

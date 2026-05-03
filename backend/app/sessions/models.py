@@ -47,6 +47,43 @@ class MessageKind(StrEnum):
     CRITICAL_INJECT = "critical_inject"
 
 
+class WorkstreamState(StrEnum):
+    OPEN = "open"
+    CLOSED = "closed"
+
+
+class Workstream(BaseModel):
+    """Phase-A chat-declutter primitive (docs/plans/chat-decluttering.md).
+
+    A long-running parallel concern within a single tabletop session.
+    AI-declared during setup via ``declare_workstreams``; lives until
+    session end (no mid-session lifecycle in Phase A — see plan §10
+    Q3). Session-scoped: ``id`` is unique per-session, never global
+    (plan §6.5). Color is assigned client-side in declaration order;
+    not stored.
+
+    Workstream metadata is **not** load-bearing for play correctness
+    (plan §6.1). The play engine, phase policy, and turn validator
+    are workstream-blind — a missing or invalid ``workstream_id`` on
+    a message renders under the synthetic ``#main`` bucket and the
+    turn still progresses.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str = Field(
+        ...,
+        min_length=1,
+        max_length=32,
+        pattern=r"^[a-z][a-z0-9_]*$",
+    )
+    label: str = Field(..., min_length=1, max_length=24)
+    lead_role_id: str | None = None
+    state: WorkstreamState = WorkstreamState.OPEN
+    created_at: datetime = Field(default_factory=_now)
+    closed_at: datetime | None = None
+
+
 ParticipantKind = Literal["player", "spectator"]
 TurnStatus = Literal["awaiting", "processing", "complete", "errored"]
 RosterSize = Literal["small", "medium", "large"]
@@ -96,6 +133,22 @@ class Message(BaseModel):
     # field to round-trip per-submission intent into ``PlayStep.intent``
     # for deterministic replay.
     intent: Literal["ready", "discuss"] | None = None
+    # Phase A chat-declutter (docs/plans/chat-decluttering.md §4.1):
+    # ``workstream_id`` categorizes this message into one of the
+    # session's declared workstreams (or ``None`` for the synthetic
+    # ``#main`` bucket). Validated at dispatch time against the
+    # session's declared set; invalid values fall back to ``None``
+    # rather than failing the tool call (plan §7.3). Purely metadata
+    # — never load-bearing for play correctness (plan §6.1).
+    workstream_id: str | None = None
+    # ``mentions`` is the structural source for the @-highlight
+    # affordance (plan §5.1). Server-populated for AI messages from
+    # the ``role_id`` arg of ``address_role`` (and any future
+    # directly-addressed tools); user-typed @-mentions land here in
+    # Phase C. The frontend renders the highlight from this list,
+    # **never** from regex-scanning ``body``, so the highlight is
+    # decoupled from the model's prose habits.
+    mentions: list[str] = Field(default_factory=list)
 
     def is_visible_to(self, role_id: str | None, *, is_creator: bool = False) -> bool:
         if self.visibility == "all":
@@ -168,6 +221,14 @@ class ScenarioPlan(BaseModel):
     guardrails: list[str] = Field(default_factory=list)
     success_criteria: list[str] = Field(default_factory=list)
     out_of_scope: list[str] = Field(default_factory=list)
+    # Phase A chat-declutter (docs/plans/chat-decluttering.md §4.1):
+    # AI-declared workstreams for this session. Empty list = no
+    # categorization (single ``#main`` bucket); populated when the
+    # AI calls ``declare_workstreams`` during setup with the
+    # ``workstreams_enabled`` feature flag on. Stripped from the
+    # AAR pipeline's serialization per plan §6.9 — workstreams are
+    # a live-exercise affordance, not a post-mortem artifact.
+    workstreams: list[Workstream] = Field(default_factory=list)
 
 
 class TokenUsage(BaseModel):

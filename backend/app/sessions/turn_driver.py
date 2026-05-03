@@ -34,7 +34,7 @@ from ..llm.prompts import (
     build_play_system_blocks,
     build_setup_system_blocks,
 )
-from ..llm.tools import PLAY_TOOLS, SETUP_TOOLS
+from ..llm.tools import PLAY_TOOLS, setup_tools_for
 from ..logging_setup import get_logger
 from .active_roles import narrow_active_roles
 from .manager import SessionManager
@@ -185,7 +185,10 @@ class TurnDriver:
                 messages = _setup_messages(session)
                 result = await llm.acomplete(
                     tier="setup",
-                    system_blocks=build_setup_system_blocks(session),
+                    system_blocks=build_setup_system_blocks(
+                        session,
+                        workstreams_enabled=self._manager.settings().workstreams_enabled,
+                    ),
                     messages=messages,
                     # Pin ``tool_choice`` to "any" so the model MUST emit a
                     # setup tool call. Eliminates the bare-text leak path
@@ -193,7 +196,9 @@ class TurnDriver:
                     # text without a tool is if the SDK contract is
                     # violated, in which case we discard below.
                     tool_choice=tool_choice_for("setup"),
-                    tools=SETUP_TOOLS,
+                    tools=setup_tools_for(
+                        workstreams_enabled=self._manager.settings().workstreams_enabled
+                    ),
                     # Per-tier default from settings.max_tokens_for(tier) — call passes None.
                     session_id=session.id,
                 )
@@ -387,7 +392,11 @@ class TurnDriver:
                     )
                     messages.append({"role": "user", "content": recovery_blocks})
 
-                system_blocks = build_play_system_blocks(session, registry=registry)
+                system_blocks = build_play_system_blocks(
+                    session,
+                    registry=registry,
+                    workstreams_enabled=self._manager.settings().workstreams_enabled,
+                )
                 if active_directive is not None:
                     system_blocks.append(
                         {"type": "text", "text": active_directive.system_addendum}
@@ -614,7 +623,11 @@ class TurnDriver:
 
         try:
             messages = _play_messages(session, strict=False)
-            system_blocks = build_play_system_blocks(session, registry=registry)
+            system_blocks = build_play_system_blocks(
+                session,
+                registry=registry,
+                workstreams_enabled=self._manager.settings().workstreams_enabled,
+            )
             system_blocks.append({"type": "text", "text": INTERJECT_NOTE})
             # Surface ``for_role_id`` directly in the system context so
             # the model doesn't have to guess which transcript message
@@ -692,6 +705,9 @@ class TurnDriver:
                         "tool_name": msg.tool_name,
                         "tool_args": msg.tool_args,
                         "turn_id": turn.id,
+                        # Phase A chat-declutter (plan §4.8).
+                        "workstream_id": msg.workstream_id,
+                        "mentions": list(msg.mentions),
                     },
                 )
             await self._manager._repo.save(session)
@@ -785,8 +801,73 @@ class TurnDriver:
                 session.id,
                 {"type": "plan_finalized_announcement"},
             )
+        # Phase A chat-declutter (docs/plans/chat-decluttering.md §4.2,
+        # §4.8): merge declared workstreams into ``session.plan`` AFTER
+        # the proposed/finalized branches above run, so a same-batch
+        # ``declare_workstreams + propose_scenario_plan + finalize_setup``
+        # response doesn't lose the declarations to the plan-overwrite.
+        # The dispatcher's ``propose_scenario_plan`` /
+        # ``finalize_setup`` handlers carry forward *prior-turn*
+        # workstreams via ``plan.workstreams = list(session.plan.workstreams)``;
+        # this layer handles same-turn additions on top.
+        await self._apply_declared_workstreams(session, outcome)
         # Always persist via repository
         await self._manager._repo.save(session)
+
+    async def _apply_declared_workstreams(
+        self, session: Session, outcome: DispatchOutcome
+    ) -> None:
+        """Merge ``outcome.declared_workstreams`` onto the plan + fan out.
+
+        Idempotent on ids — entries whose id is already on the plan are
+        skipped and counted in ``replayed_ids`` so the audit log makes
+        a "duplicate declare" event observable. The ``workstream_declared``
+        WS broadcast carries only the *new* entries so the frontend
+        doesn't render a duplicate of an already-known workstream.
+        """
+
+        if not outcome.declared_workstreams:
+            return
+        if session.plan is None:
+            # ``declare_workstreams`` ran without ``propose_scenario_plan``
+            # in the same batch and no prior plan exists. The
+            # declarations would be lost on the next plan replacement —
+            # surface this as a structured warning with the orphan ids
+            # so an operator can tell what was dropped.
+            dropped_ids = [ws.id for ws in outcome.declared_workstreams]
+            _logger.warning(
+                "declare_workstreams_before_plan",
+                session_id=session.id,
+                dropped_count=len(dropped_ids),
+                dropped_ids=dropped_ids,
+            )
+            return
+        existing_ids = {ws.id for ws in session.plan.workstreams}
+        new_workstreams = [
+            ws for ws in outcome.declared_workstreams if ws.id not in existing_ids
+        ]
+        replayed_ids = [
+            ws.id for ws in outcome.declared_workstreams if ws.id in existing_ids
+        ]
+        session.plan.workstreams.extend(new_workstreams)
+        self._manager._emit(
+            "workstream_declared",
+            session,
+            count=len(new_workstreams),
+            ids=[ws.id for ws in new_workstreams],
+            replayed_ids=replayed_ids,
+        )
+        if not new_workstreams:
+            return
+        await self._manager.connections().broadcast(
+            session.id,
+            {
+                "type": "workstream_declared",
+                "workstreams": [
+                    ws.model_dump(mode="json") for ws in new_workstreams
+                ],
+            },
+        )
 
     async def _apply_play_outcome(
         self,
@@ -818,6 +899,9 @@ class TurnDriver:
                     "body": msg.body,
                     "tool_name": msg.tool_name,
                     "turn_id": msg.turn_id,
+                    # Phase A chat-declutter (plan §4.8).
+                    "workstream_id": msg.workstream_id,
+                    "mentions": list(msg.mentions),
                 },
             )
 
