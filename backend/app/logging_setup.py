@@ -75,13 +75,30 @@ def configure_logging(settings: Settings) -> None:
     else:
         processors.append(structlog.dev.ConsoleRenderer(colors=False))
 
-    structlog.configure(
-        processors=processors,
-        wrapper_class=structlog.make_filtering_bound_logger(level),
-        context_class=dict,
-        logger_factory=structlog.PrintLoggerFactory(file=sys.stdout),
-        cache_logger_on_first_use=True,
-    )
+    # In tests, ``capsys`` swaps ``sys.stdout`` per-test. Caching the
+    # logger and pinning the factory to a specific ``sys.stdout``
+    # reference would freeze the bound stream at config time and
+    # leave later tests writing to a closed buffer (raising
+    # ``ValueError: I/O operation on closed file`` from inside the
+    # cached logger). Avoid both pins in test mode: omit ``file=``
+    # so PrintLoggerFactory looks up ``sys.stdout`` per call, and
+    # disable caching so every log emits through that fresh path.
+    if settings.test_mode:
+        structlog.configure(
+            processors=processors,
+            wrapper_class=structlog.make_filtering_bound_logger(level),
+            context_class=dict,
+            logger_factory=structlog.PrintLoggerFactory(),
+            cache_logger_on_first_use=False,
+        )
+    else:
+        structlog.configure(
+            processors=processors,
+            wrapper_class=structlog.make_filtering_bound_logger(level),
+            context_class=dict,
+            logger_factory=structlog.PrintLoggerFactory(file=sys.stdout),
+            cache_logger_on_first_use=True,
+        )
 
 
 def get_logger(name: str | None = None) -> Any:

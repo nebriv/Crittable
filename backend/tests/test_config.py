@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import warnings
 
+import pytest
+
 from app.config import Settings
 
 
@@ -365,3 +367,81 @@ def test_llm_client_forwards_temperature_when_set(monkeypatch) -> None:
     assert kwargs["temperature"] == 0.3
     assert kwargs["top_p"] == 0.85
     assert kwargs["max_tokens"] == 777
+
+
+def test_empty_env_vars_fall_back_to_defaults(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Empty-string env vars must NOT crash ``Settings()`` — they
+    fall back to the field default.
+
+    This is the ``docker-compose.yml`` ``${VAR:-}`` pattern: when
+    the operator hasn't set ``VAR`` in their ``.env``, Compose
+    passes the literal empty string ``""`` to the container.
+    Without ``env_ignore_empty=True`` on ``SettingsConfigDict``,
+    pydantic raised ``bool_parsing`` / ``int_parsing`` errors on
+    every empty-string-valued bool / int field and the container
+    crash-looped on startup.
+
+    Covers the production crash on 2026-05-02 caused by adding
+    ``DEV_TOOLS_ENABLED: ${DEV_TOOLS_ENABLED:-}`` to compose
+    without any of the dev flags being set on the host.
+    """
+
+    from app.config import Settings, reset_settings_cache
+
+    # Bool fields — these were the actual crash trigger.
+    monkeypatch.setenv("DEV_TOOLS_ENABLED", "")
+    monkeypatch.setenv("TEST_MODE", "")
+    monkeypatch.setenv("DEV_FAST_SETUP", "")
+    monkeypatch.setenv("INPUT_GUARDRAIL_ENABLED", "")
+    # String fields with non-empty defaults — empty env value should
+    # NOT clobber the default (would silently break path resolution
+    # for ``DEV_SCENARIOS_PATH`` etc.).
+    monkeypatch.setenv("DEV_SCENARIOS_PATH", "")
+    monkeypatch.setenv("SESSION_SECRET", "")
+    reset_settings_cache()
+
+    # Must not raise.
+    s = Settings()
+    assert s.dev_tools_enabled is False
+    assert s.test_mode is False
+    assert s.dev_fast_setup is False
+    assert s.input_guardrail_enabled is True  # default is True
+    # ``dev_scenarios_path`` field default is "" (empty string is the
+    # auto-detect sentinel — the ``resolved_dev_scenarios_path``
+    # method then computes a real path). Either "" or absent is fine.
+    assert s.dev_scenarios_path == ""
+    # ``resolved_dev_scenarios_path`` must still produce something
+    # usable.
+    resolved = s.resolved_dev_scenarios_path()
+    assert resolved.endswith("backend/scenarios")
+
+
+def test_app_boots_with_empty_env_vars(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """End-to-end smoke: ``create_app()`` must succeed when every
+    optional env var is set to empty string. Catches the
+    docker-compose passthrough regression at the ``app.main``
+    boundary, not just ``Settings``."""
+
+    from fastapi.testclient import TestClient
+
+    from app.config import reset_settings_cache
+    from app.main import create_app
+
+    monkeypatch.setenv("DEV_TOOLS_ENABLED", "")
+    monkeypatch.setenv("TEST_MODE", "true")  # so the API-key check passes
+    monkeypatch.setenv("DEV_FAST_SETUP", "")
+    monkeypatch.setenv("INPUT_GUARDRAIL_ENABLED", "")
+    monkeypatch.setenv("DEV_SCENARIOS_PATH", "")
+    monkeypatch.setenv("SESSION_SECRET", "x" * 32)
+    reset_settings_cache()
+
+    app = create_app()
+    with TestClient(app) as c:
+        # A trivial endpoint that doesn't need any of the disabled
+        # features — confirms the lifespan startup didn't blow up.
+        resp = c.get("/healthz")
+        assert resp.status_code == 200

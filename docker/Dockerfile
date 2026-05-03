@@ -25,6 +25,14 @@ WORKDIR /app
 
 COPY backend/pyproject.toml ./backend/pyproject.toml
 COPY backend/app ./backend/app
+# Ship the dev-tools scenario presets as part of the image so the
+# scenario picker isn't empty inside Docker. The scenarios are tiny
+# (<10 KB) and only loaded when ``DEV_TOOLS_ENABLED=true``; the gate
+# stays closed by default in production builds. Without this COPY
+# the auto-resolved ``<repo_root>/backend/scenarios`` directory
+# inside the container ends up missing and the picker silently
+# returns an empty list.
+COPY backend/scenarios ./backend/scenarios
 RUN pip install -e ./backend
 
 # Copy built frontend into the location the backend serves static files from

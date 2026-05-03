@@ -615,51 +615,59 @@ async def _client_pump(
                     )
                     continue
             if event_type == "submit_response":
+                # Validation / truncation / guardrail / submit live in
+                # ``submission_pipeline`` so the dev-tools scenario
+                # runner exercises the same checks. The handler's
+                # remaining job is converting the structured outcome
+                # into the WS info frames a connected client expects
+                # (``submission_truncated`` / ``guardrail_blocked``)
+                # plus dispatching the post-submission AI driver
+                # (``run_play_turn`` if advanced; ``run_interject`` if
+                # the message looks like a question and the turn is
+                # not yet full).
+                from ..sessions.submission_pipeline import (
+                    EmptySubmissionError,
+                    prepare_and_submit_player_response,
+                )
+
                 content = str(payload.get("content", ""))
-                if not content.strip():
+                try:
+                    outcome = await prepare_and_submit_player_response(
+                        manager=manager,
+                        session_id=session_id,
+                        role_id=role_id,
+                        content=content,
+                    )
+                except EmptySubmissionError:
                     await websocket.send_json(
                         {"type": "error", "scope": "submit_response", "message": "empty"}
                     )
                     continue
-                # Hard cap on participant submission length — protects the
-                # transcript + the message payload that flows into the next
-                # AI turn. Truncate (don't reject) so a chatty player gets
-                # *something* through; a dedicated ``submission_truncated``
-                # event (NOT ``error``) tells them their text was clipped
-                # so the frontend can render it as info, not a red banner
-                # that reads as "didn't post". The truncated content also
-                # gets a server-appended ``[message truncated by server]``
-                # marker so the AI doesn't read a clipped sentence as a
-                # real fragment and try to "complete the thought".
-                cap = manager.settings().max_participant_submission_chars
-                if len(content) > cap:
-                    original_len = len(content)
+                except IllegalTransitionError as exc:
+                    await websocket.send_json(
+                        {"type": "error", "scope": "submit_response", "message": str(exc)}
+                    )
+                    continue
+                if outcome.truncated:
+                    cap = manager.settings().max_participant_submission_chars
                     await websocket.send_json(
                         {
                             "type": "submission_truncated",
                             "scope": "submit_response",
                             "cap": cap,
-                            "original_len": original_len,
+                            "original_len": outcome.original_len,
                             "message": (
                                 f"Posted the first {cap} characters; "
-                                f"{original_len - cap} more were dropped. "
+                                f"{outcome.original_len - cap} more were dropped. "
                                 "Your reply did go through."
                             ),
                         }
                     )
-                    content = content[:cap] + "\n[message truncated by server]"
-                # Optional input-side guardrail. Only ``prompt_injection``
-                # blocks (see ``llm/guardrail.py``); everything else flows
-                # through. Pre-fix this also blocked ``off_topic``, which
-                # silently dropped legitimate casual / in-character replies
-                # like "i'm not even on slack" and made the chat look frozen
-                # to the participant.
-                verdict = await manager.guardrail().classify(message=content)
-                if verdict == "prompt_injection":
+                if outcome.blocked:
                     await websocket.send_json(
                         {
                             "type": "guardrail_blocked",
-                            "verdict": verdict,
+                            "verdict": outcome.blocked_verdict,
                             "message": (
                                 "Your message looked like a prompt-injection "
                                 "attempt and was blocked. If that was a real "
@@ -669,23 +677,14 @@ async def _client_pump(
                         }
                     )
                     continue
-                try:
-                    advanced = await manager.submit_response(
-                        session_id=session_id, role_id=role_id, content=content
-                    )
-                except IllegalTransitionError as exc:
-                    await websocket.send_json(
-                        {"type": "error", "scope": "submit_response", "message": str(exc)}
-                    )
-                    continue
-                if advanced:
+                if outcome.advanced:
                     session = await manager.get_session(session_id)
                     turn = session.current_turn
                     if turn is not None:
                         await TurnDriver(manager=manager).run_play_turn(
                             session=session, turn=turn
                         )
-                elif _looks_like_question(content):
+                elif _looks_like_question(outcome.content):
                     # Side-channel facilitator response: when a player asks
                     # a direct question (heuristic: trailing ``?``) and the
                     # turn is NOT yet ready to advance, fire a constrained

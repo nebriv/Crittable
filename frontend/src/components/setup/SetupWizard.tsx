@@ -1,5 +1,5 @@
-import { FormEvent, ReactNode, useMemo, useState } from "react";
-import type { SessionSnapshot } from "../../api/client";
+import { FormEvent, ReactNode, useEffect, useMemo, useState } from "react";
+import { api, type SessionSnapshot } from "../../api/client";
 import { Eyebrow } from "../brand/Eyebrow";
 import { StatusChip } from "../brand/StatusChip";
 import { WizardRail, type WizardStepId } from "./WizardRail";
@@ -400,6 +400,11 @@ function Step1Body(props: IntroBodyProps) {
         devMode={props.devMode}
         setDevMode={props.setDevMode}
       />
+      {/* Dev-mode scenarios: when the operator has DEV_TOOLS_ENABLED
+          on AND has flipped the dev-mode toggle, show a one-click
+          replay picker right here so they don't have to walk through
+          the whole wizard before realising they wanted a preset. */}
+      {props.devMode ? <WizardScenarioPicker /> : null}
       <BriefField
         label="SCENARIO BRIEF"
         required
@@ -750,6 +755,207 @@ function DevModeBand({
         Skip the AI setup dialogue and use a known ransomware brief.
       </span>
     </label>
+  );
+}
+
+interface ScenarioOption {
+  id: string;
+  name: string;
+  description: string;
+  roster_size: number;
+  play_turns: number;
+}
+
+/**
+ * Dev-only scenario picker shown on Step 01 of the setup wizard
+ * when the operator has dev mode toggled on. Lets a solo dev
+ * one-click replay a preset scenario instead of walking through the
+ * whole wizard manually.
+ *
+ * Click → calls ``/api/dev/scenarios/{id}/play`` (no token needed
+ * when ``DEV_TOOLS_ENABLED=true``); the backend returns IMMEDIATELY
+ * with a session id + creator token, then runs the play / end /
+ * AAR phases in a background task. We navigate the same tab to
+ * ``/play/:sessionId/:token`` (the App router's two-segment route;
+ * the one-segment shape silently falls through to the home page)
+ * so the dev watches the replay unfold live via the existing WS
+ * broadcasts — same code path, no new routes to maintain.
+ *
+ * Hidden when ``play_token_required`` is True (TEST_MODE-only
+ * environments where ``/play`` still demands a token). The wizard
+ * has no token to present at this point in the flow; the picker
+ * stays hidden and the dev can use the God Mode panel instead
+ * (which has the creator token).
+ */
+function WizardScenarioPicker() {
+  const [scenarios, setScenarios] = useState<ScenarioOption[]>([]);
+  const [selected, setSelected] = useState<string>("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [disabled, setDisabled] = useState(false);
+  const [tokenRequired, setTokenRequired] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const body = await api.listScenarios();
+        if (cancelled) return;
+        setScenarios(body.scenarios);
+        setDisabled(body.disabled);
+        setTokenRequired(body.play_token_required);
+      } catch (err) {
+        if (!cancelled) {
+          const text = err instanceof Error ? err.message : String(err);
+          setError(text);
+          console.warn("[wizard-scenarios] list failed", text);
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  async function handlePlay() {
+    if (!selected) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const body = await api.playScenario(selected);
+      if (!body.ok || !body.session_id) {
+        setError(body.error ?? "replay failed");
+        setBusy(false);
+        return;
+      }
+      const creatorRoleId = body.role_label_to_id["creator"];
+      const creatorToken = creatorRoleId
+        ? body.role_tokens[creatorRoleId]
+        : undefined;
+      if (!creatorToken) {
+        setError("replay returned no creator token");
+        setBusy(false);
+        return;
+      }
+      console.info("[wizard-scenarios] navigating to replayed session");
+      // Route is ``/play/:sessionId/:token`` — both segments are
+      // required by the App router (the one-segment shape silently
+      // falls through to the home page).
+      window.location.href = `/play/${body.session_id}/${creatorToken}`;
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+      setBusy(false);
+      console.warn("[wizard-scenarios] play failed", err);
+    }
+  }
+
+  if (disabled || tokenRequired) {
+    // Dev tools off → picker hidden; dev mode still works.
+    // Token required (TEST_MODE-only env) → picker hidden because
+    // the wizard has no token to send; God Mode panel still works.
+    return null;
+  }
+
+  return (
+    <div
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        gap: 8,
+        padding: "10px 12px",
+        // ``--info`` is the design-system info-tint token; using
+        // ``color-mix`` keeps the alpha at the same level the
+        // hard-coded ``rgba(38, 132, 255, 0.10/0.40)`` originally
+        // produced but stays in sync with theme/contrast changes.
+        background: "color-mix(in srgb, var(--info) 10%, transparent)",
+        border:
+          "1px solid color-mix(in srgb, var(--info) 40%, transparent)",
+        borderRadius: 4,
+      }}
+    >
+      <span
+        className="mono"
+        style={{
+          fontSize: 11,
+          color: "var(--info)",
+          letterSpacing: "0.16em",
+          fontWeight: 700,
+        }}
+      >
+        OR REPLAY A PRESET SCENARIO
+      </span>
+      {scenarios.length === 0 ? (
+        <span
+          className="sans"
+          style={{ fontSize: 12, color: "var(--ink-300)" }}
+        >
+          No scenarios available — drop a JSON file into
+          <code style={{ marginLeft: 4 }}>backend/scenarios/</code>.
+        </span>
+      ) : (
+        <>
+          <label
+            className="sans"
+            style={{ display: "flex", flexDirection: "column", gap: 4 }}
+          >
+            <span style={{ fontSize: 11, color: "var(--ink-300)" }}>
+              Skip the wizard and watch a preset play out live.
+            </span>
+            <select
+              value={selected}
+              onChange={(e) => setSelected(e.target.value)}
+              disabled={busy}
+              style={{
+                fontSize: 13,
+                padding: "6px 8px",
+                background: "var(--ink-850)",
+                border: "1px solid var(--ink-600)",
+                color: "var(--ink-100)",
+                borderRadius: 3,
+              }}
+            >
+              <option value="">— pick one —</option>
+              {scenarios.map((s) => (
+                <option key={s.id} value={s.id}>
+                  {s.name} ({s.roster_size} roles, {s.play_turns} turns)
+                </option>
+              ))}
+            </select>
+          </label>
+          <button
+            type="button"
+            disabled={!selected || busy}
+            onClick={handlePlay}
+            style={{
+              alignSelf: "flex-start",
+              fontSize: 12,
+              padding: "6px 14px",
+              // Token-derived info-tint, same pattern as the panel
+              // background above — matches the design system rather
+              // than hard-coding the ``rgba(38, 132, 255, 0.20)``
+              // numerals.
+              background: "color-mix(in srgb, var(--info) 20%, transparent)",
+              border: "1px solid var(--info)",
+              color: "var(--info)",
+              borderRadius: 3,
+              cursor: busy ? "wait" : "pointer",
+              fontWeight: 600,
+            }}
+          >
+            {busy ? "Spinning up replay…" : "Play scenario"}
+          </button>
+          {error ? (
+            <span
+              role="alert"
+              className="sans"
+              style={{ fontSize: 11, color: "var(--crit)" }}
+            >
+              {error}
+            </span>
+          ) : null}
+        </>
+      )}
+    </div>
   );
 }
 

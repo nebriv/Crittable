@@ -171,6 +171,53 @@ flowchart TD
 > `active_role_ids`. It only appends a `MessageKind.PLAYER` row with
 > `is_interjection=True`. The state machine is preserved.
 
+### 1a. Player-submission pipeline (single source of truth)
+
+Every player submission — whether it arrives via `submit_response` over
+the WebSocket, or via the dev-tools scenario runner replaying a recording
+— goes through `app/sessions/submission_pipeline.py::prepare_and_submit_player_response`.
+This is a load-bearing seam: both call sites MUST use it so a regression
+in any input-side gate trips a replayed scenario before production.
+
+The pipeline does, in order:
+
+1. **Empty-content check** → `EmptySubmissionError` (caller decides:
+   WS handler emits `error` frame, runner logs + skips).
+2. **Length-cap truncation** → if `len(content) > max_participant_submission_chars`,
+   slice and append the `[message truncated by server]` marker (so the
+   AI doesn't read a clipped sentence as a real fragment).
+   `outcome.truncated=True` and `outcome.original_len` let the WS handler
+   emit a `submission_truncated` info frame.
+3. **Input-side guardrail classification** → only `prompt_injection`
+   blocks. `outcome.blocked=True`, `submit_response` is NOT called, and
+   the message never lands in the transcript. The WS handler emits a
+   `guardrail_blocked` info frame; the runner just logs.
+4. **`manager.submit_response`** → records the message, mutates
+   `submitted_role_ids` if the role is active, flips state to
+   `AI_PROCESSING` when the last active role submits. The dedupe window
+   lives inside `submit_response` itself, so both call sites inherit it.
+
+What's deliberately **NOT** in the pipeline:
+
+- WS framing / origin check / token-version check at upgrade time —
+  those are connection-level gates the WS handler enforces before
+  `event_type == "submit_response"` is even read. The runner is
+  in-process and uses the manager directly; there's no socket to
+  authenticate.
+- `run_play_turn` / `run_interject` post-submission dispatch — those
+  are tier-specific. The deterministic-replay path skips both
+  intentionally; engine-mode replay still calls `run_play_turn` after
+  `outcome.advanced` flips True.
+
+**If you're adding a new input-side gate** (a new validator, a new
+classifier, anything between "the user typed something" and "it lands
+in `session.messages`"), put it in `submission_pipeline.py`. Otherwise
+it'll only fire on the WS path and a recorded-then-replayed regression
+won't catch it. There's a regression-net test —
+`tests/test_submission_pipeline.py` for the unit boundary, and
+`tests/scenarios/test_scenario_runner.py::test_runner_routes_player_submissions_through_pipeline`
+for the runner-level proof — that locks the contract.
+
 ---
 
 ## 2. Session state machine

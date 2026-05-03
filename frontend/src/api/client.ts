@@ -115,6 +115,32 @@ export interface SetupReplyResult {
   diagnostics?: BackendDiagnostic[];
 }
 
+/** One scenario entry in the dev-tools picker. Mirrors the
+ * backend's ``backend/app/devtools/api.py::list_scenarios`` shape;
+ * keep the two in sync when adding fields. */
+export interface DevScenarioMeta {
+  id: string;
+  name: string;
+  description: string;
+  tags: string[];
+  roster_size: number;
+  play_turns: number;
+  skip_setup: boolean;
+}
+
+/** Response shape from ``GET /api/dev/scenarios``. ``disabled`` is a
+ * frontend-synthesised flag for the "endpoint 404'd" case (the
+ * backend itself never returns disabled=true — the route just 404s
+ * when the gate is closed). ``play_token_required`` reflects the
+ * server's auth model: True in TEST_MODE-only environments, False
+ * when ``DEV_TOOLS_ENABLED=true`` opens the unauth path. */
+export interface DevScenarioList {
+  scenarios: DevScenarioMeta[];
+  path?: string;
+  disabled: boolean;
+  play_token_required: boolean;
+}
+
 /**
  * Strip query-string secrets ({@code token=...}) from a path before logging.
  * Tokens are bearer credentials — leaking them via console is a real bug.
@@ -328,6 +354,99 @@ export const api = {
     return request(
       "GET",
       `/api/sessions/${sessionId}/debug?token=${encodeURIComponent(token)}`,
+    );
+  },
+
+  /**
+   * Dev-tools: list scenarios available for replay.
+   *
+   * Returns ``{ scenarios: [], disabled: true }`` when the backend
+   * gate is closed (route 404s — typically ``DEV_TOOLS_ENABLED`` /
+   * ``TEST_MODE`` not set). Returns ``{ scenarios: [...], disabled:
+   * false, path: "...", play_token_required: bool }`` when the gate
+   * is open. ``play_token_required`` is True in TEST_MODE-only
+   * environments (CI/preview) where ``/play`` still demands a token
+   * — the wizard's no-token picker hides itself in that case.
+   */
+  async listScenarios(): Promise<DevScenarioList> {
+    try {
+      const body = (await request(
+        "GET",
+        "/api/dev/scenarios",
+      )) as DevScenarioList;
+      return {
+        ...body,
+        disabled: false,
+        play_token_required: body.play_token_required ?? false,
+      };
+    } catch (err) {
+      // The route is 404 when dev tools are disabled. Other errors
+      // (network, 500) bubble back up so the panel can show them.
+      const text = err instanceof Error ? err.message : String(err);
+      if (text.includes("404") || text.includes("not found")) {
+        console.info(
+          "[scenarios] /api/dev/scenarios returned 404 — DEV_TOOLS_ENABLED / TEST_MODE not set on backend",
+        );
+        return {
+          scenarios: [],
+          disabled: true,
+          play_token_required: false,
+        };
+      }
+      throw err;
+    }
+  },
+
+  /**
+   * Dev-tools: replay a scenario in a NEW session.
+   *
+   * The backend returns the new session id + tokens IMMEDIATELY
+   * (after setup) and runs the play/end/AAR phases in the
+   * background, broadcasting ``message_complete`` events at the
+   * recording's original timestamp cadence so a connected tab
+   * watches the replay unfold live.
+   *
+   * Token is optional: when ``DEV_TOOLS_ENABLED=true`` the backend
+   * accepts unauthenticated calls (so the wizard can replay a
+   * scenario without first creating a placeholder session). When
+   * only ``TEST_MODE=true`` is set, a token is still required to
+   * avoid leaking session minting on preview/CI deploys.
+   */
+  async playScenario(
+    scenarioId: string,
+    token?: string,
+  ): Promise<{
+    ok: boolean;
+    session_id: string | null;
+    error: string | null;
+    log: string[];
+    role_tokens: Record<string, string>;
+    role_label_to_id: Record<string, string>;
+  }> {
+    const url = token
+      ? `/api/dev/scenarios/${encodeURIComponent(scenarioId)}/play?token=${encodeURIComponent(token)}`
+      : `/api/dev/scenarios/${encodeURIComponent(scenarioId)}/play`;
+    return request("POST", url);
+  },
+
+  /**
+   * Dev-tools: dump the current session state as a Scenario JSON. The
+   * dev is expected to save the response to ``backend/scenarios/`` if
+   * they want it to show up in the picker on next boot.
+   */
+  async recordScenario(
+    sessionId: string,
+    creatorToken: string,
+    body: { name: string; description?: string; tags?: string[] },
+  ): Promise<{
+    ok: boolean;
+    scenario_json: unknown;
+    stats: { roster_size: number; setup_replies: number; play_turns: number };
+  }> {
+    return request(
+      "POST",
+      `/api/dev/sessions/${sessionId}/record?token=${encodeURIComponent(creatorToken)}`,
+      body,
     );
   },
 };

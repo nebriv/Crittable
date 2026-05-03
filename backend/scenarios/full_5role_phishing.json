@@ -1,0 +1,132 @@
+{
+  "meta": {
+    "name": "Full lifecycle — 5 roles, phishing-to-ransomware",
+    "description": "Five roles (CISO, IR Lead, SOC, Legal, Comms), full setup dialogue, six play turns. Exercises the multi-role active-set narrowing, role-handoff broadcasting, and AAR per-role scoring. Runs a real LLM end-to-end — costs ~$0.20.",
+    "tags": ["full", "5role", "phishing", "expensive"]
+  },
+  "scenario_prompt": "Phishing email to executive assistant escalates to credential theft and ransomware deployment overnight.",
+  "creator_label": "CISO",
+  "creator_display_name": "Alex (CISO)",
+  "skip_setup": false,
+  "roster": [
+    {
+      "label": "IR Lead",
+      "display_name": "Jordan (IR Lead)",
+      "kind": "player"
+    },
+    {
+      "label": "SOC Analyst",
+      "display_name": "Bo (SOC)",
+      "kind": "player"
+    },
+    {
+      "label": "Legal",
+      "display_name": "Casey (Legal)",
+      "kind": "player"
+    },
+    {
+      "label": "Comms",
+      "display_name": "Dana (Comms)",
+      "kind": "player"
+    }
+  ],
+  "setup_replies": [
+    {
+      "content": "We're a regional bank, mid-size, ~3000 employees, PCI + SOX compliance scope. Tier 2 regulator (state DOB) with 24-hour notification clock."
+    },
+    {
+      "content": "Looks like enough context — please draft a plan covering detection, containment, customer notification, and the regulator clock."
+    },
+    {
+      "content": "Plan looks good — please finalize. We're ready to start the exercise."
+    }
+  ],
+  "play_turns": [
+    {
+      "submissions": [
+        {
+          "role_label": "CISO",
+          "content": "Activate the IR plan. Isolate the EA's laptop and any machines that authenticated from her token in the last 12 hours. Start the regulator clock."
+        },
+        {
+          "role_label": "IR Lead",
+          "content": "On it. Spinning up the war room. SOC, give me a scope read in 5."
+        },
+        {
+          "role_label": "SOC Analyst",
+          "content": "Pulling Defender + Okta logs. Initial signal: EA token used to enumerate the M365 directory at 02:14, then a Cobalt-Strike-style beacon from finance-laptop-7 at 02:48."
+        }
+      ]
+    },
+    {
+      "submissions": [
+        {
+          "role_label": "Legal",
+          "content": "Confirm the regulator clock starts at first reasonable belief — that's now. I'll draft the 24-hr notification template. Need scope confirmation from SOC before we file."
+        },
+        {
+          "role_label": "Comms",
+          "content": "Pre-staging an internal-only memo and a holding statement for press. Will not release externally without Legal sign-off."
+        }
+      ]
+    },
+    {
+      "submissions": [
+        {
+          "role_label": "IR Lead",
+          "content": "Containment sequence: revoke EA's tokens, rotate service-account creds for finance, isolate laptops 4-9 in the finance VLAN. SOC, confirm Defender quarantine on each."
+        },
+        {
+          "role_label": "SOC Analyst",
+          "content": "Defender quarantine confirmed on 6 of 9 laptops. Three need manual intervention — laptops 7, 8, 9 are off-network (executive travel). Engaging endpoint team to remote-wipe."
+        }
+      ]
+    },
+    {
+      "submissions": [
+        {
+          "role_label": "CISO",
+          "content": "Decision: notify regulator at hour 4 with preliminary scope, full filing at hour 20. Brief board chair now."
+        },
+        {
+          "role_label": "Legal",
+          "content": "Concur. Drafting the prelim filing with the scope SOC just confirmed (6 laptops contained, 3 pending). Will hold until board chair brief is complete."
+        }
+      ]
+    },
+    {
+      "submissions": [
+        {
+          "role_label": "Comms",
+          "content": "Internal memo released to all-staff at hour 3. Holding statement ready for press; will not push without authorization."
+        },
+        {
+          "role_label": "IR Lead",
+          "content": "Recovery plan in motion: clean-baseline imaging for the 9 laptops, rotation of all M365 service accounts, audit of EA's calendar for any data exfil during the 12-hour window."
+        },
+        {
+          "role_label": "SOC Analyst",
+          "content": "Forensics flag: the beacon attempted to reach an S3 bucket at 03:02 — pulled 47 MB of an HR file share before we cut network. Comms will need to cover this."
+        }
+      ]
+    },
+    {
+      "submissions": [
+        {
+          "role_label": "CISO",
+          "content": "Update regulator filing: 47 MB confirmed exfiltration of HR data. Engage outside counsel for breach-notification scope."
+        },
+        {
+          "role_label": "Legal",
+          "content": "Outside counsel engaged. Filing updated. Notification scope: state regulator + affected HR data subjects (estimated 3000 employees). 30-day clock starts on confirmation of subject list."
+        },
+        {
+          "role_label": "Comms",
+          "content": "Holding statement updated. Will release with regulator filing. Drafting employee FAQ now."
+        }
+      ]
+    }
+  ],
+  "end_reason": "full lifecycle scenario complete",
+  "mock_llm_script": null
+}

@@ -21,6 +21,7 @@ from .api import register_api_routes
 from .auth import HMACAuthenticator
 from .auth.audit import AuditLog
 from .config import Settings, get_settings
+from .devtools.api import register_devtools_routes
 from .extensions import EnvLoader, freeze_bundle
 from .extensions.dispatch import ExtensionDispatcher
 from .llm.client import LLMClient
@@ -201,6 +202,11 @@ def create_app(
 
     register_api_routes(app)
     register_ws_routes(app)
+    # Dev-tools (scenario replay / record) — handlers self-gate on
+    # ``settings.dev_tools_enabled`` so registering unconditionally is
+    # safe; we still register every install for symmetry with the
+    # other route blocks.
+    register_devtools_routes(app)
 
     static_dir = static_dir_override or (Path(__file__).parent / "static")
     if static_dir.is_dir():
