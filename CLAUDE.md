@@ -86,7 +86,7 @@ If you'd rather invoke pytest directly, the equivalent inline form is:
 ANTHROPIC_API_KEY="$LIVE_TEST_ANTHROPIC_API_KEY" pytest backend/tests/live/ -v
 ```
 
-The `VAR=value command` form scopes the assignment to that one child process; Claude Code's own SDK calls keep using the harness-provided auth. `backend/tests/live/conftest.py` checks `os.environ.get("ANTHROPIC_API_KEY")` at collection time, so this is sufficient. Same rule for any other tool you wire to the harness — never reuse a name the host process's SDK reads.
+The `VAR=value command` form scopes the assignment to that one child process; Claude Code's own SDK calls keep using the harness-provided auth. `backend/tests/live/conftest.py` resolves the key via `get_settings().require_anthropic_key()` at collection time (which reads `ANTHROPIC_API_KEY` from env through pydantic-settings), so the bridged var reaches the auto-skip exactly the same way a shell-exported one would. Same rule for any other tool you wire to the harness — never reuse a name the host process's SDK reads.
 
 This restriction does **not** apply to GitHub Actions (runners don't host Claude Code), Docker, devcontainers, or local dev shells — name the secret `ANTHROPIC_API_KEY` directly in those, matching the SDK convention.
 
