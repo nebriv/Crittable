@@ -698,15 +698,18 @@ function KeyboardOverrideTrigger({
 }: {
   onOpen: (x: number, y: number) => void;
 }) {
-  // Right-click is the primary affordance; this button gives keyboard-
-  // only users (and pointer users on touch devices) the same path. The
-  // visible glyph is "..." per the iter-4 mockup chrome — small,
-  // uppercase, ink-400 so it doesn't compete with the role label.
+  // User-persona review CRITICAL C-1: the right-click contextmenu
+  // hijacks browser muscle memory ("copy this AI text to my notes")
+  // with no in-app discovery. The visible ``⋯`` button + a
+  // descriptive ``title`` is the discoverability fallback — hover
+  // over a bubble's chevron and you see "Move to workstream
+  // (right-click also works)". Keyboard-only users hit Tab to land
+  // here; they don't depend on a contextmenu event ever firing.
   return (
     <button
       type="button"
       aria-label="Move to workstream"
-      title="Move to workstream"
+      title="Move to workstream — right-click the message also works"
       onClick={(e) => {
         e.preventDefault();
         e.stopPropagation();

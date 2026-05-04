@@ -1,5 +1,3 @@
-import { useState } from "react";
-
 import { MessageView, RoleView, WorkstreamView } from "../api/client";
 import { colorForWorkstream } from "../lib/workstreamPalette";
 
@@ -143,13 +141,11 @@ function ArtifactCard({
   color: string;
   onScrollMissed?: (id: string) => void;
 }) {
-  const [flashing, setFlashing] = useState(false);
-  void flashing;
   return (
     <li className="rounded-r-1 border border-ink-600 bg-ink-900">
       <button
         type="button"
-        onClick={() => scrollToMessage(item.id, onScrollMissed, setFlashing)}
+        onClick={() => scrollToMessage(item.id, onScrollMissed)}
         aria-label={`Jump to ${item.title} in the transcript`}
         className="flex w-full items-stretch gap-2 px-2 py-1.5 text-left hover:bg-ink-800 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-signal"
         title="Click to scroll the transcript to this moment."
@@ -184,7 +180,6 @@ function actorLabel(
 function scrollToMessage(
   id: string,
   onScrollMissed: ((id: string) => void) | undefined,
-  setFlashing: (v: boolean) => void,
 ): void {
   const el = document.getElementById(`msg-${id}`);
   if (!el) {
@@ -195,11 +190,15 @@ function scrollToMessage(
     return;
   }
   el.scrollIntoView({ behavior: "smooth", block: "start" });
-  setFlashing(true);
+  // ``data-flash`` drives the flash highlight via CSS; we don't need a
+  // React state mirror because the attribute toggle is the source of
+  // truth (the bubble may re-render between scroll and timeout, but the
+  // attribute is restored by React from the DOM diff). 1.4 s matches
+  // the Timeline tab so the same visual cue ties all three surfaces
+  // together.
   el.setAttribute("data-flash", "1");
   setTimeout(() => {
     el.removeAttribute("data-flash");
-    setFlashing(false);
   }, 1400);
 }
 

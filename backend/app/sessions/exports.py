@@ -31,9 +31,8 @@ under the per-session lock.
 from __future__ import annotations
 
 from collections import defaultdict
-from typing import Any
 
-from .models import Message, MessageKind, Role, Session, Workstream
+from .models import Message, MessageKind, Session
 
 # Same threshold the frontend Timeline uses for ``share_data`` pinning
 # — short shares clutter the rail, only substantial dumps deserve a pin.
@@ -348,7 +347,3 @@ __all__ = [
     "render_timeline_markdown",
     "timeline_filename",
 ]
-
-
-# Silence "unused" warnings for re-exported names some callers may import.
-_unused: tuple[Any, ...] = (Role, Workstream)

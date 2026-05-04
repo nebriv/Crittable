@@ -1,5 +1,3 @@
-import { useState } from "react";
-
 import { MessageView, RoleView, WorkstreamView } from "../api/client";
 import { colorForWorkstream } from "../lib/workstreamPalette";
 import { RailListShell } from "./ArtifactsRail";
@@ -137,20 +135,28 @@ function ActionCard({
   color: string;
   onScrollMissed?: (id: string) => void;
 }) {
-  const [flashing, setFlashing] = useState(false);
-  void flashing;
   const tone =
     item.status === "in_progress"
       ? "border-warn bg-warn-bg text-warn"
       : item.status === "done"
         ? "border-signal bg-signal-tint text-signal"
         : "border-ink-500 bg-ink-700 text-ink-200";
-  const label = item.status.replace("_", " ").toUpperCase();
+  // User-persona review HIGH H4: the heuristic only proves the
+  // addressed role replied — not that they completed the ask. Surface
+  // "REPLIED" not "IN PROGRESS" so the operator doesn't trust a flip
+  // to amber as completion signal. The underlying enum stays
+  // ``in_progress`` so the sort order + badge tone keep working.
+  const label =
+    item.status === "in_progress"
+      ? "REPLIED"
+      : item.status === "done"
+        ? "DONE"
+        : "OPEN";
   return (
     <li className="rounded-r-1 border border-ink-600 bg-ink-900">
       <button
         type="button"
-        onClick={() => scrollToMessage(item.id, onScrollMissed, setFlashing)}
+        onClick={() => scrollToMessage(item.id, onScrollMissed)}
         aria-label={`Jump to ${item.text.slice(0, 60)} in the transcript`}
         className="flex w-full items-stretch gap-2 px-2 py-1.5 text-left hover:bg-ink-800 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-signal"
         title="Click to scroll the transcript to the originating ask."
@@ -187,7 +193,6 @@ function ActionCard({
 function scrollToMessage(
   id: string,
   onScrollMissed: ((id: string) => void) | undefined,
-  setFlashing: (v: boolean) => void,
 ): void {
   const el = document.getElementById(`msg-${id}`);
   if (!el) {
@@ -198,10 +203,8 @@ function scrollToMessage(
     return;
   }
   el.scrollIntoView({ behavior: "smooth", block: "start" });
-  setFlashing(true);
   el.setAttribute("data-flash", "1");
   setTimeout(() => {
     el.removeAttribute("data-flash");
-    setFlashing(false);
   }, 1400);
 }

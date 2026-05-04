@@ -652,6 +652,16 @@ class SessionManager:
             after=target,
             actor=by_role_id,
         )
+        # Security review MEDIUM #1: ``record=False`` so override flips
+        # don't pressure the 256-slot replay buffer. The new
+        # ``workstream_id`` is part of the persisted message and lands
+        # in any reconnecting tab's snapshot fetch — the WS event is a
+        # live-tab nudge, not the source of truth. Without this guard
+        # a creator (or message-author) flipping their own message in
+        # a tight loop could evict legitimate ``state_changed`` /
+        # ``message_complete`` entries from the buffer and break
+        # reconnect rehydration. Mirrors the policy on
+        # ``notepad_update`` / typing indicators / awareness frames.
         await self._connections.broadcast(
             session.id,
             {
@@ -660,6 +670,7 @@ class SessionManager:
                 "workstream_id": target,
                 "actor_role_id": by_role_id,
             },
+            record=False,
         )
         return msg
 

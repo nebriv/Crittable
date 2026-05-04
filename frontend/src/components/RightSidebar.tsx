@@ -1,4 +1,9 @@
-import { useState, type ReactNode } from "react";
+import {
+  useCallback,
+  useState,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type ReactNode,
+} from "react";
 
 import { MessageView, RoleView, WorkstreamView } from "../api/client";
 import { Timeline } from "./Timeline";
@@ -102,23 +107,55 @@ export function RightSidebar({
     onScrollMissed,
   });
 
+  // UI/UX review BLOCK B2: ARIA APG tablist contract requires
+  // arrow-key + home/end keyboard navigation across tabs. Without it
+  // a keyboard-only user tabs into the active button and is trapped.
+  // Roving-tabindex pattern: only the active tab is in the natural
+  // tab order; arrow keys move focus + selection, and Tab leaves
+  // the tablist into the panel body.
+  const onTablistKey = useCallback(
+    (e: ReactKeyboardEvent<HTMLDivElement>, idPrefix: string): void => {
+      const idx = TABS.findIndex((t) => t.id === active);
+      let nextIdx = idx;
+      if (e.key === "ArrowRight") nextIdx = (idx + 1) % TABS.length;
+      else if (e.key === "ArrowLeft")
+        nextIdx = (idx - 1 + TABS.length) % TABS.length;
+      else if (e.key === "Home") nextIdx = 0;
+      else if (e.key === "End") nextIdx = TABS.length - 1;
+      else return;
+      e.preventDefault();
+      const nextTab = TABS[nextIdx];
+      selectTab(nextTab.id);
+      const el = document.getElementById(`${idPrefix}-tab-${nextTab.id}`);
+      el?.focus();
+    },
+    [active],
+  );
+
   return (
     <>
       <aside className="hidden flex-col gap-4 lg:flex lg:min-h-0 lg:overflow-y-auto lg:pr-1">
-        <section
-          className="flex min-h-0 flex-col rounded-r-3 border border-ink-600 bg-ink-850"
-          style={{ flex: "1 1 0" }}
-        >
+        {/*
+          UI/UX review HIGH H2: the rail's outer scroll region is the
+          page-level <aside> above this component. Pin the tablist
+          inside that scroll region with ``sticky top-0`` so a long
+          action-items / artifacts list can't push the tab affordance
+          off-screen at 1080p. The section itself doesn't take its own
+          overflow — the page-level scroller handles it.
+        */}
+        <section className="flex min-h-0 flex-col rounded-r-3 border border-ink-600 bg-ink-850">
           <div
             role="tablist"
             aria-label="Right sidebar"
-            className="flex border-b border-ink-600 text-[11px]"
+            onKeyDown={(e) => onTablistKey(e, "rail")}
+            className="sticky top-0 z-10 flex rounded-t-3 border-b border-ink-600 bg-ink-850 text-[11px]"
           >
             {TABS.map((tab) => (
               <RailTabButton
                 key={tab.id}
                 tab={tab}
                 active={active === tab.id}
+                idPrefix="rail"
                 onSelect={() => selectTab(tab.id)}
               />
             ))}
@@ -127,16 +164,23 @@ export function RightSidebar({
             id={`rail-panel-${active}`}
             role="tabpanel"
             aria-labelledby={`rail-tab-${active}`}
-            className="flex min-h-0 flex-1 flex-col overflow-y-auto"
+            className="flex min-h-0 flex-col"
           >
             {body}
           </div>
         </section>
         {notepad ?? null}
       </aside>
+      {/*
+        Mobile: collapses into a <details> block. UI/UX review BLOCK
+        B1: the mobile tab buttons MUST use a different id prefix
+        (``mrail`` here) than the desktop ones — both trees are in the
+        DOM at all viewport sizes (CSS only hides the inactive one),
+        and duplicate ids break ``aria-labelledby`` resolution + AT
+        navigation.
+      */}
       <details
         className="rounded-r-3 border border-ink-600 bg-ink-850 lg:hidden"
-        // Closed by default on mobile; players open when they want the sidebar.
       >
         <summary className="mono cursor-pointer px-3 py-2 text-[10px] font-bold uppercase tracking-[0.22em] text-ink-300">
           ARTIFACTS · ACTIONS · TIMELINE &amp; NOTES
@@ -145,6 +189,7 @@ export function RightSidebar({
           <div
             role="tablist"
             aria-label="Right sidebar (mobile)"
+            onKeyDown={(e) => onTablistKey(e, "mrail")}
             className="flex border-b border-ink-600 text-[11px]"
           >
             {TABS.map((tab) => (
@@ -152,14 +197,15 @@ export function RightSidebar({
                 key={tab.id}
                 tab={tab}
                 active={active === tab.id}
+                idPrefix="mrail"
                 onSelect={() => selectTab(tab.id)}
               />
             ))}
           </div>
           <div
-            id={`rail-panel-mobile-${active}`}
+            id={`mrail-panel-${active}`}
             role="tabpanel"
-            aria-labelledby={`rail-tab-${active}`}
+            aria-labelledby={`mrail-tab-${active}`}
           >
             {body}
           </div>
@@ -211,19 +257,25 @@ function renderTabBody(
 function RailTabButton({
   tab,
   active,
+  idPrefix,
   onSelect,
 }: {
   tab: { id: RailTab; label: string };
   active: boolean;
+  /** ``"rail"`` for desktop, ``"mrail"`` for mobile — both trees stay
+   *  in the DOM regardless of viewport, so unique id prefixes are
+   *  required to keep ``aria-labelledby`` / ``aria-controls`` valid
+   *  per the W3C ARIA APG tablist pattern. */
+  idPrefix: string;
   onSelect: () => void;
 }) {
   return (
     <button
       type="button"
       role="tab"
-      id={`rail-tab-${tab.id}`}
+      id={`${idPrefix}-tab-${tab.id}`}
       aria-selected={active}
-      aria-controls={`rail-panel-${tab.id}`}
+      aria-controls={`${idPrefix}-panel-${tab.id}`}
       tabIndex={active ? 0 : -1}
       onClick={onSelect}
       className={`mono flex-1 px-2 py-2 font-semibold uppercase tracking-[0.10em] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-signal ${

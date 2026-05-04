@@ -17,6 +17,7 @@ Coverage:
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 import pytest
 
@@ -441,3 +442,203 @@ def test_strip_workstream_keys_helper_drops_workstream_id_and_mentions() -> None
         }
     )
     assert cleaned == {"args_keys": ["role_id"], "keep": "yes"}
+
+
+# ----------------------------------------------------------------------
+# HTTP-layer integration (QA review MEDIUM — make 4xx mapping +
+# Content-Type + Content-Disposition assertable, not just visible-in-code).
+
+
+@pytest.fixture
+def http_client(monkeypatch: pytest.MonkeyPatch) -> Any:
+    """In-process FastAPI client with a benign LLM mock. Mirrors the
+    fixture in ``test_api_routes_gaps.py`` so the two suites can share
+    seating helpers without coupling on the import surface."""
+
+    from fastapi.testclient import TestClient
+
+    from app.main import create_app
+    from tests.mock_anthropic import MockAnthropic
+
+    monkeypatch.setenv("ANTHROPIC_MODEL_PLAY", "mock-play")
+    monkeypatch.setenv("ANTHROPIC_MODEL_SETUP", "mock-setup")
+    monkeypatch.setenv("ANTHROPIC_MODEL_AAR", "mock-aar")
+    monkeypatch.setenv("ANTHROPIC_MODEL_GUARDRAIL", "mock-guardrail")
+    monkeypatch.setenv("TEST_MODE", "true")
+    monkeypatch.setenv("SESSION_SECRET", "x" * 32)
+    monkeypatch.setenv("INPUT_GUARDRAIL_ENABLED", "false")
+    monkeypatch.setenv("DUPLICATE_SUBMISSION_WINDOW_SECONDS", "0")
+    monkeypatch.setenv("WORKSTREAMS_ENABLED", "true")
+    reset_settings_cache()
+    app = create_app()
+    with TestClient(app) as c:
+        c.app.state.llm.set_transport(MockAnthropic({}).messages)
+        yield c
+
+
+def _seed_ai_message_sync(client: Any, session_id: str) -> str:
+    """Append an AI-authored play message directly via the manager's
+    in-memory repository so the override / export tests have a real
+    message to operate on without driving a full play turn through
+    the mock LLM. Returns the new message id.
+
+    The repository's interface is async, but ``InMemoryRepository``'s
+    operations are pure dict mutations under an asyncio.Lock — we
+    don't need to actually await them in test setup. We poke the
+    private dict directly to avoid bringing up an event loop here
+    (relying on ``asyncio.get_event_loop()`` is deprecated in 3.13
+    and breaks under shared-process suite runs).
+    """
+
+    manager = client.app.state.manager
+    repo = manager._repo  # type: ignore[attr-defined]
+    sessions = repo._sessions  # type: ignore[attr-defined]
+    session = sessions[session_id]
+    msg = Message(
+        kind=MessageKind.AI_TEXT,
+        body="seeded test message for polish integration",
+        tool_name="broadcast",
+    )
+    session.messages.append(msg)
+    return msg.id
+
+
+def _http_seat(client: Any) -> dict[str, str]:
+    """Create a session, add a player, seed one AI message, return
+    ids + tokens. ``skip_setup=True`` lands in READY; we seed a play
+    message manually because the e2e drive path is overkill for
+    verifying route mapping."""
+
+    r = client.post(
+        "/api/sessions",
+        json={
+            "scenario_prompt": "Ransomware",
+            "creator_label": "CISO",
+            "creator_display_name": "Alex",
+            "skip_setup": True,
+        },
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    sid = body["session_id"]
+    ctok = body["creator_token"]
+    cid = body["creator_role_id"]
+    r2 = client.post(
+        f"/api/sessions/{sid}/roles?token={ctok}",
+        json={"label": "SOC", "display_name": "Bo"},
+    )
+    assert r2.status_code == 200, r2.text
+    other = r2.json()
+    seeded_msg_id = _seed_ai_message_sync(client, sid)
+    return {
+        "sid": sid,
+        "ctok": ctok,
+        "cid": cid,
+        "ptok": other["token"],
+        "pid": other["role_id"],
+        "seeded_msg_id": seeded_msg_id,
+    }
+
+
+def test_export_timeline_md_returns_markdown_content_type(http_client: Any) -> None:
+    """Mandate: both export endpoints must return
+    ``Content-Type: text/markdown; charset=utf-8``. Asserted by HTTP
+    response, not by inspection."""
+
+    seats = _http_seat(http_client)
+    r = http_client.get(
+        f"/api/sessions/{seats['sid']}/exports/timeline.md?token={seats['ctok']}"
+    )
+    assert r.status_code == 200, r.text
+    ct = r.headers.get("content-type", "")
+    assert "text/markdown" in ct
+    assert "charset=utf-8" in ct.lower()
+    cd = r.headers.get("content-disposition", "")
+    assert "attachment" in cd
+    assert "-timeline.md" in cd
+
+
+def test_export_full_record_md_returns_markdown_content_type(http_client: Any) -> None:
+    seats = _http_seat(http_client)
+    r = http_client.get(
+        f"/api/sessions/{seats['sid']}/exports/full-record.md?token={seats['ctok']}"
+    )
+    assert r.status_code == 200, r.text
+    ct = r.headers.get("content-type", "")
+    assert "text/markdown" in ct
+    assert "charset=utf-8" in ct.lower()
+    cd = r.headers.get("content-disposition", "")
+    assert "-full-record.md" in cd
+
+
+def test_exports_reject_non_creator(http_client: Any) -> None:
+    """Both export endpoints are creator-only — a player token returns 403."""
+
+    seats = _http_seat(http_client)
+    r1 = http_client.get(
+        f"/api/sessions/{seats['sid']}/exports/timeline.md?token={seats['ptok']}"
+    )
+    assert r1.status_code == 403
+    r2 = http_client.get(
+        f"/api/sessions/{seats['sid']}/exports/full-record.md?token={seats['ptok']}"
+    )
+    assert r2.status_code == 403
+
+
+def test_override_workstream_404_for_unknown_message(http_client: Any) -> None:
+    seats = _http_seat(http_client)
+    r = http_client.post(
+        f"/api/sessions/{seats['sid']}/messages/missing-id/workstream?token={seats['ctok']}",
+        json={"workstream_id": None},
+    )
+    assert r.status_code == 404
+
+
+def test_override_workstream_400_for_undeclared_target(http_client: Any) -> None:
+    """No workstreams declared on this session (skip_setup path leaves
+    the plan's workstream list empty), so any non-null target is
+    rejected with 400. Verifies the route's IllegalTransitionError →
+    400 mapping for the "not declared" branch."""
+
+    seats = _http_seat(http_client)
+    r = http_client.post(
+        f"/api/sessions/{seats['sid']}/messages/{seats['seeded_msg_id']}/workstream?token={seats['ctok']}",
+        json={"workstream_id": "vendor_management"},
+    )
+    assert r.status_code == 400
+
+
+def test_override_workstream_403_for_third_party_role(http_client: Any) -> None:
+    """A non-creator non-author player must not be able to override
+    someone else's message. Mandate authz contract; verifies the
+    route's IllegalTransitionError → 403 mapping for the
+    "only the message's author or the creator" branch.
+
+    The seeded message is AI-authored (``role_id=None``); the player
+    is neither the author nor the creator, so the override must 403.
+    """
+
+    seats = _http_seat(http_client)
+    r = http_client.post(
+        f"/api/sessions/{seats['sid']}/messages/{seats['seeded_msg_id']}/workstream?token={seats['ptok']}",
+        json={"workstream_id": None},
+    )
+    assert r.status_code == 403
+
+
+def test_override_workstream_empty_string_normalised_to_null(
+    http_client: Any,
+) -> None:
+    """Security review LOW #2: ``""`` in the JSON body is normalised
+    to ``None`` (the #main bucket). A creator submitting
+    ``{"workstream_id": ""}`` gets a 200 OK (idempotent no-op when the
+    message is already in #main) rather than a confusing 400 about
+    an undeclared id.
+    """
+
+    seats = _http_seat(http_client)
+    r = http_client.post(
+        f"/api/sessions/{seats['sid']}/messages/{seats['seeded_msg_id']}/workstream?token={seats['ctok']}",
+        json={"workstream_id": ""},
+    )
+    assert r.status_code == 200

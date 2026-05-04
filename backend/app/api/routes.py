@@ -8,7 +8,7 @@ from typing import Any
 
 from fastapi import APIRouter, FastAPI, HTTPException, Request, status
 from fastapi.responses import PlainTextResponse, Response
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from ..auth.authn import HMACAuthenticator, InvalidTokenError, JoinTokenPayload
 from ..auth.authz import (
@@ -137,10 +137,22 @@ class WorkstreamOverrideBody(BaseModel):
     the message back to the synthetic ``#main`` bucket. Authz lives
     in ``manager.override_message_workstream``: creator OR the
     message-of-record's role only.
+
+    Security review LOW #2: ``""`` is normalised to ``None`` at the
+    boundary so a JS caller that defaults to an empty string for
+    "unset" doesn't trip the "not declared" branch and surface a
+    confusing 400 to the operator.
     """
 
     model_config = ConfigDict(extra="forbid")
     workstream_id: str | None = Field(default=None, max_length=32)
+
+    @field_validator("workstream_id", mode="before")
+    @classmethod
+    def _empty_to_none(cls, v: Any) -> Any:
+        if isinstance(v, str) and v == "":
+            return None
+        return v
 
 
 def register_api_routes(app: FastAPI) -> None:

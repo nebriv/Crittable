@@ -99,27 +99,37 @@ export function WorkstreamMenu({
       <header className="mono px-3 py-1 text-[10px] font-bold uppercase tracking-[0.16em] text-ink-300">
         Move to workstream
       </header>
-      <MenuItem
-        label="#main (unscoped)"
-        active={current === null}
-        color="var(--ink-500)"
-        onSelect={() => {
-          onPick(null);
-          onClose();
-        }}
-      />
-      {workstreams.map((ws) => (
+      {/*
+        UI/UX review HIGH H1: per W3C ARIA, ``aria-checked`` is valid
+        only on ``role="menuitemradio"`` / ``"menuitemcheckbox"``,
+        not on a plain ``"menuitem"``. The radio variant is the right
+        fit here: exactly one workstream is current per message, so
+        the radiogroup semantics announce "Containment, 2 of 3,
+        checked" the way a screen-reader user expects.
+      */}
+      <div role="group" aria-label="Workstream targets">
         <MenuItem
-          key={ws.id}
-          label={`#${ws.label}`}
-          active={current === ws.id}
-          color={colorForWorkstream(ws.id, declaredOrder)}
+          label="#main (unscoped)"
+          active={current === null}
+          color="var(--ink-500)"
           onSelect={() => {
-            onPick(ws.id);
+            onPick(null);
             onClose();
           }}
         />
-      ))}
+        {workstreams.map((ws) => (
+          <MenuItem
+            key={ws.id}
+            label={`#${ws.label}`}
+            active={current === ws.id}
+            color={colorForWorkstream(ws.id, declaredOrder)}
+            onSelect={() => {
+              onPick(ws.id);
+              onClose();
+            }}
+          />
+        ))}
+      </div>
       {workstreams.length === 0 ? (
         <p className="mono px-3 py-2 text-[10px] uppercase tracking-[0.10em] text-ink-500">
           No workstreams declared
@@ -143,17 +153,21 @@ function MenuItem({
   return (
     <button
       type="button"
-      role="menuitem"
+      role="menuitemradio"
       data-menuitem="1"
       onClick={onSelect}
       onKeyDown={(e) => {
-        // Basic arrow-down/up nav within the menu.
+        // Basic arrow-down/up nav within the menu. We query from the
+        // ``role="menu"`` ancestor (closest match) rather than the
+        // immediate parent so the radio-group wrapper added in the
+        // H1 a11y fix doesn't fragment the navigation set.
         if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
         e.preventDefault();
+        const root = e.currentTarget.closest("[role='menu']");
         const items = Array.from(
-          (e.currentTarget.parentElement?.querySelectorAll<HTMLButtonElement>(
+          root?.querySelectorAll<HTMLButtonElement>(
             "button[data-menuitem='1']",
-          ) ?? []),
+          ) ?? [],
         );
         const idx = items.indexOf(e.currentTarget);
         const nextIdx =

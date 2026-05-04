@@ -132,7 +132,22 @@ function extractFilename(disposition: string | null): string | null {
 
 async function safeReadText(res: Response): Promise<string> {
   try {
-    return (await res.text()).slice(0, 200);
+    const text = await res.text();
+    // UI/UX review HIGH H4: FastAPI's default 4xx body is
+    // ``{"detail": "..."}``. Render only the human-readable
+    // ``detail`` field so the operator sees "creator only" rather
+    // than ``{"detail":"creator only"}``. Falls back to the raw
+    // text when the body isn't JSON or is missing the field.
+    const ct = res.headers.get("content-type") ?? "";
+    if (ct.includes("application/json")) {
+      try {
+        const parsed = JSON.parse(text) as { detail?: unknown };
+        if (typeof parsed.detail === "string") return parsed.detail.slice(0, 200);
+      } catch {
+        /* fall through to raw text */
+      }
+    }
+    return text.slice(0, 200);
   } catch {
     return "";
   }
