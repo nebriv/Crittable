@@ -95,7 +95,7 @@ async def test_aar_grounds_claims_in_transcript(
     invent a 7th decision."""
 
     gen = AARGenerator(llm=aar_client, audit=aar_audit)
-    md = await gen.generate(aar_session)
+    md, _ = await gen.generate(aar_session)
     artifact = _truncate_for_judge(md)
 
     rubric = """
@@ -149,7 +149,7 @@ async def test_aar_per_role_scores_are_differentiated(
     from SOC's, who mostly reported telemetry."""
 
     gen = AARGenerator(llm=aar_client, audit=aar_audit)
-    md = await gen.generate(aar_session)
+    md, _ = await gen.generate(aar_session)
     artifact = _truncate_for_judge(md)
 
     rubric = """
@@ -193,7 +193,7 @@ async def test_aar_gaps_and_recommendations_are_concrete(
     is the failure mode this test guards against."""
 
     gen = AARGenerator(llm=aar_client, audit=aar_audit)
-    md = await gen.generate(aar_session)
+    md, _ = await gen.generate(aar_session)
     artifact = _truncate_for_judge(md)
 
     rubric = """
@@ -239,7 +239,7 @@ async def test_aar_participant_view_strips_creator_only(
     leak via paraphrase elsewhere."""
 
     gen = AARGenerator(llm=aar_client, audit=aar_audit)
-    full = await gen.generate(aar_session)
+    full, _ = await gen.generate(aar_session)
     stripped = strip_creator_only(full)
     artifact = _truncate_for_judge(stripped)
 
