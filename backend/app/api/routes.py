@@ -322,11 +322,16 @@ def register_api_routes(app: FastAPI) -> None:
                     # Issue #78: True for out-of-turn interjections so
                     # the transcript UI can render a "sidebar" badge.
                     "is_interjection": m.is_interjection,
-                    # Wave 2: per-message structural mention list.
-                    # Surfaced so the transcript can render the
-                    # @-highlight from this list rather than regex-
-                    # scanning the body — the same list the WS
-                    # ``message_complete`` event already carries.
+                    # Phase B chat-declutter (docs/plans/chat-decluttering.md
+                    # §4.7): the frontend's TranscriptFilters and the
+                    # colored track-bar stripe both read ``workstream_id``
+                    # off this snapshot field. ``None`` = synthetic
+                    # ``#main`` bucket (slate gray stripe). The
+                    # @-highlight + ``(@you)`` badge similarly reads
+                    # ``mentions`` here so a reconnecting tab can recolor
+                    # bubbles from the snapshot alone (no replay buffer
+                    # round-trip required).
+                    "workstream_id": m.workstream_id,
                     "mentions": list(m.mentions),
                     # Wave 3 (issue #69): True iff this player message
                     # tagged ``@facilitator`` AND ``Session.ai_paused``
@@ -369,6 +374,21 @@ def register_api_routes(app: FastAPI) -> None:
             # snapshot field covers the page-reload case where the
             # WS replay buffer may have rolled past the toggle.
             "ai_paused": session.ai_paused,
+            # Phase B chat-declutter (docs/plans/chat-decluttering.md §4.1):
+            # the declared-workstreams registry is visible to every
+            # participant (not just the creator) because the
+            # TranscriptFilters pills + colored stripe palette assignment
+            # read off this list — a player needs the same registry the
+            # creator does to filter their own view. ``plan`` itself stays
+            # creator-only (it leaks objectives + injects); we surface
+            # only the workstream rows here, which were always intended to
+            # be a player-visible UI affordance per plan §6.1. Empty list
+            # when no workstreams declared (or feature flag off).
+            "workstreams": (
+                [ws.model_dump(mode="json") for ws in session.plan.workstreams]
+                if session.plan is not None
+                else []
+            ),
             # Per-role follow-up todo list maintained by the AI. Creator-
             # only because seeing other roles' open asks could spoil the
             # narrative. Each item: {id, role_id, prompt, status,

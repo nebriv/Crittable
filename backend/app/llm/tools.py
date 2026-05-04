@@ -57,6 +57,35 @@ _SCENARIO_INJECT_SCHEMA: dict[str, Any] = {
     "required": ["trigger", "type", "summary"],
 }
 
+
+# Phase B chat-declutter (docs/plans/chat-decluttering.md §3.1):
+# shared optional ``workstream_id`` field used by every routing tool
+# that can reasonably belong to one of the session's declared
+# workstreams (``address_role`` / ``pose_choice`` / ``share_data`` /
+# ``inject_critical_event``). Centralised so future schema tweaks
+# (rewordings, additional constraints) only happen in one place — the
+# Prompt Expert review specifically asked we don't let the four
+# descriptions drift across tools.
+#
+# Strict enum on the *value* is intentionally NOT in the JSON schema:
+# the dispatch-time validator (``_validate_workstream_id``) returns a
+# structured ``tool_result is_error=True`` instead so the strict-retry
+# loop can recover (per plan §4.5), rather than the schema-validation
+# layer rejecting before the model gets a chance to self-correct.
+_WORKSTREAM_ID_FIELD: dict[str, Any] = {
+    "type": "string",
+    "description": (
+        "Optional. Workstream this beat belongs to. Must match an id "
+        "from the session's declared workstreams (declared during "
+        "setup). Omit (or pass empty string) for cross-cutting / "
+        "general beats; the message renders under the default "
+        "unscoped bucket. **If no workstreams were declared for this "
+        "session, OMIT this field on every call — do not invent "
+        "values.** UI-filter affordance only; not load-bearing for "
+        "play correctness."
+    ),
+}
+
 PLAY_TOOLS: list[dict[str, Any]] = [
     {
         "name": "address_role",
@@ -79,20 +108,7 @@ PLAY_TOOLS: list[dict[str, Any]] = [
             "properties": {
                 "role_id": {"type": "string"},
                 "message": {"type": "string"},
-                "workstream_id": {
-                    "type": "string",
-                    "description": (
-                        "Optional. Workstream this beat belongs to. Must "
-                        "match an id from the session's declared workstreams "
-                        "(declared during setup). Omit (or pass empty string) "
-                        "for cross-cutting / general beats; the message "
-                        "renders under the default unscoped bucket. **If no "
-                        "workstreams were declared for this session, OMIT "
-                        "this field on every call — do not invent values.** "
-                        "UI-filter affordance only; not load-bearing for "
-                        "play correctness."
-                    ),
-                },
+                "workstream_id": _WORKSTREAM_ID_FIELD,
             },
             "required": ["role_id", "message"],
         },
@@ -180,6 +196,7 @@ PLAY_TOOLS: list[dict[str, Any]] = [
                     "minItems": 2,
                     "maxItems": 5,
                 },
+                "workstream_id": _WORKSTREAM_ID_FIELD,
             },
             "required": ["role_id", "question", "options"],
         },
@@ -219,6 +236,7 @@ PLAY_TOOLS: list[dict[str, Any]] = [
             "properties": {
                 "label": {"type": "string"},
                 "data": {"type": "string"},
+                "workstream_id": _WORKSTREAM_ID_FIELD,
             },
             "required": ["label", "data"],
         },
@@ -248,6 +266,7 @@ PLAY_TOOLS: list[dict[str, Any]] = [
                     "type": "array",
                     "items": {"type": "string"},
                 },
+                "workstream_id": _WORKSTREAM_ID_FIELD,
             },
             "required": ["severity", "headline", "body"],
         },

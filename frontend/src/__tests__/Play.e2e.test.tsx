@@ -106,6 +106,7 @@ function _baseSnapshot(): SessionSnapshot {
     setup_notes: null,
     cost: null,
     aar_status: null,
+    workstreams: [],
   };
 }
 
@@ -128,6 +129,8 @@ function _playSnapshot(): SessionSnapshot {
       body: "**SOC** — what does the alert queue actually show?",
       tool_name: "broadcast",
       tool_args: null,
+      workstream_id: null,
+      mentions: [],
     },
   ];
   return s;

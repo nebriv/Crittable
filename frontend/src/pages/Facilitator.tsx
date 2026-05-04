@@ -20,6 +20,12 @@ import { RolesPanel } from "../components/RolesPanel";
 import { SessionActivityPanel } from "../components/SessionActivityPanel";
 import { SetupChat } from "../components/SetupChat";
 import { Transcript } from "../components/Transcript";
+import { TranscriptFilters } from "../components/TranscriptFilters";
+import {
+  DEFAULT_FILTER,
+  FilterState,
+  filterMessages,
+} from "../lib/transcriptFilters";
 import { BottomActionBar } from "../components/brand/BottomActionBar";
 import { DieLoader } from "../components/brand/DieLoader";
 import { CollapsibleRailPanel } from "../components/brand/CollapsibleRailPanel";
@@ -253,6 +259,12 @@ export function Facilitator() {
   // 3-second client-side cooldown on force-advance — paired with the
   // backend in-flight gate in ``manager.force_advance``. See issue #63.
   const [forceAdvanceCooldown, setForceAdvanceCooldown] = useState(false);
+  // Phase B chat-declutter (docs/plans/chat-decluttering.md §4.7):
+  // creator-side filter state for the TranscriptFilters component
+  // above the chat. Mirrors the player-side state in ``Play.tsx`` so
+  // the same filter logic drives both surfaces.
+  const [transcriptFilter, setTranscriptFilter] =
+    useState<FilterState>(DEFAULT_FILTER);
   // Live AI decision rationale stream (issue #55). Entries arrive via
   // ``decision_logged`` events as the AI calls
   // ``record_decision_rationale``; on snapshot refresh we replace the
@@ -1193,6 +1205,24 @@ export function Facilitator() {
             an operator literally couldn't reach the "Approve plan" button.
           */}
           {/*
+            Phase B chat-declutter (UI/UX review BLOCK):
+            ``TranscriptFilters`` lives OUTSIDE the scroll region so the
+            filter pills + hidden-mentions banner stay reachable as the
+            creator scrolls down through the transcript. Pre-fix the
+            component was nested inside ``scrollRegionRef`` and scrolled
+            out of view mid-exercise — the player view (``Play.tsx``)
+            already had this layout right; the creator view didn't.
+          */}
+          {phase === "play" ? (
+            <TranscriptFilters
+              messages={snapshot.messages}
+              workstreams={snapshot.workstreams ?? []}
+              selfRoleId={state.creatorRoleId}
+              state={transcriptFilter}
+              onChange={setTranscriptFilter}
+            />
+          ) : null}
+          {/*
             Scroll region: holds whatever scrolls within a phase. For
             setup/ready/ended this is the entire phase content. For play
             the *transcript only* lives here so the Composer (a sibling
@@ -1258,8 +1288,13 @@ export function Facilitator() {
                 </div>
               ) : null}
               <Transcript
-                messages={snapshot.messages}
+                messages={filterMessages(
+                  snapshot.messages,
+                  transcriptFilter,
+                  state.creatorRoleId,
+                )}
                 roles={snapshot.roles}
+                workstreams={snapshot.workstreams ?? []}
                 aiThinking={
                   // Authoritative: any LLM call boundary in flight, or
                   // an active stream, lights the typing indicator. The
@@ -1484,6 +1519,10 @@ export function Facilitator() {
           <RightSidebar
             messages={snapshot.messages}
             roles={snapshot.roles}
+            // Phase B chat-declutter: same recovery as the player path
+            // — Timeline pin against a filtered-out message clears the
+            // filter so the next click lands.
+            onScrollMissed={() => setTranscriptFilter(DEFAULT_FILTER)}
             notepad={
               wsClient ? (
                 <SharedNotepad

@@ -11,9 +11,20 @@ export type ServerEvent =
       body: string;
       tool_name: string | null;
       turn_id: string | null;
-      /** Wave 2: structural mention list emitted alongside the message.
-       *  Includes the literal ``"facilitator"`` token for AI-routed
-       *  mentions. */
+      /**
+       * Phase B chat-declutter (docs/plans/chat-decluttering.md §4.8):
+       * server-validated workstream tag. ``null`` = synthetic ``#main``
+       * (unscoped) bucket. The colored track-bar stripe in
+       * ``Transcript.tsx`` reads this field directly.
+       */
+      workstream_id?: string | null;
+      /**
+       * Phase B chat-declutter (plan §5.1) + Wave 2 composer mentions:
+       * structural source for the @-highlight (amber outline +
+       * ``(@you)`` badge). Each entry is a real ``role_id`` from the
+       * roster or the literal ``"facilitator"`` token. **Never**
+       * regex'd from ``body``.
+       */
       mentions?: string[];
       /** Wave 3 (issue #69): True iff this player message was a
        *  ``@facilitator`` mention submitted while ``Session.ai_paused``
@@ -143,6 +154,25 @@ export type ServerEvent =
     }
   | { type: "notepad_lock_pending"; locks_in_seconds: number }
   | { type: "notepad_locked"; locked_at: string | null }
+  /**
+   * Phase A chat-declutter (docs/plans/chat-decluttering.md §4.8):
+   * AI declared one or more workstreams during setup (the new tool
+   * ``declare_workstreams``). Recorded server-side so a late joiner
+   * still sees the registry replay through their snapshot fetch.
+   * ``record=True`` so reconnecting tabs stay in sync with the
+   * filter UI's available pills.
+   */
+  | {
+      type: "workstream_declared";
+      workstreams: {
+        id: string;
+        label: string;
+        lead_role_id: string | null;
+        state: "open" | "closed";
+        created_at: string;
+        closed_at: string | null;
+      }[];
+    }
   | { type: "error"; scope: string; message: string };
 
 export type ClientEvent =

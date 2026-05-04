@@ -69,6 +69,27 @@ The current mitigation (in `backend/tests/live/conftest.py`'s `pytest_collection
 
 The proper fix is to **delete `TEST_MODE` entirely** and have the unit-test conftest inject a dummy `ANTHROPIC_API_KEY` instead. Tracked as a separate issue (filed when the joint-PR work merges) — do not extend `TEST_MODE`'s reach in the meantime. If you reach for it, you're probably about to add the next instance of this bug class.
 
+## Never shadow `ANTHROPIC_*` in the agent harness
+
+Claude Code itself talks to the Anthropic API via the official SDK, which auto-discovers `ANTHROPIC_API_KEY`, `ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN`, and friends from process env. **Setting any of them as a session-wide secret in the Claude Code harness's "environment variables" pane shadows the credential the harness uses internally and breaks the session immediately** — auth mismatch, wrong account, wrong entitlement, or silent re-routing of Claude's own calls through your key. Every sandbox-level env var is inherited by Claude Code's own process tree.
+
+The fix: store the live-test key under a non-shadowing name in the harness — e.g. `LIVE_TEST_ANTHROPIC_API_KEY` — and bridge it into the pytest subprocess only at invocation time. The `backend/scripts/run-live-tests.sh` wrapper does this for you:
+
+```bash
+backend/scripts/run-live-tests.sh                # full suite
+backend/scripts/run-live-tests.sh -k test_aar    # pytest filter
+```
+
+If you'd rather invoke pytest directly, the equivalent inline form is:
+
+```bash
+ANTHROPIC_API_KEY="$LIVE_TEST_ANTHROPIC_API_KEY" pytest backend/tests/live/ -v
+```
+
+The `VAR=value command` form scopes the assignment to that one child process; Claude Code's own SDK calls keep using the harness-provided auth. `backend/tests/live/conftest.py` resolves the key via `get_settings().require_anthropic_key()` at collection time (which reads `ANTHROPIC_API_KEY` from env through pydantic-settings), so the bridged var reaches the auto-skip exactly the same way a shell-exported one would. Same rule for any other tool you wire to the harness — never reuse a name the host process's SDK reads.
+
+This restriction does **not** apply to GitHub Actions (runners don't host Claude Code), Docker, devcontainers, or local dev shells — name the secret `ANTHROPIC_API_KEY` directly in those, matching the SDK convention.
+
 ## Branding (read before any UI / copy work)
 
 The product is **Crittable** — tabletop exercises for security teams. Slogan `ROLL · RESPOND · REVIEW`. Operator voice, not marketer voice; the audience is incident responders mid-exercise. **Always read these before touching UI, page copy, marketing surfaces, or anything user-facing:**
@@ -126,7 +147,7 @@ Custom tools, resources, and prompts (Skills-style) are loaded at startup via en
 
 > **Pair this section with [`docs/turn-lifecycle.md`](docs/turn-lifecycle.md)** — the load-bearing reference for the play-turn engine. Flowcharts of every gate, slot, contract, validator branch, and recovery directive, plus a full write-up of the 2026-04-30 silent-yield regression. Read both before touching `app/sessions/turn_validator.py`, `app/sessions/turn_driver.py`, `app/sessions/slots.py`, or `app/llm/dispatch.py`.
 >
-> **Adding or rewording a tool:** read [`docs/tool-design.md`](docs/tool-design.md) first. The five trap patterns there are the difference between a tool the model picks correctly and one it ignores or over-applies. Run `pytest backend/tests/live/ -v` against `ANTHROPIC_API_KEY` after any change to `app/llm/tools.py`, Block 6 of `app/llm/prompts.py`, or the recovery directives.
+> **Adding or rewording a tool:** read [`docs/tool-design.md`](docs/tool-design.md) first. The five trap patterns there are the difference between a tool the model picks correctly and one it ignores or over-applies. Run `backend/scripts/run-live-tests.sh` after any change to `app/llm/tools.py`, Block 6 of `app/llm/prompts.py`, or the recovery directives.
 
 [`backend/app/sessions/phase_policy.py`](backend/app/sessions/phase_policy.py) is the **single source of truth** for "what is the LLM allowed to do in tier X at session state Y?" Do not duplicate these rules elsewhere. Three enforcement points consume it:
 
@@ -145,7 +166,7 @@ Adding a new tier or tool: update `phase_policy.POLICIES`, add `ALLOWED_*_TOOL_N
 1. Drop the tool from `PLAY_TOOLS` / `SETUP_TOOLS` / `AAR_TOOL` in `app/llm/tools.py`.
 2. Add the name to `HISTORICAL_REMOVED_PLAY_TOOLS` (or the tier-equivalent set) in `backend/tests/test_prompt_tool_consistency.py`. **Do not skip this** — it's how future regressions get caught.
 3. Search the codebase for the name in backticks: `grep -rn '`<name>`' backend/app frontend/src` — every hit in a model-facing string is a bug. Hits in code comments, removal-explanation docstrings, and `BUILTIN_TOOL_NAMES` (extension shadowing prevention) are intentional.
-4. Run `pytest backend/tests/test_prompt_tool_consistency.py` — must pass. Then run `pytest backend/tests/live/` against `ANTHROPIC_API_KEY` to confirm no model-routing regression.
+4. Run `pytest backend/tests/test_prompt_tool_consistency.py` — must pass. Then run `backend/scripts/run-live-tests.sh` to confirm no model-routing regression.
 
 **Addition protocol**:
 
@@ -456,4 +477,5 @@ This error wastes tokens and time.
 3. Pick or confirm the issue you're working on.
 4. Re-read [`docs/PLAN.md`](docs/PLAN.md) for the relevant section before making decisions that contradict it.
 5. After meaningful work: run tests + lint locally before pushing.
-6. For Phase-2 issues: launch the three review sub-agents before requesting human review.
+6. If the diff touches `backend/app/llm/`, `backend/app/sessions/turn_*.py`, `backend/app/sessions/submission_pipeline.py`, or any prompt / tool description / recovery-directive copy, also run `backend/scripts/run-live-tests.sh` before pushing (~$0.10/run; hits the real Anthropic API). The non-live suite catches structural regressions; the live suite catches model-routing ones — the two are complementary, not redundant. Skip only when the diff is provably LLM-blind (CSS, type-only changes, comment fixes, scenarios JSON without engine-mode replay).
+7. For Phase-2 issues: launch the three review sub-agents before requesting human review.

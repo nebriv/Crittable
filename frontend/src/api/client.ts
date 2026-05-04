@@ -32,6 +32,24 @@ export interface SessionSnapshot {
    * covers reload after the replay buffer has rolled past the toggle.
    */
   ai_paused?: boolean;
+  /**
+   * Phase B chat-declutter (docs/plans/chat-decluttering.md §4.1):
+   * AI-declared workstreams for this session. Empty list = no
+   * categorization (single ``#main`` bucket); populated when the AI
+   * called ``declare_workstreams`` during setup. Visible to every
+   * participant so the TranscriptFilters pills + colored stripe
+   * palette can assign deterministic colors in declaration order.
+   */
+  workstreams: WorkstreamView[];
+}
+
+export interface WorkstreamView {
+  id: string;
+  label: string;
+  lead_role_id: string | null;
+  state: "open" | "closed";
+  created_at: string;
+  closed_at: string | null;
 }
 
 export interface DecisionLogEntry {
@@ -91,11 +109,30 @@ export interface MessageView {
    * transcript renders a "sidebar" badge so it isn't confused with a
    * turn submission. */
   is_interjection?: boolean;
-  /** Wave 2: structural mention list — server-cleaned. The transcript
-   * renders the @-highlight from this list rather than regex-scanning
-   * ``body``. May contain role_ids and/or the literal ``"facilitator"``
-   * token for ``@facilitator`` / ``@ai`` / ``@gm`` mentions. */
-  mentions?: string[];
+  /**
+   * Phase B chat-declutter (docs/plans/chat-decluttering.md §4.1):
+   * one of the session's declared ``Workstream.id`` values, or
+   * ``null`` for the synthetic ``#main`` (unscoped) bucket. Validated
+   * server-side at dispatch time; the frontend renders the colored
+   * track-bar stripe directly off this field — no body parsing.
+   *
+   * Per CLAUDE.md "no backwards compat": the snapshot endpoint
+   * always emits this field (Phase A), so the frontend type makes
+   * it required. ``null`` is the canonical "no workstream" value.
+   */
+  workstream_id: string | null;
+  /**
+   * Phase B chat-declutter (plan §5.1) + Wave 2 composer mentions:
+   * structural source for the @-highlight (amber outline +
+   * ``(@you)`` badge). Each entry is a real ``role_id`` from the
+   * roster or the literal ``"facilitator"`` token for
+   * ``@facilitator`` / ``@ai`` / ``@gm`` mentions. The frontend
+   * **never** regex-scans ``body``. Empty list when nobody is
+   * mentioned.
+   *
+   * Required (no-back-compat): the wire contract always emits this.
+   */
+  mentions: string[];
   /** Wave 3 (issue #69): True iff this player message tagged
    * ``@facilitator`` AND ``Session.ai_paused`` was set at submit
    * time. The transcript renders an "AI silenced — won't reply"
