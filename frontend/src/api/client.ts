@@ -23,6 +23,24 @@ export interface SessionSnapshot {
    * why it picked a turn's actions. ``null`` for non-creator roles.
    */
   decision_log?: DecisionLogEntry[] | null;
+  /**
+   * Phase B chat-declutter (docs/plans/chat-decluttering.md §4.1):
+   * AI-declared workstreams for this session. Empty list = no
+   * categorization (single ``#main`` bucket); populated when the AI
+   * called ``declare_workstreams`` during setup. Visible to every
+   * participant so the TranscriptFilters pills + colored stripe
+   * palette can assign deterministic colors in declaration order.
+   */
+  workstreams: WorkstreamView[];
+}
+
+export interface WorkstreamView {
+  id: string;
+  label: string;
+  lead_role_id: string | null;
+  state: "open" | "closed";
+  created_at: string;
+  closed_at: string | null;
 }
 
 export interface DecisionLogEntry {
@@ -82,6 +100,28 @@ export interface MessageView {
    * transcript renders a "sidebar" badge so it isn't confused with a
    * turn submission. */
   is_interjection?: boolean;
+  /**
+   * Phase B chat-declutter (docs/plans/chat-decluttering.md §4.1):
+   * one of the session's declared ``Workstream.id`` values, or
+   * ``null`` for the synthetic ``#main`` (unscoped) bucket. Validated
+   * server-side at dispatch time; the frontend renders the colored
+   * track-bar stripe directly off this field — no body parsing.
+   *
+   * Per CLAUDE.md "no backwards compat": the snapshot endpoint
+   * always emits this field (Phase A), so the frontend type makes
+   * it required. ``null`` is the canonical "no workstream" value.
+   */
+  workstream_id: string | null;
+  /**
+   * Phase B chat-declutter (plan §5.1): structural source for the
+   * @-highlight. Each entry is a real ``role_id`` from the roster or
+   * the literal ``"facilitator"`` token. The frontend renders the
+   * amber outline + ``(@you)`` badge from this list — **never** by
+   * regex-scanning ``body``. Empty list when nobody is mentioned.
+   *
+   * Required (no-back-compat): the wire contract always emits this.
+   */
+  mentions: string[];
 }
 
 export interface CostSnapshot {

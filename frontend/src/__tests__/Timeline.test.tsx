@@ -17,6 +17,8 @@ function msg(over: Partial<MessageView>): MessageView {
     body: "",
     tool_name: null,
     tool_args: null,
+    workstream_id: null,
+    mentions: [],
     ...over,
   };
 }

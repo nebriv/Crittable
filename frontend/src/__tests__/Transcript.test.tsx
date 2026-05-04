@@ -93,6 +93,8 @@ describe("Transcript", () => {
         body: "Old AI bubble — no ring on this one.",
         tool_name: "broadcast",
         tool_args: null,
+        workstream_id: null,
+        mentions: [],
       },
       {
         id: "m2",
@@ -102,6 +104,8 @@ describe("Transcript", () => {
         body: "Player reply",
         tool_name: null,
         tool_args: null,
+        workstream_id: null,
+        mentions: [],
       },
       {
         id: "m3",
@@ -111,6 +115,8 @@ describe("Transcript", () => {
         body: "Latest AI bubble — should have the amber ring.",
         tool_name: "broadcast",
         tool_args: null,
+        workstream_id: null,
+        mentions: [],
       },
     ];
     const { container } = render(

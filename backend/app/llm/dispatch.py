@@ -521,6 +521,17 @@ class ToolDispatcher:
                     "pose_choice requires 2–5 options; "
                     f"got {len(options)}."
                 )
+            # Phase B chat-declutter (plan §3.1): same shape as
+            # ``address_role.workstream_id`` — invalid value triggers
+            # ``is_error=True`` so the strict-retry loop can recover.
+            workstream_id = _validate_workstream_id(
+                session=session,
+                value=args.get("workstream_id"),
+                workstreams_enabled=self._workstreams_enabled,
+                tool_name="pose_choice",
+                session_id=session.id,
+            )
+            args["workstream_id"] = workstream_id
             letters = ["A", "B", "C", "D", "E"]
             option_lines = "\n".join(
                 f"**{letters[i]}.** {opt}" for i, opt in enumerate(options)
@@ -533,6 +544,14 @@ class ToolDispatcher:
                     turn_id=turn_id,
                     tool_name=name,
                     tool_args=args,
+                    workstream_id=workstream_id,
+                    # Phase B chat-declutter (plan §5.1): pose_choice
+                    # is single-addressee like ``address_role`` — stamp
+                    # the target as a structural mention so the
+                    # @-highlight and "(@you)" badge fire even though
+                    # the body's first token is the role label rather
+                    # than ``@<label>``.
+                    mentions=[target_id],
                 )
             )
             outcome.had_player_facing_message = True
@@ -547,6 +566,19 @@ class ToolDispatcher:
             # affordances and so the timeline can show "data shared".
             label = str(args.get("label", "")).strip()
             data = str(args.get("data", ""))
+            # Phase B chat-declutter (plan §3.1): data shares are
+            # often genuinely cross-cutting (an IOC dump can be
+            # relevant to two workstreams) — the field is optional and
+            # the model is expected to omit it for cross-cutting
+            # dumps. Same validation seam as the other three.
+            workstream_id = _validate_workstream_id(
+                session=session,
+                value=args.get("workstream_id"),
+                workstreams_enabled=self._workstreams_enabled,
+                tool_name="share_data",
+                session_id=session.id,
+            )
+            args["workstream_id"] = workstream_id
             if label:
                 body = f"**{label}**\n\n{data}"
             else:
@@ -558,6 +590,7 @@ class ToolDispatcher:
                     turn_id=turn_id,
                     tool_name=name,
                     tool_args=args,
+                    workstream_id=workstream_id,
                 )
             )
             outcome.had_player_facing_message = True
@@ -650,6 +683,21 @@ class ToolDispatcher:
             allowed = await _maybe_call(critical_inject_allowed_cb)
             if not allowed:
                 raise _DispatchError("critical-event rate limit hit")
+            # Phase B chat-declutter (plan §3.1): most injects target
+            # one workstream (press inject → Comms; new IOC →
+            # Containment), so the field is meaningful here. Validation
+            # runs BEFORE the WS broadcast so a bad value still raises
+            # as a strict-retryable tool error rather than fanning out
+            # a half-formed critical_event the frontend would have to
+            # retract.
+            workstream_id = _validate_workstream_id(
+                session=session,
+                value=args.get("workstream_id"),
+                workstreams_enabled=self._workstreams_enabled,
+                tool_name="inject_critical_event",
+                session_id=session.id,
+            )
+            args["workstream_id"] = workstream_id
             body_text = (
                 f"[{args.get('severity','HIGH')}] {args.get('headline','')} — "
                 f"{args.get('body','')}"
@@ -661,6 +709,7 @@ class ToolDispatcher:
                     turn_id=turn_id,
                     tool_name=name,
                     tool_args=args,
+                    workstream_id=workstream_id,
                 )
             )
             outcome.critical_inject_fired = True
@@ -919,14 +968,23 @@ def _validate_workstream_id(
         # what ``/setup/reply`` surfaces back to the creator); the
         # structured code rides alongside as ``reason_code`` so neither
         # consumer is starved.
+        #
+        # Security review LOW: clip the unknown value before echoing
+        # it back to the model and the audit log. The strict-retry
+        # loop replays the prose to the model on its next call, so an
+        # adversarial / hallucinated multi-KB ``workstream_id`` would
+        # otherwise fan out across the audit ring AND inflate the
+        # next prompt. 120 chars is a generous upper bound for a
+        # legit slug-shaped id; longer values are bugs anyway.
+        clipped = value if len(value) <= 120 else f"{value[:120]}…"
         raise _DispatchError(
-            f"unknown workstream_id {value!r} on {tool_name}. Known: "
+            f"unknown workstream_id {clipped!r} on {tool_name}. Known: "
             f"{', '.join(known)}. Pass an id from your earlier "
             "declare_workstreams call, or omit the field for a "
             "cross-cutting beat.",
             audit_extras={
                 "reason_code": "unknown_workstream_id",
-                "attempted": value,
+                "attempted": clipped,
                 "known": known,
             },
         )
