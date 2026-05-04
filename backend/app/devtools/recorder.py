@@ -273,6 +273,23 @@ def _to_recorded(
     label: str | None = None
     if msg.role_id:
         label = role_id_to_label.get(msg.role_id)
+    # Chat-declutter polish: round-trip the workstream tag + mentions
+    # so the replay UI reproduces the colored stripes + ``@-highlight``
+    # chrome the original session rendered. ``mentions`` is stored as
+    # role LABELS (not ids) so it's portable across replay sessions
+    # — the runner translates labels back to fresh role_ids on inject.
+    # The ``"facilitator"`` literal passes through unchanged (it's not
+    # a role id; it's the synthetic AI-mention token).
+    captured_mentions: list[str] = []
+    for ent in msg.mentions:
+        if ent == "facilitator":
+            captured_mentions.append(ent)
+        elif ent in role_id_to_label:
+            captured_mentions.append(role_id_to_label[ent])
+        # Unresolved role_id: silently drop. Real recordings capture
+        # session state at end-of-session, so every mention should
+        # resolve unless the role was kicked mid-session — at which
+        # point the mention is to a role that no longer exists.
     return RecordedMessage(
         kind=_KIND_TO_RECORDED[msg.kind],
         body=msg.body or "",
@@ -285,6 +302,8 @@ def _to_recorded(
         # messages it can't resolve. Per-role visibility round-trip
         # is tracked as follow-up.
         visibility="all",
+        workstream_id=msg.workstream_id,
+        mentions=captured_mentions,
         ts=msg.ts.isoformat() if msg.ts else None,
     )
 

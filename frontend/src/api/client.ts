@@ -404,6 +404,41 @@ export const api = {
     return `/api/sessions/${sessionId}/export.json?token=${encodeURIComponent(token)}`;
   },
 
+  /** Chat-declutter polish: operator-facing curated timeline markdown.
+   *  Creator-only on the server. Returns the URL so callers can pipe
+   *  the response straight into a Blob download (we don't pre-fetch
+   *  here — the markdown can be ~200 KB on a long session and the
+   *  browser's native download UX is the right surface). */
+  exportTimelineUrl(sessionId: string, creatorToken: string): string {
+    return `/api/sessions/${sessionId}/exports/timeline.md?token=${encodeURIComponent(creatorToken)}`;
+  },
+
+  /** Chat-declutter polish: operator-facing full-record markdown
+   *  (every visible message, chronological, with per-row flags).
+   *  Creator-only on the server. */
+  exportFullRecordUrl(sessionId: string, creatorToken: string): string {
+    return `/api/sessions/${sessionId}/exports/full-record.md?token=${encodeURIComponent(creatorToken)}`;
+  },
+
+  /** Chat-declutter polish: manual workstream override on a single
+   *  message. ``null`` moves the message back to the synthetic
+   *  ``#main`` bucket. Server enforces creator-OR-author authz and
+   *  validates the target against the session's declared workstream
+   *  set; clients see the result fanned out via the
+   *  ``message_workstream_changed`` WS event. */
+  async overrideMessageWorkstream(
+    sessionId: string,
+    token: string,
+    messageId: string,
+    workstreamId: string | null,
+  ): Promise<{ ok: boolean }> {
+    return request(
+      "POST",
+      `/api/sessions/${sessionId}/messages/${messageId}/workstream?token=${encodeURIComponent(token)}`,
+      { workstream_id: workstreamId },
+    );
+  },
+
   async reissueRole(
     sessionId: string,
     creatorToken: string,

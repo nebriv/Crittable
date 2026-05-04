@@ -45,6 +45,8 @@ from __future__ import annotations
 
 import re
 
+import pytest
+
 from app.extensions.models import ExtensionBundle
 from app.extensions.registry import freeze_bundle
 from app.llm.prompts import (
@@ -53,7 +55,7 @@ from app.llm.prompts import (
     build_play_system_blocks,
     build_setup_system_blocks,
 )
-from app.llm.tools import AAR_TOOL, PLAY_TOOLS, SETUP_TOOLS
+from app.llm.tools import AAR_TOOL, PLAY_TOOLS, setup_tools_for
 from app.sessions.models import (
     Role,
     ScenarioBeat,
@@ -215,6 +217,23 @@ _NON_TOOL_ALLOWLIST = frozenset(
         "recommendations",
         "narrative",
         "score",
+        # Workstream-related field names + example IDs the prompt
+        # copy uses to illustrate ``declare_workstreams`` / the
+        # ``workstream_id`` field. Added when the iter-4 polish PR
+        # flipped ``WORKSTREAMS_ENABLED`` to True by default — these
+        # tokens now ship in every real setup/play prompt.
+        "lead_role_id",
+        "workstream_id",
+        "workstreams",
+        # Example workstream ids used inline in the setup directive
+        # (e.g. "Examples: `containment`, `comms`, `disclosure`") —
+        # not roles, not tool names, just illustrative ids the model
+        # might re-use in its own declaration.
+        "containment",
+        "containment_1",
+        "containment_2",
+        "comms",
+        "disclosure",
         "per_role",
         "highlights",
         "lowlights",
@@ -257,13 +276,17 @@ def _empty_registry():
     return freeze_bundle(ExtensionBundle())
 
 
-def _all_play_tier_text() -> str:
+def _all_play_tier_text(*, workstreams_enabled: bool = True) -> str:
     """Concatenate every string the model can see while running a
     play-tier turn or its recovery passes.
 
-    Order matters less than completeness — if a string is sent to the
-    Anthropic API on a play-tier call, it must appear here so the
-    regex can scan it.
+    ``workstreams_enabled`` covers both branches of the feature flag.
+    Phantom-tool regressions in the workstream-only blocks
+    (``_WORKSTREAMS_PLAY_NOTE``) wouldn't fire under the False path —
+    the test must scan the True path too. Default True since the
+    iter-4 polish flipped the runtime default to True; the False path
+    is exercised by the parametrized tests below as a kill-switch
+    safety net.
     """
 
     session = _build_session()
@@ -271,7 +294,9 @@ def _all_play_tier_text() -> str:
     parts: list[str] = []
 
     # System blocks — Block 1 through Block 11 + extension prompts.
-    for blk in build_play_system_blocks(session, registry=registry):
+    for blk in build_play_system_blocks(
+        session, registry=registry, workstreams_enabled=workstreams_enabled
+    ):
         parts.append(blk.get("text", ""))
 
     # Per-tool description (sent in the tools array).
@@ -296,12 +321,24 @@ def _all_play_tier_text() -> str:
     return "\n".join(parts)
 
 
-def _all_setup_tier_text() -> str:
+def _all_setup_tier_text(*, workstreams_enabled: bool = True) -> str:
+    """Same widening as :func:`_all_play_tier_text` — the setup-tier
+    has its own workstream-gated directive (``_WORKSTREAMS_SETUP_DIRECTIVE``)
+    that needs the True branch scanned for phantom-tool refs.
+
+    Note: with ``workstreams_enabled=True`` the setup palette gains
+    ``declare_workstreams`` (added by ``setup_tools_for``); we pull the
+    palette through that helper so the descriptions of the gated tool
+    are scanned alongside the static palette.
+    """
+
     session = _build_session()
     parts: list[str] = []
-    for blk in build_setup_system_blocks(session):
+    for blk in build_setup_system_blocks(
+        session, workstreams_enabled=workstreams_enabled
+    ):
         parts.append(blk.get("text", ""))
-    for t in SETUP_TOOLS:
+    for t in setup_tools_for(workstreams_enabled=workstreams_enabled):
         parts.append(t.get("description", ""))
     return "\n".join(parts)
 
@@ -323,11 +360,19 @@ def _backtick_refs(text: str) -> set[str]:
 # --------------------------------------------------------------- per-tier tests
 
 
-def test_play_tier_prompts_dont_reference_removed_tools() -> None:
+@pytest.mark.parametrize("workstreams_enabled", [False, True])
+def test_play_tier_prompts_dont_reference_removed_tools(
+    workstreams_enabled: bool,
+) -> None:
     """The bug from PR #68 review: model-facing strings mentioning
-    tools that are no longer in PLAY_TOOLS. Always a regression."""
+    tools that are no longer in PLAY_TOOLS. Always a regression.
 
-    text = _all_play_tier_text()
+    Both flag branches scanned — the workstream-only block
+    (``_WORKSTREAMS_PLAY_NOTE``) ships in real prompts on the True
+    branch, and a phantom-tool reference there must trip the test.
+    """
+
+    text = _all_play_tier_text(workstreams_enabled=workstreams_enabled)
     refs = _backtick_refs(text)
     leaked = refs & HISTORICAL_REMOVED_PLAY_TOOLS
     assert not leaked, (
@@ -342,12 +387,21 @@ def test_play_tier_prompts_dont_reference_removed_tools() -> None:
     )
 
 
-def test_play_tier_prompts_only_reference_known_play_tools_or_concepts() -> None:
+@pytest.mark.parametrize("workstreams_enabled", [False, True])
+def test_play_tier_prompts_only_reference_known_play_tools_or_concepts(
+    workstreams_enabled: bool,
+) -> None:
     """Stricter check: every backticked snake_case name in play-tier
     model-facing text must be either (a) a current play-tier tool,
-    or (b) a known non-tool concept in ``_NON_TOOL_ALLOWLIST``."""
+    or (b) a known non-tool concept in ``_NON_TOOL_ALLOWLIST``.
 
-    text = _all_play_tier_text()
+    Parametrized so the workstream-gated block
+    (``_WORKSTREAMS_PLAY_NOTE``) is scanned on the True branch — the
+    polish PR flipped the runtime default to True so this is now the
+    common path.
+    """
+
+    text = _all_play_tier_text(workstreams_enabled=workstreams_enabled)
     refs = _backtick_refs(text)
     play_tool_names = {t["name"] for t in PLAY_TOOLS}
 
@@ -362,14 +416,23 @@ def test_play_tier_prompts_only_reference_known_play_tools_or_concepts() -> None
     )
 
 
-def test_setup_tier_prompts_only_reference_known_setup_tools_or_concepts() -> None:
+@pytest.mark.parametrize("workstreams_enabled", [False, True])
+def test_setup_tier_prompts_only_reference_known_setup_tools_or_concepts(
+    workstreams_enabled: bool,
+) -> None:
     """Same guard for the setup tier. Setup-tier prompts may mention
     play-tier tools when explaining the post-finalize lifecycle, so
-    play tools are also allowed."""
+    play tools are also allowed.
 
-    text = _all_setup_tier_text()
+    Parametrized so ``_WORKSTREAMS_SETUP_DIRECTIVE`` is scanned on
+    both flag branches (it ships only on True).
+    """
+
+    text = _all_setup_tier_text(workstreams_enabled=workstreams_enabled)
     refs = _backtick_refs(text)
-    setup_tool_names = {t["name"] for t in SETUP_TOOLS}
+    setup_tool_names = {
+        t["name"] for t in setup_tools_for(workstreams_enabled=workstreams_enabled)
+    }
     play_tool_names = {t["name"] for t in PLAY_TOOLS}
     unknown = refs - setup_tool_names - play_tool_names - _NON_TOOL_ALLOWLIST
     assert not unknown, (

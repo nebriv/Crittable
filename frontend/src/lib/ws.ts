@@ -173,6 +173,22 @@ export type ServerEvent =
         closed_at: string | null;
       }[];
     }
+  /**
+   * Chat-declutter polish: a creator or message-author re-tagged a
+   * single message via the contextmenu / REST endpoint. Recorded
+   * server-side (replay-buffered) so reconnecting tabs converge on
+   * the latest categorization. ``workstream_id=null`` means the
+   * message was moved back to the synthetic ``#main`` bucket.
+   * ``actor_role_id`` is who performed the override; surface in the
+   * audit log only — clients update their local message map without
+   * a snapshot round-trip.
+   */
+  | {
+      type: "message_workstream_changed";
+      message_id: string;
+      workstream_id: string | null;
+      actor_role_id: string;
+    }
   | { type: "error"; scope: string; message: string };
 
 export type ClientEvent =
@@ -426,6 +442,11 @@ export class WsClient {
             break;
           case "notepad_locked":
             safe.locked_at = parsed.locked_at;
+            break;
+          case "message_workstream_changed":
+            safe.message_id = parsed.message_id;
+            safe.workstream_id = parsed.workstream_id;
+            safe.actor_role_id = parsed.actor_role_id;
             break;
           default:
             break;

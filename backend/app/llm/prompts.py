@@ -453,11 +453,14 @@ _GUARDRAIL_CLASSIFIER = (
 
 
 _WORKSTREAMS_PLAY_NOTE = (
-    "\n\n**Workstream metadata.** `address_role`, `pose_choice`, "
+    "\n\n**Workstream metadata.** Block 7's plan dump includes a "
+    "`workstreams` array. If non-empty, `address_role`, `pose_choice`, "
     "`share_data`, and `inject_critical_event` each accept an optional "
-    "`workstream_id` from the set declared in setup. Use it when the "
-    "beat clearly belongs to one workstream; omit for cross-cutting "
-    "beats. UI-filter affordance, not a play-correctness requirement."
+    "`workstream_id` matching one of those ids — use it when the beat "
+    "clearly belongs to one; omit for cross-cutting beats. **If "
+    "`workstreams` is empty, OMIT `workstream_id` on every call — do "
+    "not invent values.** UI-filter affordance only; never load-bearing "
+    "for play correctness."
 )
 
 

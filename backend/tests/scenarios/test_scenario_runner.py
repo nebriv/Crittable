@@ -447,3 +447,160 @@ async def test_runner_routes_player_submissions_through_pipeline(
             "the WS handler enforces"
         )
         assert len(first.body or "") < 200
+
+
+@pytest.mark.asyncio
+async def test_deterministic_replay_preserves_workstream_and_mentions(
+    client: TestClient,
+) -> None:
+    """Chat-declutter polish: the deterministic-replay path round-trips
+    ``workstream_id`` + ``mentions`` from the scenario JSON to the
+    persisted ``Message``. Without this the replay UI would render
+    every recorded AI message in #main with no ``@-highlight``,
+    defeating the whole point of the polish PR.
+
+    Deterministic-mode contract: ``play_turns[0]`` is the briefing —
+    submissions=[] and ai_messages = the briefing's AI fallout.
+    Subsequent turns carry the player responses + the next AI fallout.
+    """
+
+    from app.devtools.scenario import RecordedMessage
+
+    scenario = Scenario(
+        meta=ScenarioMeta(
+            name="ws round-trip",
+            description="workstream + mentions deterministic round-trip",
+            tags=["test", "chat-declutter"],
+        ),
+        scenario_prompt="Ransomware via vendor portal",
+        creator_label="CISO",
+        creator_display_name="Alex",
+        skip_setup=True,
+        roster=[
+            RoleSpec(label="IR Lead", display_name="Jordan", kind="player"),
+            RoleSpec(label="SOC Analyst", display_name="Bo", kind="player"),
+        ],
+        play_turns=[
+            # Turn 0: briefing only — no submissions per the
+            # deterministic-mode contract.
+            PlayTurn(
+                submissions=[],
+                ai_messages=[
+                    RecordedMessage(
+                        kind="ai_text",
+                        body="Briefing — Jordan and Bo, take point.",
+                        tool_name="broadcast",
+                        role_label=None,
+                        workstream_id=None,
+                        mentions=["IR Lead", "SOC Analyst"],
+                    ),
+                ],
+            ),
+            # Turn 1: responses to the briefing + tagged AI fallout.
+            PlayTurn(
+                submissions=[
+                    PlayStep(role_label="IR Lead", content="On it.", intent="ready"),
+                    PlayStep(role_label="SOC Analyst", content="Logs pulled.", intent="ready"),
+                ],
+                ai_messages=[
+                    RecordedMessage(
+                        kind="ai_text",
+                        body="Jordan, contain laptops 4-9.",
+                        tool_name="address_role",
+                        tool_args={"message": "contain"},
+                        role_label=None,
+                        is_interjection=False,
+                        visibility="all",
+                        workstream_id="containment",
+                        mentions=["IR Lead"],
+                    ),
+                    RecordedMessage(
+                        kind="ai_text",
+                        body="Cross-cutting beat broadcast.",
+                        tool_name="broadcast",
+                        role_label=None,
+                        is_interjection=False,
+                        visibility="all",
+                        workstream_id=None,
+                        mentions=[],
+                    ),
+                ],
+            ),
+        ],
+        replay_mode="deterministic",
+    )
+
+    manager = client.app.state.manager
+    runner = ScenarioRunner(manager, scenario)
+    progress = await runner.run()
+    assert progress.error is None, progress.error
+    assert progress.session_id is not None
+
+    session = await manager.get_session(progress.session_id)
+    ai_messages = [m for m in session.messages if m.kind.value.startswith("ai")]
+    # Turn-0 briefing + turn-1 (address_role + broadcast) = 3 AI messages.
+    assert len(ai_messages) == 3
+    briefing, addressed, broadcast = ai_messages
+    # Briefing is unscoped + mentions IR Lead + SOC Analyst.
+    assert briefing.workstream_id is None
+    ir_lead_id = runner.role_label_to_id["IR Lead"]
+    soc_id = runner.role_label_to_id["SOC Analyst"]
+    assert set(briefing.mentions) == {ir_lead_id, soc_id}
+    # address_role: tagged containment, mentions IR Lead → translated to
+    # the fresh role_id the runner minted.
+    assert addressed.workstream_id == "containment"
+    assert addressed.mentions == [ir_lead_id]
+    # Broadcast: unscoped (#main), no mentions — empty list survives
+    # the round-trip without being coerced.
+    assert broadcast.workstream_id is None
+    assert broadcast.mentions == []
+
+
+@pytest.mark.asyncio
+async def test_deterministic_replay_drops_undeclared_workstream(
+    client: TestClient,
+) -> None:
+    """A scenario that names a workstream the spawned session's plan
+    doesn't declare gets coerced to ``None`` (the #main bucket) at the
+    ``append_recorded_message`` boundary. This protects against a
+    scenario file written against a different default plan from
+    polluting the replay with ghost workstreams."""
+
+    from app.devtools.scenario import RecordedMessage
+
+    scenario = Scenario(
+        meta=ScenarioMeta(name="ghost ws", description="", tags=["test"]),
+        scenario_prompt="Ransomware",
+        creator_label="CISO",
+        creator_display_name="Alex",
+        skip_setup=True,
+        roster=[
+            RoleSpec(label="IR Lead", display_name="Jordan", kind="player"),
+            RoleSpec(label="SOC Analyst", display_name="Bo", kind="player"),
+        ],
+        play_turns=[
+            PlayTurn(
+                submissions=[],
+                ai_messages=[
+                    RecordedMessage(
+                        kind="ai_text",
+                        body="cross-cutting",
+                        tool_name="broadcast",
+                        role_label=None,
+                        workstream_id="vendor_management",  # not declared
+                    ),
+                ],
+            ),
+        ],
+        replay_mode="deterministic",
+    )
+    manager = client.app.state.manager
+    runner = ScenarioRunner(manager, scenario)
+    progress = await runner.run()
+    assert progress.error is None, progress.error
+    session = await manager.get_session(progress.session_id)  # type: ignore[arg-type]
+    ai = [m for m in session.messages if m.kind.value == "ai_text"]
+    assert ai, "expected the recorded ai_text to be persisted"
+    # Undeclared id was dropped to None — the message renders in #main,
+    # NOT against an invented workstream slot.
+    assert ai[0].workstream_id is None

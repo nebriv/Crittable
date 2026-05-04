@@ -135,6 +135,23 @@ class RecordedMessage(BaseModel):
     # the deterministic runner's playback pacing so the replay
     # matches the real session's cadence — see ``PlayStep.ts``.
     ts: str | None = None
+    # Chat-declutter polish: round-trip the workstream tag + the
+    # structural mention list so the replay reproduces the colored
+    # track-bar stripes + ``@-highlight`` chrome the original session
+    # rendered. ``None`` / empty list means the recorded message was
+    # unscoped / unaddressed — which is the historical default for
+    # scenarios captured before workstreams existed. Hand-authored
+    # scenarios SHOULD populate these to exercise the polish PR's UI.
+    # Validated against ``Workstream.id``'s regex so a malformed value
+    # in a scenario file fails at load time, not at replay time.
+    workstream_id: str | None = Field(
+        default=None, max_length=32, pattern=r"^[a-z][a-z0-9_]*$"
+    )
+    # Each entry is a real ``role_label`` (resolved to ``role_id`` at
+    # replay time) or the literal ``"facilitator"`` token for AI
+    # mentions. The runner translates labels → role_ids the same way
+    # ``role_label`` itself is resolved on submissions.
+    mentions: list[str] = Field(default_factory=list)
 
 
 class PlayTurn(BaseModel):
