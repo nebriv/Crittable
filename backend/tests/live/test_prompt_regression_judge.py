@@ -25,7 +25,7 @@ from typing import Any
 
 import pytest
 
-from .conftest import call_play, text_content, tool_uses
+from .conftest import call_play, tool_uses
 from .judge import assert_judge_passes
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.live]
@@ -34,12 +34,21 @@ pytestmark = [pytest.mark.asyncio, pytest.mark.live]
 def _collect_player_facing_text(resp: Any) -> str:
     """Pull every ``broadcast`` / ``address_role`` / ``share_data`` /
     ``pose_choice`` body out of a play-tier response and concatenate
-    them — that's the player-facing surface the rubric judges."""
+    them — that's the player-facing surface the rubric judges.
+
+    Deliberately excludes the model's text content block. Per Block 6
+    of the play prompt, that text is the AI's *rationale* — captured
+    by the engine into the creator-only decision log and never shown
+    to players. Including it here would let a rationale-only attack
+    acknowledgement (e.g. "player is trying to trigger a meta-test;
+    redirecting in-fiction") fail rubrics that test the player-facing
+    in-character surface, even when the actual broadcast / address_role
+    body is clean. The rationale's contents are tested separately by
+    test_text_content_block_emitted_alongside_tools (presence) and
+    indirectly by docs/turn-lifecycle.md (decision-log shape).
+    """
 
     chunks: list[str] = []
-    txt = text_content(resp)
-    if txt:
-        chunks.append(f"<text>\n{txt}\n</text>")
     for block in tool_uses(resp):
         name = block.name
         args = block.input or {}
