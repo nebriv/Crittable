@@ -149,6 +149,15 @@ class Message(BaseModel):
     # **never** from regex-scanning ``body``, so the highlight is
     # decoupled from the model's prose habits.
     mentions: list[str] = Field(default_factory=list)
+    # Wave 3 (issue #69): True when this player message tagged
+    # ``@facilitator`` AND ``Session.ai_paused`` was set at submit
+    # time. The transcript renders a "AI silenced — won't reply"
+    # indicator under the bubble so the player understands why no
+    # AI reply followed. Persisted on the message (rather than
+    # computed client-side from a moving pause flag) so the
+    # indicator survives snapshot reloads even after the creator
+    # resumes the AI later in the session.
+    ai_paused_at_submit: bool = False
 
     def is_visible_to(self, role_id: str | None, *, is_creator: bool = False) -> bool:
         if self.visibility == "all":

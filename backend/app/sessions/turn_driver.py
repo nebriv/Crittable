@@ -1179,6 +1179,18 @@ def _play_messages(session: Session, *, strict: bool = False) -> list[dict[str, 
             # change there.
             if m.is_interjection:
                 label = "[OUT-OF-TURN] " + label
+            # Wave 3 (issue #69) prompt-expert HIGH: when the operator
+            # paused the AI, ``run_interject`` was already skipped on
+            # this ``@facilitator``-tagged message — but Block 6
+            # instructs the model to "answer ``@facilitator`` mentions
+            # first" on the next normal play turn. Without an explicit
+            # silence marker the very next ``run_play_turn`` would
+            # retroactively answer the suppressed ask, defeating the
+            # pause's purpose. Annotate so the model reads "the
+            # operator deliberately silenced this; do not retroactively
+            # answer." Block 6 references this exact prefix.
+            if m.ai_paused_at_submit:
+                label = "[OPERATOR-SILENCED] " + label
             msgs.append({"role": "user", "content": label + m.body})
         elif m.kind in (
             MessageKind.AI_TEXT,

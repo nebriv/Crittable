@@ -384,6 +384,28 @@ export function Transcript({
                   </p>
                 ) : null}
               </div>
+              {/* Wave 3 (issue #69): when this player message tagged
+                  ``@facilitator`` AND the AI was paused at submit
+                  time, surface an italic indicator under the bubble
+                  so the player understands why no AI reply followed.
+                  Both predicates intentional — the server snapshots
+                  ``ai_paused_at_submit`` only when the mention is
+                  present, so the mention check is belt-and-braces
+                  against any future drift. ``role="note"`` because
+                  the indicator is contextual annotation, not a
+                  status update — the session-wide pause banner is
+                  the live-region surface. */}
+              {isPlayer
+                && m.ai_paused_at_submit === true
+                && (m.mentions ?? []).includes("facilitator") ? (
+                <p
+                  role="note"
+                  data-testid="ai-silenced-indicator"
+                  className="mt-1 italic text-[11px] leading-tight text-ink-400"
+                >
+                  AI silenced — won't reply
+                </p>
+              ) : null}
             </div>
             {/* Role-code avatar — fixed 36×36 circle. Distinct geometry
                 from the rectangular bubble + ink-700 chips so it reads

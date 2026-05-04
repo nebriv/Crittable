@@ -322,6 +322,20 @@ def register_api_routes(app: FastAPI) -> None:
                     # Issue #78: True for out-of-turn interjections so
                     # the transcript UI can render a "sidebar" badge.
                     "is_interjection": m.is_interjection,
+                    # Wave 2: per-message structural mention list.
+                    # Surfaced so the transcript can render the
+                    # @-highlight from this list rather than regex-
+                    # scanning the body — the same list the WS
+                    # ``message_complete`` event already carries.
+                    "mentions": list(m.mentions),
+                    # Wave 3 (issue #69): True iff this player message
+                    # tagged ``@facilitator`` AND ``Session.ai_paused``
+                    # was set when it was submitted. The transcript
+                    # renders an "AI silenced — won't reply" indicator
+                    # under the bubble so the player understands why
+                    # no AI reply followed. Surfaced on the snapshot
+                    # so the indicator survives a page reload.
+                    "ai_paused_at_submit": m.ai_paused_at_submit,
                 }
                 for m in session.visible_messages(token["role_id"])
             ],
@@ -348,6 +362,13 @@ def register_api_routes(app: FastAPI) -> None:
             # sidebar Download-AAR button without hitting /export.md early
             # and seeing a 425.
             "aar_status": session.aar_status,
+            # Wave 3 (issue #69): current AI-pause state. The frontend
+            # toggles a creator-only "Pause AI / Resume AI" button off
+            # this and renders a session-wide banner when True. WS
+            # ``ai_pause_state_changed`` is the live signal; this
+            # snapshot field covers the page-reload case where the
+            # WS replay buffer may have rolled past the toggle.
+            "ai_paused": session.ai_paused,
             # Per-role follow-up todo list maintained by the AI. Creator-
             # only because seeing other roles' open asks could spoil the
             # narrative. Each item: {id, role_id, prompt, status,
@@ -623,28 +644,41 @@ def register_api_routes(app: FastAPI) -> None:
             session.current_turn is not None
             and session.state == SessionState.AWAITING_PLAYERS
             and FACILITATOR_MENTION_TOKEN in cleaned_mentions
-            and not session.ai_paused
         ):
             # Wave 2: the composer is the single source of facilitator-
             # routing intent. Plain ``@<role>`` mentions are player-to-
             # player and don't fire here; only ``@facilitator`` (real
             # token or alias resolved to it client-side) triggers the
-            # constrained AI interject. ``ai_paused`` (Wave 3 stub)
-            # short-circuits the dispatch — the message still landed
-            # in the transcript via ``proxy_submit_as`` above.
+            # constrained AI interject. ``ai_paused`` (Wave 3, issue
+            # #69) short-circuits the dispatch — the message still
+            # landed in the transcript via ``proxy_submit_as`` above.
             import structlog
-            structlog.get_logger("api").info(
-                "routed_via_facilitator_mention",
-                session_id=session_id,
-                role_id=as_role_id,
-                turn_id=session.current_turn.id,
-                via="proxy",
-            )
-            await TurnDriver(manager=manager).run_interject(
-                session=session,
-                turn=session.current_turn,
-                for_role_id=as_role_id,
-            )
+            if session.ai_paused:
+                # QA review HIGH on issue #69: log parity with the WS
+                # path (``ws/routes.py``). Without this line the proxy
+                # path silently swallows the suppression — a "creator
+                # proxy-typed @facilitator and got nothing" debug
+                # session would have zero signal in the audit log.
+                structlog.get_logger("api").info(
+                    "facilitator_mention_skipped_ai_paused",
+                    session_id=session_id,
+                    role_id=as_role_id,
+                    turn_id=session.current_turn.id,
+                    via="proxy",
+                )
+            else:
+                structlog.get_logger("api").info(
+                    "routed_via_facilitator_mention",
+                    session_id=session_id,
+                    role_id=as_role_id,
+                    turn_id=session.current_turn.id,
+                    via="proxy",
+                )
+                await TurnDriver(manager=manager).run_interject(
+                    session=session,
+                    turn=session.current_turn,
+                    for_role_id=as_role_id,
+                )
         return {"ok": True}
 
     @router.post("/sessions/{session_id}/admin/proxy-submit-pending")
@@ -792,6 +826,44 @@ def register_api_routes(app: FastAPI) -> None:
         except IllegalTransitionError as exc:
             raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
         return {"ok": True}
+
+    # ---------------------------------------------------- AI pause toggle (#69)
+    @router.post("/sessions/{session_id}/pause")
+    async def pause_ai(session_id: str, request: Request) -> dict[str, Any]:
+        """Creator-only: silence ``run_interject`` for ``@facilitator``
+        mentions. Idempotent — repeating the call when already paused
+        is a no-op (no duplicate audit / broadcast). Does NOT halt
+        normal play turns; players still submit and the AI still
+        advances on the ready quorum. See ``Session.ai_paused``.
+        """
+
+        manager = _manager(request)
+        token = await _bind_token(request, session_id)
+        try:
+            require_creator(token)
+        except AuthorizationError as exc:
+            raise HTTPException(status.HTTP_403_FORBIDDEN, str(exc)) from exc
+        await manager.set_ai_paused(
+            session_id=session_id, paused=True, by_role_id=token["role_id"]
+        )
+        return {"ok": True, "paused": True}
+
+    @router.post("/sessions/{session_id}/resume")
+    async def resume_ai(session_id: str, request: Request) -> dict[str, Any]:
+        """Creator-only: re-enable AI replies to ``@facilitator``
+        mentions. Idempotent — see ``pause_ai``.
+        """
+
+        manager = _manager(request)
+        token = await _bind_token(request, session_id)
+        try:
+            require_creator(token)
+        except AuthorizationError as exc:
+            raise HTTPException(status.HTTP_403_FORBIDDEN, str(exc)) from exc
+        await manager.set_ai_paused(
+            session_id=session_id, paused=False, by_role_id=token["role_id"]
+        )
+        return {"ok": True, "paused": False}
 
     # ---------------------------------------------------- shared notepad (#98)
     @router.post(
