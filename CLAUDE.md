@@ -69,6 +69,20 @@ The current mitigation (in `backend/tests/live/conftest.py`'s `pytest_collection
 
 The proper fix is to **delete `TEST_MODE` entirely** and have the unit-test conftest inject a dummy `ANTHROPIC_API_KEY` instead. Tracked as a separate issue (filed when the joint-PR work merges) — do not extend `TEST_MODE`'s reach in the meantime. If you reach for it, you're probably about to add the next instance of this bug class.
 
+## Never shadow `ANTHROPIC_*` in the agent harness
+
+Claude Code itself talks to the Anthropic API via the official SDK, which auto-discovers `ANTHROPIC_API_KEY`, `ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN`, and friends from process env. **Setting any of them as a session-wide secret in the Claude Code harness's "environment variables" pane shadows the credential the harness uses internally and breaks the session immediately** — auth mismatch, wrong account, wrong entitlement, or silent re-routing of Claude's own calls through your key. Every sandbox-level env var is inherited by Claude Code's own process tree.
+
+The fix: store the live-test key under a non-shadowing name in the harness — e.g. `LIVE_TEST_ANTHROPIC_API_KEY` — and bridge it into the pytest subprocess only at invocation time:
+
+```bash
+ANTHROPIC_API_KEY="$LIVE_TEST_ANTHROPIC_API_KEY" pytest backend/tests/live/ -v
+```
+
+The `VAR=value command` form scopes the assignment to that one child process; Claude Code's own SDK calls keep using the harness-provided auth. `backend/tests/live/conftest.py` checks `os.environ.get("ANTHROPIC_API_KEY")` at collection time, so this is sufficient. Same rule for any other tool you wire to the harness — never reuse a name the host process's SDK reads.
+
+This restriction does **not** apply to GitHub Actions (runners don't host Claude Code), Docker, devcontainers, or local dev shells — name the secret `ANTHROPIC_API_KEY` directly in those, matching the SDK convention.
+
 ## Branding (read before any UI / copy work)
 
 The product is **Crittable** — tabletop exercises for security teams. Slogan `ROLL · RESPOND · REVIEW`. Operator voice, not marketer voice; the audience is incident responders mid-exercise. **Always read these before touching UI, page copy, marketing surfaces, or anything user-facing:**
