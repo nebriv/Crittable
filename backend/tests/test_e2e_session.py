@@ -183,7 +183,7 @@ def _drive(
                 f"/ws/sessions/{session_id}?token={tok}"
             ) as ws:
                 ws.send_json(
-                    {"type": "submit_response", "content": "Acknowledged, taking action.", "intent": "ready"}
+                    {"type": "submit_response", "content": "Acknowledged, taking action.", "intent": "ready", "mentions": []}
                 )
                 # Drain a bounded number of events; close on first message_complete
                 # for our role (server-driven; never blocks indefinitely).
@@ -835,7 +835,7 @@ def test_ws_rejects_spectator_for_mutating_events(client: TestClient) -> None:
     with client.websocket_connect(
         f"/ws/sessions/{sid}?token={spectator_token}"
     ) as ws:
-        ws.send_json({"type": "submit_response", "content": "hello", "intent": "ready"})
+        ws.send_json({"type": "submit_response", "content": "hello", "intent": "ready", "mentions": []})
         # Drain until we see the rejection or the connection closes.
         # ``state_changed`` / ``presence`` / ``presence_snapshot`` /
         # ``message_complete`` etc. all flow through the WS during the
@@ -1373,7 +1373,7 @@ def test_drive_required_on_mid_exercise_yield(client: TestClient) -> None:
     with client.websocket_connect(
         f"/ws/sessions/{sid}?token={creator_token}"
     ) as ws:
-        ws.send_json({"type": "submit_response", "content": "we triage", "intent": "ready"})
+        ws.send_json({"type": "submit_response", "content": "we triage", "intent": "ready", "mentions": []})
         # drain for a moment so the manager's submit_response chain runs
         for _ in range(8):
             try:
@@ -3023,7 +3023,7 @@ def test_admin_proxy_respond_impersonates_role(client: TestClient) -> None:
     # Happy path: creator submits as the SOC analyst seat.
     r = client.post(
         f"/api/sessions/{sid}/admin/proxy-respond?token={cr}",
-        json={"as_role_id": other_role_id, "content": "Containing now.", "intent": "ready"},
+        json={"as_role_id": other_role_id, "content": "Containing now.", "intent": "ready", "mentions": []},
     )
     assert r.status_code == 200, r.text
 
@@ -3043,7 +3043,7 @@ def test_admin_proxy_respond_impersonates_role(client: TestClient) -> None:
     # double-submits.
     r = client.post(
         f"/api/sessions/{sid}/admin/proxy-respond?token={cr}",
-        json={"as_role_id": other_role_id, "content": "second", "intent": "ready"},
+        json={"as_role_id": other_role_id, "content": "second", "intent": "ready", "mentions": []},
     )
     assert r.status_code == 200, r.text
     snap = client.get(f"/api/sessions/{sid}?token={cr}").json()
@@ -3540,7 +3540,7 @@ def test_proxy_respond_rejects_unknown_or_spectator_role(
     # via the route's existing exception mapping).
     r = client.post(
         f"/api/sessions/{sid}/admin/proxy-respond?token={cr}",
-        json={"as_role_id": "ghost-role-id-xyz", "content": "hello", "intent": "ready"},
+        json={"as_role_id": "ghost-role-id-xyz", "content": "hello", "intent": "ready", "mentions": []},
     )
     assert r.status_code == 409, r.text
     assert "not seated" in r.text.lower()
@@ -3560,7 +3560,7 @@ def test_proxy_respond_rejects_unknown_or_spectator_role(
     spectator_role_id = asyncio.run(_add_spectator())
     r = client.post(
         f"/api/sessions/{sid}/admin/proxy-respond?token={cr}",
-        json={"as_role_id": spectator_role_id, "content": "hello", "intent": "ready"},
+        json={"as_role_id": spectator_role_id, "content": "hello", "intent": "ready", "mentions": []},
     )
     assert r.status_code == 409, r.text
     assert "not a player role" in r.text.lower()
@@ -3808,7 +3808,7 @@ def test_max_participant_submission_chars_truncates(monkeypatch) -> None:
         long_msg = "x" * 200
         r = c.post(
             f"/api/sessions/{sid}/admin/proxy-respond?token={cr}",
-            json={"as_role_id": other, "content": long_msg, "intent": "ready"},
+            json={"as_role_id": other, "content": long_msg, "intent": "ready", "mentions": []},
         )
         assert r.status_code == 200, r.text
         snap = c.get(f"/api/sessions/{sid}?token={cr}").json()
@@ -4282,7 +4282,7 @@ def test_ws_submit_truncates_with_marker_and_warning(monkeypatch) -> None:
         asyncio.run(_open_awaiting())
 
         with c.websocket_connect(f"/ws/sessions/{sid}?token={cr}") as ws:
-            ws.send_json({"type": "submit_response", "content": "y" * 100, "intent": "ready"})
+            ws.send_json({"type": "submit_response", "content": "y" * 100, "intent": "ready", "mentions": []})
             seen_truncated = False
             for _ in range(8):
                 evt = ws.receive_json()

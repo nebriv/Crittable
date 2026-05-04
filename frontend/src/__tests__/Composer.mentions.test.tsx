@@ -130,15 +130,68 @@ describe("Composer @-mention popover (Wave 2)", () => {
     type(textarea, "hi @ci");
     fireEvent.keyDown(textarea, { key: "Enter" });
     expect(textarea.value).toBe("hi @CISO ");
-    // User deletes a character INSIDE the mention token. We simulate
-    // by setting the new value (textarea minus one char) and calling
-    // onChange — the reconciler should drop the mark because the
-    // substring at [start, end) no longer matches the original.
+    // User deletes a character INSIDE the mention token. The
+    // reconciler detects the edit overlaps the mark's range and
+    // drops the mark whole (plan §4.6).
     type(textarea, "hi @CIS ");
-    // Submit and confirm mentions[] is now empty (the mark was
-    // dropped on the partial-edit).
+    // Submit and confirm mentions[] is now empty.
     fireEvent.keyDown(textarea, { key: "Enter" });
     expect(onSubmit).toHaveBeenCalledWith("hi @CIS", "ready", [], undefined);
+  });
+
+  it("text inserted BEFORE a mark does NOT drop the mark", () => {
+    // Copilot review on PR #152: the original ``reconcileMarks``
+    // compared ``prev.slice(start, end)`` with ``next.slice(start,
+    // end)`` at fixed offsets. Any insertion before the mention
+    // shifted indices and the mark was incorrectly dropped, even
+    // though the user never touched the token itself.
+    //
+    // Lock the invariant: a popover-picked mention survives an
+    // unrelated edit anywhere ahead of it. The mark's end-position
+    // shifts; the target stays.
+    const { textarea, onSubmit } = setup();
+    type(textarea, "@ci");
+    fireEvent.keyDown(textarea, { key: "Enter" });
+    expect(textarea.value).toBe("@CISO ");
+    // Now insert text BEFORE the mention. Text becomes
+    // ``"prefix @CISO ", which should still resolve "ciso" on submit.
+    type(textarea, "prefix " + textarea.value);
+    fireEvent.keyDown(textarea, { key: "Enter" });
+    const last = onSubmit.mock.calls[onSubmit.mock.calls.length - 1];
+    expect(last[0]).toBe("prefix @CISO");
+    expect(last[2]).toEqual(["ciso"]);
+  });
+
+  it("text appended AFTER a mark does NOT drop the mark", () => {
+    // Symmetric to the previous test — appending should also leave
+    // the mark intact (its [start,end) is in the unchanged prefix
+    // of the new text).
+    const { textarea, onSubmit } = setup();
+    type(textarea, "@ci");
+    fireEvent.keyDown(textarea, { key: "Enter" });
+    expect(textarea.value).toBe("@CISO ");
+    type(textarea, textarea.value + "and what's the call?");
+    fireEvent.keyDown(textarea, { key: "Enter" });
+    const last = onSubmit.mock.calls[onSubmit.mock.calls.length - 1];
+    expect(last[0]).toBe("@CISO and what's the call?");
+    expect(last[2]).toEqual(["ciso"]);
+  });
+
+  it("paste-replace of the entire body drops all marks", () => {
+    // Worst-case edit (cmd+A → paste). The new text shares no
+    // common prefix or suffix with prev, so the edit range covers
+    // every mark; all marks are dropped.
+    const { textarea, onSubmit } = setup();
+    type(textarea, "@ci");
+    fireEvent.keyDown(textarea, { key: "Enter" });
+    type(textarea, textarea.value + "and @soc");
+    fireEvent.keyDown(textarea, { key: "Enter" });
+    expect(textarea.value).toContain("@SOC");
+    // Wholesale replace — both marks should drop.
+    type(textarea, "totally different content with no @-tokens");
+    fireEvent.keyDown(textarea, { key: "Enter" });
+    const last = onSubmit.mock.calls[onSubmit.mock.calls.length - 1];
+    expect(last[2]).toEqual([]);
   });
 
   it("dedupes mentions on submit — multiple inserts of the same role count once", () => {

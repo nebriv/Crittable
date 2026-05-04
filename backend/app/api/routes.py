@@ -571,16 +571,27 @@ def register_api_routes(app: FastAPI) -> None:
             # this REST proxy path; importing it here (rather than
             # duplicating the logic) keeps a future schema change
             # landing in one place.
+            #
+            # Per CLAUDE.md "no backwards compat" — ``mentions`` is a
+            # required body field. Mirrors the ``intent`` gate
+            # immediately above: missing or non-list payloads are a
+            # contract violation, not a flow.  The frontend's
+            # ``adminProxyRespond`` always sends an explicit list
+            # (empty if no mentions); a caller hitting this branch
+            # is a stale client and should fail loud rather than
+            # silently submit with ``mentions=[]``. Copilot review
+            # on PR #152.
             from ..sessions.submission_pipeline import (
                 FACILITATOR_MENTION_TOKEN,
                 validate_mentions,
             )
-            mentions_raw = body.get("mentions")
-            mentions_in: list[str] | None
-            if isinstance(mentions_raw, list):
-                mentions_in = mentions_raw
-            else:
-                mentions_in = None
+            mentions_in = body.get("mentions")
+            if not isinstance(mentions_in, list):
+                raise HTTPException(
+                    status.HTTP_400_BAD_REQUEST,
+                    "mentions is required and must be a list "
+                    "(empty list OK)",
+                )
             cleaned_mentions = await validate_mentions(
                 manager=manager,
                 session_id=session_id,

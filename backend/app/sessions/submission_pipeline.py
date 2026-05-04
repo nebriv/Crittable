@@ -40,6 +40,7 @@ What's NOT in this pipeline (intentionally):
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -115,6 +116,17 @@ _MENTION_ENTRY_MAX_CHARS = 64
 # elsewhere in the manager. Sec review L1.
 _MENTION_LOG_PREVIEW_CHARS = 80
 
+# Wave 2: per-list truncation count used when echoing the
+# ``submitted`` / ``dropped`` lists into the ``mention_dropped``
+# audit. A malicious client can ship a 10000-entry array; even with
+# per-entry truncation that's still ~800KB of log per request. Cap
+# the audit echo at this many entries — operators see the head of
+# the abuse pattern (which is sufficient to identify the misbehaving
+# client) without paying the storage cost for the full payload.
+# Total counts are reported separately so the truncation is visible.
+# Copilot review on PR #152.
+_MENTION_LOG_LIST_PREVIEW = 32
+
 # Wave 2: synthetic mention target for the AI. Plain ``@<role>``
 # mentions resolve to a real ``role_id``; ``@facilitator`` (and the
 # client-side aliases ``@ai`` / ``@gm``) resolve to this literal
@@ -133,6 +145,26 @@ def _preview_for_log(value: object) -> object:
     if isinstance(value, str) and len(value) > _MENTION_LOG_PREVIEW_CHARS:
         return value[:_MENTION_LOG_PREVIEW_CHARS] + "..."
     return value
+
+
+def _bounded_log_list(values: Sequence[object]) -> list[object]:
+    """Cap one mention list to the first ``_MENTION_LOG_LIST_PREVIEW``
+    entries and apply per-entry preview truncation. Used to bound the
+    audit-log payload when echoing back ``submitted`` / ``dropped``
+    arrays from a (possibly abusive) client.
+
+    The total length of the original list is reported separately as
+    a ``..._total`` field so an operator can see the truncation
+    happened. Cheap iteration: we only walk the head, never the tail.
+
+    ``Sequence[object]`` rather than ``list[object]`` so the caller
+    can pass either ``list[str]`` (clean kept entries) or
+    ``list[object]`` (heterogeneous wire payload) without an
+    invariance compile error.
+    """
+
+    head = values[:_MENTION_LOG_LIST_PREVIEW]
+    return [_preview_for_log(v) for v in head]
 
 
 async def prepare_and_submit_player_response(
@@ -334,19 +366,25 @@ async def validate_mentions(
             dropped.append(entry)
 
     if dropped:
-        # Truncate per-entry strings in the log payload to bound log
-        # volume on a megabyte-string abuse payload (Sec review L1).
-        # Entry types are preserved so the audit still shows whether
-        # the wire shipped a string, a dict, a number, etc.
+        # Bound BOTH per-entry size AND list length when echoing into
+        # the audit. Per-entry truncation alone (Sec review L1) caps
+        # one string at ~80 chars; without the list-length cap, a
+        # 10000-entry payload still produces ~800KB of log per
+        # request. ``submitted_total`` / ``dropped_total`` make the
+        # truncation visible to an operator inspecting the audit.
+        # Copilot review on PR #152.
         _logger.warning(
             "mention_dropped",
             session_id=session_id,
             role_id=role_id,
-            submitted=[_preview_for_log(e) for e in submitted],
-            dropped=[_preview_for_log(e) for e in dropped],
+            submitted=_bounded_log_list(submitted),
+            submitted_total=len(submitted),
+            dropped=_bounded_log_list(dropped),
+            dropped_total=len(dropped),
             kept=kept,
             cap=_MENTIONS_CAP,
             entry_max_chars=_MENTION_ENTRY_MAX_CHARS,
+            log_list_preview=_MENTION_LOG_LIST_PREVIEW,
         )
 
     return kept

@@ -644,14 +644,32 @@ async def _client_pump(
                 # list of mention targets (real ``role_id`` values + the
                 # literal ``"facilitator"`` token). The pipeline
                 # validates / drops unknowns; the handler just hands off
-                # the raw payload. Missing / non-list payloads coerce to
-                # ``None`` so older clients (no popover) still submit.
-                mentions_raw = payload.get("mentions")
-                mentions_in: list[str] | None
-                if isinstance(mentions_raw, list):
-                    mentions_in = mentions_raw
-                else:
-                    mentions_in = None
+                # the raw payload.
+                #
+                # Per CLAUDE.md "no backwards compat" — ``mentions`` is
+                # a required wire field. Missing or non-list payloads
+                # are a stale-client mismatch that surfaces as a clean
+                # error frame rather than silently coercing to ``[]``
+                # (which would hide a bug in the calling code, e.g. a
+                # frontend that forgot to thread the marks). Empty
+                # list ``[]`` IS valid — the player just didn't tag
+                # anyone. Copilot review on PR #152.
+                mentions_in = payload.get("mentions")
+                if not isinstance(mentions_in, list):
+                    await websocket.send_json(
+                        {
+                            "type": "error",
+                            "scope": "submit_response",
+                            "message": (
+                                "mentions is required and must be a list "
+                                "(empty list OK; non-list payloads are "
+                                "rejected so a stale client surfaces "
+                                "loudly instead of silently sending an "
+                                "empty list)"
+                            ),
+                        }
+                    )
+                    continue
                 try:
                     outcome = await prepare_and_submit_player_response(
                         manager=manager,

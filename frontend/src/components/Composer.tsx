@@ -516,21 +516,69 @@ export function Composer({
   }
 
   function reconcileMarks(prev: string, next: string): MentionMark[] {
-    // Wave 2 invariant: every mark must remain anchored to the exact
-    // visible token its ``[start, end)`` range identified. Any edit
-    // that changes the substring under a mark (typing in the middle,
-    // backspacing into the trailing ``@``, paste replacement, etc.)
-    // drops the mark — the alternative would be a phantom mention
-    // pointing at characters that no longer match. Per plan §4.6:
-    // backspace into a mark removes the WHOLE mark.
+    // Wave 2 invariant (plan §4.6): a popover-picked mention must
+    // survive subsequent text edits unless the user actually edited
+    // INTO the mention's token, in which case the mark is dropped
+    // whole.
+    //
+    // Strategy: compute the edit range (longest common prefix +
+    // suffix between ``prev`` and ``next``), then for each mark
+    //   * mark ENTIRELY BEFORE the edit          → unchanged
+    //   * mark ENTIRELY AFTER the edit           → shift by delta
+    //   * mark OVERLAPS the edit (or touches it) → drop
+    //
+    // The previous implementation compared ``prev.slice(m.start,
+    // m.end)`` with ``next.slice(m.start, m.end)`` at fixed offsets
+    // — so any insertion/deletion BEFORE the mention shifted indices
+    // and the mark was incorrectly dropped, breaking the documented
+    // invariant. Copilot review on PR #152.
     if (prev === next) return marks;
-    return marks.filter((m) => {
-      if (m.end > next.length) return false;
-      if (m.start < 0) return false;
-      const expected = prev.slice(m.start, m.end);
-      const actual = next.slice(m.start, m.end);
-      return expected === actual;
-    });
+
+    // Longest common prefix.
+    const maxPrefix = Math.min(prev.length, next.length);
+    let prefix = 0;
+    while (prefix < maxPrefix && prev[prefix] === next[prefix]) prefix++;
+
+    // Longest common suffix, bounded so it can't overlap the prefix
+    // (otherwise a single-character insert in a long unchanged
+    // string would overcount the suffix and we'd miscompute delta).
+    let suffix = 0;
+    const maxSuffix = Math.min(prev.length - prefix, next.length - prefix);
+    while (
+      suffix < maxSuffix &&
+      prev[prev.length - 1 - suffix] === next[next.length - 1 - suffix]
+    ) {
+      suffix++;
+    }
+
+    const editStart = prefix;
+    const editPrevEnd = prev.length - suffix;
+    const editNextEnd = next.length - suffix;
+    const delta = editNextEnd - editPrevEnd;
+
+    const out: MentionMark[] = [];
+    for (const m of marks) {
+      if (m.end <= editStart) {
+        // Mark sits entirely in the unchanged prefix — keep as-is.
+        out.push(m);
+      } else if (m.start >= editPrevEnd) {
+        // Mark sits entirely in the unchanged suffix — shift by the
+        // length delta. The substring at ``[m.start+delta,
+        // m.end+delta)`` in ``next`` is byte-for-byte identical to
+        // ``prev[m.start, m.end)`` because both sit inside the
+        // common-suffix region; no re-verification needed.
+        out.push({
+          start: m.start + delta,
+          end: m.end + delta,
+          target: m.target,
+        });
+      }
+      // else: mark's range overlaps the edited span — drop it. This
+      // covers backspace-into-token, paste-over-token, select-all-
+      // replace, and any partial-token mutation. Plan §4.6's
+      // "backspace into a mark removes the WHOLE mark" is preserved.
+    }
+    return out;
   }
 
   function handleChange(e: ChangeEvent<HTMLTextAreaElement>) {
