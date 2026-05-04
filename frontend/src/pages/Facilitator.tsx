@@ -1148,7 +1148,6 @@ export function Facilitator() {
       {criticalBanner ? (
         <CriticalEventBanner
           {...criticalBanner}
-          canAcknowledge={isMyTurn}
           onAcknowledge={() => setCriticalBanner(null)}
         />
       ) : null}

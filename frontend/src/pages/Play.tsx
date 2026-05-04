@@ -1141,7 +1141,6 @@ export function Play({ sessionId, token }: Props) {
       {criticalBanner ? (
         <CriticalEventBanner
           {...criticalBanner}
-          canAcknowledge={isMyTurn}
           onAcknowledge={() => setCriticalBanner(null)}
         />
       ) : null}

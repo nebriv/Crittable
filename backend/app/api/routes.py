@@ -1888,7 +1888,7 @@ def _default_dev_plan(scenario_prompt: str) -> ScenarioPlan:
     API or by waiting for the AI's own setup output.
     """
 
-    from ..sessions.models import ScenarioBeat, ScenarioInject
+    from ..sessions.models import ScenarioBeat, ScenarioInject, Workstream
 
     title = (scenario_prompt or "").strip().splitlines()[0][:80]
     if not title:
@@ -1978,5 +1978,18 @@ def _default_dev_plan(scenario_prompt: str) -> ScenarioPlan:
             "Real exploit / payload generation.",
             "Real CVE numbers tied to attacker tradecraft.",
             "Long-term policy changes — this is an incident-response drill.",
+        ],
+        # Chat-declutter polish: the default-dev plan ships with the
+        # canonical IR triad of workstreams declared so the skip-setup
+        # path (DEV_FAST_SETUP / scenario replay / "Skip setup" button)
+        # exercises the workstream UI out of the box. Without this,
+        # devs running a quick replay see the new pills / right-click
+        # menu / colored stripes only after declaring workstreams
+        # themselves, which is friction. The labels match the
+        # iter-4 mockup's example track set.
+        workstreams=[
+            Workstream(id="containment", label="Containment"),
+            Workstream(id="comms", label="Comms"),
+            Workstream(id="legal", label="Legal"),
         ],
     )
