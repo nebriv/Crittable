@@ -564,25 +564,28 @@ class TurnDriver:
     ) -> Session:
         """Side-channel AI response that does NOT advance the turn.
 
-        Triggered when a player asks the facilitator a direct question
-        mid-turn (heuristic: trailing ``?``). The AI is restricted to
-        ``broadcast`` / ``address_role`` / ``share_data`` / ``pose_choice``,
-        with ``tool_choice={"type":"any"}`` forcing at least one call.
-        ``set_active_roles`` and ``end_session`` are deliberately
-        excluded — the asking player's submission still counts toward
-        the active turn and the other roles continue to owe their own
-        responses; the interject just appends the AI's answer to the
-        chat. State stays ``AWAITING_PLAYERS`` throughout.
+        Wave 2: triggered when a player ``@facilitator``s the AI mid-
+        turn. The composer's structural ``mentions`` list (containing
+        the literal ``"facilitator"`` token; aliases ``@ai`` / ``@gm``
+        resolve client-side) is the single source of routing intent.
+        The AI is restricted to ``broadcast`` / ``address_role`` /
+        ``share_data`` / ``pose_choice``, with ``tool_choice={"type":
+        "any"}`` forcing at least one call. ``set_active_roles`` and
+        ``end_session`` are deliberately excluded — the asking
+        player's submission still counts toward the active turn and
+        the other roles continue to owe their own responses; the
+        interject just appends the AI's answer to the chat. State
+        stays ``AWAITING_PLAYERS`` throughout.
 
         Engine-side guardrail: state must be ``AWAITING_PLAYERS`` (the
         play tier policy permits all three play states; this path
         narrows further).
 
-        Pre-fix the operator had to either wait for every active role
-        to submit (so the AI could process the full batch) or hit
-        force-advance (which skipped the other roles entirely). Neither
-        was right when the question was simple ("what open items do we
-        have?") and the operator just wanted the AI to answer inline.
+        Pre-Wave-2 the routing branch fired on a trailing-``?``
+        heuristic, which both missed real questions ("can we look
+        inside the temp dir") and over-fired on rhetorical ones. The
+        explicit ``@facilitator`` mention replaces the heuristic with
+        an unambiguous user signal.
         """
 
         # Stricter than the play-tier policy: interject only ever runs

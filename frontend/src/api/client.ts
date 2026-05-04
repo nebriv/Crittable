@@ -302,11 +302,12 @@ export const api = {
     asRoleId: string,
     content: string,
     intent: "ready" | "discuss",
+    mentions: string[],
   ): Promise<{ ok: boolean }> {
     return request(
       "POST",
       `/api/sessions/${sessionId}/admin/proxy-respond?token=${encodeURIComponent(creatorToken)}`,
-      { as_role_id: asRoleId, content, intent },
+      { as_role_id: asRoleId, content, intent, mentions },
     );
   },
 

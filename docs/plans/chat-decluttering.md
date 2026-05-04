@@ -302,19 +302,47 @@ Critically, this is the **same dispatch-validation pattern** already in producti
 
 ### 4.6 User-typed `@`-mentions
 
+> **Status (2026-05-03):** Phase C of this plan + Wave 2 of the
+> turn-management plan shipped jointly. The composer popover, the
+> mark/resolve invariant, the structural ``mentions[]`` payload, and
+> the server-side validation are all live in
+> ``frontend/src/components/MentionPopover.tsx`` /
+> ``frontend/src/components/Composer.tsx`` /
+> ``backend/app/sessions/submission_pipeline.py``. The
+> ``@facilitator`` synthetic entry + alias resolution + the routing
+> branch in ``ws/routes.py`` are documented below for completeness.
+>
+> **Phase B is intentionally NOT in this PR.** The transcript-side
+> ``@``-highlight rendering — drawing an amber chip on a message
+> when ``Message.mentions[]`` includes the local participant's
+> ``role_id`` — is listed under Phase B (see §8 / §4.7) and remains
+> deferred. Frontend ``Transcript.tsx`` is unmodified in this PR.
+> The composer's body-scan fallback (added in this PR) ensures
+> hand-typed ``@facilitator`` / ``@<role>`` tokens populate
+> ``mentions[]`` symmetrically with popover-picked tokens, so
+> Phase B can pick up rendering against a stable contract.
+
 Composer-side (frontend, `frontend/src/components/Composer.tsx`):
 
-- On `@` keypress, open a roster popover anchored at the caret. Filter by typeahead. Arrow-key nav, Enter to insert.
-- Insert format: `@<role_label>` for distinct labels, `@<first_name>` if collision, `@<role_label> (<first_name>)` if both labels collide.
-- Each insertion stores a `(start, end, role_id)` mark in component state — the visible text and the resolved role_id are kept paired. This is critical: regex on the body would re-introduce the brittleness we just escaped on the AI side.
-- On submit, build `mentions: [role_ids]` from the marks and ship the message with both the prose body and the structured list.
+- On `@` keypress, open a roster popover anchored at the caret. Filter by typeahead. Arrow-key nav, Enter / Tab to insert, Escape / click-outside to dismiss.
+- Insert format: `@<role_label>` for distinct labels (matches the role's `insertLabel`). The synthetic ``@facilitator`` entry inserts the canonical ``"facilitator"`` token; aliases ``@ai`` / ``@gm`` resolve to the same insertion client-side.
+- Each insertion stores a `(start, end, target)` mark in component state — the visible text and the resolved target (real `role_id` OR the literal ``"facilitator"``) are kept paired. This is critical: regex on the body would re-introduce the brittleness we just escaped on the AI side.
+- On submit, build `mentions: [targets]` from the marks (order-preserving + de-duplicated) and ship the message with both the prose body and the structured list.
+- Backspace-into-mark removes the WHOLE mark — the reconciler drops any mark whose ``[start, end)`` substring no longer matches the original visible text.
 
-Server-side (`backend/app/sessions/manager.py` or wherever player submissions land):
+Server-side (`backend/app/sessions/submission_pipeline.py::_validate_mentions`):
 
-- Validate every `mentions[]` entry is a current role in the session. Drop unknown ids with a `mention_dropped` audit log line (per CLAUDE.md "Logging rules").
-- No body parsing. The composer is the single source of mention-resolution. (A future enhancement could re-validate by re-tokenizing the body, but Phase A skips this — keeps server logic minimal.)
+- Validate every `mentions[]` entry is either a current role in the session OR the literal ``"facilitator"`` token. Drop unknown / non-string / empty entries with a `mention_dropped` WARNING audit (per CLAUDE.md "Logging rules"). Log payload includes the full submitted list, the dropped entries, and the kept entries so an operator can debug a "the AI didn't pick up my @-mention" report from the audit log alone.
+- Cap the list at 16 entries; excess is truncated and the drop is logged.
+- No body parsing. The composer is the single source of mention-resolution.
+- The cleaned list is what `manager.submit_response` persists on `Message.mentions` and what the WS routing branch reads.
 
-Workstream-tagging via composer: typing `#<workstream_label>` (with autocomplete from declared set) sets the message's `workstream_id`. If a player types both `@CISO` and `#disclosure` the message gets both pieces of metadata — they're orthogonal.
+WS routing branch (`backend/app/ws/routes.py`):
+
+- After the pipeline returns, if ``"facilitator" in outcome.mentions`` AND ``not session.ai_paused``, fire ``run_interject`` for the asking role. Plain ``@<role>`` mentions have no AI side effect — the transcript-with-highlight (rendered from `Message.mentions[]` on the frontend) is the entire affordance.
+- ``Session.ai_paused`` is a Wave 3 stub field (default False); the toggle UI / endpoint that flips it is intentionally out of this PR's scope. The routing branch consumes the flag so Wave 3 can ship the toggle without re-touching this code.
+
+Workstream-tagging via composer: typing `#<workstream_label>` (with autocomplete from declared set) sets the message's `workstream_id`. If a player types both `@CISO` and `#disclosure` the message gets both pieces of metadata — they're orthogonal. (The `#`-token autocomplete itself is deferred per §10 Q5.)
 
 ### 4.7 UI — what changes vs the iter-4 mockup
 

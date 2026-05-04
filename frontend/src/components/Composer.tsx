@@ -1,5 +1,24 @@
-import { FormEvent, KeyboardEvent, useEffect, useRef, useState } from "react";
+import {
+  ChangeEvent,
+  FormEvent,
+  KeyboardEvent,
+  useEffect,
+  useId,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import type { ImpersonateOption } from "../lib/proxy";
+import { MentionPopover } from "./MentionPopover";
+import {
+  MentionRosterEntry,
+  filterMentionRoster,
+  nextHighlightIndex,
+  optionIdFor,
+  readMentionContext,
+  scanBodyForMentions,
+} from "./mentionPopoverUtils";
 
 // ``ImpersonateOption`` lives in ``../lib/proxy`` so the helper that
 // builds the dropdown options and the consumer here can't drift on
@@ -14,6 +33,22 @@ import type { ImpersonateOption } from "../lib/proxy";
  * these values.
  */
 export type SubmissionIntent = "ready" | "discuss";
+
+/**
+ * Wave 2 (composer mentions + facilitator routing).
+ *
+ * One mention occurrence in the composer's text. ``start`` and ``end``
+ * are caret positions in the visible body text; ``target`` is either a
+ * real ``role_id`` or the literal ``"facilitator"`` token. The
+ * marks are the source of truth for which mentions exist — the visible
+ * body text is decorative. This is the "mark/resolve, never regex"
+ * invariant from the chat-declutter plan (§5.1, §6.6).
+ */
+export interface MentionMark {
+  start: number;
+  end: number;
+  target: string;
+}
 
 interface Props {
   enabled: boolean;
@@ -33,8 +68,28 @@ interface Props {
    * Always one of ``"ready"`` / ``"discuss"`` — never undefined, the
    * composer always knows which button was pressed. The parent forwards
    * this to the WS payload.
+   *
+   * ``mentions`` (Wave 2): structural mention targets parsed from the
+   * composer's marks. Order-preserving, de-duplicated. Plain
+   * ``role_id`` entries surface the @-highlight to the addressed role;
+   * the literal ``"facilitator"`` token (alias ``@ai`` / ``@gm``
+   * resolved client-side) triggers the server-side AI interject.
    */
-  onSubmit: (text: string, intent: SubmissionIntent, asRoleId?: string) => void;
+  onSubmit: (
+    text: string,
+    intent: SubmissionIntent,
+    mentions: string[],
+    asRoleId?: string,
+  ) => void;
+  /**
+   * Wave 2: roster the popover offers. The local participant's own
+   * role should be EXCLUDED upstream so a player doesn't ``@`` themself.
+   * The synthetic facilitator entry is rendered automatically — do
+   * not include it here. Defaults to ``[]`` so legacy callers that
+   * don't pass a roster still get a working composer (the facilitator
+   * entry alone keeps the popover functional).
+   */
+  mentionRoster?: MentionRosterEntry[];
   /**
    * When ``true``, the local participant has already signalled ready
    * for the current turn. The composer surfaces this as a small
@@ -82,8 +137,22 @@ export function Composer({
   submitErrorEpoch,
   isCurrentlyReady = false,
   hideDiscussButton = false,
+  mentionRoster = [],
 }: Props) {
   const [text, setText] = useState("");
+  // Wave 2: source-of-truth list of mention occurrences in ``text``.
+  // Every visible ``@<token>`` should have a matching mark; the
+  // submit handler derives ``mentions[]`` from this list, not from
+  // regex on the body. Marks are kept sorted by ``start`` so the
+  // shift logic on edits stays simple.
+  const [marks, setMarks] = useState<MentionMark[]>([]);
+  // Mention popover state. ``triggerIndex`` is the position of the
+  // ``@`` keystroke that opened the popover; ``query`` is the
+  // typeahead substring after it. ``null`` triggerIndex means the
+  // popover is closed.
+  const [mentionTrigger, setMentionTrigger] = useState<number | null>(null);
+  const [mentionQuery, setMentionQuery] = useState("");
+  const [mentionHighlight, setMentionHighlight] = useState(0);
   // Empty string == speak as the local participant. Anything else is a
   // role_id passed up to the parent for proxy submission.
   const [asRoleId, setAsRoleId] = useState<string>("");
@@ -114,6 +183,58 @@ export function Composer({
   // begins). Without the count gate the timer would still emit
   // start for a single keystroke that didn't clear the textarea —
   // Copilot review on PR #99.
+  // Textarea ref — needed for the mention popover so insertion can
+  // restore the caret + focus after committing a pick (otherwise the
+  // browser parks the cursor at position 0).
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  // Stable id for the popover's ``role="listbox"`` so the textarea
+  // can carry ``aria-controls`` + ``aria-activedescendant`` to the
+  // currently-highlighted option.
+  const listboxId = useId();
+  // Memoised filter slice — used both by the textarea's ARIA
+  // ``aria-activedescendant`` and the popover render. We pass the
+  // popover its own copy too, but the ARIA wire here needs the size
+  // up-front to decide whether to set the attribute at all (an empty
+  // slice should not point at a missing option).
+  const mentionVisible = useMemo(
+    () =>
+      mentionTrigger != null
+        ? filterMentionRoster(mentionQuery, mentionRoster)
+        : [],
+    [mentionTrigger, mentionQuery, mentionRoster],
+  );
+  const mentionVisibleSize = mentionVisible.length;
+  const mentionActiveTarget =
+    mentionVisibleSize > 0
+      ? mentionVisible[Math.min(mentionHighlight, mentionVisibleSize - 1)]
+          ?.target ?? ""
+      : "";
+  // UI/UX review BLOCK B1: when the composer is anchored near the
+  // bottom of the viewport (the common case — there's a sticky
+  // ``BottomActionBar`` below it on both Play and Facilitator),
+  // a downward popover would clip behind the bar and disappear
+  // mid-typing. Measure the textarea's distance from the viewport
+  // bottom each time the popover opens; if the popover's natural
+  // height (``max-h-56`` = 224px + a few px of padding) wouldn't
+  // fit below, render it ABOVE the textarea instead. We re-measure
+  // on a window resize so a viewport change mid-popover-open
+  // doesn't leave the popover stuck on the wrong side.
+  const [openMentionUpward, setOpenMentionUpward] = useState(false);
+  useLayoutEffect(() => {
+    if (mentionTrigger == null) return;
+    const node = textareaRef.current;
+    if (!node) return;
+    const POPOVER_HEIGHT_PX = 240;
+    function measure() {
+      if (!node) return;
+      const rect = node.getBoundingClientRect();
+      const spaceBelow = window.innerHeight - rect.bottom;
+      setOpenMentionUpward(spaceBelow < POPOVER_HEIGHT_PX);
+    }
+    measure();
+    window.addEventListener("resize", measure);
+    return () => window.removeEventListener("resize", measure);
+  }, [mentionTrigger]);
   const heartbeatTimer = useRef<ReturnType<typeof setInterval> | null>(null);
   const idleTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pendingStartTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -135,8 +256,34 @@ export function Composer({
     if (!enabled || !text.trim()) return;
     const trimmed = text.trim();
     lastAttemptedRef.current = trimmed;
-    onSubmit(trimmed, intent, asRoleId || undefined);
+    // Wave 2: derive the submit-time mention list from two sources:
+    //   1. Popover-picked marks (authoritative for picked tokens —
+    //      a mark survives subsequent text edits and pins the
+    //      target even if the visible label happens to match a
+    //      different role).
+    //   2. Body-scan fallback (resolves tokens the user typed
+    //      literally without using the popover — e.g. ``@facilitator``
+    //      from muscle memory). Bounded by the alias set + the
+    //      session roster; never an arbitrary regex.
+    // Both sources flow into a single de-duped, order-preserving
+    // list. The server still trusts ``mentions[]`` as the source of
+    // routing intent — the body text is decorative.
+    const seen = new Set<string>();
+    const submittedMentions: string[] = [];
+    for (const m of [...marks].sort((a, b) => a.start - b.start)) {
+      if (seen.has(m.target)) continue;
+      seen.add(m.target);
+      submittedMentions.push(m.target);
+    }
+    for (const target of scanBodyForMentions(trimmed, mentionRoster)) {
+      if (seen.has(target)) continue;
+      seen.add(target);
+      submittedMentions.push(target);
+    }
+    onSubmit(trimmed, intent, submittedMentions, asRoleId || undefined);
     setText("");
+    setMarks([]);
+    closeMentionPopover();
     // Reset back to "speak as me" after every submit so the next message
     // doesn't accidentally post under the previous proxy role. Sticky
     // proxy mode was a real footgun in solo testing.
@@ -145,6 +292,95 @@ export function Composer({
     // typing_stop so peers don't keep showing us as typing for
     // the length of TYPING_VISIBLE_MS after we just submitted.
     emitTypingStop("submit");
+  }
+
+  function closeMentionPopover() {
+    setMentionTrigger(null);
+    setMentionQuery("");
+    setMentionHighlight(0);
+  }
+
+  /**
+   * Insert the picked roster entry at the trigger position. Replaces
+   * the typed query (e.g. ``"di"``) with the canonical token (e.g.
+   * ``"facilitator"`` for the synthetic AI entry; ``"CISO"`` for a
+   * real role). Records a matching mark so the submit-time derivation
+   * can rebuild ``mentions[]`` without parsing the body.
+   *
+   * ``opts.keepFocus`` controls whether to re-focus the textarea
+   * after committing. ``true`` (default) is the Enter/click path —
+   * focus stays in the composer so the user can keep typing.
+   * ``false`` is the Tab path — we leave focus alone so the
+   * browser's native Tab advance lands on the next focusable
+   * element (UI/UX review BLOCK B2).
+   */
+  function insertMention(
+    entry: MentionRosterEntry,
+    opts: { keepFocus?: boolean } = {},
+  ) {
+    const keepFocus = opts.keepFocus ?? true;
+    const triggerIndex = mentionTrigger;
+    if (triggerIndex == null) return;
+    const ta = textareaRef.current;
+    const caretEnd = ta?.selectionEnd ?? text.length;
+    // The visible insertion is always ``@`` + canonical insertLabel.
+    // For the synthetic facilitator the canonical token is also the
+    // insert label so aliases (``@ai``, ``@gm``) resolve to the
+    // canonical visible string.
+    const inserted = `@${entry.insertLabel}`;
+    const before = text.slice(0, triggerIndex);
+    const after = text.slice(caretEnd);
+    // Append a space after the mention so the next keystroke doesn't
+    // accidentally extend the @-token (and so the popover trigger
+    // logic stops finding the same ``@`` after commit).
+    const next = `${before}${inserted} ${after}`;
+    const insertedEnd = triggerIndex + inserted.length;
+    const newCaret = insertedEnd + 1; // after the trailing space
+
+    // Shift any existing marks AFTER the trigger so their offsets
+    // stay aligned with the post-insert text. Marks BEFORE the
+    // trigger are unaffected.
+    const replacedRangeLen = caretEnd - triggerIndex; // length we replaced
+    const shift = inserted.length + 1 - replacedRangeLen; // +1 for trailing space
+    const shifted: MentionMark[] = [];
+    for (const m of marks) {
+      if (m.end <= triggerIndex) {
+        shifted.push(m);
+      } else if (m.start >= caretEnd) {
+        shifted.push({
+          start: m.start + shift,
+          end: m.end + shift,
+          target: m.target,
+        });
+      }
+      // Marks that overlap the replaced range are dropped — they
+      // wouldn't be addressable anyway since the user is replacing
+      // their visible text.
+    }
+    shifted.push({
+      start: triggerIndex,
+      end: insertedEnd,
+      target: entry.target,
+    });
+    shifted.sort((a, b) => a.start - b.start);
+
+    setText(next);
+    setMarks(shifted);
+    closeMentionPopover();
+    // Move caret past the inserted token + space. Defer to the next
+    // tick so React commits the value first; otherwise selectionStart
+    // is set against the stale value and the cursor jumps.
+    requestAnimationFrame(() => {
+      const node = textareaRef.current;
+      if (!node) return;
+      if (keepFocus) {
+        node.focus();
+      }
+      // The caret update is safe regardless of focus state — if the
+      // user Tab'd off, the next time they Tab back the caret will
+      // already be where they expect it.
+      node.setSelectionRange(newCaret, newCaret);
+    });
   }
 
   function handle(e: FormEvent) {
@@ -170,6 +406,60 @@ export function Composer({
   }, [submitErrorEpoch]);
 
   function handleKeyDown(e: KeyboardEvent<HTMLTextAreaElement>) {
+    // Wave 2: when the mention popover is open it absorbs the
+    // navigation keys (ArrowUp/Down/Enter/Escape/Tab) so the
+    // composer's submit / newline behaviour doesn't fire mid-pick.
+    // The popover's filtered slice is recomputed here so we don't
+    // re-render the popover before clamping the highlight.
+    if (mentionTrigger != null) {
+      const visible = filterMentionRoster(mentionQuery, mentionRoster);
+      if (e.key === "Escape") {
+        e.preventDefault();
+        closeMentionPopover();
+        return;
+      }
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        setMentionHighlight(
+          nextHighlightIndex(mentionHighlight, 1, visible.length),
+        );
+        return;
+      }
+      if (e.key === "ArrowUp") {
+        e.preventDefault();
+        setMentionHighlight(
+          nextHighlightIndex(mentionHighlight, -1, visible.length),
+        );
+        return;
+      }
+      if (e.key === "Enter" || e.key === "Tab") {
+        if (visible.length === 0) {
+          // Nothing to commit — fall through to the normal
+          // Enter/Tab handler so the user isn't trapped if their
+          // query matched zero entries.
+          closeMentionPopover();
+        } else {
+          // UI/UX review BLOCK B2: Enter and Tab both commit, but
+          // Tab MUST also let the browser advance focus to the
+          // next focusable element — otherwise a keyboard-only
+          // user is trapped in the textarea, having to press Tab
+          // a second time after every commit. Enter keeps focus
+          // on the textarea (typical chat composer behaviour); Tab
+          // commits + lets the native Tab advance fire by NOT
+          // preventDefault'ing.
+          const entry = visible[mentionHighlight] ?? visible[0];
+          if (e.key === "Tab") {
+            insertMention(entry, { keepFocus: false });
+            // No e.preventDefault — the browser's Tab advance runs.
+          } else {
+            e.preventDefault();
+            insertMention(entry, { keepFocus: true });
+          }
+          return;
+        }
+      }
+    }
+
     // Enter submits as ready; Shift+Enter inserts a newline.
     // Ctrl/Cmd+Enter submits as discuss (Wave 1 / issue #134 UI/UX
     // review HIGH — gives keyboard-only operators a path to the
@@ -225,8 +515,96 @@ export function Composer({
     }
   }
 
-  function handleChange(value: string) {
+  function reconcileMarks(prev: string, next: string): MentionMark[] {
+    // Wave 2 invariant (plan §4.6): a popover-picked mention must
+    // survive subsequent text edits unless the user actually edited
+    // INTO the mention's token, in which case the mark is dropped
+    // whole.
+    //
+    // Strategy: compute the edit range (longest common prefix +
+    // suffix between ``prev`` and ``next``), then for each mark
+    //   * mark ENTIRELY BEFORE the edit          → unchanged
+    //   * mark ENTIRELY AFTER the edit           → shift by delta
+    //   * mark OVERLAPS the edit (or touches it) → drop
+    //
+    // The previous implementation compared ``prev.slice(m.start,
+    // m.end)`` with ``next.slice(m.start, m.end)`` at fixed offsets
+    // — so any insertion/deletion BEFORE the mention shifted indices
+    // and the mark was incorrectly dropped, breaking the documented
+    // invariant. Copilot review on PR #152.
+    if (prev === next) return marks;
+
+    // Longest common prefix.
+    const maxPrefix = Math.min(prev.length, next.length);
+    let prefix = 0;
+    while (prefix < maxPrefix && prev[prefix] === next[prefix]) prefix++;
+
+    // Longest common suffix, bounded so it can't overlap the prefix
+    // (otherwise a single-character insert in a long unchanged
+    // string would overcount the suffix and we'd miscompute delta).
+    let suffix = 0;
+    const maxSuffix = Math.min(prev.length - prefix, next.length - prefix);
+    while (
+      suffix < maxSuffix &&
+      prev[prev.length - 1 - suffix] === next[next.length - 1 - suffix]
+    ) {
+      suffix++;
+    }
+
+    const editStart = prefix;
+    const editPrevEnd = prev.length - suffix;
+    const editNextEnd = next.length - suffix;
+    const delta = editNextEnd - editPrevEnd;
+
+    const out: MentionMark[] = [];
+    for (const m of marks) {
+      if (m.end <= editStart) {
+        // Mark sits entirely in the unchanged prefix — keep as-is.
+        out.push(m);
+      } else if (m.start >= editPrevEnd) {
+        // Mark sits entirely in the unchanged suffix — shift by the
+        // length delta. The substring at ``[m.start+delta,
+        // m.end+delta)`` in ``next`` is byte-for-byte identical to
+        // ``prev[m.start, m.end)`` because both sit inside the
+        // common-suffix region; no re-verification needed.
+        out.push({
+          start: m.start + delta,
+          end: m.end + delta,
+          target: m.target,
+        });
+      }
+      // else: mark's range overlaps the edited span — drop it. This
+      // covers backspace-into-token, paste-over-token, select-all-
+      // replace, and any partial-token mutation. Plan §4.6's
+      // "backspace into a mark removes the WHOLE mark" is preserved.
+    }
+    return out;
+  }
+
+  function handleChange(e: ChangeEvent<HTMLTextAreaElement>) {
+    const value = e.target.value;
+    const caret = e.target.selectionStart ?? value.length;
+    setMarks(reconcileMarks(text, value));
     setText(value);
+    // Wave 2: detect the ``@<query>`` context at the caret and either
+    // open the popover with a fresh query or close it when the user
+    // navigated outside any mention trigger. ``readMentionContext``
+    // returns ``null`` for "no active mention here" — that's the
+    // close path.
+    const ctx = readMentionContext(value, caret);
+    if (ctx) {
+      // Reset the highlight to 0 only when the trigger position
+      // CHANGED (new ``@``). Re-typing within the same trigger keeps
+      // the user's last navigated index so a typeahead refinement
+      // doesn't yank the highlight back to top.
+      if (mentionTrigger !== ctx.atIndex) {
+        setMentionHighlight(0);
+      }
+      setMentionTrigger(ctx.atIndex);
+      setMentionQuery(ctx.query);
+    } else if (mentionTrigger != null) {
+      closeMentionPopover();
+    }
     if (!enabled || !onTypingChange) return;
     // If the textarea is now empty (e.g. user cleared with
     // backspace), tear down the heartbeat + emit stop. Holding
@@ -392,18 +770,50 @@ export function Composer({
           </div>
         );
       })() : null}
-      <textarea
-        id="composer"
-        value={text}
-        onChange={(e) => handleChange(e.target.value)}
-        onKeyDown={handleKeyDown}
-        placeholder={placeholder}
-        disabled={!enabled}
-        rows={3}
-        className={`w-full rounded-r-1 border bg-ink-900 p-3 text-sm text-ink-100 sans focus-visible:outline focus-visible:outline-2 focus-visible:outline-signal-deep disabled:opacity-50 ${
-          asRoleId ? "border-warn" : "border-signal-deep"
-        }`}
-      />
+      <div className="relative">
+        <textarea
+          id="composer"
+          ref={textareaRef}
+          value={text}
+          onChange={handleChange}
+          onKeyDown={handleKeyDown}
+          placeholder={placeholder}
+          disabled={!enabled}
+          rows={3}
+          // Wave 2: ARIA wiring for the mention popover. The textarea
+          // claims combobox semantics so screen readers announce the
+          // currently-highlighted option as the user types and arrows
+          // through the listbox. ``aria-controls`` always points at
+          // the listbox id; ``aria-expanded`` flips with the popover
+          // visibility; ``aria-activedescendant`` is set only when the
+          // popover is open AND has results.
+          role="combobox"
+          aria-haspopup="listbox"
+          aria-expanded={mentionTrigger != null}
+          aria-controls={listboxId}
+          aria-activedescendant={
+            mentionTrigger != null && mentionVisibleSize > 0
+              ? optionIdFor(listboxId, mentionActiveTarget)
+              : undefined
+          }
+          aria-autocomplete="list"
+          className={`w-full rounded-r-1 border bg-ink-900 p-3 text-sm text-ink-100 sans focus-visible:outline focus-visible:outline-2 focus-visible:outline-signal-deep disabled:opacity-50 ${
+            asRoleId ? "border-warn" : "border-signal-deep"
+          }`}
+        />
+        {mentionTrigger != null ? (
+          <MentionPopover
+            query={mentionQuery}
+            roster={mentionRoster}
+            listboxId={listboxId}
+            highlightedIndex={mentionHighlight}
+            setHighlightedIndex={setMentionHighlight}
+            onSelect={(entry) => insertMention(entry, { keepFocus: true })}
+            onDismiss={closeMentionPopover}
+            openUpward={openMentionUpward}
+          />
+        ) : null}
+      </div>
       <div className="flex flex-wrap items-center justify-between gap-2">
         <span className="mono text-[10px] uppercase tracking-[0.04em] text-ink-400">
           <kbd className="mono rounded-r-1 border border-ink-500 bg-ink-800 px-1 text-[10px] text-ink-100">Enter</kbd>{" "}
@@ -417,7 +827,17 @@ export function Composer({
           ) : null}
           <kbd className="mono rounded-r-1 border border-ink-500 bg-ink-800 px-1 text-[10px] text-ink-100">Shift</kbd>+
           <kbd className="mono rounded-r-1 border border-ink-500 bg-ink-800 px-1 text-[10px] text-ink-100">Enter</kbd>{" "}
-          newline
+          newline,{" "}
+          {/* Wave 2 / User-Persona review HIGH H1: surface the ``@``
+              affordance in the canonical keyboard-hints row so a
+              first-time player learns about mentions without
+              accidentally hitting the key. ``@facilitator`` is
+              named explicitly because that's the canonical AI-
+              routing token. */}
+          <kbd className="mono rounded-r-1 border border-ink-500 bg-ink-800 px-1 text-[10px] text-ink-100">@</kbd>{" "}
+          mention (try{" "}
+          <kbd className="mono rounded-r-1 border border-ink-500 bg-ink-800 px-1 text-[10px] text-ink-100">@facilitator</kbd>
+          {" "}for AI)
           {isCurrentlyReady && showDiscussButton ? (
             <>
               {" · "}

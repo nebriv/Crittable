@@ -141,14 +141,19 @@ def test_default_requires_drive_when_player_asks_ai_a_question() -> None:
 def test_legacy_soft_drive_carve_out_still_works_when_kill_switch_on() -> None:
     """Legacy carve-out path: kept reachable for emergency rollback via
     ``LLM_RECOVERY_DRIVE_SOFT_ON_OPEN_QUESTION=True``. Documents that
-    the predicate is wrong (it fires on a player asking the AI a
-    question — exactly when DRIVE is mandatory) but still does what
+    the predicate is wrong (it fires on a player ``@facilitator``-ing
+    the AI — exactly when DRIVE is mandatory) but still does what
     the original implementation did when the kill-switch is flipped
     on. Do NOT re-enable in production."""
 
     s = _session()
     s.messages.append(
-        Message(kind=MessageKind.PLAYER, role_id="role-a", body="What's next?")
+        Message(
+            kind=MessageKind.PLAYER,
+            role_id="role-a",
+            body="@facilitator what's next",
+            mentions=["facilitator"],
+        )
     )
     res = validate(
         session=s,
@@ -167,7 +172,12 @@ def test_legacy_carve_out_yields_to_new_beat_when_kill_switch_on() -> None:
 
     s = _session()
     s.messages.append(
-        Message(kind=MessageKind.PLAYER, role_id="role-a", body="What's next?")
+        Message(
+            kind=MessageKind.PLAYER,
+            role_id="role-a",
+            body="@facilitator what's next",
+            mentions=["facilitator"],
+        )
     )
     res = validate(
         session=s,
@@ -182,11 +192,17 @@ def test_legacy_carve_out_yields_to_new_beat_when_kill_switch_on() -> None:
 def test_carve_out_kill_switch_off_overrides_per_contract_flag() -> None:
     """``PLAY_CONTRACT_NORMAL.soft_drive_when_open_question=True`` but
     the operator kill-switch defaults to off; the kill-switch wins.
-    A player ``?`` message no longer downgrades the violation."""
+    A player ``@facilitator`` mention no longer downgrades the
+    violation."""
 
     s = _session()
     s.messages.append(
-        Message(kind=MessageKind.PLAYER, role_id="role-a", body="What's next?")
+        Message(
+            kind=MessageKind.PLAYER,
+            role_id="role-a",
+            body="@facilitator what's next",
+            mentions=["facilitator"],
+        )
     )
     assert PLAY_CONTRACT_NORMAL.soft_drive_when_open_question is True
     res = validate(
@@ -254,11 +270,13 @@ def test_drive_recovery_directive_embeds_pending_question_in_user_nudge() -> Non
 
 
 def test_drive_recovery_directive_falls_back_when_no_pending_question() -> None:
-    """No open question → fall back to the static nudge so the model
-    still gets a recovery prompt for non-question silent yields."""
+    """No open ``@facilitator`` mention → fall back to the static
+    nudge so the model still gets a recovery prompt for non-mention
+    silent yields. Wave 2 swapped the trailing-`?` predicate for the
+    structural mention, but the fallback nudge shape is unchanged."""
 
     d = drive_recovery_directive()
-    assert "answer any pending player question first" in d.user_nudge
+    assert "answer any pending `@facilitator` ask first" in d.user_nudge
 
 
 def test_drive_recovery_directive_truncates_long_player_question() -> None:
@@ -285,17 +303,18 @@ def test_drive_recovery_directive_neutralises_quote_chars() -> None:
 
 
 def test_validate_passes_quoted_player_question_into_directive() -> None:
-    """End-to-end at the validator layer: a player ``?``-message in
-    the session plumbs through to the recovery directive's user
-    nudge. Locks the integration so a future refactor doesn't drop
-    the grounding."""
+    """End-to-end at the validator layer: a player ``@facilitator``
+    message in the session plumbs through to the recovery directive's
+    user nudge. Locks the integration so a future refactor doesn't
+    drop the grounding."""
 
     s = _session()
     s.messages.append(
         Message(
             kind=MessageKind.PLAYER,
             role_id="role-a",
-            body="Yeah we can pull account activity. What do we see?",
+            body="@facilitator yeah we can pull account activity. What do we see?",
+            mentions=["facilitator"],
         )
     )
     res = validate(

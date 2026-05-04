@@ -46,13 +46,27 @@ def aar_client() -> LLMClient:
 def judge_client() -> AsyncAnthropic:
     """Shared judge transport — reused across all judge calls in a
     test so the cached system block (``cache_control: ephemeral``)
-    actually hits on the second + Nth invocation."""
+    actually hits on the second + Nth invocation.
 
-    import os
+    Reads the API key via ``Settings.require_anthropic_key()`` rather
+    than ``os.environ`` directly — see ``conftest.py`` for the
+    rationale (matches the production resolution path; ``.env`` works
+    the same as a shell env var).
 
+    Asserts ``not test_mode`` defensively — the conftest auto-skip
+    should have caught a test-mode run already, but the placeholder
+    string ``"test-mode-no-key"`` slipping into a real API call is
+    exactly the failure mode the multi-layer guard exists to prevent.
+    """
+
+    settings = get_settings()
+    assert not settings.test_mode, (
+        "judge_client fixture must not run with test_mode=True; "
+        "the live conftest's auto-skip should have intercepted this."
+    )
     return AsyncAnthropic(
-        api_key=os.environ["ANTHROPIC_API_KEY"],
-        base_url=get_settings().anthropic_base_url,
+        api_key=settings.require_anthropic_key(),
+        base_url=settings.anthropic_base_url,
     )
 
 

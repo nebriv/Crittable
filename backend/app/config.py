@@ -230,17 +230,16 @@ class Settings(BaseSettings):
     )
     # Legacy carve-out kill-switch. When True, missing-DRIVE is
     # downgraded from a violation to a warning if the most-recent
-    # un-replied player message ends in ``?``. The original intent was
-    # "players are mid-discussion on the AI's open ask, so the AI
-    # yielding silently is fine" — but the predicate (player message
-    # ends in ``?``) actually matches the *opposite* case (player
-    # asking AI a direct question). Enabling this carve-out causes the
-    # AI to silently yield exactly when it must answer a player. The
-    # current product design also doesn't include player-to-player
-    # discussion, so the carve-out's premise doesn't apply. Default
-    # flipped to False; retained as an emergency kill-switch only.
-    # When silence is genuinely wanted, use the operator pause control
-    # (Phase B) rather than re-enabling this flag.
+    # un-replied player message carries an ``@facilitator`` mention.
+    # The original intent was "players are mid-discussion on the AI's
+    # open ask, so the AI yielding silently is fine" — but the
+    # predicate (player addressed the AI explicitly) actually matches
+    # the *opposite* case (player demanded an answer). Enabling this
+    # carve-out causes the AI to silently yield exactly when it must
+    # answer a player. Default flipped to False; retained as an
+    # emergency kill-switch only. When silence is genuinely wanted,
+    # use the operator pause control (Wave 3) rather than re-enabling
+    # this flag.
     llm_recovery_drive_soft_on_open_question: bool = Field(
         default=False, alias="LLM_RECOVERY_DRIVE_SOFT_ON_OPEN_QUESTION"
     )

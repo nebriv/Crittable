@@ -565,12 +565,46 @@ def register_api_routes(app: FastAPI) -> None:
                     status.HTTP_400_BAD_REQUEST,
                     "message looked like a prompt-injection attempt and was blocked",
                 )
+            # Wave 2: validate ``mentions`` the same way the WS
+            # pipeline does — drop unknowns + cap. The validator is
+            # the single source of truth for both the WS path and
+            # this REST proxy path; importing it here (rather than
+            # duplicating the logic) keeps a future schema change
+            # landing in one place.
+            #
+            # Per CLAUDE.md "no backwards compat" — ``mentions`` is a
+            # required body field. Mirrors the ``intent`` gate
+            # immediately above: missing or non-list payloads are a
+            # contract violation, not a flow.  The frontend's
+            # ``adminProxyRespond`` always sends an explicit list
+            # (empty if no mentions); a caller hitting this branch
+            # is a stale client and should fail loud rather than
+            # silently submit with ``mentions=[]``. Copilot review
+            # on PR #152.
+            from ..sessions.submission_pipeline import (
+                FACILITATOR_MENTION_TOKEN,
+                validate_mentions,
+            )
+            mentions_in = body.get("mentions")
+            if not isinstance(mentions_in, list):
+                raise HTTPException(
+                    status.HTTP_400_BAD_REQUEST,
+                    "mentions is required and must be a list "
+                    "(empty list OK)",
+                )
+            cleaned_mentions = await validate_mentions(
+                manager=manager,
+                session_id=session_id,
+                role_id=as_role_id,
+                submitted=mentions_in,
+            )
             await manager.proxy_submit_as(
                 session_id=session_id,
                 by_role_id=token["role_id"],
                 as_role_id=as_role_id,
                 content=posted,
                 intent=intent_raw,
+                mentions=cleaned_mentions,
             )
         except AuthorizationError as exc:
             raise HTTPException(status.HTTP_403_FORBIDDEN, str(exc)) from exc
@@ -588,14 +622,24 @@ def register_api_routes(app: FastAPI) -> None:
         elif (
             session.current_turn is not None
             and session.state == SessionState.AWAITING_PLAYERS
-            and _looks_like_question(content[:cap])
+            and FACILITATOR_MENTION_TOKEN in cleaned_mentions
+            and not session.ai_paused
         ):
-            # Mirror the WS submit path: when the proxy submission is a
-            # direct question and the turn isn't ready to advance, fire
-            # the constrained AI interject so the asking role gets an
-            # answer without waiting for every other active role. This
-            # also fires for out-of-turn interjections (issue #78) where
-            # the proxied role isn't in ``active_role_ids``.
+            # Wave 2: the composer is the single source of facilitator-
+            # routing intent. Plain ``@<role>`` mentions are player-to-
+            # player and don't fire here; only ``@facilitator`` (real
+            # token or alias resolved to it client-side) triggers the
+            # constrained AI interject. ``ai_paused`` (Wave 3 stub)
+            # short-circuits the dispatch — the message still landed
+            # in the transcript via ``proxy_submit_as`` above.
+            import structlog
+            structlog.get_logger("api").info(
+                "routed_via_facilitator_mention",
+                session_id=session_id,
+                role_id=as_role_id,
+                turn_id=session.current_turn.id,
+                via="proxy",
+            )
             await TurnDriver(manager=manager).run_interject(
                 session=session,
                 turn=session.current_turn,
@@ -1584,20 +1628,6 @@ def register_api_routes(app: FastAPI) -> None:
         }
 
     app.include_router(router)
-
-
-def _looks_like_question(content: str) -> bool:
-    """Heuristic for "this player just asked the facilitator something" —
-    used to decide whether to fire a side-channel AI interject after a
-    submission. Mirrors the helper in ``ws/routes.py`` (kept duplicated
-    rather than shared because the import cycle is messy and the
-    function is 4 lines).
-    """
-
-    stripped = content.strip()
-    if len(stripped) < 8:
-        return False
-    return stripped.endswith("?")
 
 
 def _default_dev_plan(scenario_prompt: str) -> ScenarioPlan:

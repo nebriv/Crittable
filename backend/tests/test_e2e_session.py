@@ -183,7 +183,7 @@ def _drive(
                 f"/ws/sessions/{session_id}?token={tok}"
             ) as ws:
                 ws.send_json(
-                    {"type": "submit_response", "content": "Acknowledged, taking action.", "intent": "ready"}
+                    {"type": "submit_response", "content": "Acknowledged, taking action.", "intent": "ready", "mentions": []}
                 )
                 # Drain a bounded number of events; close on first message_complete
                 # for our role (server-driven; never blocks indefinitely).
@@ -285,8 +285,9 @@ def test_non_active_role_can_interject(client: TestClient) -> None:
     active set may still post a message. The message lands in the
     transcript as an out-of-turn interjection — the turn does NOT
     advance, ``submitted_role_ids`` is unchanged, and the manager does
-    NOT raise. Non-question content is exercised here (no LLM call
-    fires); ``run_interject`` is covered by the question test below.
+    NOT raise. No ``@facilitator`` mention is exercised here (no LLM
+    call fires); ``run_interject`` is covered by the facilitator-
+    mention tests below.
 
     Calls the manager directly rather than driving the WS — the WS
     spectator-rejection test (``test_spectator_token_rejected_*``)
@@ -834,7 +835,7 @@ def test_ws_rejects_spectator_for_mutating_events(client: TestClient) -> None:
     with client.websocket_connect(
         f"/ws/sessions/{sid}?token={spectator_token}"
     ) as ws:
-        ws.send_json({"type": "submit_response", "content": "hello", "intent": "ready"})
+        ws.send_json({"type": "submit_response", "content": "hello", "intent": "ready", "mentions": []})
         # Drain until we see the rejection or the connection closes.
         # ``state_changed`` / ``presence`` / ``presence_snapshot`` /
         # ``message_complete`` etc. all flow through the WS during the
@@ -1372,7 +1373,7 @@ def test_drive_required_on_mid_exercise_yield(client: TestClient) -> None:
     with client.websocket_connect(
         f"/ws/sessions/{sid}?token={creator_token}"
     ) as ws:
-        ws.send_json({"type": "submit_response", "content": "we triage", "intent": "ready"})
+        ws.send_json({"type": "submit_response", "content": "we triage", "intent": "ready", "mentions": []})
         # drain for a moment so the manager's submit_response chain runs
         for _ in range(8):
             try:
@@ -1437,14 +1438,15 @@ def test_player_question_does_not_downgrade_drive_recovery(
     client: TestClient,
 ) -> None:
     """Regression for the captured production bug (session
-    ``e4d6503317d6``): player asks the AI a direct ``?``-terminated
-    question, AI's tool calls are only ``inject_event``,
-    and the legacy soft-drive carve-out used to downgrade the missing
-    DRIVE to a warning — leaving the player's question unanswered. The
-    carve-out's predicate matches the *opposite* case (player asking
-    AI), and the kill-switch
-    ``LLM_RECOVERY_DRIVE_SOFT_ON_OPEN_QUESTION`` is now default-off.
-    Verify the cascade fires and the recovery broadcast lands."""
+    ``e4d6503317d6``): player ``@facilitator``s the AI, AI's tool
+    calls are only ``inject_event``, and the legacy soft-drive carve-
+    out used to downgrade the missing DRIVE to a warning — leaving
+    the player's question unanswered. The carve-out's predicate
+    matches the *opposite* case (player asking AI), and the kill-
+    switch ``LLM_RECOVERY_DRIVE_SOFT_ON_OPEN_QUESTION`` is now
+    default-off. Wave 2 swapped the trailing-``?`` heuristic for an
+    explicit ``@facilitator`` mention; this test pins the new
+    contract end-to-end."""
 
     from tests.mock_anthropic import MockAnthropic, _ContentBlock, _Response
 
@@ -1522,8 +1524,9 @@ def test_player_question_does_not_downgrade_drive_recovery(
     client.post(f"/api/sessions/{sid}/setup/skip?token={cr}")
     client.post(f"/api/sessions/{sid}/start?token={cr}")
 
-    # Creator submits a `?`-terminated message — exactly the case that
-    # used to trip the carve-out and silence the AI's response.
+    # Creator ``@facilitator``s the AI — Wave 2's explicit signal.
+    # Pre-Wave-2 this used a `?`-terminated message and the legacy
+    # carve-out would silence the AI's response.
     creator_token = seats["role_tokens"][creator_role]
     with client.websocket_connect(
         f"/ws/sessions/{sid}?token={creator_token}"
@@ -1531,7 +1534,10 @@ def test_player_question_does_not_downgrade_drive_recovery(
         ws.send_json(
             {
                 "type": "submit_response",
-                "content": "Yeah we can pull account activity. What do we see?", "intent": "ready"}
+                "content": "@facilitator yeah we can pull account activity. What do we see?",
+                "intent": "ready",
+                "mentions": ["facilitator"],
+            }
         )
         for _ in range(8):
             try:
@@ -3017,7 +3023,7 @@ def test_admin_proxy_respond_impersonates_role(client: TestClient) -> None:
     # Happy path: creator submits as the SOC analyst seat.
     r = client.post(
         f"/api/sessions/{sid}/admin/proxy-respond?token={cr}",
-        json={"as_role_id": other_role_id, "content": "Containing now.", "intent": "ready"},
+        json={"as_role_id": other_role_id, "content": "Containing now.", "intent": "ready", "mentions": []},
     )
     assert r.status_code == 200, r.text
 
@@ -3037,7 +3043,7 @@ def test_admin_proxy_respond_impersonates_role(client: TestClient) -> None:
     # double-submits.
     r = client.post(
         f"/api/sessions/{sid}/admin/proxy-respond?token={cr}",
-        json={"as_role_id": other_role_id, "content": "second", "intent": "ready"},
+        json={"as_role_id": other_role_id, "content": "second", "intent": "ready", "mentions": []},
     )
     assert r.status_code == 200, r.text
     snap = client.get(f"/api/sessions/{sid}?token={cr}").json()
@@ -3331,15 +3337,17 @@ def test_play_system_prompt_includes_open_followups() -> None:
     assert "Confluence findings?" not in blocks3[0]["text"]
 
 
-def test_ai_auto_interjects_on_direct_question(client: TestClient) -> None:
-    """When a player asks a direct question (heuristic: trailing ``?``)
-    and the turn isn't ready to advance, the AI fires a side-channel
-    response that:
+def test_ai_auto_interjects_on_facilitator_mention(client: TestClient) -> None:
+    """Wave 2: when a player ``@facilitator``s and the turn isn't ready
+    to advance, the AI fires a side-channel response that:
       * appends a broadcast / address_role chat bubble
       * does NOT change ``submitted_role_ids`` (asking player's
         submission already counted as their turn submission)
       * does NOT advance the turn (other active roles still owe)
       * does NOT yield via set_active_roles (interject is constrained)
+
+    The trailing-``?`` heuristic was deleted in this same PR — routing
+    intent now flows from the structural ``mentions`` list.
     """
 
     import asyncio
@@ -3384,13 +3392,16 @@ def test_ai_auto_interjects_on_direct_question(client: TestClient) -> None:
 
     asyncio.run(_open_awaiting())
 
-    # Creator proxy-submits a question on behalf of the other role
-    # (cleaner than threading a real WS in tests).
+    # Creator proxy-submits a facilitator mention on behalf of the
+    # other role (cleaner than threading a real WS in tests).
     r = client.post(
         f"/api/sessions/{sid}/admin/proxy-respond?token={cr}",
         json={
             "as_role_id": other_role_id,
-            "content": "What open items do we have right now?", "intent": "ready"},
+            "content": "@facilitator what open items do we have right now",
+            "intent": "ready",
+            "mentions": ["facilitator"],
+        },
     )
     assert r.status_code == 200, r.text
 
@@ -3529,7 +3540,7 @@ def test_proxy_respond_rejects_unknown_or_spectator_role(
     # via the route's existing exception mapping).
     r = client.post(
         f"/api/sessions/{sid}/admin/proxy-respond?token={cr}",
-        json={"as_role_id": "ghost-role-id-xyz", "content": "hello", "intent": "ready"},
+        json={"as_role_id": "ghost-role-id-xyz", "content": "hello", "intent": "ready", "mentions": []},
     )
     assert r.status_code == 409, r.text
     assert "not seated" in r.text.lower()
@@ -3549,7 +3560,7 @@ def test_proxy_respond_rejects_unknown_or_spectator_role(
     spectator_role_id = asyncio.run(_add_spectator())
     r = client.post(
         f"/api/sessions/{sid}/admin/proxy-respond?token={cr}",
-        json={"as_role_id": spectator_role_id, "content": "hello", "intent": "ready"},
+        json={"as_role_id": spectator_role_id, "content": "hello", "intent": "ready", "mentions": []},
     )
     assert r.status_code == 409, r.text
     assert "not a player role" in r.text.lower()
@@ -3623,13 +3634,14 @@ def test_proxy_respond_blocks_prompt_injection(client: TestClient) -> None:
     assert bodies == []
 
 
-def test_out_of_turn_question_fires_interject(client: TestClient) -> None:
-    """Issue #78: a participant whose role is NOT in the current turn's
-    active set may ask a direct question, and the engine fires the
-    constrained ``run_interject`` LLM mini-call exactly the way it does
-    for an active-role question. Distinct from
-    ``test_ai_auto_interjects_on_direct_question`` (active asker) and
-    ``test_non_active_role_can_interject`` (non-question, no LLM call).
+def test_out_of_turn_facilitator_mention_fires_interject(client: TestClient) -> None:
+    """Issue #78 + Wave 2: a participant whose role is NOT in the
+    current turn's active set may ``@facilitator`` and the engine fires
+    the constrained ``run_interject`` LLM mini-call exactly the way it
+    does for an active-role mention. Distinct from
+    ``test_ai_auto_interjects_on_facilitator_mention`` (active asker)
+    and ``test_non_active_role_can_interject`` (no facilitator mention,
+    no LLM call).
     """
 
     import asyncio
@@ -3680,14 +3692,17 @@ def test_out_of_turn_question_fires_interject(client: TestClient) -> None:
 
     asyncio.run(_open_awaiting())
 
-    # The non-active role asks a question via the proxy endpoint (the
-    # in-test surrogate for a real WS submit; the WS path runs through
-    # the same manager method + post-submit dispatch).
+    # The non-active role facilitator-mentions via the proxy endpoint
+    # (the in-test surrogate for a real WS submit; the WS path runs
+    # through the same manager method + post-submit dispatch).
     r = client.post(
         f"/api/sessions/{sid}/admin/proxy-respond?token={cr}",
         json={
             "as_role_id": other_role_id,
-            "content": "Should we pull the egress logs first?", "intent": "ready"},
+            "content": "@facilitator should we pull the egress logs first",
+            "intent": "ready",
+            "mentions": ["facilitator"],
+        },
     )
     assert r.status_code == 200, r.text
 
@@ -3709,24 +3724,6 @@ def test_out_of_turn_question_fires_interject(client: TestClient) -> None:
     ai_msgs = [m for m in snap["messages"] if m.get("tool_name") == "address_role"]
     assert ai_msgs, snap["messages"]
     assert "egress" in ai_msgs[-1]["body"].lower()
-
-
-def test_interject_skipped_for_short_or_non_question(client: TestClient) -> None:
-    """``_looks_like_question`` filters out very short messages and
-    non-question text so trivial submissions don't burn an LLM call."""
-
-    from app.api.routes import _looks_like_question as api_looks
-    from app.ws.routes import _looks_like_question as ws_looks
-
-    for fn in (api_looks, ws_looks):
-        assert fn("What is our exposure?") is True
-        assert fn("Did the sweep complete?") is True
-        # Too short — common short reactions like "what?", "huh?"
-        assert fn("?") is False
-        assert fn("what?") is False
-        # Doesn't end with ?
-        assert fn("We are containing now.") is False
-        assert fn("Here's a question mark? in the middle.") is False
 
 
 def test_strict_retry_max_zero_marks_errored_immediately(monkeypatch) -> None:
@@ -3811,7 +3808,7 @@ def test_max_participant_submission_chars_truncates(monkeypatch) -> None:
         long_msg = "x" * 200
         r = c.post(
             f"/api/sessions/{sid}/admin/proxy-respond?token={cr}",
-            json={"as_role_id": other, "content": long_msg, "intent": "ready"},
+            json={"as_role_id": other, "content": long_msg, "intent": "ready", "mentions": []},
         )
         assert r.status_code == 200, r.text
         snap = c.get(f"/api/sessions/{sid}?token={cr}").json()
@@ -4247,32 +4244,6 @@ def test_temperature_stripped_for_opus_4_x(monkeypatch) -> None:
     )
 
 
-def test_question_heuristic_catches_no_questionmark_phrasing() -> None:
-    """The interject heuristic must fire on "can we look inside…" /
-    "should we isolate…" / "what is in the directory" even without a
-    trailing ``?``. Real participants type questions as statements often
-    enough that the punctuation-only rule was leaving the AI deaf to
-    direct asks.
-    """
-
-    from app.ws.routes import _looks_like_question
-
-    # Trailing ``?`` path (existing behaviour).
-    assert _looks_like_question("Is the host isolated yet?")
-    # Prefix path — these all previously slipped through.
-    assert _looks_like_question(
-        "can we look inside of C:\\Users\\evasquez\\AppData\\Local\\Temp\\~ex_out\\"
-    )
-    assert _looks_like_question("should we isolate the IT admin workstation")
-    assert _looks_like_question("what is in the triage package")
-    assert _looks_like_question("how do we tell the engineer to escalate")
-    # Negative cases — narrative statements stay non-questions.
-    assert not _looks_like_question("we isolated the host via Defender")
-    assert not _looks_like_question("forensics is complete")
-    assert not _looks_like_question("hi")  # too short for either path
-    assert not _looks_like_question("can we?")  # too short for either path
-
-
 def test_ws_submit_truncates_with_marker_and_warning(monkeypatch) -> None:
     """The WS ``submit_response`` path must (a) emit a
     ``submission_truncated`` event (NOT ``error``) so the frontend can
@@ -4311,7 +4282,7 @@ def test_ws_submit_truncates_with_marker_and_warning(monkeypatch) -> None:
         asyncio.run(_open_awaiting())
 
         with c.websocket_connect(f"/ws/sessions/{sid}?token={cr}") as ws:
-            ws.send_json({"type": "submit_response", "content": "y" * 100, "intent": "ready"})
+            ws.send_json({"type": "submit_response", "content": "y" * 100, "intent": "ready", "mentions": []})
             seen_truncated = False
             for _ in range(8):
                 evt = ws.receive_json()

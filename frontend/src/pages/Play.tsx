@@ -409,7 +409,11 @@ export function Play({ sessionId, token }: Props) {
     }
   }
 
-  function handleSubmit(text: string, intent: "ready" | "discuss") {
+  function handleSubmit(
+    text: string,
+    intent: "ready" | "discuss",
+    mentions: string[],
+  ) {
     setError(null);
     // Pin the chat to the bottom on the next render so the player sees
     // their own message commit, even if they happened to be reading
@@ -423,6 +427,12 @@ export function Play({ sessionId, token }: Props) {
         // ready-quorum advance. The Composer always sets this; never
         // omit on the wire — the backend rejects payloads without it.
         intent,
+        // Wave 2: structural mention list from the composer's marks.
+        // Plain ``@<role>`` entries surface the @-highlight to the
+        // addressed role; the literal ``"facilitator"`` token (alias
+        // ``@ai`` / ``@gm`` resolved client-side) triggers the
+        // server-side ``run_interject`` mini-turn.
+        mentions,
       });
       // Issue #78: confirm out-of-turn submits inline so the user
       // doesn't think "did it post? did the AI hear me?" while waiting
@@ -430,24 +440,24 @@ export function Play({ sessionId, token }: Props) {
       // at render time, so capturing it here is correct for the just-
       // sent submission.
       //
-      // Question-style submissions trip the backend ``run_interject``
-      // side-channel and typically get an inline AI reply within a few
-      // seconds, so the "AI will see this on its next turn" copy is
-      // misleading for them. We approximate the backend's
-      // ``_looks_like_question`` heuristic with a trimmed-trailing-?
-      // check (the prefix path — "can we …" without a ? — is the
-      // minority case; the generic "noted" copy still reads correctly
-      // there if it ends up routed to the next turn instead of an
-      // interject). Both branches deliver the same core reassurance
-      // (your message landed; here's what happens next), differentiated
-      // so the user isn't told "wait until next turn" when the AI is
-      // already composing a reply.
+      // Wave 2 replaces the legacy trailing-``?`` heuristic with the
+      // structural ``@facilitator`` mention. If the player explicitly
+      // routed the message at the AI we know an interject is coming;
+      // otherwise the message just lands as a sidebar comment the AI
+      // will read on its next turn.
+      //
+      // User-Persona review HIGH: the no-mention copy is the canonical
+      // teaching moment for the new mechanic — a first-time player
+      // sending an off-turn comment learns here that ``@facilitator``
+      // (or aliases) is how to demand an inline reply. Without this
+      // copy, players who used to rely on the trailing-``?`` heuristic
+      // bounce off the empty sidebar with no path forward.
       if (!isMyTurn) {
-        const looksLikeQuestion = text.trim().endsWith("?");
+        const willInterject = mentions.includes("facilitator");
         setNotice(
-          looksLikeQuestion
-            ? "Posted as a sidebar — if the AI reads this as a question it'll reply inline; otherwise it sees it on its next turn."
-            : "Posted as a sidebar — the AI will see this on its next turn.",
+          willInterject
+            ? "Posted as a sidebar — @facilitator was tagged, so the AI will reply inline."
+            : "Posted as a sidebar — the AI will see this on its next turn. Need an answer now? Tag @facilitator (or @ai).",
         );
       }
     } catch (err) {
@@ -914,6 +924,23 @@ export function Play({ sessionId, token }: Props) {
   // submit, so disabling client-side is just early UX.
   const composerEnabled =
     isPlayer && snapshot.state === "AWAITING_PLAYERS";
+  // Wave 2: roster the composer's @-popover offers. Excludes the
+  // local participant (a player ``@``-ing themself is never useful)
+  // and spectators (they aren't addressable beats). The synthetic
+  // ``@facilitator`` entry is rendered by the popover itself — do
+  // NOT add it here. Plain const (not ``useMemo``) because this
+  // file has early-return branches above; a hook below them would
+  // violate the rules-of-hooks. The filter+map cost on a small
+  // role list is negligible compared to the per-render WS-event
+  // churn this page already absorbs.
+  const mentionRoster = snapshot.roles
+    .filter((r) => r.id !== selfRoleId && r.kind !== "spectator")
+    .map((r) => ({
+      target: r.id,
+      insertLabel: r.label,
+      displayLabel: r.label,
+      secondary: r.display_name ?? undefined,
+    }));
   // "Your turn" stays as the at-a-glance label only when this viewer
   // is actually on the active set; otherwise we soften to "Add a
   // comment" so a non-active player typing into the still-enabled
@@ -1217,6 +1244,7 @@ export function Play({ sessionId, token }: Props) {
               // ``ready_role_ids``). Hide the discuss button so the
               // affordance only shows where it's load-bearing.
               hideDiscussButton={!iAmActive}
+              mentionRoster={mentionRoster}
             />
             {notice ? (
               <p
@@ -1617,9 +1645,16 @@ export function JoinIntro({
             <ul className="flex flex-col gap-2 text-sm leading-relaxed text-ink-200">
               <li>
                 <span className="font-semibold text-ink-100">Type how you'd respond on the job.</span>{" "}
-                Plain English — no special syntax. The AI is your facilitator;
-                talk to it the way you'd talk to a colleague running the
-                exercise.
+                Plain English. To address a teammate, type{" "}
+                <span className="mono rounded-r-1 border border-ink-500 bg-ink-800 px-1 text-[11px] text-ink-100">@</span>
+                {" "}— a roster will pop up. To get the AI's attention
+                directly (sidebar question, clarification), tag{" "}
+                <span className="mono rounded-r-1 border border-ink-500 bg-ink-800 px-1 text-[11px] text-ink-100">@facilitator</span>
+                {" "}(aliases{" "}
+                <span className="mono rounded-r-1 border border-ink-500 bg-ink-800 px-1 text-[11px] text-ink-100">@ai</span>
+                {", "}
+                <span className="mono rounded-r-1 border border-ink-500 bg-ink-800 px-1 text-[11px] text-ink-100">@gm</span>
+                ) and the AI will reply inline.
               </li>
               <li>
                 <span className="font-semibold text-ink-100">Ask for what you'd actually have.</span>{" "}

@@ -206,8 +206,12 @@ describe("Play page e2e — state transitions", () => {
     await waitFor(() => {
       expect(screen.queryByTestId("join-intro-waiting")).toBeNull();
     });
-    // Composer textarea is reachable (the primary CTA for an active player).
-    const textarea = await screen.findByRole("textbox");
+    // Composer textarea is reachable (the primary CTA for an active
+    // player). Wave 2: the textarea claims ``role="combobox"``
+    // because it owns the ``@``-mention popover (ARIA listbox); the
+    // implicit textbox role is overridden once aria-controls /
+    // aria-haspopup are wired.
+    const textarea = await screen.findByRole("combobox");
     expect(textarea).toBeInTheDocument();
     expect(textarea).not.toBeDisabled();
     // The AI's prior broadcast renders.

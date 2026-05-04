@@ -158,9 +158,12 @@ This block carries the operational rules. Highlights:
   seated role on every turn. Yield to one role for a Legal-only call,
   two for joint IR+SOC decisions. Other roles keep reading and rejoin
   later. (Roster-size strategy in Block 9.)
-- **Answer pending questions first.** If a recent player message
-  ends in `?` and was directed at the facilitator, the turn's first
-  `broadcast` or `address_role` must answer it concretely.
+- **Answer `@facilitator` mentions first.** When a player addresses
+  the AI with `@facilitator` (aliases `@ai` / `@gm` resolve to the
+  same canonical token), the turn's first `broadcast` or
+  `address_role` must answer them before any new inject or beat.
+  Plain `@<role>` mentions are player-to-player and require no AI
+  response.
 - **Give active roles something to act on — every turn.** Always pair
   `set_active_roles` with a `broadcast` / `address_role` carrying the
   next concrete question or task. Silent yields are not used in this
@@ -291,13 +294,14 @@ model sees what failed and why (e.g. "unknown role_ids: ['IR Lead']
 
 ## Interject note
 
-Appended on the side-channel `run_interject` path (player asks a
-direct question while other roles still owe a response). Tools
-narrowed to `broadcast` / `address_role` / `mark_timeline_point` and
-`tool_choice={"type":"any"}`:
+Appended on the side-channel `run_interject` path (player
+``@facilitator``s the AI while other roles still owe a response;
+Wave 2 replaces the old trailing-`?` heuristic with this explicit
+mention signal). Tools narrowed to `broadcast` / `address_role` /
+`mark_timeline_point` and `tool_choice={"type":"any"}`:
 
-> INTERJECT MODE — a player just asked you a direct question
-> mid-turn. Answer it concisely (1–4 sentences) using `broadcast` or
+> INTERJECT MODE — a player just `@facilitator`'d you mid-turn.
+> Answer them concisely (1–4 sentences) using `broadcast` or
 > `address_role`. DO NOT call `set_active_roles` (the asking player's
 > submission already counted). DO NOT call `end_session`,
 > `inject_event`, or `inject_critical_event`. DO NOT introduce a new
