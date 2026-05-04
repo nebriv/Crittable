@@ -6,6 +6,7 @@ or print a clear "set the key" message when it's missing.
 
 | Script | When to run it | Cost (per run) |
 |---|---|---|
+| `run-live-tests.sh` | Whenever you want to run `backend/tests/live/` from inside the Claude Code agent harness (or any environment where setting `ANTHROPIC_API_KEY` directly would collide with the host process's SDK auth). Bridges `LIVE_TEST_ANTHROPIC_API_KEY` -> pytest. | ~$0.10 (full suite) |
 | `live_recovery_check.py` | Before every push that touches `_DRIVE_RECOVERY_NOTE`, `_STRICT_YIELD_NOTE`, `_format_drive_user_nudge`, `Block 6` of the system prompt, or any `drive_recovery_directive` plumbing. | ~$0.03 |
 | `diagnostic_full_response.py` | When you suspect a tool is being mis-picked and want to see the full model response (text + all tool_use blocks) across three palette variants. | ~$0.05 |
 
@@ -71,6 +72,17 @@ cd backend && ANTHROPIC_API_KEY=sk-ant-... pytest tests/live/ -v
 ```
 
 Auto-skipped without the key. Cost ~$0.10 per full run.
+
+Inside the Claude Code agent harness, **don't** set `ANTHROPIC_API_KEY`
+as a session-wide secret — it shadows the harness's own SDK auth and
+breaks the session. Store the key as `LIVE_TEST_ANTHROPIC_API_KEY`
+instead and use the wrapper, which scopes the bridged var to the
+pytest subprocess only:
+
+```bash
+backend/scripts/run-live-tests.sh                # full suite
+backend/scripts/run-live-tests.sh -k test_aar    # pytest filter
+```
 
 See [`docs/tool-design.md`](../../docs/tool-design.md) for the
 authoring guidelines this suite enforces.

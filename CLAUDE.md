@@ -73,7 +73,14 @@ The proper fix is to **delete `TEST_MODE` entirely** and have the unit-test conf
 
 Claude Code itself talks to the Anthropic API via the official SDK, which auto-discovers `ANTHROPIC_API_KEY`, `ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN`, and friends from process env. **Setting any of them as a session-wide secret in the Claude Code harness's "environment variables" pane shadows the credential the harness uses internally and breaks the session immediately** — auth mismatch, wrong account, wrong entitlement, or silent re-routing of Claude's own calls through your key. Every sandbox-level env var is inherited by Claude Code's own process tree.
 
-The fix: store the live-test key under a non-shadowing name in the harness — e.g. `LIVE_TEST_ANTHROPIC_API_KEY` — and bridge it into the pytest subprocess only at invocation time:
+The fix: store the live-test key under a non-shadowing name in the harness — e.g. `LIVE_TEST_ANTHROPIC_API_KEY` — and bridge it into the pytest subprocess only at invocation time. The `backend/scripts/run-live-tests.sh` wrapper does this for you:
+
+```bash
+backend/scripts/run-live-tests.sh                # full suite
+backend/scripts/run-live-tests.sh -k test_aar    # pytest filter
+```
+
+If you'd rather invoke pytest directly, the equivalent inline form is:
 
 ```bash
 ANTHROPIC_API_KEY="$LIVE_TEST_ANTHROPIC_API_KEY" pytest backend/tests/live/ -v
