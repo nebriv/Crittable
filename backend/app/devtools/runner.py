@@ -633,6 +633,20 @@ class ScenarioRunner:
             role_id: str | None = None
             if record.role_label:
                 role_id = self._role_ids.get(record.role_label)
+            # Chat-declutter polish: translate recorded mentions
+            # (label-based for portability) → role_ids the engine
+            # uses. The literal ``"facilitator"`` token passes
+            # through unchanged. Drop any mentions whose label
+            # doesn't resolve in this session's roster — same drop
+            # contract the live submission pipeline applies.
+            translated_mentions: list[str] = []
+            for entry in record.mentions:
+                if entry == "facilitator":
+                    translated_mentions.append(entry)
+                    continue
+                resolved = self._role_ids.get(entry)
+                if resolved is not None:
+                    translated_mentions.append(resolved)
             await self._manager.append_recorded_message(
                 session_id=sid,
                 kind=kind,
@@ -642,6 +656,8 @@ class ScenarioRunner:
                 role_id=role_id,
                 is_interjection=record.is_interjection,
                 visibility=record.visibility,
+                workstream_id=record.workstream_id,
+                mentions=translated_mentions,
             )
             # Critical-inject messages get a separate ``critical_event``
             # WS broadcast in the live engine (see

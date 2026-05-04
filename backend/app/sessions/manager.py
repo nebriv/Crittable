@@ -1728,6 +1728,8 @@ class SessionManager:
         role_id: str | None,
         is_interjection: bool,
         visibility: list[str] | Literal["all"],
+        workstream_id: str | None = None,
+        mentions: list[str] | None = None,
     ) -> Message:
         """Boundary for the dev-tools deterministic replay path.
 
@@ -1777,6 +1779,21 @@ class SessionManager:
             session = await self._repo.get(session_id)
             turn = session.current_turn
             turn_id = turn.id if turn is not None else None
+            # Chat-declutter polish: persist the recorded
+            # ``workstream_id`` + ``mentions`` directly on the Message so
+            # the replay UI sees the colored stripes + ``@-highlight``
+            # chrome the real session rendered. The dispatcher writes
+            # these fields on live tool_use; the recorder captures
+            # them; the replay path must apply them.
+            ws_target: str | None = None
+            if workstream_id is not None and session.plan is not None:
+                declared = {ws.id for ws in session.plan.workstreams}
+                if workstream_id in declared:
+                    ws_target = workstream_id
+                # Silently drop an undeclared workstream — defensive
+                # against a scenario file that names a workstream the
+                # default plan doesn't seed (skip-setup path) or that
+                # changed between record and replay.
             msg = Message(
                 kind=kind,
                 body=body,
@@ -1786,6 +1803,8 @@ class SessionManager:
                 is_interjection=is_interjection,
                 visibility=visibility,
                 turn_id=turn_id,
+                workstream_id=ws_target,
+                mentions=list(mentions or []),
             )
             session.messages.append(msg)
             await self._repo.save(session)
