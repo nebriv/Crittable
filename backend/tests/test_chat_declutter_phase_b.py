@@ -14,7 +14,7 @@ in ``test_chat_declutter_phase_a.py``; this file is dispatch-side only.
 
 The frontend filter logic + UI components are tested in the frontend
 suite under ``frontend/src/__tests__/transcriptFilters.test.ts`` and
-``transcriptFiltersUI.test.tsx``.
+``TranscriptFilters.test.tsx``.
 """
 
 from __future__ import annotations

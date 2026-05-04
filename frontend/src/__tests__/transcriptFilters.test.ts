@@ -136,7 +136,9 @@ describe("filterMessages", () => {
     expect(filtered.map((m) => m.id)).toEqual(["m1"]);
   });
 
-  it("'me' is a no-op when selfRoleId is null", () => {
+  it("'me' returns [] when selfRoleId is null", () => {
+    // No self ⇒ no message can match @Me; the filter collapses to
+    // an empty list rather than no-op-ing back to the input.
     expect(
       filterMessages(FIXTURES, { quality: "me", tracks: new Set() }, null),
     ).toEqual([]);
