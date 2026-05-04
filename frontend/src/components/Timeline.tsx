@@ -4,6 +4,16 @@ import { MessageView, RoleView } from "../api/client";
 interface Props {
   messages: MessageView[];
   roles: RoleView[];
+  /**
+   * Phase B chat-declutter (UI/UX review HIGH): invoked when a
+   * Timeline pin's target ``msg-{id}`` is missing from the DOM —
+   * typically because a transcript filter is hiding it. The parent
+   * page owns the filter state and can clear it then re-attempt the
+   * scroll, surface a recovery toast, etc. Optional — without a
+   * handler the click degrades to a console warning + no-op (the
+   * pre-Phase-B behaviour).
+   */
+  onScrollMissed?: (messageId: string) => void;
 }
 
 interface TimelineEntry {
@@ -54,7 +64,11 @@ const BEAT_RE = /\b(beat|phase|stage)\s+(\d{1,2})\b/i;
  * Each entry is a button — clicking scrolls the transcript to the originating
  * message bubble (which has ``id="msg-{id}"``).
  */
-export function Timeline({ messages, roles: _roles }: Props) {
+export function Timeline({
+  messages,
+  roles: _roles,
+  onScrollMissed,
+}: Props) {
   // ``_roles`` kept in the prop signature so the parent doesn't need to
   // change; the timeline currently doesn't render role labels because the
   // entries are already attributed in the AI's title.
@@ -190,7 +204,21 @@ export function Timeline({ messages, roles: _roles }: Props) {
 
   function scrollTo(id: string) {
     const el = document.getElementById(`msg-${id}`);
-    if (!el) return;
+    if (!el) {
+      // Phase B chat-declutter (UI/UX review HIGH): a Timeline pin
+      // whose target message is filtered out of the transcript would
+      // silently no-op pre-fix, leaving the operator wondering whether
+      // the click registered. ``onScrollMissed`` lets the parent (the
+      // page, which owns the filter state) surface a recovery —
+      // typically by clearing the filter and re-trying. Without a
+      // handler we still log so the next operator can see the silent
+      // no-op in their browser console.
+      console.warn(
+        `[timeline] msg-${id} not in DOM — likely hidden by an active transcript filter`,
+      );
+      onScrollMissed?.(id);
+      return;
+    }
     el.scrollIntoView({ behavior: "smooth", block: "start" });
     setFlashing(id);
     el.setAttribute("data-flash", "1");

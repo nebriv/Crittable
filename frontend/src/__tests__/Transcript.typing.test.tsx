@@ -133,6 +133,8 @@ describe("Transcript typing label (issue #77)", () => {
         ts: "2026-05-01T00:00:00Z",
         tool_name: null,
         tool_args: null,
+        workstream_id: null,
+        mentions: [],
       },
       {
         id: "m2",
@@ -142,6 +144,8 @@ describe("Transcript typing label (issue #77)", () => {
         ts: "2026-05-01T00:00:01Z",
         tool_name: null,
         tool_args: null,
+        workstream_id: null,
+        mentions: [],
       },
     ];
     const { container } = render(

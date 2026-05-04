@@ -13,6 +13,12 @@ import { RightSidebar } from "../components/RightSidebar";
 import { RoleRoster } from "../components/RoleRoster";
 import { SharedNotepad } from "../components/SharedNotepad";
 import { Transcript } from "../components/Transcript";
+import { TranscriptFilters } from "../components/TranscriptFilters";
+import {
+  DEFAULT_FILTER,
+  FilterState,
+  filterMessages,
+} from "../lib/transcriptFilters";
 import { DieLoader } from "../components/brand/DieLoader";
 import { CollapsibleRailPanel } from "../components/brand/CollapsibleRailPanel";
 import { HudGauges } from "../components/brand/HudGauges";
@@ -127,6 +133,14 @@ export function Play({ sessionId, token }: Props) {
   // can sit idle and the notepad never mounts. Issue surfaced during
   // manual smoke for #98.
   const [wsClient, setWsClient] = useState<WsClient | null>(null);
+  // Phase B chat-declutter (docs/plans/chat-decluttering.md §4.7):
+  // local filter state for the TranscriptFilters component above the
+  // chat. Quality is single-valued (All / @Me / Critical); track set
+  // is multi-select OR within the set, AND-combined with quality.
+  // Default = ``"all" + empty set`` = no filtering = identical
+  // behaviour to the pre-Phase-B chat.
+  const [transcriptFilter, setTranscriptFilter] =
+    useState<FilterState>(DEFAULT_FILTER);
   const forceAdvanceTimerRef = useRef<number | null>(null);
 
   // Determine self by inspecting snapshot.roles and matching the role with the
@@ -1143,13 +1157,25 @@ export function Play({ sessionId, token }: Props) {
             region while Composer + notice + error live below as a
             shrink-0 footer.
           */}
+          <TranscriptFilters
+            messages={snapshot.messages}
+            workstreams={snapshot.workstreams ?? []}
+            selfRoleId={selfRoleId}
+            state={transcriptFilter}
+            onChange={setTranscriptFilter}
+          />
           <div
             ref={scrollRegionRef}
             className="flex min-w-0 flex-col gap-3 lg:min-h-0 lg:flex-1 lg:overflow-y-auto lg:pr-1"
           >
             <Transcript
-              messages={snapshot.messages}
+              messages={filterMessages(
+                snapshot.messages,
+                transcriptFilter,
+                selfRoleId,
+              )}
               roles={snapshot.roles}
+              workstreams={snapshot.workstreams ?? []}
               aiThinking={showAiThinking}
               aiStatusLabel={
                 aiStatusLabel ?? (streamingActive ? "Typing…" : undefined)
@@ -1278,6 +1304,11 @@ export function Play({ sessionId, token }: Props) {
           <RightSidebar
             messages={snapshot.messages}
             roles={snapshot.roles}
+            // Phase B chat-declutter: clear the transcript filter
+            // when a Timeline pin's target is hidden, then the user
+            // can click the pin again. UI/UX review HIGH — pre-fix
+            // was a silent no-op that read as "the app is broken".
+            onScrollMissed={() => setTranscriptFilter(DEFAULT_FILTER)}
             notepad={
               wsClient && selfRoleId ? (
                 <SharedNotepad

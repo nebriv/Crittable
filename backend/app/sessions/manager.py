@@ -63,6 +63,43 @@ def _is_oversized(value: Any) -> bool:
     return False
 
 
+def _inherit_workstream_id(session: Session, *, role_id: str) -> str | None:
+    """Phase B chat-declutter (docs/plans/chat-decluttering.md §4.4):
+    resolve the workstream_id a player's reply should inherit.
+
+    Two of the four documented rules are implemented in Phase B —
+    the explicit-tag rule (#1) requires the composer ``#tag``
+    autocomplete (Phase C), and the lead_role_id fallback (#3)
+    requires lead-role lookup against open workstreams. The most
+    impactful rule for the visible filter chrome is #2 ("most recent
+    AI message addressing this player"), which is what this helper
+    implements; #4 ("otherwise None") falls out as the default
+    return.
+
+    The walk is bounded by the session's existing message log size
+    (already memory-resident) and short-circuits on the first match,
+    so it's O(N) worst-case per submission with N capped at the
+    session's history. We deliberately don't memoize: the cost is
+    negligible against the sub-millisecond budget for ``submit_response``,
+    and a stale memo would silently corrupt inheritance after a turn
+    flips.
+
+    The dispatch layer guarantees that AI messages produced by
+    ``address_role`` and ``pose_choice`` carry exactly one role_id in
+    their ``mentions`` list (the addressee), so a reverse-walk
+    matching ``role_id in msg.mentions`` is the correct addressing
+    predicate. Pre-Phase-A messages have empty ``mentions`` lists and
+    fail the predicate, so they're safely ignored.
+    """
+
+    for msg in reversed(session.messages):
+        if msg.kind != MessageKind.AI_TEXT:
+            continue
+        if role_id in msg.mentions:
+            return msg.workstream_id
+    return None
+
+
 class SessionManager:
     def __init__(
         self,
@@ -733,6 +770,15 @@ class SessionManager:
                     turn_index=turn.index,
                 )
             self._enforce_dedupe_window(session, role_id=role_id, content=content)
+            # Phase B chat-declutter (docs/plans/chat-decluttering.md
+            # §4.4): inherit the most recent AI-addressed-to-me
+            # workstream so a player's reply lands under the same
+            # track filter as the prompt that drove it. ``None`` if
+            # no such message exists (or the addressing AI message
+            # was cross-cutting).
+            inherited_workstream_id = _inherit_workstream_id(
+                session, role_id=role_id
+            )
             session.messages.append(
                 Message(
                     kind=MessageKind.PLAYER,
@@ -749,6 +795,7 @@ class SessionManager:
                     # Wave 2: cleaned by the submission pipeline; the
                     # raw wire payload never reaches this layer.
                     mentions=list(mentions) if mentions else [],
+                    workstream_id=inherited_workstream_id,
                 )
             )
             walked_back = False
@@ -825,11 +872,12 @@ class SessionManager:
                 # ready_role_ids. ``None`` for interjections (intent
                 # doesn't apply to out-of-turn posts).
                 "intent": intent if is_turn_submission else None,
-                # Phase A chat-declutter (plan §4.8). Player-side
-                # workstream-id inheritance (§4.4) lands in a later
-                # phase; for Phase A every player message reports
-                # ``None`` (the synthetic ``#main`` bucket).
-                "workstream_id": None,
+                # Phase B chat-declutter (plan §4.4 / §4.8): the
+                # message we just appended carries the inherited
+                # workstream — surface it on the broadcast so the
+                # frontend's TranscriptFilters track pills and the
+                # 3 px stripe stay consistent with the snapshot.
+                "workstream_id": inherited_workstream_id,
                 # Wave 2: cleaned by the submission pipeline; clients
                 # render the @-highlight from this list rather than
                 # regex-scanning the body.
@@ -1001,6 +1049,14 @@ class SessionManager:
             self._enforce_dedupe_window(
                 session, role_id=as_role_id, content=content
             )
+            # Phase B chat-declutter (plan §4.4): proxy path inherits
+            # the workstream the same way the regular submit path does
+            # — symmetry matters because creators using proxy_respond
+            # for solo-test runs would otherwise see their proxy
+            # messages permanently in #main.
+            inherited_workstream_id = _inherit_workstream_id(
+                session, role_id=as_role_id
+            )
             session.messages.append(
                 Message(
                     kind=MessageKind.PLAYER,
@@ -1012,6 +1068,7 @@ class SessionManager:
                     # Wave 2: mirror ``submit_response``. The REST
                     # proxy endpoint validates before this layer.
                     mentions=list(mentions) if mentions else [],
+                    workstream_id=inherited_workstream_id,
                 )
             )
             if is_turn_submission:
@@ -1050,9 +1107,8 @@ class SessionManager:
                 "body": content,
                 "is_interjection": not is_turn_submission,
                 "intent": intent if is_turn_submission else None,
-                # Phase A chat-declutter (plan §4.8). Same shape as
-                # ``submit_response`` above.
-                "workstream_id": None,
+                # Phase B chat-declutter (plan §4.4): inherited above.
+                "workstream_id": inherited_workstream_id,
                 # Wave 2: same source as ``submit_response``. The
                 # REST proxy validates the wire payload first.
                 "mentions": list(mentions) if mentions else [],
@@ -1128,6 +1184,13 @@ class SessionManager:
                 # only would block forever.
                 if rid not in turn.ready_role_ids:
                     turn.ready_role_ids.append(rid)
+                # Phase B chat-declutter (plan §4.4): each filled
+                # seat inherits the workstream of the most recent AI
+                # message addressing that role. The fill is N
+                # independent inheritances, not N copies of the same
+                # value — different roles may have been addressed by
+                # different workstream-tagged AI messages.
+                inherited = _inherit_workstream_id(session, role_id=rid)
                 session.messages.append(
                     Message(
                         kind=MessageKind.PLAYER,
@@ -1135,6 +1198,7 @@ class SessionManager:
                         body=content,
                         turn_id=turn.id,
                         intent="ready",
+                        workstream_id=inherited,
                     )
                 )
                 filled.append(rid)
@@ -1144,6 +1208,22 @@ class SessionManager:
                 session.state = SessionState.AI_PROCESSING
             await self._repo.save(session)
         for rid in filled:
+            # Re-resolve the inheritance against the persisted state
+            # so the broadcast carries the same value the persisted
+            # message did (no race between append and broadcast).
+            broadcast_msg = next(
+                (
+                    m
+                    for m in reversed(session.messages)
+                    if m.kind == MessageKind.PLAYER
+                    and m.role_id == rid
+                    and m.body == content
+                ),
+                None,
+            )
+            inherited_for_rid = (
+                broadcast_msg.workstream_id if broadcast_msg else None
+            )
             await self.connections().broadcast(
                 session_id,
                 {
@@ -1156,8 +1236,9 @@ class SessionManager:
                     # the whole point of the helper — auto-advance the
                     # turn).
                     "intent": "ready",
-                    # Phase A chat-declutter (plan §4.8).
-                    "workstream_id": None,
+                    # Phase B chat-declutter (plan §4.4): inherited
+                    # from the persisted message above.
+                    "workstream_id": inherited_for_rid,
                     "mentions": [],
                 },
             )

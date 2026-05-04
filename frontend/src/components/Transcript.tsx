@@ -1,12 +1,26 @@
+import type { ReactNode } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { MessageView, RoleView } from "../api/client";
+import { MessageView, RoleView, WorkstreamView } from "../api/client";
+import { colorForWorkstream } from "../lib/workstreamPalette";
 import { ChatIndicator } from "./ChatIndicator";
 import { TableScroll } from "./TableScroll";
 
 interface Props {
   messages: MessageView[];
   roles: RoleView[];
+  /**
+   * Phase B chat-declutter (docs/plans/chat-decluttering.md §4.7):
+   * declared workstreams for this session, in declaration order. The
+   * 6-slot color palette is assigned by index here, so the same id
+   * resolves to the same stripe color across the filter pills, the
+   * track-bar, and the synthetic "track opened" landmark row. Empty
+   * list = no categorization (single ``#main`` bucket); messages get
+   * the slate-gray stripe but no synthetic rows render. Optional —
+   * callers that don't have a session snapshot (e.g. a tests-only
+   * harness) can omit it; the transcript falls back to slate.
+   */
+  workstreams?: WorkstreamView[];
   /**
    * Live AI text streaming: previously this prop fed a green
    * "AI Facilitator (streaming…)" bubble that rendered the
@@ -74,6 +88,21 @@ interface Props {
 function roleCode(label: string): string {
   const first = label.trim().split(/\s+/)[0] ?? "";
   return first.toUpperCase().slice(0, 4) || "—";
+}
+
+/**
+ * Phase B chat-declutter — bucket a message timestamp by wall-clock
+ * minute. Used by the sticky minute-anchor row so a scrolled-up
+ * reader can tell "what time is this" without hunting for a
+ * timestamp on every bubble. ``Intl.DateTimeFormat`` so the user's
+ * locale picks 12h vs 24h, but we constrain the components to the
+ * minute resolution (no seconds).
+ */
+function minuteKey(iso: string): string {
+  return new Date(iso).toLocaleTimeString([], {
+    hour: "2-digit",
+    minute: "2-digit",
+  });
 }
 
 /**
@@ -160,6 +189,7 @@ function MarkdownBody({ body }: { body: string }) {
 export function Transcript({
   messages,
   roles,
+  workstreams,
   // streamingText is intentionally not destructured — see the prop
   // docstring. We accept it so existing callers don't break, but we
   // never render partial chunk text.
@@ -170,6 +200,10 @@ export function Transcript({
   selfRoleId,
 }: Props) {
   const roleById = new Map(roles.map((r) => [r.id, r]));
+  const declaredOrder = (workstreams ?? []).map((w) => w.id);
+  const workstreamLabelById = new Map(
+    (workstreams ?? []).map((w) => [w.id, w.label]),
+  );
   // Find the index of the latest AI-authored bubble (ai_text or
   // critical_inject). Only that one gets the focus ring; an older AI
   // message in the transcript stays visually neutral.
@@ -180,6 +214,44 @@ export function Transcript({
       lastAiIndex = i;
       break;
     }
+  }
+  // Phase B chat-declutter — landmark synthesis. Walk the messages
+  // once, emitting a "track opened by ROLE at HH:MM:SS" row before
+  // the first message of each declared workstream and a sticky
+  // minute-anchor row each time the wall-clock minute boundary
+  // crosses. Both are pure derived chrome — no server state, no
+  // backend round-trip. The row pre-computation lives outside the
+  // render JSX so the render path stays a flat map without a
+  // useEffect dance to track previous values.
+  type Landmark =
+    | { kind: "track_open"; key: string; workstreamId: string; ts: string; roleLabel: string }
+    | { kind: "minute"; key: string; minute: string };
+  const landmarksByMessageId = new Map<string, Landmark[]>();
+  const seenWorkstreams = new Set<string>();
+  let lastMinute: string | null = null;
+  for (const m of messages) {
+    const out: Landmark[] = [];
+    const minute = minuteKey(m.ts);
+    if (lastMinute !== minute) {
+      out.push({ kind: "minute", key: `min-${m.id}`, minute });
+      lastMinute = minute;
+    }
+    if (m.workstream_id && !seenWorkstreams.has(m.workstream_id)) {
+      const ws = workstreamLabelById.get(m.workstream_id);
+      if (ws) {
+        const role = m.role_id ? roleById.get(m.role_id) : null;
+        const roleLabel = role ? role.label : "AI Facilitator";
+        out.push({
+          kind: "track_open",
+          key: `track-${m.id}`,
+          workstreamId: m.workstream_id,
+          ts: m.ts,
+          roleLabel,
+        });
+      }
+      seenWorkstreams.add(m.workstream_id);
+    }
+    if (out.length > 0) landmarksByMessageId.set(m.id, out);
   }
   const typing = (typingRoleIds ?? []).flatMap((id) => {
     const r = roleById.get(id);
@@ -230,26 +302,48 @@ export function Transcript({
             ? "ring-2 ring-warn ring-offset-1 ring-offset-ink-900 shadow-[0_0_0_2px_color-mix(in_oklch,var(--warn)_15%,transparent)]"
             : "";
         const ts = new Date(m.ts).toLocaleTimeString();
+        // Phase B chat-declutter — track-bar stripe + structural
+        // @-highlight. The stripe is 3 px on the left edge of the
+        // bubble; ``colorForWorkstream`` falls back to slate gray
+        // for ``#main`` / unknown ids. The mention-flag drives the
+        // amber outline + ``(@you)`` badge ONLY from the structural
+        // ``mentions[]`` list — we never regex the body, per plan
+        // §5.1.
+        const stripeColor = colorForWorkstream(m.workstream_id, declaredOrder);
+        const isMentioned =
+          selfRoleId != null && (m.mentions ?? []).includes(selfRoleId);
+        const mentionRing = isMentioned && !isCritical
+          ? "ring-2 ring-warn ring-offset-1 ring-offset-ink-900"
+          : "";
+        const landmarks = landmarksByMessageId.get(m.id) ?? [];
 
         if (isSystem) {
           // SystemBeat — center-aligned mono uppercase divider, lifted
-          // from app-screens.jsx <SystemBeat>.
+          // from app-screens.jsx <SystemBeat>. Landmarks (minute /
+          // track-open) render BEFORE the system row so the chrome
+          // sequence reads naturally: "[14:32]" → "track opened" →
+          // SYSTEM beat.
           return (
-            <article
-              key={m.id}
-              id={`msg-${m.id}`}
-              data-kind={m.kind}
-              data-message-id={m.id}
-              data-highlightable="true"
-              data-message-kind="system"
-              className="mono scroll-mt-24 select-text border-y border-dashed border-ink-600 px-2 py-1.5 text-center text-[10px] font-bold uppercase tracking-[0.16em] text-ink-400"
+            <Landmarks
+              key={`grp-${m.id}`}
+              entries={landmarks}
+              declaredOrder={declaredOrder}
+              workstreamLabelById={workstreamLabelById}
             >
-              <span className="tabular-nums text-ink-500">
-                {ts}
-              </span>
-              <span className="mx-2 text-ink-600">·</span>
-              <span>{m.body}</span>
-            </article>
+              <article
+                key={m.id}
+                id={`msg-${m.id}`}
+                data-kind={m.kind}
+                data-message-id={m.id}
+                data-highlightable="true"
+                data-message-kind="system"
+                className="mono scroll-mt-24 select-text border-y border-dashed border-ink-600 px-2 py-1.5 text-center text-[10px] font-bold uppercase tracking-[0.16em] text-ink-400"
+              >
+                <span className="tabular-nums text-ink-500">{ts}</span>
+                <span className="mx-2 text-ink-600">·</span>
+                <span>{m.body}</span>
+              </article>
+            </Landmarks>
           );
         }
 
@@ -257,69 +351,101 @@ export function Transcript({
           // AIBubble — left mark avatar (36 px square, signal-deep
           // bordered) + right column with FACILITATOR · TURN N header
           // and a signal-bordered body. Critical injects swap the signal
-          // border + dot for crit equivalents.
+          // border + dot for crit equivalents. The 3 px workstream
+          // stripe is layered onto the left border via inline style
+          // (Tailwind has no arbitrary-color border util that survives
+          // dark-mode oklch tokens). For critical injects we keep the
+          // crit-red border at the bubble level — the workstream stripe
+          // sits OUTSIDE that border on a dedicated rail so the two
+          // signals don't collide (UI/UX review specifically asked we
+          // avoid recoloring the critical-inject red).
           const dotColor = isCritical ? "bg-crit" : "bg-signal";
           const labelColor = isCritical ? "text-crit" : "text-signal";
           const borderClass = isCritical
             ? "border border-crit border-l-2 bg-crit-bg"
-            : "border border-ink-600 border-l-2 border-l-signal bg-ink-800";
+            : "border border-ink-600 bg-ink-800";
+          // Outer ring stacks: focus-ring (active turn) + mention-ring
+          // (you got @-tagged). Both fade gracefully via Tailwind's
+          // ring composition; we never apply both simultaneously
+          // because the active-turn role is also the most likely
+          // mention target — collapsing to one amber ring is cleaner.
+          const outerRing = focusRing || mentionRing;
           return (
-            <article
-              key={m.id}
-              id={`msg-${m.id}`}
-              data-kind={m.kind}
-              data-message-id={m.id}
-              className={`scroll-mt-24 flex min-w-0 gap-3 ${focusRing}`}
+            <Landmarks
+              key={`grp-${m.id}`}
+              entries={landmarks}
+              declaredOrder={declaredOrder}
+              workstreamLabelById={workstreamLabelById}
             >
-              <div
-                aria-hidden="true"
-                className="flex h-9 w-9 shrink-0 items-center justify-center rounded-r-1 border border-signal-deep bg-ink-800"
+              <article
+                key={m.id}
+                id={`msg-${m.id}`}
+                data-kind={m.kind}
+                data-message-id={m.id}
+                data-workstream-id={m.workstream_id ?? ""}
+                className={`scroll-mt-24 flex min-w-0 gap-3 ${outerRing}`}
               >
-                <img
-                  src="/logo/svg/mark-encounter-01-dark.svg"
-                  alt=""
-                  width={26}
-                  height={26}
-                  // Inline ``style`` rather than the HTML attrs alone:
-                  // Tailwind preflight resets ``img { height: auto }``
-                  // which overrides the height attribute and forces
-                  // the image back to its intrinsic SVG viewBox size.
-                  // Inline style wins over preflight specificity-wise.
-                  style={{ height: 26, width: 26 }}
-                  className="block"
-                />
-              </div>
-              <div className="flex min-w-0 flex-1 flex-col gap-1.5">
-                <header className="mono flex items-baseline gap-2 text-[10px] font-bold uppercase tracking-[0.14em]">
-                  <span
-                    aria-hidden="true"
-                    className={`inline-block h-1.5 w-1.5 rounded-full ${dotColor}`}
-                  />
-                  <span className={`tracking-[0.16em] ${labelColor}`}>
-                    {isCritical ? "CRITICAL INJECT" : "AI FACILITATOR"}
-                  </span>
-                  <span className="ml-auto tabular-nums text-ink-500">
-                    {ts}
-                  </span>
-                </header>
                 <div
-                  className={`min-w-0 break-words rounded-r-2 px-4 py-3 text-ink-100 ${borderClass}`}
-                  // Issue #98: AI / inject bubbles must be highlight-pinnable
-                  // — they're the artifact users most want to capture into
-                  // their notepad timeline.
-                  data-highlightable="true"
-                  data-message-id={m.id}
-                  data-message-kind="ai"
+                  aria-hidden="true"
+                  className="flex h-9 w-9 shrink-0 items-center justify-center rounded-r-1 border border-signal-deep bg-ink-800"
                 >
-                  <MarkdownBody body={m.body} />
-                  {m.tool_name ? (
-                    <p className="mono mt-2 text-[10px] uppercase tracking-[0.10em] text-ink-400">
-                      tool · {m.tool_name}
-                    </p>
-                  ) : null}
+                  <img
+                    src="/logo/svg/mark-encounter-01-dark.svg"
+                    alt=""
+                    width={26}
+                    height={26}
+                    style={{ height: 26, width: 26 }}
+                    className="block"
+                  />
                 </div>
-              </div>
-            </article>
+                <div
+                  aria-hidden="true"
+                  className="shrink-0 self-stretch"
+                  style={{ width: 3, background: stripeColor, borderRadius: 2 }}
+                  title={
+                    m.workstream_id
+                      ? `Workstream: #${workstreamLabelById.get(m.workstream_id) ?? m.workstream_id}`
+                      : "Unscoped (#main)"
+                  }
+                />
+                <div className="flex min-w-0 flex-1 flex-col gap-1.5">
+                  <header className="mono flex items-baseline gap-2 text-[10px] font-bold uppercase tracking-[0.14em]">
+                    <span
+                      aria-hidden="true"
+                      className={`inline-block h-1.5 w-1.5 rounded-full ${dotColor}`}
+                    />
+                    <span className={`tracking-[0.16em] ${labelColor}`}>
+                      {isCritical ? "CRITICAL INJECT" : "AI FACILITATOR"}
+                    </span>
+                    {isMentioned ? (
+                      <span
+                        className="rounded-r-1 border border-warn bg-warn-bg px-1.5 py-0.5 text-[9px] font-bold uppercase leading-none tracking-[0.10em] text-warn"
+                        title="This message mentions you"
+                      >
+                        @YOU
+                      </span>
+                    ) : null}
+                    <span className="ml-auto tabular-nums text-ink-500">{ts}</span>
+                  </header>
+                  <div
+                    className={`min-w-0 break-words rounded-r-2 px-4 py-3 text-ink-100 ${borderClass}`}
+                    // Issue #98: AI / inject bubbles must be highlight-pinnable
+                    // — they're the artifact users most want to capture into
+                    // their notepad timeline.
+                    data-highlightable="true"
+                    data-message-id={m.id}
+                    data-message-kind="ai"
+                  >
+                    <MarkdownBody body={m.body} />
+                    {m.tool_name ? (
+                      <p className="mono mt-2 text-[10px] uppercase tracking-[0.10em] text-ink-400">
+                        tool · {m.tool_name}
+                      </p>
+                    ) : null}
+                  </div>
+                </div>
+              </article>
+            </Landmarks>
           );
         }
 
@@ -334,71 +460,93 @@ export function Transcript({
         const bubbleColour = isSelf
           ? "border border-signal-deep bg-signal-tint"
           : "border border-ink-600 bg-ink-800";
+        const playerOuterRing = mentionRing; // focus-ring is AI-only
         return (
-          <article
-            key={m.id}
-            id={`msg-${m.id}`}
-            data-kind={m.kind}
-            data-message-id={m.id}
-            className="scroll-mt-24 flex min-w-0 gap-3 pl-6"
+          <Landmarks
+            key={`grp-${m.id}`}
+            entries={landmarks}
+            declaredOrder={declaredOrder}
+            workstreamLabelById={workstreamLabelById}
           >
-            <div className="flex min-w-0 flex-1 flex-col items-end gap-1.5">
-              <header className="mono flex flex-wrap items-baseline justify-end gap-2 text-[10px] font-bold uppercase tracking-[0.14em]">
-                {isInterjection ? (
-                  <span
-                    className="mono rounded-r-1 border border-ink-500 bg-ink-700 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-[0.10em] leading-none text-ink-200"
-                    title="Posted while not on the active turn — a sidebar comment, not a turn answer."
-                  >
-                    SIDEBAR
-                  </span>
-                ) : (
-                  <span className="text-signal tracking-[0.16em]">
-                    ✓ SUBMITTED
-                  </span>
-                )}
-                <span className="tracking-[0.10em] text-ink-100">
-                  {roleLabel}
-                </span>
-                {displayName ? (
-                  <span className="font-semibold tabular-nums text-ink-400">
-                    {displayName}
-                  </span>
-                ) : null}
-                {isSelf ? (
-                  <span className="text-signal tracking-[0.16em]">
-                    · YOU
-                  </span>
-                ) : null}
-                <span className="tabular-nums text-ink-500">{ts}</span>
-              </header>
-              <div
-                className={`min-w-0 break-words rounded-r-2 px-4 py-3 text-left text-sm leading-relaxed text-ink-100 ${bubbleColour}`}
-                data-highlightable="true"
-                data-message-id={m.id}
-                data-message-kind={isPlayer ? "chat" : m.kind === "ai_text" ? "ai" : "system"}
-              >
-                <p className="whitespace-pre-wrap">{m.body}</p>
-                {m.tool_name ? (
-                  <p className="mono mt-2 text-[10px] uppercase tracking-[0.10em] text-ink-400">
-                    tool · {m.tool_name}
-                  </p>
-                ) : null}
-              </div>
-            </div>
-            {/* Role-code avatar — fixed 36×36 circle. Distinct geometry
-                from the rectangular bubble + ink-700 chips so it reads
-                as identity, not a continuation of the message body. */}
-            <div
-              aria-hidden="true"
-              className={`mono flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-[10px] font-bold uppercase leading-none tracking-[0.04em] ${
-                isSelf
-                  ? "border border-signal-deep bg-signal-tint text-signal"
-                  : "border border-ink-500 bg-ink-700 text-ink-100"
-              }`}
+            <article
+              key={m.id}
+              id={`msg-${m.id}`}
+              data-kind={m.kind}
+              data-message-id={m.id}
+              data-workstream-id={m.workstream_id ?? ""}
+              className={`scroll-mt-24 flex min-w-0 gap-3 pl-6 ${playerOuterRing}`}
             >
-              {code}
-            </div>
-          </article>
+              <div className="flex min-w-0 flex-1 flex-col items-end gap-1.5">
+                <header className="mono flex flex-wrap items-baseline justify-end gap-2 text-[10px] font-bold uppercase tracking-[0.14em]">
+                  {isInterjection ? (
+                    <span
+                      className="mono rounded-r-1 border border-ink-500 bg-ink-700 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-[0.10em] leading-none text-ink-200"
+                      title="Posted while not on the active turn — a sidebar comment, not a turn answer."
+                    >
+                      SIDEBAR
+                    </span>
+                  ) : (
+                    <span className="text-signal tracking-[0.16em]">✓ SUBMITTED</span>
+                  )}
+                  <span className="tracking-[0.10em] text-ink-100">{roleLabel}</span>
+                  {displayName ? (
+                    <span className="font-semibold tabular-nums text-ink-400">
+                      {displayName}
+                    </span>
+                  ) : null}
+                  {isSelf ? (
+                    <span className="text-signal tracking-[0.16em]">· YOU</span>
+                  ) : null}
+                  {isMentioned ? (
+                    <span
+                      className="rounded-r-1 border border-warn bg-warn-bg px-1.5 py-0.5 text-[9px] font-bold uppercase leading-none tracking-[0.10em] text-warn"
+                      title="This message mentions you"
+                    >
+                      @YOU
+                    </span>
+                  ) : null}
+                  <span className="tabular-nums text-ink-500">{ts}</span>
+                </header>
+                <div
+                  className={`min-w-0 break-words rounded-r-2 px-4 py-3 text-left text-sm leading-relaxed text-ink-100 ${bubbleColour}`}
+                  data-highlightable="true"
+                  data-message-id={m.id}
+                  data-message-kind={isPlayer ? "chat" : m.kind === "ai_text" ? "ai" : "system"}
+                >
+                  <p className="whitespace-pre-wrap">{m.body}</p>
+                  {m.tool_name ? (
+                    <p className="mono mt-2 text-[10px] uppercase tracking-[0.10em] text-ink-400">
+                      tool · {m.tool_name}
+                    </p>
+                  ) : null}
+                </div>
+              </div>
+              <div
+                aria-hidden="true"
+                className="shrink-0 self-stretch"
+                style={{ width: 3, background: stripeColor, borderRadius: 2 }}
+                title={
+                  m.workstream_id
+                    ? `Workstream: #${workstreamLabelById.get(m.workstream_id) ?? m.workstream_id}`
+                    : "Unscoped (#main)"
+                }
+              />
+              {/* Role-code avatar — fixed 36×36 circle. Distinct
+                  geometry from the rectangular bubble + ink-700 chips
+                  so it reads as identity, not a continuation of the
+                  message body. */}
+              <div
+                aria-hidden="true"
+                className={`mono flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-[10px] font-bold uppercase leading-none tracking-[0.04em] ${
+                  isSelf
+                    ? "border border-signal-deep bg-signal-tint text-signal"
+                    : "border border-ink-500 bg-ink-700 text-ink-100"
+                }`}
+              >
+                {code}
+              </div>
+            </article>
+          </Landmarks>
         );
       })}
       {aiThinking ? (
@@ -420,5 +568,78 @@ export function Transcript({
         <ChatIndicator label={typingLabel} tone="player" silent />
       ) : null}
     </div>
+  );
+}
+
+/**
+ * Phase B chat-declutter — render the synthetic landmark rows
+ * (minute anchor + "track opened by …") that precede a message in
+ * the transcript. Wraps the bubble in a Fragment so the
+ * ``messages.map`` keeps returning a single child per message
+ * (React's rule, not ours).
+ *
+ * The minute anchor uses ``position: sticky`` inside the scrolling
+ * region — a reader who has scrolled up by 50 messages still sees
+ * "what minute am I in" pinned at the top until the next anchor
+ * scrolls into view and replaces it. Pure CSS, no IntersectionObserver.
+ *
+ * The track-open row is purely decorative chrome — ``role="presentation"``
+ * + ``aria-hidden="false"`` because it's still useful context for a
+ * screen-reader user navigating the transcript ("track opened by
+ * SOC at 14:33"); we just don't want it announced as a list item or
+ * a heading. NVDA reads it as plain text.
+ */
+function Landmarks({
+  entries,
+  declaredOrder,
+  workstreamLabelById,
+  children,
+}: {
+  entries: ReadonlyArray<
+    | { kind: "track_open"; key: string; workstreamId: string; ts: string; roleLabel: string }
+    | { kind: "minute"; key: string; minute: string }
+  >;
+  declaredOrder: readonly string[];
+  workstreamLabelById: Map<string, string>;
+  children: ReactNode;
+}) {
+  if (entries.length === 0) return <>{children}</>;
+  return (
+    <>
+      {entries.map((entry) => {
+        if (entry.kind === "minute") {
+          return (
+            <div
+              key={entry.key}
+              className="mono sticky top-0 z-10 -mx-1 select-none border-b border-dashed border-ink-700 bg-ink-850/95 px-3 py-1 text-[10px] font-bold uppercase tracking-[0.16em] text-ink-300 backdrop-blur"
+              aria-hidden="false"
+            >
+              <span className="tabular-nums">{entry.minute}</span>
+            </div>
+          );
+        }
+        const color = colorForWorkstream(entry.workstreamId, declaredOrder);
+        const label = workstreamLabelById.get(entry.workstreamId) ?? entry.workstreamId;
+        const ts = new Date(entry.ts).toLocaleTimeString();
+        return (
+          <div
+            key={entry.key}
+            className="mono flex select-none items-center gap-2 px-3 py-1 text-[10px] font-bold uppercase tracking-[0.14em] text-ink-300"
+            role="presentation"
+          >
+            <span
+              aria-hidden="true"
+              className="inline-block h-2 w-8 rounded-r-0"
+              style={{ background: color }}
+            />
+            <span style={{ color }}>#{label}</span>
+            <span className="text-ink-500">opened by</span>
+            <span className="text-ink-100">{entry.roleLabel}</span>
+            <span className="ml-auto tabular-nums text-ink-500">{ts}</span>
+          </div>
+        );
+      })}
+      {children}
+    </>
   );
 }

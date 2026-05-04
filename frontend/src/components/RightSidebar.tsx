@@ -16,6 +16,12 @@ interface Props {
    * scratchpad in v2, etc.) can drop in without changing this file.
    */
   notepad?: ReactNode;
+  /**
+   * Phase B chat-declutter: forwarded to ``Timeline`` so the parent
+   * page can clear an active filter when a Timeline-pin click would
+   * otherwise dead-no-op against a hidden message. Optional.
+   */
+  onScrollMissed?: (messageId: string) => void;
 }
 
 /**
@@ -28,7 +34,12 @@ interface Props {
  * with few or zero pinned beats produce a small Timeline panel that
  * still ate ~60px of header chrome under the previous layout).
  */
-export function RightSidebar({ messages, roles, notepad }: Props) {
+export function RightSidebar({
+  messages,
+  roles,
+  notepad,
+  onScrollMissed,
+}: Props) {
   return (
     <>
       <aside className="hidden flex-col gap-4 lg:flex lg:min-h-0 lg:overflow-y-auto lg:pr-1">
@@ -36,7 +47,11 @@ export function RightSidebar({ messages, roles, notepad }: Props) {
           title="TIMELINE"
           persistKey="crittable.rail.timeline.collapsed"
         >
-          <Timeline messages={messages} roles={roles} />
+          <Timeline
+            messages={messages}
+            roles={roles}
+            onScrollMissed={onScrollMissed}
+          />
         </CollapsibleRailPanel>
         {notepad ?? null}
       </aside>
@@ -48,7 +63,11 @@ export function RightSidebar({ messages, roles, notepad }: Props) {
           TIMELINE &amp; NOTES
         </summary>
         <div className="flex flex-col gap-3 border-t border-dashed border-ink-600 p-3">
-          <Timeline messages={messages} roles={roles} />
+          <Timeline
+            messages={messages}
+            roles={roles}
+            onScrollMissed={onScrollMissed}
+          />
           {notepad ?? null}
         </div>
       </details>

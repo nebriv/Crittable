@@ -446,7 +446,8 @@ _GUARDRAIL_CLASSIFIER = (
 
 
 _WORKSTREAMS_PLAY_NOTE = (
-    "\n\n**Workstream metadata.** `address_role` accepts an optional "
+    "\n\n**Workstream metadata.** `address_role`, `pose_choice`, "
+    "`share_data`, and `inject_critical_event` each accept an optional "
     "`workstream_id` from the set declared in setup. Use it when the "
     "beat clearly belongs to one workstream; omit for cross-cutting "
     "beats. UI-filter affordance, not a play-correctness requirement."
