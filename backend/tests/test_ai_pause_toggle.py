@@ -415,6 +415,11 @@ def test_pause_via_rest_suppresses_facilitator_interject(
     mock = MockAnthropic({"play": []})
     client.app.state.llm.set_transport(mock.messages)
 
+    # Server-side ``submit_response`` handler awaits the submission
+    # pipeline synchronously before returning to its WS recv loop;
+    # exiting the ``with`` context serializes the handler so the
+    # snapshot reads after the close already reflect the persisted
+    # message. No drain loop needed.
     with client.websocket_connect(
         f"/ws/sessions/{sid}?token={other}"
     ) as ws:
@@ -426,22 +431,10 @@ def test_pause_via_rest_suppresses_facilitator_interject(
                 "mentions": [FACILITATOR_MENTION_TOKEN],
             }
         )
-        # Same broken-on-purpose drain pattern as
-        # ``test_composer_mentions_routing.py``: ``receive_json``
-        # doesn't accept ``timeout=`` — the kwarg raises TypeError,
-        # the except catches it, and the loop bails immediately.
-        # The ``ws.send_json`` above is what matters; the WS
-        # context-manager exit serializes the server-side handler.
-        for _ in range(4):
-            try:
-                ws.receive_json(mode="text", timeout=0.5)  # type: ignore[call-arg]
-            except Exception:
-                break
 
-    play_calls = [c for c in mock.messages.calls if "play" in c.get("model", "")]
-    assert play_calls == [], (
+    assert mock.messages.calls == [], (
         "ai_paused via REST must suppress run_interject; "
-        f"got {len(play_calls)} play call(s)"
+        f"got {len(mock.messages.calls)} LLM call(s)"
     )
 
     # Inspect the persisted message.
@@ -485,11 +478,6 @@ def test_non_facilitator_message_does_not_set_ai_paused_at_submit(
                 "mentions": [],
             }
         )
-        for _ in range(4):
-            try:
-                ws.receive_json(mode="text", timeout=0.5)  # type: ignore[call-arg]
-            except Exception:
-                break
 
     snap = client.get(f"/api/sessions/{sid}?token={cr}").json()
     last_player = next(
@@ -532,6 +520,11 @@ def test_resumed_facilitator_message_does_not_get_silenced_indicator(
     mock = MockAnthropic({"play": [interject]})
     client.app.state.llm.set_transport(mock.messages)
 
+    # The interject would land if the broadcast tool's ``run_interject``
+    # actually fired — we only care that ``ai_paused_at_submit`` is
+    # False on the persisted message regardless of whether the
+    # subsequent LLM call completes. The ``with`` exit serializes
+    # the server-side submit_response handler.
     with client.websocket_connect(
         f"/ws/sessions/{sid}?token={other}"
     ) as ws:
@@ -543,11 +536,6 @@ def test_resumed_facilitator_message_does_not_get_silenced_indicator(
                 "mentions": [FACILITATOR_MENTION_TOKEN],
             }
         )
-        for _ in range(8):
-            try:
-                ws.receive_json(mode="text", timeout=2.0)  # type: ignore[call-arg]
-            except Exception:
-                break
 
     snap = client.get(f"/api/sessions/{sid}?token={cr}").json()
     last_player = next(
@@ -765,8 +753,16 @@ def test_proxy_respond_path_skipped_when_ai_paused(
     path). Pre-fix that branch silently skipped ``run_interject``
     when ``ai_paused`` was True without logging — a "creator
     proxy-typed @facilitator and got nothing" debug session had
-    zero signal. The test asserts the LLM is not called and a
-    structlog line was emitted at WARNING/INFO level."""
+    zero signal. The fix added a ``facilitator_mention_skipped_ai_paused``
+    structlog line; we don't assert on the structlog output here
+    (capturing it requires more plumbing than it's worth — the
+    LLM-call counter + the persisted-snapshot check are the
+    load-bearing assertions). What this test asserts:
+
+    * No LLM call fired (structural skip works).
+    * The proxy'd message persists with
+      ``ai_paused_at_submit=True`` so the transcript indicator
+      renders consistently for proxy-typed messages."""
 
     from tests.mock_anthropic import MockAnthropic
 
