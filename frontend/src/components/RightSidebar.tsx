@@ -134,21 +134,30 @@ export function RightSidebar({
 
   return (
     <>
-      <aside className="hidden flex-col gap-4 lg:flex lg:min-h-0 lg:overflow-y-auto lg:pr-1">
-        {/*
-          UI/UX review HIGH H2: the rail's outer scroll region is the
-          page-level <aside> above this component. Pin the tablist
-          inside that scroll region with ``sticky top-0`` so a long
-          action-items / artifacts list can't push the tab affordance
-          off-screen at 1080p. The section itself doesn't take its own
-          overflow — the page-level scroller handles it.
-        */}
-        <section className="flex min-h-0 flex-col rounded-r-3 border border-ink-600 bg-ink-850">
+      {/*
+        Page-level layout (Play.tsx / Facilitator.tsx) already wraps
+        this in a page-level <aside> that gives us:
+          1. HUD panel (collapsible)
+          2. RightSidebar (this component)
+        We add the third section (tabs) + the notepad slot inside the
+        component's own <aside>. Critical: the inner <aside> takes
+        ``flex-1`` of the page-level aside so a tall tab body doesn't
+        push the notepad out of the viewport. Within this inner aside,
+        the section fills remaining space (``flex-1 min-h-0``) and its
+        BODY div is the only ``overflow-y-auto`` — so:
+          - The tablist stays pinned at the top of the section
+            (it's outside the body's scroll context).
+          - Tab content scrolls internally.
+          - The notepad sits at its intrinsic height below the
+            section, always visible at the bottom of the rail.
+      */}
+      <aside className="hidden flex-col gap-4 lg:flex lg:min-h-0 lg:flex-1 lg:pr-1">
+        <section className="flex min-h-0 flex-1 flex-col rounded-r-3 border border-ink-600 bg-ink-850">
           <div
             role="tablist"
             aria-label="Right sidebar"
             onKeyDown={(e) => onTablistKey(e, "rail")}
-            className="sticky top-0 z-10 flex rounded-t-3 border-b border-ink-600 bg-ink-850 text-[11px]"
+            className="flex rounded-t-3 border-b border-ink-600 bg-ink-850 text-[11px]"
           >
             {TABS.map((tab) => (
               <RailTabButton
@@ -164,7 +173,7 @@ export function RightSidebar({
             id={`rail-panel-${active}`}
             role="tabpanel"
             aria-labelledby={`rail-tab-${active}`}
-            className="flex min-h-0 flex-col"
+            className="flex min-h-0 flex-1 flex-col overflow-y-auto"
           >
             {body}
           </div>
