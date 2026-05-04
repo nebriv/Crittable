@@ -14,6 +14,7 @@ import { AarReportView } from "../components/AarReport";
 import { Composer } from "../components/Composer";
 import { CriticalEventBanner } from "../components/CriticalEventBanner";
 import { DecisionLogPanel } from "../components/DecisionLogPanel";
+import { ExportsPanel } from "../components/ExportsPanel";
 import { GodModePanel } from "../components/GodModePanel";
 import { RightSidebar } from "../components/RightSidebar";
 import { RolesPanel } from "../components/RolesPanel";
@@ -21,6 +22,7 @@ import { SessionActivityPanel } from "../components/SessionActivityPanel";
 import { SetupChat } from "../components/SetupChat";
 import { Transcript } from "../components/Transcript";
 import { TranscriptFilters } from "../components/TranscriptFilters";
+import { WorkstreamMenu } from "../components/WorkstreamMenu";
 import {
   DEFAULT_FILTER,
   FilterState,
@@ -265,6 +267,15 @@ export function Facilitator() {
   // the same filter logic drives both surfaces.
   const [transcriptFilter, setTranscriptFilter] =
     useState<FilterState>(DEFAULT_FILTER);
+  // Chat-declutter polish: workstream-override contextmenu state. The
+  // creator can re-tag any message; the menu is rendered in this page
+  // so its position survives transcript scroll. Closed when ``null``.
+  const [overrideMenu, setOverrideMenu] = useState<{
+    messageId: string;
+    workstreamId: string | null;
+    x: number;
+    y: number;
+  } | null>(null);
   // Live AI decision rationale stream (issue #55). Entries arrive via
   // ``decision_logged`` events as the AI calls
   // ``record_decision_rationale``; on snapshot refresh we replace the
@@ -582,6 +593,16 @@ export function Facilitator() {
       case "plan_proposed":
       case "plan_finalized":
       case "plan_edited":
+        refreshSnapshot();
+        break;
+      case "message_workstream_changed":
+        // Chat-declutter polish: a creator or message-author manually
+        // re-tagged a single message via the contextmenu. Refresh the
+        // snapshot so the colored stripe + filter pill counts converge.
+        console.info(
+          "[facilitator] message workstream changed",
+          { id: evt.message_id, workstream_id: evt.workstream_id },
+        );
         refreshSnapshot();
         break;
       case "participant_renamed":
@@ -1193,6 +1214,10 @@ export function Facilitator() {
             onForceAdvance={handleForceAdvance}
             busy={busy || forceAdvanceCooldown}
           />
+          <ExportsPanel
+            sessionId={state.sessionId}
+            creatorToken={state.token}
+          />
           <DecisionLogPanel entries={decisionLog} />
         </aside>
 
@@ -1295,6 +1320,11 @@ export function Facilitator() {
                 )}
                 roles={snapshot.roles}
                 workstreams={snapshot.workstreams ?? []}
+                onMessageContextMenu={({ messageId, workstreamId, x, y }) =>
+                  setOverrideMenu({ messageId, workstreamId, x, y })
+                }
+                viewerIsCreator={true}
+                selfAuthoredRoleIds={null}
                 aiThinking={
                   // Authoritative: any LLM call boundary in flight, or
                   // an active stream, lights the typing indicator. The
@@ -1519,6 +1549,7 @@ export function Facilitator() {
           <RightSidebar
             messages={snapshot.messages}
             roles={snapshot.roles}
+            workstreams={snapshot.workstreams ?? []}
             // Phase B chat-declutter: same recovery as the player path
             // — Timeline pin against a filtered-out message clears the
             // filter so the next click lands.
@@ -1550,6 +1581,29 @@ export function Facilitator() {
           token={state.token}
         />
       ) : null}
+      <WorkstreamMenu
+        position={
+          overrideMenu ? { x: overrideMenu.x, y: overrideMenu.y } : null
+        }
+        current={overrideMenu?.workstreamId ?? null}
+        workstreams={snapshot.workstreams ?? []}
+        onPick={async (next) => {
+          if (!overrideMenu) return;
+          try {
+            await api.overrideMessageWorkstream(
+              state.sessionId,
+              state.token,
+              overrideMenu.messageId,
+              next,
+            );
+          } catch (err) {
+            const text = err instanceof Error ? err.message : String(err);
+            console.warn("[facilitator] workstream override failed", text);
+            setError(text);
+          }
+        }}
+        onClose={() => setOverrideMenu(null)}
+      />
       <BottomActionBar
         phase={phase}
         backendState={snapshot.state}

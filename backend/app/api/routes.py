@@ -130,6 +130,19 @@ class NotepadSnapshotBody(BaseModel):
     markdown: str = Field(max_length=1_000_000)
 
 
+class WorkstreamOverrideBody(BaseModel):
+    """POST /api/sessions/{id}/messages/{message_id}/workstream.
+
+    Manual workstream re-tag (chat-declutter polish). ``None`` moves
+    the message back to the synthetic ``#main`` bucket. Authz lives
+    in ``manager.override_message_workstream``: creator OR the
+    message-of-record's role only.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+    workstream_id: str | None = Field(default=None, max_length=32)
+
+
 def register_api_routes(app: FastAPI) -> None:
     router = APIRouter(prefix="/api")
 
@@ -885,6 +898,58 @@ def register_api_routes(app: FastAPI) -> None:
         )
         return {"ok": True, "paused": False}
 
+    # ----------------------------- chat-declutter manual workstream override
+    @router.post(
+        "/sessions/{session_id}/messages/{message_id}/workstream",
+    )
+    async def override_message_workstream(
+        session_id: str,
+        message_id: str,
+        body: WorkstreamOverrideBody,
+        request: Request,
+    ) -> dict[str, Any]:
+        """Manual workstream re-tag for a single message.
+
+        Authz: any participant (creator-or-author check is enforced
+        inside ``manager.override_message_workstream``; a misaddressed
+        attempt is mapped to 403). The target ``workstream_id`` must
+        either be ``null`` (#main bucket) or one of the session's
+        declared workstream ids; otherwise 400.
+
+        Side effects: emits ``workstream_override`` audit + fans out
+        ``message_workstream_changed`` WS event so peer tabs update
+        their filter view without a snapshot round-trip.
+        """
+
+        manager = _manager(request)
+        token = await _bind_token(request, session_id)
+        try:
+            require_participant(token)
+            session = await manager.get_session(session_id)
+        except AuthorizationError as exc:
+            raise HTTPException(status.HTTP_403_FORBIDDEN, str(exc)) from exc
+        except SessionNotFoundError as exc:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "session not found") from exc
+
+        is_creator = token["role_id"] == session.creator_role_id
+        try:
+            await manager.override_message_workstream(
+                session_id=session_id,
+                message_id=message_id,
+                workstream_id=body.workstream_id,
+                by_role_id=token["role_id"],
+                is_creator=is_creator,
+            )
+        except IllegalTransitionError as exc:
+            text = str(exc)
+            if text.startswith("message not found"):
+                raise HTTPException(status.HTTP_404_NOT_FOUND, text) from exc
+            if text.startswith("only the message"):
+                raise HTTPException(status.HTTP_403_FORBIDDEN, text) from exc
+            # workstream-not-declared / other validation
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, text) from exc
+        return {"ok": True}
+
     # ---------------------------------------------------- shared notepad (#98)
     @router.post(
         "/sessions/{session_id}/notepad/pin",
@@ -1517,6 +1582,86 @@ def register_api_routes(app: FastAPI) -> None:
             content=json.dumps(body),
             media_type="application/json",
             headers={"X-AAR-Status": "ready"},
+        )
+
+    # --------------------- chat-declutter operator-facing markdown exports
+    # These two surfaces are the live-exercise companion to the AAR. The
+    # AAR pipeline stays workstream-blind per plan §6.9; these are the
+    # workstream-aware artefacts the iter-4 mockup added to the creator's
+    # management column. Creator-only — they include every visible
+    # message regardless of per-role visibility lists, which would leak
+    # sidebar conversations to a non-creator caller.
+    @router.get(
+        "/sessions/{session_id}/exports/timeline.md",
+        response_class=PlainTextResponse,
+    )
+    async def export_timeline_md(session_id: str, request: Request) -> Response:
+        """Curated markdown summary — track lifecycle + critical injects +
+        pinned artifacts. Available at any session state (including
+        mid-exercise) so the creator can dump a "what just happened"
+        summary without ending the session.
+        """
+
+        from ..sessions.exports import (
+            render_timeline_markdown,
+            timeline_filename,
+        )
+
+        manager = _manager(request)
+        token = await _bind_token(request, session_id)
+        try:
+            require_creator(token)
+            session = await manager.get_session(session_id)
+        except AuthorizationError as exc:
+            raise HTTPException(status.HTTP_403_FORBIDDEN, str(exc)) from exc
+        except SessionNotFoundError as exc:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "session not found") from exc
+
+        body = render_timeline_markdown(session, viewer_role_id=token["role_id"])
+        return PlainTextResponse(
+            content=body,
+            media_type="text/markdown; charset=utf-8",
+            headers={
+                "Content-Disposition": f'attachment; filename="{timeline_filename(session)}"',
+            },
+        )
+
+    @router.get(
+        "/sessions/{session_id}/exports/full-record.md",
+        response_class=PlainTextResponse,
+    )
+    async def export_full_record_md(
+        session_id: str, request: Request
+    ) -> Response:
+        """Full chronological transcript dump with track + role + ts +
+        flags per row. Creator-only because non-creator visibility lists
+        would otherwise leak sidebar conversations.
+        """
+
+        from ..sessions.exports import (
+            full_record_filename,
+            render_full_record_markdown,
+        )
+
+        manager = _manager(request)
+        token = await _bind_token(request, session_id)
+        try:
+            require_creator(token)
+            session = await manager.get_session(session_id)
+        except AuthorizationError as exc:
+            raise HTTPException(status.HTTP_403_FORBIDDEN, str(exc)) from exc
+        except SessionNotFoundError as exc:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "session not found") from exc
+
+        body = render_full_record_markdown(
+            session, viewer_role_id=token["role_id"]
+        )
+        return PlainTextResponse(
+            content=body,
+            media_type="text/markdown; charset=utf-8",
+            headers={
+                "Content-Disposition": f'attachment; filename="{full_record_filename(session)}"',
+            },
         )
 
     @router.get("/sessions/{session_id}/activity")

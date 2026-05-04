@@ -585,6 +585,84 @@ class SessionManager:
         )
         return session
 
+    async def override_message_workstream(
+        self,
+        *,
+        session_id: str,
+        message_id: str,
+        workstream_id: str | None,
+        by_role_id: str,
+        is_creator: bool,
+    ) -> Message:
+        """Manual workstream re-tag for a single message (chat-declutter polish).
+
+        Authz contract:
+          - ``is_creator=True`` → may move any message;
+          - else the caller must be the message's ``role_id`` (the
+            message-of-record's role can correct its own categorization).
+          - everything else: ``IllegalTransitionError``.
+
+        ``workstream_id=None`` moves the message back to the synthetic
+        ``#main`` bucket. A non-None target must match one of the
+        session's currently declared workstream ids; mismatches raise
+        ``IllegalTransitionError`` (the route maps it to 400).
+
+        Emits the ``workstream_override`` audit kind with ``before`` /
+        ``after`` / ``actor`` so the AAR archeology run can replay every
+        manual move. Fans out a ``message_workstream_changed`` WS event
+        (replay-buffered, ``record=True``) so peer tabs update their
+        filter view without a snapshot round-trip.
+        """
+
+        async with await self._lock_for(session_id):
+            session = await self._repo.get(session_id)
+            msg = next((m for m in session.messages if m.id == message_id), None)
+            if msg is None:
+                raise IllegalTransitionError(f"message not found: {message_id}")
+            # Authz: creator OR message-owner only. Spectators / other roles
+            # never get to re-tag someone else's message — covered by the
+            # ws-event security review.
+            if not is_creator and msg.role_id != by_role_id:
+                raise IllegalTransitionError(
+                    "only the message's author or the creator may override workstream"
+                )
+            target: str | None = workstream_id
+            if target is not None:
+                declared = (
+                    {ws.id for ws in session.plan.workstreams}
+                    if session.plan is not None
+                    else set()
+                )
+                if target not in declared:
+                    raise IllegalTransitionError(
+                        f"workstream not declared on this session: {target}"
+                    )
+            before = msg.workstream_id
+            if before == target:
+                # Idempotent no-op — no audit / broadcast spam from a
+                # double-click on the same menu item.
+                return msg
+            msg.workstream_id = target
+            await self._repo.save(session)
+        self._emit(
+            "workstream_override",
+            session,
+            message_id=message_id,
+            before=before,
+            after=target,
+            actor=by_role_id,
+        )
+        await self._connections.broadcast(
+            session.id,
+            {
+                "type": "message_workstream_changed",
+                "message_id": message_id,
+                "workstream_id": target,
+                "actor_role_id": by_role_id,
+            },
+        )
+        return msg
+
     async def set_ai_paused(
         self, *, session_id: str, paused: bool, by_role_id: str
     ) -> Session:

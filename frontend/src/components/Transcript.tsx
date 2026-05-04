@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import type { MouseEvent as ReactMouseEvent, ReactNode } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { MessageView, RoleView, WorkstreamView } from "../api/client";
@@ -74,6 +74,35 @@ interface Props {
    * that they're being waited on.
    */
   highlightLastAi?: boolean;
+  /**
+   * Chat-declutter polish: optional contextmenu hook for manual
+   * workstream override. Fires on right-click on a message bubble that
+   * the viewer is permitted to re-tag — i.e. the creator can
+   * right-click any bubble; a player can right-click their own
+   * bubbles only. The page wires the open-menu position + the target
+   * message; this component just signals the user's intent. ``null``
+   * disables the contextmenu entirely (e.g. a non-creator viewer
+   * looking at someone else's bubbles).
+   */
+  onMessageContextMenu?: (args: {
+    messageId: string;
+    workstreamId: string | null;
+    x: number;
+    y: number;
+  }) => void;
+  /**
+   * Set of role_ids the viewer authored. Used to gate which player
+   * bubbles fire ``onMessageContextMenu`` on right-click. ``null`` =
+   * viewer is the creator (every bubble is fair game).
+   */
+  selfAuthoredRoleIds?: Set<string> | null;
+  /**
+   * True when the viewer is the session creator. Creator can re-tag
+   * any message; non-creator only their own. The combination with
+   * ``selfAuthoredRoleIds`` keeps the predicate explicit — the
+   * Transcript itself doesn't need a token to make the call.
+   */
+  viewerIsCreator?: boolean;
 }
 
 /**
@@ -198,7 +227,34 @@ export function Transcript({
   typingRoleIds,
   highlightLastAi,
   selfRoleId,
+  onMessageContextMenu,
+  selfAuthoredRoleIds,
+  viewerIsCreator,
 }: Props) {
+  // Build a once-per-render predicate so each bubble can ask "may I
+  // open the menu on right-click?" in O(1). Creator can re-tag any
+  // message; non-creator only their own. ``onMessageContextMenu``
+  // not wired ⇒ predicate falls through to false (menu disabled).
+  function canOverride(m: MessageView): boolean {
+    if (!onMessageContextMenu) return false;
+    if (viewerIsCreator) return true;
+    if (m.role_id == null) return false;
+    if (!selfAuthoredRoleIds) return false;
+    return selfAuthoredRoleIds.has(m.role_id);
+  }
+  function handleContextMenu(
+    e: ReactMouseEvent<HTMLElement>,
+    m: MessageView,
+  ): void {
+    if (!canOverride(m)) return;
+    e.preventDefault();
+    onMessageContextMenu?.({
+      messageId: m.id,
+      workstreamId: m.workstream_id,
+      x: e.clientX,
+      y: e.clientY,
+    });
+  }
   const roleById = new Map(roles.map((r) => [r.id, r]));
   const declaredOrder = (workstreams ?? []).map((w) => w.id);
   const workstreamLabelById = new Map(
@@ -383,6 +439,7 @@ export function Transcript({
                 data-kind={m.kind}
                 data-message-id={m.id}
                 data-workstream-id={m.workstream_id ?? ""}
+                onContextMenu={(e) => handleContextMenu(e, m)}
                 className={`scroll-mt-24 flex min-w-0 gap-3 ${outerRing}`}
               >
                 <div
@@ -426,6 +483,18 @@ export function Transcript({
                       </span>
                     ) : null}
                     <span className="ml-auto tabular-nums text-ink-500">{ts}</span>
+                    {canOverride(m) ? (
+                      <KeyboardOverrideTrigger
+                        onOpen={(x, y) =>
+                          onMessageContextMenu?.({
+                            messageId: m.id,
+                            workstreamId: m.workstream_id,
+                            x,
+                            y,
+                          })
+                        }
+                      />
+                    ) : null}
                   </header>
                   <div
                     className={`min-w-0 break-words rounded-r-2 px-4 py-3 text-ink-100 ${borderClass}`}
@@ -474,6 +543,7 @@ export function Transcript({
               data-kind={m.kind}
               data-message-id={m.id}
               data-workstream-id={m.workstream_id ?? ""}
+              onContextMenu={(e) => handleContextMenu(e, m)}
               className={`scroll-mt-24 flex min-w-0 gap-3 pl-6 ${playerOuterRing}`}
             >
               <div className="flex min-w-0 flex-1 flex-col items-end gap-1.5">
@@ -506,6 +576,18 @@ export function Transcript({
                     </span>
                   ) : null}
                   <span className="tabular-nums text-ink-500">{ts}</span>
+                  {canOverride(m) ? (
+                    <KeyboardOverrideTrigger
+                      onOpen={(x, y) =>
+                        onMessageContextMenu?.({
+                          messageId: m.id,
+                          workstreamId: m.workstream_id,
+                          x,
+                          y,
+                        })
+                      }
+                    />
+                  ) : null}
                 </header>
                 <div
                   className={`min-w-0 break-words rounded-r-2 px-4 py-3 text-left text-sm leading-relaxed text-ink-100 ${bubbleColour}`}
@@ -611,6 +693,33 @@ export function Transcript({
  * SOC at 14:33"); we just don't want it announced as a list item or
  * a heading. NVDA reads it as plain text.
  */
+function KeyboardOverrideTrigger({
+  onOpen,
+}: {
+  onOpen: (x: number, y: number) => void;
+}) {
+  // Right-click is the primary affordance; this button gives keyboard-
+  // only users (and pointer users on touch devices) the same path. The
+  // visible glyph is "..." per the iter-4 mockup chrome — small,
+  // uppercase, ink-400 so it doesn't compete with the role label.
+  return (
+    <button
+      type="button"
+      aria-label="Move to workstream"
+      title="Move to workstream"
+      onClick={(e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const rect = e.currentTarget.getBoundingClientRect();
+        onOpen(rect.right, rect.bottom);
+      }}
+      className="mono ml-1 rounded-r-1 px-1 text-[10px] leading-none text-ink-400 hover:bg-ink-700 hover:text-ink-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-signal"
+    >
+      ⋯
+    </button>
+  );
+}
+
 function Landmarks({
   entries,
   declaredOrder,

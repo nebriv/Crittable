@@ -14,6 +14,7 @@ import { RoleRoster } from "../components/RoleRoster";
 import { SharedNotepad } from "../components/SharedNotepad";
 import { Transcript } from "../components/Transcript";
 import { TranscriptFilters } from "../components/TranscriptFilters";
+import { WorkstreamMenu } from "../components/WorkstreamMenu";
 import {
   DEFAULT_FILTER,
   FilterState,
@@ -149,6 +150,15 @@ export function Play({ sessionId, token }: Props) {
   // behaviour to the pre-Phase-B chat.
   const [transcriptFilter, setTranscriptFilter] =
     useState<FilterState>(DEFAULT_FILTER);
+  // Chat-declutter polish: workstream-override contextmenu state. The
+  // menu is rendered as a portal-like fixed div in this page so its
+  // position survives transcript scroll. Closed when ``null``.
+  const [overrideMenu, setOverrideMenu] = useState<{
+    messageId: string;
+    workstreamId: string | null;
+    x: number;
+    y: number;
+  } | null>(null);
   const forceAdvanceTimerRef = useRef<number | null>(null);
 
   // Determine self by inspecting snapshot.roles and matching the role with the
@@ -277,6 +287,17 @@ export function Play({ sessionId, token }: Props) {
         // when this broadcast landed.
         console.info("[play] ai pause state", evt.paused);
         setPauseInFlight(false);
+        refreshSnapshot();
+        break;
+      case "message_workstream_changed":
+        // Chat-declutter polish: a creator or message-author manually
+        // re-tagged a single message via the contextmenu. Refresh the
+        // snapshot so the colored stripe + filter pill counts converge
+        // without waiting for the next turn boundary.
+        console.info(
+          "[play] message workstream changed",
+          { id: evt.message_id, workstream_id: evt.workstream_id },
+        );
         refreshSnapshot();
         break;
       case "guardrail_blocked":
@@ -1298,6 +1319,15 @@ export function Play({ sessionId, token }: Props) {
               typingRoleIds={Object.keys(typing).filter((rid) => rid !== selfRoleId)}
               highlightLastAi={isMyTurn}
               selfRoleId={selfRoleId}
+              onMessageContextMenu={({ messageId, workstreamId, x, y }) =>
+                setOverrideMenu({ messageId, workstreamId, x, y })
+              }
+              selfAuthoredRoleIds={
+                selfRoleId ? new Set([selfRoleId]) : null
+              }
+              viewerIsCreator={
+                snapshot.roles.find((r) => r.id === selfRoleId)?.is_creator ?? false
+              }
             />
           </div>
           {/* "New messages below" chip — appears when a message arrives
@@ -1419,6 +1449,7 @@ export function Play({ sessionId, token }: Props) {
           <RightSidebar
             messages={snapshot.messages}
             roles={snapshot.roles}
+            workstreams={snapshot.workstreams ?? []}
             // Phase B chat-declutter: clear the transcript filter
             // when a Timeline pin's target is hidden, then the user
             // can click the pin again. UI/UX review HIGH — pre-fix
@@ -1453,6 +1484,29 @@ export function Play({ sessionId, token }: Props) {
           token={token}
         />
       ) : null}
+      <WorkstreamMenu
+        position={
+          overrideMenu ? { x: overrideMenu.x, y: overrideMenu.y } : null
+        }
+        current={overrideMenu?.workstreamId ?? null}
+        workstreams={snapshot.workstreams ?? []}
+        onPick={async (next) => {
+          if (!overrideMenu) return;
+          try {
+            await api.overrideMessageWorkstream(
+              sessionId,
+              token,
+              overrideMenu.messageId,
+              next,
+            );
+          } catch (err) {
+            const text = err instanceof Error ? err.message : String(err);
+            console.warn("[play] workstream override failed", text);
+            setError(text);
+          }
+        }}
+        onClose={() => setOverrideMenu(null)}
+      />
     </main>
   );
 }
