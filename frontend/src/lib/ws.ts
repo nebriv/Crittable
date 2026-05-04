@@ -19,12 +19,18 @@ export type ServerEvent =
        */
       workstream_id?: string | null;
       /**
-       * Phase B chat-declutter (plan §5.1): structural source for the
-       * @-highlight (amber outline + ``(@you)`` badge). Each entry is
-       * a real ``role_id`` from the roster or the literal
-       * ``"facilitator"`` token. **Never** regex'd from ``body``.
+       * Phase B chat-declutter (plan §5.1) + Wave 2 composer mentions:
+       * structural source for the @-highlight (amber outline +
+       * ``(@you)`` badge). Each entry is a real ``role_id`` from the
+       * roster or the literal ``"facilitator"`` token. **Never**
+       * regex'd from ``body``.
        */
       mentions?: string[];
+      /** Wave 3 (issue #69): True iff this player message was a
+       *  ``@facilitator`` mention submitted while ``Session.ai_paused``
+       *  was set. Drives the transcript-side "AI silenced — won't
+       *  reply" indicator without the client having to track timing. */
+      ai_paused_at_submit?: boolean;
     }
   | { type: "turn_changed"; turn_index: number; active_role_ids: string[] }
   | { type: "tool_invocation"; tool: string; args: Record<string, unknown> }
@@ -46,6 +52,13 @@ export type ServerEvent =
   | { type: "plan_finalized_announcement" }
   | { type: "plan_edited"; field: string }
   | { type: "aar_status_changed"; status: "pending" | "generating" | "ready" | "failed" }
+  // Wave 3 (issue #69): creator toggled the AI-pause flag. Fan-out
+  // to all participants so the session-wide banner appears /
+  // disappears in real time. Server-side only event — clients never
+  // emit this; the corresponding action is the creator-only
+  // ``POST /pause`` / ``/resume`` REST endpoint. ``record=True`` so
+  // a late joiner's replay buffer reflects the current pause state.
+  | { type: "ai_pause_state_changed"; paused: boolean }
   // Real-time AI-thinking indicator. Emitted by the LLM client at every
   // call boundary (begin / end), regardless of tier — so interject /
   // guardrail / setup-tier / AAR-generation work all show the indicator

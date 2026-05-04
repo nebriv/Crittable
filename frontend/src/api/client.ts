@@ -24,6 +24,15 @@ export interface SessionSnapshot {
    */
   decision_log?: DecisionLogEntry[] | null;
   /**
+   * Wave 3 (issue #69): True when the creator has paused the AI's
+   * facilitator-mention replies. Drives the "Pause AI / Resume AI"
+   * toggle label, the session-wide pause banner, and the
+   * transcript-side "AI silenced" indicator. Live updates arrive via
+   * the ``ai_pause_state_changed`` WS event; this snapshot field
+   * covers reload after the replay buffer has rolled past the toggle.
+   */
+  ai_paused?: boolean;
+  /**
    * Phase B chat-declutter (docs/plans/chat-decluttering.md §4.1):
    * AI-declared workstreams for this session. Empty list = no
    * categorization (single ``#main`` bucket); populated when the AI
@@ -113,15 +122,23 @@ export interface MessageView {
    */
   workstream_id: string | null;
   /**
-   * Phase B chat-declutter (plan §5.1): structural source for the
-   * @-highlight. Each entry is a real ``role_id`` from the roster or
-   * the literal ``"facilitator"`` token. The frontend renders the
-   * amber outline + ``(@you)`` badge from this list — **never** by
-   * regex-scanning ``body``. Empty list when nobody is mentioned.
+   * Phase B chat-declutter (plan §5.1) + Wave 2 composer mentions:
+   * structural source for the @-highlight (amber outline +
+   * ``(@you)`` badge). Each entry is a real ``role_id`` from the
+   * roster or the literal ``"facilitator"`` token for
+   * ``@facilitator`` / ``@ai`` / ``@gm`` mentions. The frontend
+   * **never** regex-scans ``body``. Empty list when nobody is
+   * mentioned.
    *
    * Required (no-back-compat): the wire contract always emits this.
    */
   mentions: string[];
+  /** Wave 3 (issue #69): True iff this player message tagged
+   * ``@facilitator`` AND ``Session.ai_paused`` was set at submit
+   * time. The transcript renders an "AI silenced — won't reply"
+   * indicator under the bubble. Persisted on the message so the
+   * indicator survives a page reload after the creator resumes. */
+  ai_paused_at_submit?: boolean;
 }
 
 export interface CostSnapshot {
@@ -353,6 +370,26 @@ export const api = {
 
   async endSession(sessionId: string, token: string, reason?: string): Promise<{ ok: boolean }> {
     return request("POST", `/api/sessions/${sessionId}/end?token=${encodeURIComponent(token)}`, { reason: reason ?? null });
+  },
+
+  /** Creator-only (issue #69): silence the AI's reply to ``@facilitator``
+   *  mentions for the rest of the session — the message still lands in
+   *  the transcript with the highlight, but ``run_interject`` is
+   *  skipped. Idempotent server-side. Does NOT halt normal play turns. */
+  async pauseAi(sessionId: string, creatorToken: string): Promise<{ ok: boolean; paused: boolean }> {
+    return request(
+      "POST",
+      `/api/sessions/${sessionId}/pause?token=${encodeURIComponent(creatorToken)}`,
+    );
+  },
+
+  /** Creator-only (issue #69): re-enable AI replies to ``@facilitator``
+   *  mentions. Idempotent server-side. */
+  async resumeAi(sessionId: string, creatorToken: string): Promise<{ ok: boolean; paused: boolean }> {
+    return request(
+      "POST",
+      `/api/sessions/${sessionId}/resume?token=${encodeURIComponent(creatorToken)}`,
+    );
   },
 
   async editPlan(sessionId: string, token: string, field: string, value: unknown): Promise<{ ok: boolean }> {

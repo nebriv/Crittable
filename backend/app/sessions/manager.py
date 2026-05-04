@@ -30,6 +30,7 @@ from .models import (
     Turn,
 )
 from .repository import SessionRepository
+from .submission_pipeline import FACILITATOR_MENTION_TOKEN
 from .turn_engine import (
     IllegalTransitionError,
     SubmissionIntent,
@@ -584,6 +585,43 @@ class SessionManager:
         )
         return session
 
+    async def set_ai_paused(
+        self, *, session_id: str, paused: bool, by_role_id: str
+    ) -> Session:
+        """Flip ``Session.ai_paused`` and fan the new state out to clients.
+
+        Wave 3 (issue #69). Idempotent: re-issuing pause when already
+        paused (or resume when already resumed) is a no-op — the
+        broadcast is suppressed and no audit line is emitted, so a
+        rapid double-click on the toggle doesn't double-log or send
+        confusing repeated banners. ``by_role_id`` is the creator
+        token's bound role; the route enforces creator-only — this
+        method trusts the caller and records the actor for audit.
+
+        Pause does NOT halt normal play turns. The flag is only
+        consumed by the WS routing branch in ``ws/routes.py`` to skip
+        ``run_interject`` for ``@facilitator`` mentions; player turn
+        submissions still advance ``run_play_turn`` as usual. See the
+        section in ``docs/PLAN.md`` and the routing branch comment.
+        """
+
+        async with await self._lock_for(session_id):
+            session = await self._repo.get(session_id)
+            if session.ai_paused == paused:
+                return session
+            session.ai_paused = paused
+            await self._repo.save(session)
+        self._emit(
+            "ai_paused_by_creator" if paused else "ai_resumed_by_creator",
+            session,
+            by=by_role_id,
+        )
+        await self._connections.broadcast(
+            session.id,
+            {"type": "ai_pause_state_changed", "paused": paused},
+        )
+        return session
+
     # ------------------------------------------------------------ turn flow
     async def start_session(self, *, session_id: str) -> Session:
         async with await self._lock_for(session_id):
@@ -770,6 +808,18 @@ class SessionManager:
                     turn_index=turn.index,
                 )
             self._enforce_dedupe_window(session, role_id=role_id, content=content)
+            cleaned_mentions = list(mentions) if mentions else []
+            # Wave 3 (issue #69): snapshot the pause flag at submit
+            # time iff the player tagged ``@facilitator``. Persisted
+            # so the transcript's "AI silenced — won't reply"
+            # indicator survives reloads even after the creator
+            # later resumes. We deliberately don't snapshot it for
+            # non-facilitator messages — the indicator is meaningless
+            # there.
+            ai_paused_at_submit = bool(
+                session.ai_paused
+                and FACILITATOR_MENTION_TOKEN in cleaned_mentions
+            )
             # Phase B chat-declutter (docs/plans/chat-decluttering.md
             # §4.4): inherit the most recent AI-addressed-to-me
             # workstream so a player's reply lands under the same
@@ -794,7 +844,8 @@ class SessionManager:
                     intent=intent if is_turn_submission else None,
                     # Wave 2: cleaned by the submission pipeline; the
                     # raw wire payload never reaches this layer.
-                    mentions=list(mentions) if mentions else [],
+                    mentions=cleaned_mentions,
+                    ai_paused_at_submit=ai_paused_at_submit,
                     workstream_id=inherited_workstream_id,
                 )
             )
@@ -881,7 +932,14 @@ class SessionManager:
                 # Wave 2: cleaned by the submission pipeline; clients
                 # render the @-highlight from this list rather than
                 # regex-scanning the body.
-                "mentions": list(mentions) if mentions else [],
+                "mentions": cleaned_mentions,
+                # Wave 3 (issue #69): snapshot of ``Session.ai_paused``
+                # at submit time, scoped to facilitator-tagged
+                # messages. The transcript renders an "AI silenced —
+                # won't reply" indicator under the bubble when this
+                # is True. Snapshotted at submit so toggling pause
+                # later doesn't re-paint historical messages.
+                "ai_paused_at_submit": ai_paused_at_submit,
             },
         )
         if ready_to_advance:
@@ -1049,6 +1107,16 @@ class SessionManager:
             self._enforce_dedupe_window(
                 session, role_id=as_role_id, content=content
             )
+            cleaned_proxy_mentions = list(mentions) if mentions else []
+            # Wave 3 (issue #69): mirror ``submit_response``. When the
+            # creator proxy-submits a ``@facilitator``-tagged message
+            # while paused, the transcript needs the same silenced
+            # indicator so a creator running solo-test against a
+            # paused session sees the consistent UI.
+            proxy_ai_paused_at_submit = bool(
+                session.ai_paused
+                and FACILITATOR_MENTION_TOKEN in cleaned_proxy_mentions
+            )
             # Phase B chat-declutter (plan §4.4): proxy path inherits
             # the workstream the same way the regular submit path does
             # — symmetry matters because creators using proxy_respond
@@ -1067,7 +1135,8 @@ class SessionManager:
                     intent=intent if is_turn_submission else None,
                     # Wave 2: mirror ``submit_response``. The REST
                     # proxy endpoint validates before this layer.
-                    mentions=list(mentions) if mentions else [],
+                    mentions=cleaned_proxy_mentions,
+                    ai_paused_at_submit=proxy_ai_paused_at_submit,
                     workstream_id=inherited_workstream_id,
                 )
             )
@@ -1111,7 +1180,11 @@ class SessionManager:
                 "workstream_id": inherited_workstream_id,
                 # Wave 2: same source as ``submit_response``. The
                 # REST proxy validates the wire payload first.
-                "mentions": list(mentions) if mentions else [],
+                "mentions": cleaned_proxy_mentions,
+                # Wave 3 (issue #69): mirror ``submit_response`` so the
+                # creator's solo-test proxy path renders the silenced
+                # indicator consistently when paused.
+                "ai_paused_at_submit": proxy_ai_paused_at_submit,
             },
         )
         self._emit(

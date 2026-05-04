@@ -110,6 +110,14 @@ export function Play({ sessionId, token }: Props) {
   // backend in-flight gate. Prevents the triple-banner cascade from a
   // double/triple click (issue #63).
   const [forceAdvanceCooldown, setForceAdvanceCooldown] = useState(false);
+  // Wave 3 (issue #69) AI-pause toggle round-trip flag. Disables the
+  // creator's "Pause AI / Resume AI" button while the POST is in
+  // flight so a rapid double-click doesn't fire two contradictory
+  // requests (the second of which would race the first's broadcast).
+  // The button label flips off the snapshot's ``ai_paused`` flag —
+  // not off this in-flight gate — so a stuck request never lies
+  // about the actual pause state to the operator.
+  const [pauseInFlight, setPauseInFlight] = useState(false);
   // Issue #76 transition cue: when the participant exits the JoinIntro
   // waiting variant (state goes SETUP/BRIEFING → AWAITING_PLAYERS) the
   // page used to hard-cut to the chat layout, leaving a screen-reader
@@ -258,6 +266,18 @@ export function Play({ sessionId, token }: Props) {
         break;
       case "critical_event":
         setCriticalBanner({ severity: evt.severity, headline: evt.headline, body: evt.body });
+        break;
+      case "ai_pause_state_changed":
+        // Wave 3 (issue #69): the creator flipped the AI-pause flag.
+        // Refresh the snapshot so ``snapshot.ai_paused`` (and the
+        // banner / button label / silenced indicators that read off
+        // it) update without waiting for the next state_changed
+        // event. Also drop the in-flight gate so the creator's
+        // toggle is interactable again — the round-trip completed
+        // when this broadcast landed.
+        console.info("[play] ai pause state", evt.paused);
+        setPauseInFlight(false);
+        refreshSnapshot();
         break;
       case "guardrail_blocked":
         // Server now only emits this for ``prompt_injection`` (off_topic
@@ -560,6 +580,45 @@ export function Play({ sessionId, token }: Props) {
     } catch (err) {
       console.warn("[play] end-session send failed", err);
       setError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  async function handlePauseToggle(currentlyPaused: boolean) {
+    // Wave 3 (issue #69): creator-only toggle. The button is rendered
+    // only when ``isSelfCreator`` is true; backend ``require_creator``
+    // is the authoritative gate. ``pauseInFlight`` blocks rapid
+    // double-clicks. The label flips off the snapshot's ``ai_paused``
+    // rather than off this in-flight flag so a stuck request never
+    // paints the wrong pause state.
+    if (pauseInFlight) {
+      console.warn("[play] pause toggle in-flight — ignoring rapid click");
+      return;
+    }
+    setPauseInFlight(true);
+    try {
+      if (currentlyPaused) {
+        console.info("[play] resuming AI");
+        await api.resumeAi(sessionId, token);
+      } else {
+        console.info("[play] pausing AI");
+        await api.pauseAi(sessionId, token);
+      }
+      // Optimistic snapshot refresh keeps the banner / button label
+      // honest even if the WS ``ai_pause_state_changed`` broadcast is
+      // missed (replay-buffer eviction during a stress test, WS
+      // reconnect mid-toggle, etc.). The WS handler will also flip
+      // these on the live path — both writes are idempotent.
+      await refreshSnapshot();
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn("[play] pause toggle failed", msg);
+      setError(`Pause toggle failed: ${msg}`);
+    } finally {
+      // Clear the in-flight gate on every outcome — success, failure,
+      // and the rare case where the API resolves but the WS event
+      // never arrives. Without this, a single dropped broadcast
+      // leaves the toggle disabled forever.
+      setPauseInFlight(false);
     }
   }
 
@@ -1065,6 +1124,51 @@ export function Play({ sessionId, token }: Props) {
           onAcknowledge={() => setCriticalBanner(null)}
         />
       ) : null}
+      {/*
+        Wave 3 (issue #69): session-wide pause banner. Visible to all
+        participants for the duration of the pause so a player who
+        ``@facilitator``s after pause-on understands why the AI didn't
+        reply. ``role="status"`` + ``aria-live="polite"`` (not
+        assertive) — the banner narrates a session-state change, not
+        an interrupt-the-user warning. Distinct from the warn-toned
+        ``current_turn.status === "errored"`` banner below, which
+        announces a recoverable engine error.
+
+        UI/UX review HIGH on this PR: the wrapper is **always
+        mounted** (with empty content when not paused) so screen
+        readers announce both the pause-on and the resume-off
+        transitions — most ATs only fire ``aria-live`` on text
+        changes inside an existing live region, not on node
+        unmount. With the wrapper conditionally rendered, AT users
+        got the "AI facilitator is paused" announce but no
+        "facilitator resumed" follow-up.
+
+        ``aria-label`` on the ``<code>`` element is a screen-reader
+        hint: NVDA / JAWS read backticked code as the literal
+        characters ("at facilitator"), but iOS VoiceOver routinely
+        strips punctuation and reads it as "facilitator". The
+        explicit aria-label keeps the pronunciation consistent.
+      */}
+      <div
+        role="status"
+        aria-live="polite"
+        data-testid="ai-pause-banner"
+        className={
+          snapshot.ai_paused === true
+            ? "border-b border-info bg-info-bg px-4 py-2 text-center mono text-[11px] uppercase tracking-[0.10em] text-info shadow"
+            : "sr-only"
+        }
+      >
+        {snapshot.ai_paused === true ? (
+          <>
+            AI facilitator is paused by the creator.{" "}
+            <code aria-label="at facilitator">@facilitator</code>{" "}
+            mentions land in the transcript but won't trigger an AI reply.
+          </>
+        ) : (
+          ""
+        )}
+      </div>
       {snapshot.state === "ENDED" ? (
         <div
           role="status"
@@ -1137,6 +1241,17 @@ export function Play({ sessionId, token }: Props) {
                 ? "Force-advance (cooling)"
                 : "Force-advance turn"}
             </button>
+            {isSelfCreator ? (
+              <button
+                onClick={() => handlePauseToggle(snapshot.ai_paused === true)}
+                disabled={pauseInFlight}
+                aria-disabled={pauseInFlight}
+                aria-pressed={snapshot.ai_paused === true}
+                className="mono rounded-r-1 border border-info px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-info hover:bg-info-bg focus-visible:outline focus-visible:outline-2 focus-visible:outline-info disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {snapshot.ai_paused === true ? "Resume AI" : "Pause AI"}
+              </button>
+            ) : null}
             {isSelfCreator ? (
               <button
                 onClick={handleEnd}
