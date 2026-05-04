@@ -147,7 +147,7 @@ Custom tools, resources, and prompts (Skills-style) are loaded at startup via en
 
 > **Pair this section with [`docs/turn-lifecycle.md`](docs/turn-lifecycle.md)** — the load-bearing reference for the play-turn engine. Flowcharts of every gate, slot, contract, validator branch, and recovery directive, plus a full write-up of the 2026-04-30 silent-yield regression. Read both before touching `app/sessions/turn_validator.py`, `app/sessions/turn_driver.py`, `app/sessions/slots.py`, or `app/llm/dispatch.py`.
 >
-> **Adding or rewording a tool:** read [`docs/tool-design.md`](docs/tool-design.md) first. The five trap patterns there are the difference between a tool the model picks correctly and one it ignores or over-applies. Run `pytest backend/tests/live/ -v` against `ANTHROPIC_API_KEY` after any change to `app/llm/tools.py`, Block 6 of `app/llm/prompts.py`, or the recovery directives.
+> **Adding or rewording a tool:** read [`docs/tool-design.md`](docs/tool-design.md) first. The five trap patterns there are the difference between a tool the model picks correctly and one it ignores or over-applies. Run `backend/scripts/run-live-tests.sh` after any change to `app/llm/tools.py`, Block 6 of `app/llm/prompts.py`, or the recovery directives.
 
 [`backend/app/sessions/phase_policy.py`](backend/app/sessions/phase_policy.py) is the **single source of truth** for "what is the LLM allowed to do in tier X at session state Y?" Do not duplicate these rules elsewhere. Three enforcement points consume it:
 
@@ -166,7 +166,7 @@ Adding a new tier or tool: update `phase_policy.POLICIES`, add `ALLOWED_*_TOOL_N
 1. Drop the tool from `PLAY_TOOLS` / `SETUP_TOOLS` / `AAR_TOOL` in `app/llm/tools.py`.
 2. Add the name to `HISTORICAL_REMOVED_PLAY_TOOLS` (or the tier-equivalent set) in `backend/tests/test_prompt_tool_consistency.py`. **Do not skip this** — it's how future regressions get caught.
 3. Search the codebase for the name in backticks: `grep -rn '`<name>`' backend/app frontend/src` — every hit in a model-facing string is a bug. Hits in code comments, removal-explanation docstrings, and `BUILTIN_TOOL_NAMES` (extension shadowing prevention) are intentional.
-4. Run `pytest backend/tests/test_prompt_tool_consistency.py` — must pass. Then run `pytest backend/tests/live/` against `ANTHROPIC_API_KEY` to confirm no model-routing regression.
+4. Run `pytest backend/tests/test_prompt_tool_consistency.py` — must pass. Then run `backend/scripts/run-live-tests.sh` to confirm no model-routing regression.
 
 **Addition protocol**:
 
@@ -477,4 +477,5 @@ This error wastes tokens and time.
 3. Pick or confirm the issue you're working on.
 4. Re-read [`docs/PLAN.md`](docs/PLAN.md) for the relevant section before making decisions that contradict it.
 5. After meaningful work: run tests + lint locally before pushing.
-6. For Phase-2 issues: launch the three review sub-agents before requesting human review.
+6. If the diff touches `backend/app/llm/`, `backend/app/sessions/turn_*.py`, `backend/app/sessions/submission_pipeline.py`, or any prompt / tool description / recovery-directive copy, also run `backend/scripts/run-live-tests.sh` before pushing (~$0.10/run; hits the real Anthropic API). The non-live suite catches structural regressions; the live suite catches model-routing ones — the two are complementary, not redundant. Skip only when the diff is provably LLM-blind (CSS, type-only changes, comment fixes, scenarios JSON without engine-mode replay).
+7. For Phase-2 issues: launch the three review sub-agents before requesting human review.
