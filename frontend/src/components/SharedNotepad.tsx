@@ -19,7 +19,7 @@ import StarterKit from "@tiptap/starter-kit";
 import { EditorContent, useEditor } from "@tiptap/react";
 import type { Editor, Extension } from "@tiptap/core";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Awareness, applyAwarenessUpdate, encodeAwarenessUpdate } from "y-protocols/awareness";
+import { Awareness } from "y-protocols/awareness";
 import * as Y from "yjs";
 
 import { CollapsibleRailPanel } from "./brand/CollapsibleRailPanel";
@@ -38,7 +38,8 @@ import {
 } from "../lib/notepad";
 import type { NotepadTemplate } from "../lib/notepad";
 import { appendPinToEditor, relativeStamp } from "../lib/notepadEditor";
-import type { ServerEvent, WsClient } from "../lib/ws";
+import { WsYjsProvider } from "../lib/notepadProvider";
+import type { WsClient } from "../lib/ws";
 
 interface Props {
   sessionId: string;
@@ -78,161 +79,6 @@ function roleColor(roleId: string): string {
     h = (h * 31 + roleId.charCodeAt(i)) >>> 0;
   }
   return palette[h % palette.length];
-}
-
-/**
- * Minimal Yjs <-> WsClient bridge. Replaces the standard y-websocket
- * provider so we don't need a separate Yjs server.
- *
- * On open: send notepad_sync_request. The server replies with the
- * current encoded state.
- *
- * On local Yjs update: send notepad_update with the binary payload
- * base64-encoded.
- *
- * On incoming notepad_update: apply to local doc. Yjs is idempotent,
- * so the sender's own update is a no-op when echoed back.
- */
-class WsYjsProvider {
-  private unsub: (() => void) | null = null;
-  private yObserver: ((u: Uint8Array, origin: unknown) => void) | null = null;
-  private awarenessObserver:
-    | ((args: { added: number[]; updated: number[]; removed: number[] }, origin: unknown) => void)
-    | null = null;
-  private isOriginRemote = Symbol("notepad-remote");
-
-  constructor(
-    public readonly doc: Y.Doc,
-    public readonly awareness: Awareness,
-    private readonly ws: WsClient,
-    public readonly onLocked: () => void,
-    public readonly onLockPending: (secs: number) => void,
-    public readonly onError: (msg: string) => void,
-  ) {}
-
-  start(): void {
-    this.yObserver = (update: Uint8Array, origin: unknown) => {
-      if (origin === this.isOriginRemote) return;
-      try {
-        this.ws.send({ type: "notepad_update", update: bytesToBase64(update) });
-      } catch (err) {
-        console.warn("[notepad] update send failed", err);
-      }
-    };
-    this.doc.on("update", this.yObserver);
-
-    this.awarenessObserver = (
-      { added, updated, removed }: { added: number[]; updated: number[]; removed: number[] },
-      origin: unknown,
-    ) => {
-      if (origin === this.isOriginRemote) return;
-      const changed = added.concat(updated, removed);
-      if (changed.length === 0) return;
-      try {
-        const update = encodeAwarenessUpdate(this.awareness, changed);
-        this.ws.send({
-          type: "notepad_awareness",
-          awareness: bytesToBase64(update),
-        });
-      } catch (err) {
-        console.warn("[notepad] awareness send failed", err);
-      }
-    };
-    this.awareness.on("update", this.awarenessObserver);
-
-    this.unsub = this.ws.subscribe((evt) => this.handle(evt));
-
-    // Send initial sync request. The WS may not be open yet — guard.
-    try {
-      this.ws.send({ type: "notepad_sync_request" });
-    } catch {
-      // Will retry on the next open via the page-level reconnect logic.
-    }
-  }
-
-  stop(): void {
-    if (this.yObserver) {
-      this.doc.off("update", this.yObserver);
-      this.yObserver = null;
-    }
-    if (this.awarenessObserver) {
-      this.awareness.off("update", this.awarenessObserver);
-      this.awarenessObserver = null;
-    }
-    // Drop our awareness state cleanly so other clients see us go offline.
-    this.awareness.setLocalState(null);
-    if (this.unsub) {
-      this.unsub();
-      this.unsub = null;
-    }
-  }
-
-  private handle(evt: ServerEvent): void {
-    switch (evt.type) {
-      case "notepad_sync_response": {
-        try {
-          const bytes = base64ToBytes(evt.state);
-          if (bytes.length > 0) {
-            Y.applyUpdate(this.doc, bytes, this.isOriginRemote);
-          }
-        } catch (err) {
-          console.warn("[notepad] sync apply failed", err);
-        }
-        if (evt.locked) this.onLocked();
-        break;
-      }
-      case "notepad_update": {
-        try {
-          Y.applyUpdate(
-            this.doc,
-            base64ToBytes(evt.update),
-            this.isOriginRemote,
-          );
-        } catch (err) {
-          console.warn("[notepad] remote update apply failed", err);
-        }
-        break;
-      }
-      case "notepad_awareness": {
-        try {
-          applyAwarenessUpdate(
-            this.awareness,
-            base64ToBytes(evt.awareness),
-            this.isOriginRemote,
-          );
-        } catch (err) {
-          console.warn("[notepad] awareness apply failed", err);
-        }
-        break;
-      }
-      case "notepad_lock_pending":
-        this.onLockPending(evt.locks_in_seconds);
-        break;
-      case "notepad_locked":
-        this.onLocked();
-        break;
-      case "error":
-        if (evt.scope === "notepad") this.onError(evt.message);
-        break;
-      default:
-        break;
-    }
-  }
-}
-
-function bytesToBase64(b: Uint8Array): string {
-  let out = "";
-  for (let i = 0; i < b.length; i += 0x8000) {
-    out += String.fromCharCode(...b.subarray(i, i + 0x8000));
-  }
-  return btoa(out);
-}
-
-function base64ToBytes(b64: string): Uint8Array {
-  const bin = atob(b64);
-  const out = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
-  return out;
 }
 
 function timestampHotkeyExtension(sessionStartedAt: string): Extension {
@@ -331,7 +177,21 @@ export function SharedNotepad({
       ydoc,
       awareness,
       ws,
-      () => setLocked(true),
+      () => {
+        setLocked(true);
+        // Three lock-error races to think about:
+        //   (a) error-then-lock: a "notepad is locked" toast arrived
+        //       before the lock event — clear it so the chip alone
+        //       carries the state.
+        //   (b) lock-then-error: the provider's ``this.locked`` flag
+        //       (set above the React update) suppresses any post-lock
+        //       notepad-scope errors at the source.
+        //   (c) error-during-lock: error is rendering, lock event
+        //       arrives, this clear immediately dismisses it. Fine —
+        //       the chip + sr-only live region cover the state.
+        // (Issue #160; QA review M2.)
+        setErrorMsg(null);
+      },
       (secs) => setLockPendingSecs(secs),
       (msg) => setErrorMsg(msg),
     );
@@ -530,10 +390,10 @@ export function SharedNotepad({
           <StatusChip
             tone="warn"
             label="SHARED"
-            value={locked ? "LOCKED · export available" : "HIDDEN FROM AI"}
+            value={locked ? "LOCKED · session ended" : "HIDDEN FROM AI"}
             title={
               locked
-                ? "Notepad is read-only; the export link still works."
+                ? "Session ended — notepad is read-only. The export link still works."
                 : "Hidden from the AI during play. At end of session, the AI reads the whole notepad to write the final report — including anything you've flagged via 'Mark for AAR'. Plan and debrief freely."
             }
           />
@@ -550,6 +410,18 @@ export function SharedNotepad({
           </a>
         </div>
 
+        {/* Screen-reader-only live region. The visible chip itself is a
+            static ``<div>`` with no ARIA semantics, so AT users would
+            otherwise miss the lock transition. ``aria-live="polite"``
+            announces the state change without interrupting whatever the
+            user is currently focused on. (UI/UX review HIGH for issue
+            #160.) */}
+        <span className="sr-only" aria-live="polite" role="status">
+          {locked
+            ? "Session ended. Notepad is locked and read-only. Export link is still available."
+            : ""}
+        </span>
+
         {lockPendingSecs !== null && !locked ? (
           <div
             role="status"
@@ -558,13 +430,6 @@ export function SharedNotepad({
           >
             Session ending — notepad locks in {lockPendingSecs}s. Notes will
             export regardless.
-          </div>
-        ) : null}
-
-        {locked ? (
-          <div className="rounded-r-1 border border-ink-500 bg-ink-900 px-2 py-1 text-[12px] text-ink-200">
-            NOTEPAD LOCKED — session ended. Export still available via the
-            link above.
           </div>
         ) : null}
 
