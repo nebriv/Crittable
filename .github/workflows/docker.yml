@@ -6,13 +6,12 @@ on:
     tags: ["v*"]
   pull_request:
     # Validate the build + Trivy gate on every PR that touches the
-    # runtime image, BEFORE merge. PR #135 introduced the Trivy gate
-    # on push-to-main only, which meant a CVE could land on main and
-    # block every subsequent push (the way it did 2026-05-03 →
-    # 2026-05-05). Running the same workflow on PRs catches the
-    # regression in the PR's own CI; the auth + push steps below are
-    # gated on ``github.event_name == 'push'`` so PR runs build and
-    # scan but never publish to GHCR.
+    # runtime image, BEFORE merge. Catches regressions that the
+    # original push-only setup couldn't surface until after merge,
+    # without exposing a write-scoped GITHUB_TOKEN to PR-side code:
+    # the pr-validate job below runs with the workflow-default
+    # ``contents: read`` only — the write scopes that build-and-push
+    # needs are granted at the job level, not the workflow level.
     branches: ["main"]
     paths:
       # Anything that ends up in the image, plus the workflow itself.
@@ -25,10 +24,17 @@ on:
       - ".github/workflows/docker.yml"
 
 permissions:
+  # Workflow-level default. Per-job blocks below grant additional
+  # scope ONLY to build-and-push (push events). The pr-validate job
+  # inherits this read-only default — its GITHUB_TOKEN cannot push
+  # to GHCR or upload SARIF, so untrusted PR-side code never sees a
+  # write-scoped token. The previous revision of this workflow set
+  # ``packages: write`` and ``security-events: write`` at workflow
+  # level, which meant every job — including PR runs — got those
+  # scopes in $GITHUB_TOKEN even though step-level ``if:`` gates
+  # never USED them. Splitting fixes the principle-of-least-
+  # privilege violation.
   contents: read
-  packages: write
-  # Required for the Trivy step's SARIF upload to GitHub Code Scanning.
-  security-events: write
 
 env:
   REGISTRY: ghcr.io
@@ -40,19 +46,101 @@ env:
   IMAGE_NAME: ${{ github.repository }}
 
 jobs:
-  build-and-push:
+  pr-validate:
+    # Same build + Trivy gate as build-and-push, but no GHCR login,
+    # no SARIF upload, no publish — and a read-only GITHUB_TOKEN
+    # (inherited from workflow-level ``contents: read``). Failing
+    # this gate blocks PR merge the same way build-and-push blocks
+    # publish on push events.
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
       - uses: docker/setup-buildx-action@v3
 
+      - name: Lowercase image name
+        id: image-name
+        run: echo "name=${IMAGE_NAME,,}" >> "$GITHUB_OUTPUT"
+
+      - name: Compute tags
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.REGISTRY }}/${{ steps.image-name.outputs.name }}
+          # PR-side only needs an identifier for the local image; no
+          # ``latest`` / semver tags here because nothing publishes.
+          tags: |
+            type=ref,event=branch
+            type=sha,prefix=sha-,format=short
+
+      - name: First tag (Trivy needs a single ref)
+        id: scan-target
+        run: |
+          first_tag="$(printf '%s\n' "${{ steps.meta.outputs.tags }}" | head -n1)"
+          echo "ref=${first_tag}" >> "$GITHUB_OUTPUT"
+
+      - name: Build (load locally for scan, do NOT push)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile
+          platforms: linux/amd64
+          push: false
+          load: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          # Read from main's cache; do NOT write back from PR runs.
+          # ``cache-to`` is intentionally omitted — untrusted PR code
+          # shouldn't be able to write into a cache that main's
+          # subsequent build then consumes.
+          cache-from: type=gha
+
+      - name: Trivy image scan (table, informational) — prints CVEs to log
+        # Same scan parameters as the gate below, but ``exit-code: 0``
+        # so this step never fails the build. Surfaces every finding
+        # in the Actions log so a failed gate is self-documenting.
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: ${{ steps.scan-target.outputs.ref }}
+          format: table
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "0"
+          vuln-type: os,library
+
+      - name: Trivy image scan (HIGH,CRITICAL) — gates merge
+        # ``format: table`` (not SARIF) because PR runs don't upload
+        # to Code Scanning. ``exit-code: "1"`` makes a HIGH/CRITICAL
+        # finding fail the PR check, blocking merge.
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: ${{ steps.scan-target.outputs.ref }}
+          format: table
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+          vuln-type: os,library
+
+  build-and-push:
+    # Push/tag side: full pipeline including registry login, SARIF
+    # upload, and GHCR publish. Job-level permissions grant the
+    # write scopes the steps require; the workflow-level read-only
+    # default keeps every other job (including pr-validate) from
+    # ever seeing those scopes.
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      # Required for the Trivy step's SARIF upload to GitHub Code Scanning.
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
       - name: Log in to GHCR
-        # Only push events publish to GHCR; PR runs build + scan only.
-        # Skipping the login on PRs avoids a noisy auth attempt and is
-        # required for fork PRs (where ``GITHUB_TOKEN`` is read-only and
-        # ``packages: write`` is downgraded).
-        if: github.event_name == 'push'
         uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
@@ -151,14 +239,7 @@ jobs:
         # Always upload, even if the scan failed — findings land in the
         # Security tab and can be triaged from there instead of
         # disappearing with the failed run.
-        #
-        # Only on push events: the Code Scanning view shows the current
-        # state of ``main``, not pre-merge PR speculation. PR runs still
-        # gate the merge via the Trivy step's exit code; we just don't
-        # let PR-only findings clutter the Security tab. (Also avoids a
-        # silent SARIF upload failure on fork PRs where
-        # ``security-events: write`` is downgraded.)
-        if: always() && github.event_name == 'push'
+        if: always()
         uses: github/codeql-action/upload-sarif@v3
         with:
           sarif_file: trivy-results.sarif
@@ -168,14 +249,8 @@ jobs:
         # Re-runs the build with the same inputs to publish to GHCR.
         # The previous build's ``cache-to`` populated the gha cache, so
         # this is a near-instant cache hit — no real rebuild happens.
-        #
-        # Two gates: ``success()`` so a failed Trivy scan skips the
-        # push (the original guarantee), AND
-        # ``github.event_name == 'push'`` so PR runs never publish.
-        # Both are required because specifying any ``if:`` overrides
-        # the default ``if: success()`` GitHub Actions applies to
-        # subsequent steps.
-        if: success() && github.event_name == 'push'
+        # Skipped automatically if the Trivy step failed because steps
+        # default to ``if: success()``.
         uses: docker/build-push-action@v6
         with:
           context: .
