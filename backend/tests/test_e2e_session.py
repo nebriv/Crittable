@@ -1146,6 +1146,146 @@ def test_strict_retry_cannot_be_coerced_into_end_session(client: TestClient) -> 
     )
 
 
+def test_strict_retry_recovers_from_solo_inject_critical_event(
+    client: TestClient,
+) -> None:
+    """Issue #151 fix A — end-to-end mock test for the
+    rejection-feedback-through-strict-retry path.
+
+    Flow:
+      Attempt 1: model emits SOLO ``inject_critical_event`` (no
+        DRIVE-slot tool in same response). The dispatcher's pairing
+        scan rejects this with ``is_error=True`` carrying the chain-
+        shape hint. The inject's banner does NOT fire; no
+        CRITICAL_INJECT message is appended.
+      Attempt 2: model self-corrects and emits the chain
+        (``inject_critical_event`` + ``broadcast`` + ``set_active_roles``)
+        in a single response. All three land cleanly.
+
+    Asserts:
+      * Attempt 1 produced no CRITICAL_INJECT message in the
+        transcript (inject was rejected pre-side-effect).
+      * Attempt 2's broadcast and inject both land.
+      * The turn ends in a healthy state (not errored) with the
+        right active_role_ids.
+
+    The companion unit-level coverage in
+    ``tests/test_dispatch_tools.py`` exercises the dispatcher
+    rejection in isolation; this test pins the integration with
+    the strict-retry loop in ``turn_driver._run_attempt`` so a
+    refactor of the retry-budget plumbing or the tool_results
+    splice-in path can't silently break the rejection-recovery
+    contract.
+    """
+
+    from tests.mock_anthropic import MockAnthropic, _ContentBlock, _Response
+
+    seats = _create_and_seat(client, role_count=2)
+    sid = seats["session_id"]
+    cr = seats["creator_token"]
+    second_role_id = seats["role_ids"][1]
+
+    # Attempt 1 — solo inject. Dispatcher's pairing scan should reject
+    # this with is_error=True. No banner; no CRITICAL_INJECT message.
+    play_attempt_1 = _Response(
+        content=[
+            _ContentBlock(
+                type="tool_use",
+                name="inject_critical_event",
+                input={
+                    "severity": "HIGH",
+                    "headline": "Press leak — Slack screenshot",
+                    "body": "Reporter calling in 30 minutes.",
+                },
+                id="tu_solo_inject",
+            )
+        ],
+        stop_reason="tool_use",
+    )
+    # The validator catches missing DRIVE + YIELD on attempt 1 (no
+    # slot fired — rejection means ESCALATE didn't land either) and
+    # runs DRIVE recovery first (priority 10), then YIELD recovery.
+    drive_recovery_resp = _Response(
+        content=[
+            _ContentBlock(
+                type="tool_use",
+                name="broadcast",
+                input={
+                    "message": (
+                        "**SOC** — pull the screenshot's metadata. **CISO** "
+                        "— call legal in the next 5 minutes. The reporter "
+                        "is on a 30-minute window."
+                    )
+                },
+                id="tu_drive_recovery",
+            )
+        ],
+        stop_reason="tool_use",
+    )
+    yield_recovery_resp = _Response(
+        content=[
+            _ContentBlock(
+                type="tool_use",
+                name="set_active_roles",
+                input={"role_ids": [second_role_id]},
+                id="tu_yield",
+            )
+        ],
+        stop_reason="tool_use",
+    )
+    script = [play_attempt_1, drive_recovery_resp, yield_recovery_resp]
+    mock = MockAnthropic({"play": script})
+    client.app.state.llm.set_transport(mock.messages)
+
+    client.post(f"/api/sessions/{sid}/setup/skip?token={cr}")
+    r = client.post(f"/api/sessions/{sid}/start?token={cr}")
+    assert r.status_code == 200, r.text
+
+    snap = client.get(f"/api/sessions/{sid}?token={cr}").json()
+    assert snap["current_turn"]["status"] != "errored", (
+        "strict retry failed to recover from solo inject; "
+        f"turn status is {snap['current_turn']['status']!r}"
+    )
+    assert snap["current_turn"]["active_role_ids"] == [second_role_id]
+
+    # The dispatcher's rejection short-circuits the inject's side
+    # effects: no CRITICAL_INJECT message lands. The recovery's
+    # broadcast does land.
+    msgs = snap.get("messages", [])
+    critical_msgs = [m for m in msgs if m.get("kind") == "critical_inject"]
+    assert critical_msgs == [], (
+        "fix A failed: a CRITICAL_INJECT message landed despite "
+        "the dispatcher's pairing rejection. The inject's banner "
+        "should NOT fire when paired DRIVE is missing. "
+        f"Messages: {[m.get('kind') for m in msgs]}"
+    )
+    broadcasts = [
+        m for m in msgs if m.get("kind") == "ai_text" and m.get("tool_name") == "broadcast"
+    ]
+    assert broadcasts, (
+        "DRIVE recovery's broadcast should have landed; "
+        f"messages: {[(m.get('kind'), m.get('tool_name')) for m in msgs]}"
+    )
+
+    # Verify the strict-retry sequence: attempt 1 sent the unpaired
+    # inject + got is_error=True back; attempt 2 was DRIVE recovery
+    # (broadcast pinned); attempt 3 was YIELD recovery
+    # (set_active_roles pinned).
+    play_calls = [c for c in mock.messages.calls if "play" in c.get("model", "")]
+    assert len(play_calls) >= 3, (
+        f"expected ≥3 play calls (attempt 1 + DRIVE + YIELD recovery); "
+        f"got {len(play_calls)}"
+    )
+    drive_pin = play_calls[1].get("tool_choice")
+    assert drive_pin == {"type": "tool", "name": "broadcast"}, (
+        f"DRIVE recovery must pin to broadcast; got {drive_pin}"
+    )
+    yield_pin = play_calls[2].get("tool_choice")
+    assert yield_pin == {"type": "tool", "name": "set_active_roles"}, (
+        f"YIELD recovery must pin to set_active_roles; got {yield_pin}"
+    )
+
+
 def test_briefing_recovers_when_ai_skips_broadcast(client: TestClient) -> None:
     """Regression: on the BRIEFING turn the AI must give the active roles
     a narrative beat to respond to. Sonnet has been observed firing

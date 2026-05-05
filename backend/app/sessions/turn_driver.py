@@ -486,11 +486,22 @@ class TurnDriver:
                 _merge_outcomes(cumulative, outcome)
 
                 # Validate cumulative state against the contract.
+                # ``cumulative.critical_inject_attempted_args`` (issue
+                # #151 fix B) lets a missing-DRIVE recovery ground the
+                # broadcast prompt on the inject the model just fired
+                # (or attempted to fire — the dispatcher captures the
+                # args even when fix A rejects the call for missing
+                # pairing). Without this, the recovery used a generic
+                # "skipped the player-facing message" prompt and the
+                # model fell back to a vanilla next-beat brief that
+                # ignored the inject — DRIVE slot satisfied, banner
+                # still un-grounded.
                 validation = validate(
                     session=session,
                     cumulative_slots=cumulative.slots,
                     contract=contract,
                     soft_drive_carve_out_enabled=settings.llm_recovery_drive_soft_on_open_question,
+                    pending_critical_inject_args=cumulative.critical_inject_attempted_args,
                 )
 
                 _logger.info(
@@ -503,6 +514,26 @@ class TurnDriver:
                     warnings=validation.warnings,
                     ok=validation.ok,
                 )
+
+                # Issue #151 fix B observability — surface inject-grounded
+                # recovery firings so operators can grep for them and
+                # track the recovery-after-inject rate over time.
+                # Emitted here at the call site (instead of inside
+                # ``validate()``) so the validator stays a pure function
+                # per its module contract — see PR #170 review.
+                if (
+                    cumulative.critical_inject_attempted_args is not None
+                    and any(d.kind == "missing_drive" for d in validation.violations)
+                ):
+                    inject_args = cumulative.critical_inject_attempted_args
+                    _logger.info(
+                        "drive_recovery_grounded_on_inject",
+                        session_id=session.id,
+                        turn_index=turn.index,
+                        attempt=attempt,
+                        headline=str(inject_args.get("headline") or "")[:80],
+                        severity=str(inject_args.get("severity") or "HIGH"),
+                    )
 
                 if validation.ok:
                     # Persist + advance state.
@@ -913,6 +944,27 @@ class TurnDriver:
             session.critical_injects_window = [
                 i for i in session.critical_injects_window if turn.index - i < 5
             ]
+            # Issue #151 PR #170 Copilot fix: the ``critical_event`` WS
+            # broadcast was moved here from the dispatcher so the
+            # post-dispatch slot-pairing rollback can run BEFORE any
+            # banner reaches clients (see
+            # ``ToolDispatcher._rollback_inject``). Pull the inject's
+            # severity / headline / body from the most-recent
+            # CRITICAL_INJECT message in the appended set — there's
+            # one per inject and we only re-broadcast surviving ones.
+            for inj_msg in outcome.appended_messages:
+                if inj_msg.kind != MessageKind.CRITICAL_INJECT:
+                    continue
+                inj_args = inj_msg.tool_args or {}
+                await self._manager.connections().broadcast(
+                    session.id,
+                    {
+                        "type": "critical_event",
+                        "severity": inj_args.get("severity", "HIGH"),
+                        "headline": inj_args.get("headline", ""),
+                        "body": inj_args.get("body", ""),
+                    },
+                )
 
         if outcome.end_session_reason is not None:
             from .turn_engine import assert_transition
@@ -1278,6 +1330,13 @@ def _merge_outcomes(target: DispatchOutcome, src: DispatchOutcome) -> None:
     target.critical_inject_fired = (
         target.critical_inject_fired or src.critical_inject_fired
     )
+    # Issue #151 fix B: most-recent inject attempt wins. Recovery
+    # passes (which run with a narrowed tool surface that excludes
+    # ``inject_critical_event``) never overwrite a fix-B grounding
+    # payload from attempt 1, so the recovery directive sees the
+    # inject context across re-runs.
+    if src.critical_inject_attempted_args is not None:
+        target.critical_inject_attempted_args = src.critical_inject_attempted_args
     target.had_yielding_call = target.had_yielding_call or src.had_yielding_call
     target.had_player_facing_message = (
         target.had_player_facing_message or src.had_player_facing_message
