@@ -20,39 +20,84 @@ export function relativeStamp(sessionStartedAt: string): string {
 }
 
 /**
- * If the doc has a top-level ``## Timeline`` heading, return the
- * position right before the next h2 (the end of the Timeline section)
- * — or ``doc.content.size`` if Timeline is the last section. If there
- * is no Timeline heading, also return ``doc.content.size``.
- *
- * Walks only top-level children — pinning into a heading nested inside
- * a list item or blockquote is not a real case for our templates.
+ * Pin section identifier. Add a new value here when adding a new
+ * highlight action that pins under a different section heading.
  */
-export function findPinInsertPos(editor: Editor): number {
+export type PinSection = "timeline" | "aar_review";
+
+/**
+ * Visible markdown heading text + matching predicate for each pin
+ * section. Storing them in one place keeps the heading copy in sync
+ * across the insertion path (``findPinInsertPos``), the auto-create
+ * path (``appendPinToEditor``), and the AAR-pipeline expectation that
+ * a section exists in the notepad markdown.
+ *
+ * ``matches`` is the case-insensitive predicate the doc walker uses
+ * when locating a top-level h2 — kept explicit so a future rename of
+ * the visible heading doesn't silently stop matching old docs.
+ */
+const PIN_SECTION_HEADINGS: Record<PinSection, { heading: string; matches: (text: string) => boolean }> = {
+  timeline: {
+    heading: "Timeline",
+    matches: (t) => t === "timeline",
+  },
+  aar_review: {
+    heading: "AAR Review",
+    matches: (t) => t === "aar review",
+  },
+};
+
+/**
+ * Locate the insertion position for a pin: the end of the named
+ * top-level section. If the doc has a top-level h2 matching the
+ * section's heading, return the position right before the next h2 —
+ * or ``doc.content.size`` if the section is the last one. If the
+ * heading isn't present, return ``null`` so the caller can decide
+ * whether to auto-create it (AAR Review) or fall back to end-of-doc
+ * (Timeline, which most templates already include).
+ *
+ * Walks only top-level children — pinning into a heading nested
+ * inside a list item or blockquote is not a real case for our
+ * templates.
+ */
+export function findPinInsertPos(
+  editor: Editor,
+  section: PinSection = "timeline",
+): number | null {
   const doc = editor.state.doc;
-  let timelineFound = false;
+  const matcher = PIN_SECTION_HEADINGS[section].matches;
+  let sectionFound = false;
   let nextSectionPos: number | null = null;
   doc.descendants((node, pos, parent) => {
     if (parent !== doc) return false;
     if (node.type.name === "heading" && node.attrs?.level === 2) {
       const text = node.textContent.trim().toLowerCase();
-      if (text === "timeline" && !timelineFound) {
-        timelineFound = true;
-      } else if (timelineFound && nextSectionPos === null) {
+      if (matcher(text) && !sectionFound) {
+        sectionFound = true;
+      } else if (sectionFound && nextSectionPos === null) {
         nextSectionPos = pos;
         return false;
       }
     }
     return false;
   });
-  if (!timelineFound) return doc.content.size;
+  if (!sectionFound) return null;
   return nextSectionPos ?? doc.content.size;
 }
 
 /**
- * Append a pinned snippet at the Timeline-section boundary. Only the
+ * Append a pinned snippet under the named section heading. Only the
  * originating client should call this — Yjs collab propagates to peers
  * automatically.
+ *
+ * If the section heading isn't present, the behaviour depends on the
+ * section: ``timeline`` falls back to end-of-doc (most templates
+ * already include the heading; if a user blew it away that's still
+ * "near the bottom" by intent), while ``aar_review`` auto-inserts the
+ * heading at end-of-doc before the snippet. Auto-insert keeps the
+ * section discoverable for the AAR pipeline (which sees the whole
+ * notepad markdown verbatim) without requiring the user to manually
+ * scaffold it before the first Mark-for-AAR click.
  *
  * Multi-line snippets emit one paragraph per line: ProseMirror text
  * nodes silently swallow ``\n`` (rendered as a space), so a chat
@@ -68,6 +113,7 @@ export function appendPinToEditor(
   editor: Editor,
   text: string,
   sessionStartedAt: string,
+  section: PinSection = "timeline",
 ): void {
   const stamp = relativeStamp(sessionStartedAt);
   const lines = text
@@ -75,7 +121,7 @@ export function appendPinToEditor(
     .map((s) => s.trim())
     .filter((s) => s.length > 0);
   if (lines.length === 0) return;
-  const paragraphs = lines.map((line, idx) => ({
+  const paragraphs: Array<Record<string, unknown>> = lines.map((line, idx) => ({
     type: "paragraph",
     content: [
       {
@@ -84,6 +130,26 @@ export function appendPinToEditor(
       },
     ],
   }));
-  const insertPos = findPinInsertPos(editor);
+
+  let insertPos = findPinInsertPos(editor, section);
+  if (insertPos === null) {
+    if (section === "aar_review") {
+      // Auto-create the heading at end-of-doc so the user gets a
+      // visibly-grouped "AAR Review" block from the very first click.
+      const headingNode = {
+        type: "heading",
+        attrs: { level: 2 },
+        content: [{ type: "text", text: PIN_SECTION_HEADINGS[section].heading }],
+      };
+      paragraphs.unshift(headingNode);
+      insertPos = editor.state.doc.content.size;
+    } else {
+      // ``timeline`` heading missing — fall back to end-of-doc and
+      // skip auto-creation; existing templates always ship with the
+      // heading, so a missing one usually means the user deliberately
+      // restructured the doc and we shouldn't fight them.
+      insertPos = editor.state.doc.content.size;
+    }
+  }
   editor.chain().insertContentAt(insertPos, paragraphs).run();
 }

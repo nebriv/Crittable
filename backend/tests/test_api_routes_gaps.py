@@ -229,7 +229,7 @@ def test_notepad_pin_rejects_empty_after_sanitization(client: TestClient) -> Non
     seats = _seat(client)
     r = client.post(
         f"/api/sessions/{seats['sid']}/notepad/pin?token={seats['ctok']}",
-        json={"text": "[click me](http://evil.com)"},
+        json={"text": "[click me](http://evil.com)", "action": "pin"},
     )
     # The link text "click me" survives — that's not empty.
     assert r.status_code == 204
@@ -237,7 +237,7 @@ def test_notepad_pin_rejects_empty_after_sanitization(client: TestClient) -> Non
     # Now a snippet that's pure markup → empty after strip.
     r2 = client.post(
         f"/api/sessions/{seats['sid']}/notepad/pin?token={seats['ctok']}",
-        json={"text": "<div></div>```\n```"},
+        json={"text": "<div></div>```\n```", "action": "pin"},
     )
     assert r2.status_code == 400
     assert "empty after sanitization" in r2.text
@@ -245,11 +245,11 @@ def test_notepad_pin_rejects_empty_after_sanitization(client: TestClient) -> Non
 
 def test_notepad_pin_idempotent_on_source_message_id(client: TestClient) -> None:
     """Double-clicking the highlight popover hits the route twice with
-    the same source_message_id; second call must noop with 204."""
+    the same (action, source_message_id); second call must noop with 204."""
 
     seats = _seat(client)
     sid = seats["sid"]
-    payload = {"text": "important", "source_message_id": "msg-99"}
+    payload = {"text": "important", "source_message_id": "msg-99", "action": "pin"}
     r1 = client.post(
         f"/api/sessions/{sid}/notepad/pin?token={seats['ctok']}",
         json=payload,
@@ -268,7 +268,7 @@ def test_notepad_pin_403_for_non_seated_token(client: TestClient) -> None:
     seats = _seat(client)
     r = client.post(
         f"/api/sessions/{seats['sid']}/notepad/pin?token=garbage-token",
-        json={"text": "x"},
+        json={"text": "x", "action": "pin"},
     )
     assert r.status_code in (401, 403)
 

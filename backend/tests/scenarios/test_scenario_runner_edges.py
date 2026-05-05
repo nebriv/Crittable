@@ -49,7 +49,15 @@ def _scenario_with_side_channels() -> Scenario:
             )
         ],
         notepad_snapshot="# Containment\n- isolated finance subnet\n",
-        notepad_pinned_message_ids=["msg-1", "msg-1", "msg-2"],  # dupe filter
+        # Mix of pin actions: same source message under both ``pin``
+        # and ``aar_mark`` round-trips as two distinct keys; a duplicate
+        # of the same key gets deduped.
+        notepad_pinned_message_keys=[
+            "pin:msg-1",
+            "pin:msg-1",  # dupe → filtered
+            "pin:msg-2",
+            "aar_mark:msg-1",  # same message, different action → kept
+        ],
         notepad_contributor_role_labels=["SOC", "ghost-role"],  # ghost skipped
         decision_log=[
             RecordedDecisionEntry(turn_index=1, rationale="Triage first."),
@@ -127,7 +135,8 @@ async def test_side_channels_dedupe_and_skip_unknown_labels(
     """Verify the four documented quirks of ``_apply_session_side_channels``:
 
     * Notepad markdown lands on ``session.notepad.markdown_snapshot``.
-    * Pinned message ids are deduped (the scenario lists ``msg-1`` twice).
+    * Pinned keys are deduped (``pin:msg-1`` listed twice → one entry)
+      and same-message-different-action pairs both survive.
     * Contributor labels are resolved; unknown labels are silently skipped.
     * Cost numbers round-trip exactly.
     """
@@ -146,8 +155,13 @@ async def test_side_channels_dedupe_and_skip_unknown_labels(
 
     # notepad snapshot landed
     assert sess.notepad.markdown_snapshot.startswith("# Containment")
-    # dedupe: ["msg-1", "msg-1", "msg-2"] → ["msg-1", "msg-2"]
-    assert sess.notepad.pinned_message_ids == ["msg-1", "msg-2"]
+    # dedupe: ``pin:msg-1`` listed twice collapses to one; the
+    # ``aar_mark:msg-1`` entry is preserved alongside it.
+    assert sess.notepad.pinned_message_keys == [
+        "pin:msg-1",
+        "pin:msg-2",
+        "aar_mark:msg-1",
+    ]
     # SOC resolved, ghost-role dropped
     soc_id = runner.role_label_to_id["SOC"]
     assert soc_id in sess.notepad.contributor_role_ids

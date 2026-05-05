@@ -329,10 +329,16 @@ class NotepadState(BaseModel):
     # Which starter template was applied (generic_ir / ransomware / data_breach / "custom" / None).
     template_id: str | None = None
     edit_count: int = 0
-    # Set of source_message_ids already pinned, to prevent double-pin from
-    # accidental double-clicks. A different selection from the same
-    # message creates a new pin (different request) — that's expected.
-    pinned_message_ids: list[str] = Field(default_factory=list)
+    # Idempotency keys for pin actions. Each entry is
+    # ``f"{action}:{source_message_id}"`` where ``action`` is ``"pin"``
+    # (Add to notes) or ``"aar_mark"`` (Mark for AAR review). Two
+    # different actions on the same message are kept distinct so a user
+    # can both pin a message to notes AND mark it for AAR review without
+    # one shadowing the other. A different selection from the same
+    # message + action creates a new pin (different request) — that's
+    # expected; this list only deduplicates accidental double-clicks of
+    # the same affordance.
+    pinned_message_keys: list[str] = Field(default_factory=list)
     # Roles that have emitted at least one update or pin. Used by the
     # export.md header to render "Contributors: ..." without scanning
     # the audit log.

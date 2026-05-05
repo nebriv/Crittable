@@ -2,7 +2,7 @@
 
 **Status:** Draft · 2026-05-02 · feeds Phase 3 (milestone #3)
 **Owner:** unassigned
-**Cross-refs:** PR #116 (closed, mockups archived on `claude/threaded-replies-investigation-1eekS`) · PR #115 (open, highlight-to-notepad) · issue #117 (AAR-mark affordance, shelved)
+**Cross-refs:** PR #116 (closed, mockups archived on `claude/threaded-replies-investigation-1eekS`) · PR #115 (merged, highlight-to-notepad) · issue #117 (Mark-for-AAR affordance, implemented as a sibling action in the highlight registry — pins under the notepad's `## AAR Review` section, surfaced to the AAR via a dedicated `<player_aar_marked_verbatim>` priority block)
 
 ## TL;DR
 
@@ -677,8 +677,8 @@ These are intentionally surfaced so we can settle them in review rather than dis
 ## 11. References
 
 - **Mockups (closed PR):** `claude/threaded-replies-investigation-1eekS` branch on GitHub. Five HTML mockups in `docs/mockups/chat-declutter/`. Iter-4 hybrid is `e-hybrid.html`. PR #116 closed without merge — exploratory only, but the mockups are the visual spec for Phase B.
-- **PR #115 (in-flight):** shared markdown notepad with `HighlightActionPopover`. Not load-bearing on this plan, but the rail's "Notes & follow-ups" slot is where it lands.
-- **Issue #117:** `+ mark for AAR` affordance shelved — the highlight-to-notepad flow in PR #115 supersedes it.
+- **PR #115 (merged):** shared markdown notepad with `HighlightActionPopover`. Not load-bearing on this plan, but the rail's "Notes & follow-ups" slot is where it lands.
+- **Issue #117:** Mark-for-AAR affordance — implemented as a `markForAarReviewAction` in the same `HighlightAction` registry PR #115 introduced. Pins land under a `## AAR Review` notepad section (auto-created on first click); the AAR pipeline extracts those lines into a `<player_aar_marked_verbatim>` priority block and the AAR system prompt weights it as a strong "this moment was pivotal" signal.
 - **CLAUDE.md sections referenced:**
   - "Engine-side phase policy" (§ "phase_policy.py is the single source of truth") — read before any LLM-call-site change. Plan §3.5 confirms we don't touch it.
   - "Prompt ↔ tool consistency" (§ `test_prompt_tool_consistency.py`) — Plan §3.6, §5.4 covers the regression net.

@@ -261,12 +261,14 @@ class Scenario(BaseModel):
     # we don't (yet) replay each Yjs CRDT op individually. ``None``
     # for hand-authored scenarios — the notepad stays empty.
     notepad_snapshot: str | None = Field(default=None, max_length=128_000)
-    # Source-message ids that were pinned to the notepad in the
-    # original session. The pinned text itself is already inside
-    # ``notepad_snapshot``; this list round-trips the idempotency
-    # state so a dev clicking "Add to notes" on a replayed session
-    # doesn't double-pin a message that was already pinned.
-    notepad_pinned_message_ids: list[str] = Field(default_factory=list)
+    # Idempotency keys for pin actions in the original session. Each
+    # entry is ``f"{action}:{source_message_id}"`` (action ∈ {``pin``,
+    # ``aar_mark``}). The pinned text itself is already inside
+    # ``notepad_snapshot``; this list round-trips the idempotency state
+    # so a dev clicking "Add to notes" or "Mark for AAR" on a replayed
+    # session doesn't double-pin a message + action that was already
+    # pinned in the recording.
+    notepad_pinned_message_keys: list[str] = Field(default_factory=list)
     # Contributor role labels (resolved at replay time to fresh
     # role_ids so the snapshot shows the same "Contributors: …"
     # header the original session did).

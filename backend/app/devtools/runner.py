@@ -709,16 +709,17 @@ class ScenarioRunner:
             if sc.notepad_snapshot:
                 session.notepad.markdown_snapshot = sc.notepad_snapshot
                 session.notepad.snapshot_updated_at = datetime.now(UTC)
-            # Pinned-message-id round-trip: dedupe + skip unknown
-            # ids the spawned session never saw. The dedupe matters
-            # because hand-authored scenarios could repeat ids and
-            # the live session's idempotency check uses set-membership.
-            if sc.notepad_pinned_message_ids:
-                already = set(session.notepad.pinned_message_ids)
-                for mid in sc.notepad_pinned_message_ids:
-                    if mid not in already:
-                        session.notepad.pinned_message_ids.append(mid)
-                        already.add(mid)
+            # Pinned-key round-trip: dedupe + skip unknown keys the
+            # spawned session never saw. The dedupe matters because
+            # hand-authored scenarios could repeat keys and the live
+            # session's idempotency check uses list-membership. Keys
+            # are ``f"{action}:{source_message_id}"`` (issue #117).
+            if sc.notepad_pinned_message_keys:
+                already = set(session.notepad.pinned_message_keys)
+                for key in sc.notepad_pinned_message_keys:
+                    if key not in already:
+                        session.notepad.pinned_message_keys.append(key)
+                        already.add(key)
             # Contributor role labels resolve to fresh role_ids on
             # the spawned session. Unresolved labels (roster
             # mismatch) are skipped — same identity-resolution

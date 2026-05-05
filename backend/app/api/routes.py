@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, FastAPI, HTTPException, Request, status
 from fastapi.responses import PlainTextResponse, Response
@@ -100,16 +100,24 @@ class SetupReplyBody(BaseModel):
 
 
 class NotepadPinBody(BaseModel):
-    """POST /api/sessions/{id}/notepad/pin (issue #98).
+    """POST /api/sessions/{id}/notepad/pin (issue #98 + #117).
 
     ``text`` is the user's selected snippet; the server caps it at 280
     chars and strips markdown / HTML before appending. ``source_message_id``
-    is used for idempotency (double-click on the same message is a no-op
-    instead of a double-pin)."""
+    is used for idempotency, scoped per ``action``: a user can both
+    "Add to notes" AND "Mark for AAR" the same chat message; only a
+    second click of the *same* affordance no-ops.
+
+    ``action`` is ``"pin"`` for the regular Add-to-notes flow (snippet
+    lands in the ``## Timeline`` section of the notepad) or
+    ``"aar_mark"`` for the Mark-for-AAR flow (snippet lands in the
+    ``## AAR Review`` section, which the AAR pipeline picks up via the
+    notepad's ``<player_notepad>`` block at end-of-session)."""
 
     model_config = ConfigDict(extra="forbid")
     text: str = Field(min_length=1, max_length=2000)
     source_message_id: str | None = None
+    action: Literal["pin", "aar_mark"]
 
 
 class NotepadTemplateBody(BaseModel):
@@ -970,13 +978,22 @@ def register_api_routes(app: FastAPI) -> None:
     async def pin_to_notepad(
         session_id: str, body: NotepadPinBody, request: Request
     ) -> Response:
-        """Append a chat-message snippet to the notepad's Timeline section.
+        """Append a chat-message snippet to a notepad section.
 
-        Highlight-to-action popover (issue #98) → POST. Sanitizes markdown
-        + HTML out of the snippet (defense against a player smuggling
-        formatting / clickable links into the AAR via the notepad), caps
-        length to 280 chars, and is idempotent on ``source_message_id``
-        so a double-click doesn't double-pin.
+        Highlight-to-action popover (issue #98 + #117) → POST. Sanitizes
+        markdown + HTML out of the snippet (defense against a player
+        smuggling formatting / clickable links into the AAR via the
+        notepad), caps length to 280 chars, and is idempotent on
+        ``(action, source_message_id)`` so a double-click of the same
+        affordance doesn't double-pin while still letting the OTHER
+        affordance be exercised on the same message.
+
+        ``action="pin"`` lands the snippet in the ``## Timeline``
+        section; ``action="aar_mark"`` lands it in the ``## AAR Review``
+        section. Both ride into the AAR pipeline via the notepad's
+        ``<player_notepad>`` block at end-of-session — the section
+        heading itself is the only thing differentiating them in the
+        snapshot.
 
         Auth: any participant (spectators 403). The notepad service also
         enforces that the caller's role is in the session roster.
@@ -998,8 +1015,21 @@ def register_api_routes(app: FastAPI) -> None:
         async with await manager.with_lock(session_id):
             session = await manager.get_session(session_id)
             role_id = token["role_id"]
-            if not notepad.can_pin(session, role_id, body.source_message_id):
-                # Idempotent no-op for double-click on the same message.
+            # Lock check goes BEFORE dedupe so a re-click on an already-
+            # pinned message after lock returns 409 (loud failure for
+            # the popover toast) instead of 204 (silent success while
+            # the editor refuses the insert). Per UI/UX review BLOCK on
+            # PR for issue #117 — without this, a panic-clicker who
+            # double-tapped on a now-locked session would see "Pinned
+            # to notepad." but nothing would land in the editor.
+            if session.notepad.locked:
+                raise HTTPException(
+                    status.HTTP_409_CONFLICT, "notepad is locked"
+                )
+            if not notepad.can_pin(
+                session, role_id, body.source_message_id, action=body.action
+            ):
+                # Idempotent no-op for double-click on the same message + action.
                 return Response(status_code=status.HTTP_204_NO_CONTENT)
             sanitized = notepad.sanitize_pin_text(body.text)[:280]
             if not sanitized:
@@ -1008,7 +1038,9 @@ def register_api_routes(app: FastAPI) -> None:
                     "pin text was empty after sanitization",
                 )
             try:
-                notepad.record_pin(session, role_id, body.source_message_id)
+                notepad.record_pin(
+                    session, role_id, body.source_message_id, action=body.action
+                )
             except NotepadLockedError as exc:
                 raise HTTPException(status.HTTP_409_CONFLICT, "notepad is locked") from exc
             except NotepadRoleNotAllowedError as exc:
@@ -1021,6 +1053,12 @@ def register_api_routes(app: FastAPI) -> None:
                 role_id=role_id,
                 length=len(sanitized),
                 source_message_id=body.source_message_id,
+                action=body.action,
+                # Total keys recorded so far on the session (security
+                # review LOW: gives audit-log analysis a way to spot
+                # unbounded growth of ``pinned_message_keys`` if the
+                # rate limiter is ever bypassed).
+                pinned_keys_count=len(session.notepad.pinned_message_keys),
             )
         # The originating tab inserts the snippet locally on POST
         # success and Yjs collab fans the resulting transaction to

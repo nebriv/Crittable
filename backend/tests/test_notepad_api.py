@@ -14,6 +14,7 @@ Covers:
 
 from __future__ import annotations
 
+import pytest
 from fastapi.testclient import TestClient
 
 from .test_e2e_session import _create_and_seat, client  # noqa: F401
@@ -64,16 +65,79 @@ def test_notepad_pin_appends_to_timeline_and_broadcasts(client: TestClient) -> N
 
     r = client.post(
         f"/api/sessions/{sid}/notepad/pin?token={cr}",
-        json={"text": "  ## hello [click](https://evil.com) ALERT", "source_message_id": "msg_1"},
+        json={
+            "text": "  ## hello [click](https://evil.com) ALERT",
+            "source_message_id": "msg_1",
+            "action": "pin",
+        },
     )
     assert r.status_code == 204, r.text
 
-    # Idempotent on the same source_message_id.
+    # Idempotent on the same (action, source_message_id).
     r2 = client.post(
         f"/api/sessions/{sid}/notepad/pin?token={cr}",
-        json={"text": "different selection same message", "source_message_id": "msg_1"},
+        json={
+            "text": "different selection same message",
+            "source_message_id": "msg_1",
+            "action": "pin",
+        },
     )
     assert r2.status_code == 204
+
+
+def test_notepad_pin_aar_mark_action_records_distinct_key(client: TestClient) -> None:
+    """Issue #117 — Mark for AAR is a separate idempotency key from
+    Add to notes, so the same chat message can be exercised by both
+    affordances without one shadowing the other."""
+    seats = _create_and_seat(client, role_count=2)
+    sid = seats["session_id"]
+    cr = seats["creator_token"]
+
+    # First action: regular pin.
+    r1 = client.post(
+        f"/api/sessions/{sid}/notepad/pin?token={cr}",
+        json={"text": "decision sentence", "source_message_id": "msg_1", "action": "pin"},
+    )
+    assert r1.status_code == 204, r1.text
+
+    # Same message under "aar_mark" must NOT be deduped — it's a
+    # separate affordance.
+    r2 = client.post(
+        f"/api/sessions/{sid}/notepad/pin?token={cr}",
+        json={"text": "decision sentence", "source_message_id": "msg_1", "action": "aar_mark"},
+    )
+    assert r2.status_code == 204, r2.text
+
+    # Second click of the SAME action on the same message is the
+    # double-click guard the regular flow already had.
+    r3 = client.post(
+        f"/api/sessions/{sid}/notepad/pin?token={cr}",
+        json={"text": "decision sentence", "source_message_id": "msg_1", "action": "aar_mark"},
+    )
+    assert r3.status_code == 204, r3.text
+
+    # Verify both keys landed (and no duplicate aar_mark entry).
+    import asyncio
+
+    async def _read_keys() -> list[str]:
+        sess = await client.app.state.manager.get_session(sid)
+        return list(sess.notepad.pinned_message_keys)
+
+    keys = asyncio.run(_read_keys())
+    assert keys == ["pin:msg_1", "aar_mark:msg_1"]
+
+
+def test_notepad_pin_rejects_unknown_action(client: TestClient) -> None:
+    """``action`` is a Literal — any other value is a 422 from pydantic
+    rather than silently being recorded as an unknown affordance."""
+    seats = _create_and_seat(client, role_count=2)
+    sid = seats["session_id"]
+    cr = seats["creator_token"]
+    r = client.post(
+        f"/api/sessions/{sid}/notepad/pin?token={cr}",
+        json={"text": "hi", "source_message_id": "msg_2", "action": "haxor"},
+    )
+    assert r.status_code == 422, r.text
 
 
 def test_notepad_pin_rate_limit(client: TestClient) -> None:
@@ -84,13 +148,13 @@ def test_notepad_pin_rate_limit(client: TestClient) -> None:
     for i in range(6):
         r = client.post(
             f"/api/sessions/{sid}/notepad/pin?token={cr}",
-            json={"text": f"line {i}", "source_message_id": f"msg_{i}"},
+            json={"text": f"line {i}", "source_message_id": f"msg_{i}", "action": "pin"},
         )
         assert r.status_code == 204, r.text
     # 7th within the 10s window → 429.
     r_over = client.post(
         f"/api/sessions/{sid}/notepad/pin?token={cr}",
-        json={"text": "overflow", "source_message_id": "msg_overflow"},
+        json={"text": "overflow", "source_message_id": "msg_overflow", "action": "pin"},
     )
     assert r_over.status_code == 429, r_over.text
 
@@ -101,7 +165,7 @@ def test_notepad_pin_rejects_empty_after_sanitization(client: TestClient) -> Non
     cr = seats["creator_token"]
     r = client.post(
         f"/api/sessions/{sid}/notepad/pin?token={cr}",
-        json={"text": "[ignored](https://evil.com)", "source_message_id": "msg_x"},
+        json={"text": "[ignored](https://evil.com)", "source_message_id": "msg_x", "action": "pin"},
     )
     # After sanitize: "ignored" survives → 204. Pure-link payload still
     # leaves the visible text so we 204; the test below proves a real
@@ -205,9 +269,14 @@ def test_notepad_template_accepts_custom(client: TestClient) -> None:
     assert r.status_code == 204, r.text
 
 
-def test_notepad_pin_returns_409_after_lock(client: TestClient) -> None:
+@pytest.mark.parametrize("action", ["pin", "aar_mark"])
+def test_notepad_pin_returns_409_after_lock(
+    client: TestClient, action: str
+) -> None:
     """QA review: pin endpoint should refuse writes once the notepad
-    is locked at session end."""
+    is locked at session end. Parametrised over actions so the
+    aar_mark path is held to the same lock-respecting contract as the
+    original pin path (issue #117 follow-up)."""
     seats = _create_and_seat(client, role_count=2)
     sid = seats["session_id"]
     cr = seats["creator_token"]
@@ -221,9 +290,52 @@ def test_notepad_pin_returns_409_after_lock(client: TestClient) -> None:
     asyncio.run(_lock())
     r = client.post(
         f"/api/sessions/{sid}/notepad/pin?token={cr}",
-        json={"text": "after lock", "source_message_id": "msg_post_lock"},
+        json={
+            "text": "after lock",
+            "source_message_id": f"msg_post_lock_{action}",
+            "action": action,
+        },
     )
     assert r.status_code == 409, r.text
+
+
+def test_notepad_pin_409_after_lock_even_for_already_pinned_message(
+    client: TestClient,
+) -> None:
+    """UI/UX review BLOCK: previously, re-clicking 'Add to notes' on
+    a message that was already pinned BEFORE the notepad locked
+    silently 204'd (idempotency short-circuit ran before the lock
+    check), making the popover show a success toast while the editor
+    refused the insert. The route now checks ``session.notepad.locked``
+    BEFORE ``can_pin``, so the second click also fails loudly.
+    """
+    import asyncio
+
+    seats = _create_and_seat(client, role_count=2)
+    sid = seats["session_id"]
+    cr = seats["creator_token"]
+    # First pin lands successfully while the notepad is still open.
+    r1 = client.post(
+        f"/api/sessions/{sid}/notepad/pin?token={cr}",
+        json={"text": "before lock", "source_message_id": "msg_X", "action": "pin"},
+    )
+    assert r1.status_code == 204, r1.text
+
+    async def _lock() -> None:
+        notepad_svc = client.app.state.manager.notepad()
+        session = await client.app.state.manager.get_session(sid)
+        notepad_svc.lock(session)
+
+    asyncio.run(_lock())
+
+    # Repeat pin of the same (action, source_message_id) AFTER lock.
+    # Should be 409 (loud), not 204 (silent) — that's the contract the
+    # popover toast depends on to render the failure tone.
+    r2 = client.post(
+        f"/api/sessions/{sid}/notepad/pin?token={cr}",
+        json={"text": "after lock", "source_message_id": "msg_X", "action": "pin"},
+    )
+    assert r2.status_code == 409, r2.text
 
 
 def test_end_session_locks_notepad_and_broadcasts(client: TestClient) -> None:

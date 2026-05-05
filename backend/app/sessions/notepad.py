@@ -39,6 +39,12 @@ _MAX_MARKDOWN_BYTES = 1 * 1024 * 1024  # aggregate snapshot ceiling
 _RATE_WINDOW_SECONDS = 5.0
 _RATE_MAX_UPDATES = 30
 _PIN_RATE_WINDOW_SECONDS = 10.0
+# Shared bucket across the {pin, aar_mark} affordances added by
+# issue #117 — the per-role ceiling is 6 unique pin requests / 10s in
+# total, NOT 6 per affordance. A user can spend their budget on either
+# action; the dedupe key is per (action, source_message_id) but the
+# rate counter is action-blind on purpose. Splitting per-action would
+# let a panic-clicker double the effective ceiling without any UX win.
 _PIN_RATE_MAX = 6
 
 
@@ -273,24 +279,38 @@ class NotepadService:
         out = cls._PIN_LEADING_RE.sub("", out)
         return out.strip()
 
+    @staticmethod
+    def _pin_key(action: str, source_message_id: str) -> str:
+        """Compose the idempotency key for a pin. ``action`` is ``"pin"``
+        (Add to notes) or ``"aar_mark"`` (Mark for AAR). Keying on the
+        pair lets a user both pin AND aar-mark the same message without
+        the second action being silently no-op'd."""
+        return f"{action}:{source_message_id}"
+
     def can_pin(
         self,
         session: Session,
         role_id: str,
         source_message_id: str | None,
+        *,
+        action: str,
     ) -> bool:
         """Idempotency check before applying a pin. Returns False if this
-        ``source_message_id`` was already pinned (so the caller short-
-        circuits and returns 204 no-op)."""
+        ``(action, source_message_id)`` pair was already pinned (so the
+        caller short-circuits and returns 204 no-op). The same message
+        can be pinned once per action — once for ``pin``, once for
+        ``aar_mark`` — without colliding."""
         if source_message_id is None:
             return True
-        return source_message_id not in session.notepad.pinned_message_ids
+        return self._pin_key(action, source_message_id) not in session.notepad.pinned_message_keys
 
     def record_pin(
         self,
         session: Session,
         role_id: str,
         source_message_id: str | None,
+        *,
+        action: str,
     ) -> None:
         """Bookkeeping after a successful pin. Locks/role checks have
         already happened in ``apply_update`` upstream — this call only
@@ -302,7 +322,9 @@ class NotepadService:
             self._docs[session.id] = entry
         self._ensure_rate(entry, role_id, bucket="pin")
         if source_message_id is not None:
-            session.notepad.pinned_message_ids.append(source_message_id)
+            session.notepad.pinned_message_keys.append(
+                self._pin_key(action, source_message_id)
+            )
         if role_id not in session.notepad.contributor_role_ids:
             session.notepad.contributor_role_ids.append(role_id)
 
