@@ -70,16 +70,8 @@ def test_session_secret_warning_when_unset(monkeypatch) -> None:
     assert any("SESSION_SECRET unset" in str(w.message) for w in caught)
 
 
-def test_require_anthropic_key_test_mode(monkeypatch) -> None:
-    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-    monkeypatch.setenv("TEST_MODE", "true")
-    s = Settings()
-    assert s.require_anthropic_key() == "test-mode-no-key"
-
-
 def test_require_anthropic_key_strict(monkeypatch) -> None:
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-    monkeypatch.setenv("TEST_MODE", "false")
     s = Settings()
     import pytest
 
@@ -177,7 +169,6 @@ def test_anthropic_base_url_default_is_unset(monkeypatch) -> None:
 def test_anthropic_base_url_can_be_overridden(monkeypatch) -> None:
     monkeypatch.setenv("ANTHROPIC_BASE_URL", "http://litellm:4000")
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-    monkeypatch.setenv("TEST_MODE", "false")
     s = Settings()
     assert s.anthropic_base_url == "http://litellm:4000"
     # Anthropic key is still required (the override doesn't bypass it).
@@ -392,9 +383,9 @@ def test_empty_env_vars_fall_back_to_defaults(
 
     # Bool fields — these were the actual crash trigger.
     monkeypatch.setenv("DEV_TOOLS_ENABLED", "")
-    monkeypatch.setenv("TEST_MODE", "")
     monkeypatch.setenv("DEV_FAST_SETUP", "")
     monkeypatch.setenv("INPUT_GUARDRAIL_ENABLED", "")
+    monkeypatch.setenv("AAR_INLINE_ON_END", "")
     # String fields with non-empty defaults — empty env value should
     # NOT clobber the default (would silently break path resolution
     # for ``DEV_SCENARIOS_PATH`` etc.).
@@ -405,7 +396,7 @@ def test_empty_env_vars_fall_back_to_defaults(
     # Must not raise.
     s = Settings()
     assert s.dev_tools_enabled is False
-    assert s.test_mode is False
+    assert s.aar_inline_on_end is False
     assert s.dev_fast_setup is False
     assert s.input_guardrail_enabled is True  # default is True
     # ``dev_scenarios_path`` field default is "" (empty string is the
@@ -421,8 +412,7 @@ def test_empty_env_vars_fall_back_to_defaults(
 def test_create_app_refuses_without_anthropic_api_key() -> None:
     """Issue #118: importing ``app.main`` (which evaluates
     ``app = create_app()`` at module level) must fail at the process
-    boundary when ``ANTHROPIC_API_KEY`` is unset and ``TEST_MODE`` is
-    off.
+    boundary when ``ANTHROPIC_API_KEY`` is unset.
 
     Pre-fix the check lived in the lifespan, so uvicorn printed
     ``Started server process``, swallowed the lifespan traceback, then
@@ -430,17 +420,10 @@ def test_create_app_refuses_without_anthropic_api_key() -> None:
     ``docker compose restart: unless-stopped``. Post-fix the import
     itself raises so uvicorn never binds the port and exits non-zero.
 
-    Runs in a subprocess for two reasons:
-
-    * The pytest process imports ``app.main`` once at startup with
-      ``TEST_MODE=true`` (set in ``conftest.py``). Re-asserting against
-      that already-imported module would skip the actual import-time
-      gate. A subprocess gives us a fresh, never-imported module space.
-    * ``create_app`` calls ``configure_logging(cfg)`` which, when
-      ``test_mode=False``, reconfigures structlog into production mode
-      (logger caching + ``sys.stdout`` pin). Running that in-process
-      would break subsequent ``capsys``-based tests (see
-      ``test_logging_setup_test_mode.py`` for the failure mode).
+    Runs in a subprocess so the pytest process's module cache (which
+    imported ``app.main`` once at startup with the dummy key from
+    ``conftest.py``) doesn't short-circuit the import-time gate.
+    A subprocess gives us a fresh, never-imported module space.
     """
 
     import os
@@ -449,7 +432,6 @@ def test_create_app_refuses_without_anthropic_api_key() -> None:
 
     env = os.environ.copy()
     env.pop("ANTHROPIC_API_KEY", None)
-    env["TEST_MODE"] = "false"
     env.setdefault("SESSION_SECRET", "x" * 32)
 
     result = subprocess.run(
@@ -484,7 +466,6 @@ def test_app_boots_with_empty_env_vars(
     from app.main import create_app
 
     monkeypatch.setenv("DEV_TOOLS_ENABLED", "")
-    monkeypatch.setenv("TEST_MODE", "true")  # so the API-key check passes
     monkeypatch.setenv("DEV_FAST_SETUP", "")
     monkeypatch.setenv("INPUT_GUARDRAIL_ENABLED", "")
     monkeypatch.setenv("DEV_SCENARIOS_PATH", "")

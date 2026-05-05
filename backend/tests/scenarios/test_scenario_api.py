@@ -87,7 +87,6 @@ def test_list_scenarios_gated_off_404(monkeypatch: pytest.MonkeyPatch) -> None:
     route exists."""
 
     monkeypatch.setenv("DEV_TOOLS_ENABLED", "false")
-    monkeypatch.setenv("TEST_MODE", "false")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
     reset_settings_cache()
     from app.main import create_app
@@ -126,27 +125,6 @@ def test_play_no_token_required_when_dev_tools_enabled(
     client.app.state.llm.set_transport(MockAnthropic({}).messages)
     resp = client.post("/api/dev/scenarios/fixture/play")
     assert resp.status_code == 200, resp.text
-
-
-def test_play_requires_token_in_test_mode_only(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """When only ``TEST_MODE=true`` is set (CI / preview deploy),
-    ``/play`` MUST still require a valid token — preview environments
-    are sometimes network-reachable and we don't want an unauth'd
-    caller harvesting tokens. Closes Security H1 for that environment.
-    """
-
-    monkeypatch.setenv("DEV_TOOLS_ENABLED", "false")
-    monkeypatch.setenv("TEST_MODE", "true")
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
-    reset_settings_cache()
-    from app.main import create_app
-
-    app = create_app()
-    with TestClient(app) as c:
-        resp = c.post("/api/dev/scenarios/fixture/play")
-        assert resp.status_code == 401
 
 
 def test_play_unknown_scenario_404(client: TestClient) -> None:

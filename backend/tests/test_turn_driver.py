@@ -22,7 +22,6 @@ def _env(monkeypatch) -> None:
     monkeypatch.setenv("ANTHROPIC_MODEL_SETUP", "mock-setup")
     monkeypatch.setenv("ANTHROPIC_MODEL_AAR", "mock-aar")
     monkeypatch.setenv("ANTHROPIC_MODEL_GUARDRAIL", "mock-guardrail")
-    monkeypatch.setenv("TEST_MODE", "true")
     monkeypatch.setenv("SESSION_SECRET", "x" * 32)
     monkeypatch.setenv("INPUT_GUARDRAIL_ENABLED", "false")
     reset_settings_cache()

@@ -877,11 +877,7 @@ interface ScenarioOption {
  * so the dev watches the replay unfold live via the existing WS
  * broadcasts — same code path, no new routes to maintain.
  *
- * Hidden when ``play_token_required`` is True (TEST_MODE-only
- * environments where ``/play`` still demands a token). The wizard
- * has no token to present at this point in the flow; the picker
- * stays hidden and the dev can use the God Mode panel instead
- * (which has the creator token).
+ * Hidden when the backend gate is closed (``disabled=true``).
  */
 function WizardScenarioPicker() {
   const [scenarios, setScenarios] = useState<ScenarioOption[]>([]);
@@ -889,7 +885,6 @@ function WizardScenarioPicker() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [disabled, setDisabled] = useState(false);
-  const [tokenRequired, setTokenRequired] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -899,7 +894,6 @@ function WizardScenarioPicker() {
         if (cancelled) return;
         setScenarios(body.scenarios);
         setDisabled(body.disabled);
-        setTokenRequired(body.play_token_required);
       } catch (err) {
         if (!cancelled) {
           const text = err instanceof Error ? err.message : String(err);
@@ -945,10 +939,8 @@ function WizardScenarioPicker() {
     }
   }
 
-  if (disabled || tokenRequired) {
+  if (disabled) {
     // Dev tools off → picker hidden; dev mode still works.
-    // Token required (TEST_MODE-only env) → picker hidden because
-    // the wizard has no token to send; God Mode panel still works.
     return null;
   }
 

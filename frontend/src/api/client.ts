@@ -197,14 +197,11 @@ export interface DevScenarioMeta {
 /** Response shape from ``GET /api/dev/scenarios``. ``disabled`` is a
  * frontend-synthesised flag for the "endpoint 404'd" case (the
  * backend itself never returns disabled=true — the route just 404s
- * when the gate is closed). ``play_token_required`` reflects the
- * server's auth model: True in TEST_MODE-only environments, False
- * when ``DEV_TOOLS_ENABLED=true`` opens the unauth path. */
+ * when the gate is closed). */
 export interface DevScenarioList {
   scenarios: DevScenarioMeta[];
   path?: string;
   disabled: boolean;
-  play_token_required: boolean;
 }
 
 /**
@@ -490,12 +487,9 @@ export const api = {
    * Dev-tools: list scenarios available for replay.
    *
    * Returns ``{ scenarios: [], disabled: true }`` when the backend
-   * gate is closed (route 404s — typically ``DEV_TOOLS_ENABLED`` /
-   * ``TEST_MODE`` not set). Returns ``{ scenarios: [...], disabled:
-   * false, path: "...", play_token_required: bool }`` when the gate
-   * is open. ``play_token_required`` is True in TEST_MODE-only
-   * environments (CI/preview) where ``/play`` still demands a token
-   * — the wizard's no-token picker hides itself in that case.
+   * gate is closed (route 404s — ``DEV_TOOLS_ENABLED`` not set).
+   * Returns ``{ scenarios: [...], disabled: false, path: "..." }``
+   * when the gate is open.
    */
   async listScenarios(): Promise<DevScenarioList> {
     try {
@@ -506,7 +500,6 @@ export const api = {
       return {
         ...body,
         disabled: false,
-        play_token_required: body.play_token_required ?? false,
       };
     } catch (err) {
       // The route is 404 when dev tools are disabled. Other errors
@@ -514,12 +507,11 @@ export const api = {
       const text = err instanceof Error ? err.message : String(err);
       if (text.includes("404") || text.includes("not found")) {
         console.info(
-          "[scenarios] /api/dev/scenarios returned 404 — DEV_TOOLS_ENABLED / TEST_MODE not set on backend",
+          "[scenarios] /api/dev/scenarios returned 404 — DEV_TOOLS_ENABLED not set on backend",
         );
         return {
           scenarios: [],
           disabled: true,
-          play_token_required: false,
         };
       }
       throw err;
@@ -535,11 +527,10 @@ export const api = {
    * recording's original timestamp cadence so a connected tab
    * watches the replay unfold live.
    *
-   * Token is optional: when ``DEV_TOOLS_ENABLED=true`` the backend
-   * accepts unauthenticated calls (so the wizard can replay a
-   * scenario without first creating a placeholder session). When
-   * only ``TEST_MODE=true`` is set, a token is still required to
-   * avoid leaking session minting on preview/CI deploys.
+   * Token is not required: when ``DEV_TOOLS_ENABLED=true`` the
+   * backend accepts unauthenticated calls (so the wizard can replay
+   * a scenario without first creating a placeholder session). The
+   * dev-tools gate itself is the security boundary.
    */
   async playScenario(
     scenarioId: string,

@@ -35,7 +35,6 @@ def _env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("ANTHROPIC_MODEL_SETUP", "mock-setup")
     monkeypatch.setenv("ANTHROPIC_MODEL_AAR", "mock-aar")
     monkeypatch.setenv("ANTHROPIC_MODEL_GUARDRAIL", "mock-guardrail")
-    monkeypatch.setenv("TEST_MODE", "true")
     monkeypatch.setenv("SESSION_SECRET", "x" * 32)
     reset_settings_cache()
 

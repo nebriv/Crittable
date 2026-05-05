@@ -44,10 +44,11 @@ class SessionGC:
         self._repo = repository
         self._audit = audit
         if sweep_interval_s is None:
-            # Sub-second sweep in TEST_MODE so eviction-timing tests don't
-            # have to sleep a full production interval; once-a-minute in
-            # production (well under any retention default).
-            sweep_interval_s = 0.25 if settings.test_mode else 60.0
+            # Once-a-minute in production (well under any retention default).
+            # Eviction-timing tests construct ``SessionGC`` directly and
+            # pass ``sweep_interval_s`` explicitly when they need a faster
+            # sweep.
+            sweep_interval_s = 60.0
         self._sweep_interval_s = sweep_interval_s
         self._tombstone_cap = max(tombstone_cap, 1)
         self._tombstones: list[str] = []

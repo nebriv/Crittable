@@ -464,7 +464,6 @@ def http_client(monkeypatch: pytest.MonkeyPatch) -> Any:
     monkeypatch.setenv("ANTHROPIC_MODEL_SETUP", "mock-setup")
     monkeypatch.setenv("ANTHROPIC_MODEL_AAR", "mock-aar")
     monkeypatch.setenv("ANTHROPIC_MODEL_GUARDRAIL", "mock-guardrail")
-    monkeypatch.setenv("TEST_MODE", "true")
     monkeypatch.setenv("SESSION_SECRET", "x" * 32)
     monkeypatch.setenv("INPUT_GUARDRAIL_ENABLED", "false")
     monkeypatch.setenv("DUPLICATE_SUBMISSION_WINDOW_SECONDS", "0")

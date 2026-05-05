@@ -33,7 +33,6 @@ async def test_classifier_off_topic_now_passes_through(monkeypatch) -> None:
 
     monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
     monkeypatch.setenv("INPUT_GUARDRAIL_ENABLED", "true")
-    monkeypatch.setenv("TEST_MODE", "true")
     s = Settings()
     llm = LLMClient(settings=s)
     llm.set_transport(_StubMessages("off_topic"))
@@ -44,7 +43,6 @@ async def test_classifier_off_topic_now_passes_through(monkeypatch) -> None:
 @pytest.mark.asyncio
 async def test_classifier_prompt_injection(monkeypatch) -> None:
     monkeypatch.setenv("INPUT_GUARDRAIL_ENABLED", "true")
-    monkeypatch.setenv("TEST_MODE", "true")
     s = Settings()
     llm = LLMClient(settings=s)
     llm.set_transport(_StubMessages("prompt_injection"))
@@ -58,7 +56,6 @@ async def test_classifier_prompt_injection(monkeypatch) -> None:
 @pytest.mark.asyncio
 async def test_classifier_disabled(monkeypatch) -> None:
     monkeypatch.setenv("INPUT_GUARDRAIL_ENABLED", "false")
-    monkeypatch.setenv("TEST_MODE", "true")
     s = Settings()
     llm = LLMClient(settings=s)
     # Even if the transport would say "off_topic", disabled mode short-circuits.
@@ -70,7 +67,6 @@ async def test_classifier_disabled(monkeypatch) -> None:
 @pytest.mark.asyncio
 async def test_classifier_falls_open_on_failure(monkeypatch) -> None:
     monkeypatch.setenv("INPUT_GUARDRAIL_ENABLED", "true")
-    monkeypatch.setenv("TEST_MODE", "true")
     s = Settings()
     llm = LLMClient(settings=s)
 

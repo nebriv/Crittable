@@ -210,8 +210,7 @@ class SessionManager:
                 # collide silently while structlog cached its bound
                 # logger but raises ``TypeError: got multiple values
                 # for keyword argument 'turn_index'`` on the per-call
-                # path under ``test_mode``. Filter so the explicit
-                # values win.
+                # logger path. Filter so the explicit values win.
                 if k
                 not in {
                     "event",
@@ -1581,12 +1580,12 @@ class SessionManager:
         """Kick AAR generation. Called by ``end_session`` and by the turn
         driver when the AI ends the session via the ``end_session`` tool.
 
-        AAR runs in the background in production. In TEST_MODE we run it
-        inline because Starlette TestClient doesn't reliably progress
-        cross-request tasks.
+        AAR runs in the background in production. With ``AAR_INLINE_ON_END``
+        we run it inline because Starlette TestClient doesn't reliably
+        progress cross-request tasks.
         """
 
-        if self._settings.test_mode:
+        if self._settings.aar_inline_on_end:
             await self._generate_aar_bg(session_id)
         else:
             self._spawn_bg(self._generate_aar_bg(session_id))

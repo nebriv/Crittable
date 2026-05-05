@@ -30,7 +30,6 @@ def _e2e_env(monkeypatch) -> None:
     monkeypatch.setenv("ANTHROPIC_MODEL_SETUP", "mock-setup")
     monkeypatch.setenv("ANTHROPIC_MODEL_AAR", "mock-aar")
     monkeypatch.setenv("ANTHROPIC_MODEL_GUARDRAIL", "mock-guardrail")
-    monkeypatch.setenv("TEST_MODE", "true")
     monkeypatch.setenv("SESSION_SECRET", "x" * 32)
     monkeypatch.setenv("INPUT_GUARDRAIL_ENABLED", "false")
     monkeypatch.setenv("EXTENSIONS_TOOLS_JSON", _TOOLS_JSON)
@@ -2324,8 +2323,9 @@ def test_aar_failed_path_returns_500(client: TestClient) -> None:
 
     export_mod.AARGenerator = _BoomGenerator  # type: ignore[misc]
     try:
-        # Use REST end_session — it now triggers AAR generation inline in
-        # TEST_MODE, so by the time end returns the failure has been recorded.
+        # Use REST end_session — it triggers AAR generation inline under
+        # ``AAR_INLINE_ON_END`` (set by tests/conftest.py), so by the
+        # time end returns the failure has been recorded.
         client.post(f"/api/sessions/{sid}/end?token={cr}", json={"reason": "test"})
         r = client.get(f"/api/sessions/{sid}/export.md?token={cr}")
         assert r.status_code == 500, r.text

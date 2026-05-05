@@ -45,7 +45,6 @@ def settings(monkeypatch) -> Settings:
     monkeypatch.setenv("ANTHROPIC_MODEL_SETUP", "mock-setup")
     monkeypatch.setenv("ANTHROPIC_MODEL_AAR", "mock-aar")
     monkeypatch.setenv("ANTHROPIC_MODEL_GUARDRAIL", "mock-guardrail")
-    monkeypatch.setenv("TEST_MODE", "true")
     monkeypatch.setenv("SESSION_SECRET", "x" * 32)
     return Settings()
 

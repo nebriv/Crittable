@@ -1,13 +1,19 @@
 """Shared fixtures + skip-rule for the live-API tool-routing suite.
 
 These tests hit the real Anthropic API once each. Cost: roughly $0.01 per
-test (~5K input + ~500 output tokens each). They are SKIPPED unless
-``Settings.anthropic_api_key`` resolves AND ``TEST_MODE`` is not set.
-The auto-skip uses the same key-resolution path the production code
-uses (env var → Settings); for contributor convenience, we also load
-the project-root ``.env`` into ``os.environ`` before the check, so a
-contributor whose key lives in ``.env`` doesn't have to also export
-it into their shell.
+test (~5K input + ~500 output tokens each). They are SKIPPED unless a
+real ``ANTHROPIC_API_KEY`` resolves at collection time.
+
+The parent ``backend/tests/conftest.py`` injects a dummy
+``ANTHROPIC_API_KEY=dummy-key-for-tests`` so unit tests can boot
+``Settings`` without a real key.  For live tests that placeholder is
+exactly wrong — the SDK would happily forward it to Anthropic and
+produce a confusing 401 ``invalid x-api-key`` instead of a clean
+"key not set" skip.  The collection hook below pops the dummy, loads
+the project-root ``.env`` so a contributor's real key reaches the
+fixture, then checks whether what's left is a real key.  If yes,
+live tests run with the real key; if no, the dummy is restored so
+later unit tests still boot.
 
 Run them explicitly:
 
@@ -31,17 +37,6 @@ test uses the same key-resolution path the production code uses (env
 var → ``.env`` → fail).  ``test_live_fixtures.py`` source-greps every
 file under ``tests/live/`` and fails the suite if the bad pattern
 re-appears — see the test for the rationale.
-
-**Why this conftest fights with ``TEST_MODE``:** the parent
-``backend/tests/conftest.py`` force-sets ``TEST_MODE=true`` on every
-test run so unit tests can bypass the API key requirement.  For live
-tests that's exactly wrong — ``require_anthropic_key()`` would fall
-back to the literal string ``"test-mode-no-key"`` and the SDK would
-silently pass it through to Anthropic, producing a confusing 401
-``invalid x-api-key`` instead of a clean ``"key not set"`` skip.  The
-auto-skip below explicitly clears ``TEST_MODE`` before checking the
-key, then resets the cached ``Settings`` so the check sees the live
-state — not the placeholder fail-open.
 """
 
 from __future__ import annotations
@@ -69,6 +64,7 @@ from app.sessions.models import (
     SetupNote,
 )
 from app.sessions.turn_driver import _play_messages
+from tests.conftest import DUMMY_ANTHROPIC_API_KEY
 
 
 def _load_project_root_dotenv() -> None:
@@ -120,21 +116,21 @@ def _load_project_root_dotenv() -> None:
 
 
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
-    """Auto-skip the entire ``tests/live/`` directory unless the API
-    key is set AND we're not in ``TEST_MODE``.
+    """Auto-skip the entire ``tests/live/`` directory unless a real
+    ``ANTHROPIC_API_KEY`` is set.
 
     Three things this hook has to do correctly to avoid the
     confusing-401 trap (see module docstring):
 
-    1. Load project-root ``.env`` so a contributor's key actually
+    1. Pop the parent-conftest dummy key (``dummy-key-for-tests``) so
+       the .env loader below has a chance to install the real value.
+       Without this the dummy "wins" because the loader uses
+       ``setdefault``-style semantics.
+    2. Load project-root ``.env`` so a contributor's key actually
        reaches the fixture (Settings has ``env_file=None`` and won't
        do it itself).
-    2. Clear ``TEST_MODE`` from the env BEFORE checking the key —
-       the parent ``tests/conftest.py`` force-sets it for unit tests,
-       but with it on, ``require_anthropic_key()`` returns the
-       placeholder string and live tests silently produce 401s.
-    3. Reset the ``Settings`` cache so the check above sees the
-       state we just adjusted, not the cached placeholder-mode value.
+    3. Reset the ``Settings`` cache so the check below sees whatever
+       ended up in ``os.environ``.
 
     The path check uses ``pathlib.Path.parts`` rather than substring
     matching — substring matching with ``"tests/live"`` silently
@@ -142,51 +138,28 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
     this trap shipped in the first place.
     """
 
+    saved_dummy_key = (
+        os.environ.pop("ANTHROPIC_API_KEY", None)
+        if os.environ.get("ANTHROPIC_API_KEY") == DUMMY_ANTHROPIC_API_KEY
+        else None
+    )
     _load_project_root_dotenv()
-
-    # Live tests need a fresh Settings view that ignores ``TEST_MODE``.
-    # The parent ``tests/conftest.py`` force-sets ``TEST_MODE=true`` so
-    # unit tests can bypass the API key requirement; with it on, the
-    # ``require_anthropic_key()`` fallback returns the placeholder
-    # string ``"test-mode-no-key"`` and the SDK happily sends it to
-    # Anthropic for a silent 401.  We snapshot ``TEST_MODE``, clear
-    # it, reset the cached ``Settings`` so the auto-skip's check sees
-    # the real key state, and restore TEST_MODE in the ``finally`` so
-    # the unit tests that follow this collection hook still see their
-    # expected env state.  Without the restore, the entire unit-test
-    # suite breaks because ``Settings`` now demands a real API key
-    # they don't have.
-    saved_test_mode = os.environ.get("TEST_MODE")
-    os.environ.pop("TEST_MODE", None)
     reset_settings_cache()
+    _live_will_run = False
     try:
         settings = get_settings()
-        if settings.anthropic_api_key is not None and not settings.test_mode:
-            # Real key + no test mode → live tests are runnable.  Note
-            # that we DO leave ``TEST_MODE`` cleared in this branch
-            # (no early return out of the try) so the live tests
-            # themselves see ``test_mode=False`` — the assertion in
-            # ``anthropic_client`` would otherwise refuse to fire.
-            # The unit tests later in the run get ``TEST_MODE``
-            # restored via the ``finally``.  Use a sentinel below to
-            # distinguish "live tests will run, keep TEST_MODE off
-            # for them" from "live tests are skipped, restore now".
+        real_key = (
+            settings.anthropic_api_key.get_secret_value()
+            if settings.anthropic_api_key is not None
+            else None
+        )
+        if real_key is not None and real_key != DUMMY_ANTHROPIC_API_KEY:
             _live_will_run = True
         else:
-            _live_will_run = False
-            if settings.test_mode:
-                reason = (
-                    "live-API tests cannot run with TEST_MODE=true — "
-                    "``require_anthropic_key()`` would return the "
-                    "``test-mode-no-key`` placeholder and Anthropic "
-                    "would reject every call with 401. Unset "
-                    "TEST_MODE for live runs."
-                )
-            else:
-                reason = (
-                    "live-API tests require ANTHROPIC_API_KEY (env "
-                    "var or project-root .env; cost ~$0.01/test)"
-                )
+            reason = (
+                "live-API tests require a real ANTHROPIC_API_KEY (env "
+                "var or project-root .env; cost ~$0.01/test)"
+            )
             skip_marker = pytest.mark.skip(reason=reason)
 
             for item in items:
@@ -198,13 +171,13 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
                 if "tests" in parts and "live" in parts:
                     item.add_marker(skip_marker)
     finally:
-        # Restore the unit-test invariant unless live tests are
-        # actually about to run (in which case TEST_MODE must stay
-        # off so the API path isn't poisoned).  ``reset_settings_cache``
-        # is called either way so the next ``get_settings()`` reads
-        # the post-restoration env.
-        if not _live_will_run and saved_test_mode is not None:
-            os.environ["TEST_MODE"] = saved_test_mode
+        # Restore the unit-test dummy key unless live tests are
+        # actually about to run (in which case the real key must
+        # stay set so the SDK path isn't poisoned). Without the
+        # restore, the unit-test suite would break because
+        # ``Settings`` would demand a real API key it doesn't have.
+        if not _live_will_run and saved_dummy_key is not None:
+            os.environ["ANTHROPIC_API_KEY"] = saved_dummy_key
         reset_settings_cache()
 
 
@@ -227,25 +200,25 @@ def anthropic_client() -> Any:
     see ``KeyError`` on the fixture even though the application boots
     cleanly.
 
-    Hard-asserts ``not test_mode`` as belt-and-braces against the
-    auto-skip's path check missing an item: ``require_anthropic_key()``
-    would return the ``"test-mode-no-key"`` placeholder string in
-    that case, which the SDK happily passes to Anthropic for a
+    Hard-asserts the resolved key is not the parent-conftest dummy
+    as belt-and-braces against the auto-skip's path check missing an
+    item: the SDK would happily pass the dummy to Anthropic for a
     silent 401 — the failure mode that originally inspired this
-    triple-defence.
+    defence.
     """
 
     from anthropic import AsyncAnthropic
 
     settings = get_settings()
-    assert not settings.test_mode, (
-        "anthropic_client fixture must not run with test_mode=True; "
-        "the auto-skip in pytest_collection_modifyitems should have "
-        "skipped this test. If you see this assertion, the path-"
-        "matching in the auto-skip likely failed for this item."
+    key = settings.require_anthropic_key()
+    assert key != DUMMY_ANTHROPIC_API_KEY, (
+        "anthropic_client fixture must not run with the test-conftest "
+        "dummy key; the auto-skip in pytest_collection_modifyitems "
+        "should have skipped this test. If you see this assertion, "
+        "the path-matching in the auto-skip likely failed for this item."
     )
     return AsyncAnthropic(
-        api_key=settings.require_anthropic_key(),
+        api_key=key,
         base_url=settings.anthropic_base_url,
     )
 
