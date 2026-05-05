@@ -164,13 +164,21 @@ jobs:
         # parsing -- a non-numeric override falls back to the default.
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          PYTEST_ARGS: ${{ inputs.pytest_args || '' }}
-          LIVE_TEST_COST_CAP_USD: ${{ inputs.cost_cap_usd != '' && inputs.cost_cap_usd || '2.00' }}
+          # ``github.event.inputs.<name>`` is the long-stable context that
+          # works across every trigger — the modern ``inputs`` context is
+          # only documented for ``workflow_dispatch`` / ``workflow_call``
+          # / ``workflow_run`` events and has historically thrown
+          # "Unrecognized named-value: 'inputs'" on ``pull_request``
+          # triggers in some Actions runtime versions. The
+          # ``github.event.inputs`` form returns null on non-dispatch
+          # events; the ``||`` operator collapses null to the default.
+          PYTEST_ARGS: ${{ github.event.inputs.pytest_args || '' }}
+          LIVE_TEST_COST_CAP_USD: ${{ github.event.inputs.cost_cap_usd != '' && github.event.inputs.cost_cap_usd || '2.00' }}
           # Override the play-tier model only when the dispatch input
           # is non-empty; blank lets the backend's documented default
           # (``claude-sonnet-4-6``) apply. Reaches the backend via
           # the standard ``Settings.model_for("play")`` resolution.
-          ANTHROPIC_MODEL_PLAY: ${{ inputs.anthropic_model_play || '' }}
+          ANTHROPIC_MODEL_PLAY: ${{ github.event.inputs.anthropic_model_play || '' }}
         run: |
           set -euo pipefail
           if [[ -z "${ANTHROPIC_API_KEY:-}" ]]; then

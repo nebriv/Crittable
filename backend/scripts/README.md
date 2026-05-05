@@ -143,8 +143,8 @@ The live conftest installs a session-scoped wrapper around
 `AsyncAnthropic.messages.create` that records `response.usage` and
 multiplies by the per-million-token rate from `app/llm/cost.py`. When
 the cumulative spend crosses `LIVE_TEST_COST_CAP_USD` (default
-**$1.50**; standing suite ~$1.40), the in-flight test finishes and
-the next teardown sets `session.shouldstop` to halt cleanly.
+**$2.00**; standing suite ~$1.40, ~40% headroom), the in-flight test
+finishes and the next teardown sets `session.shouldstop` to halt cleanly.
 
 * Override per-run: `LIVE_TEST_COST_CAP_USD=2.50 pytest tests/live/`.
 * Disable (intentional stress run): `LIVE_TEST_COST_CAP_USD=0 ...`.

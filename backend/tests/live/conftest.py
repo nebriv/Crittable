@@ -546,9 +546,17 @@ def _live_cost_cap() -> Any:
          ``AARGenerator`` and the setup driver), which constructs
          ``AsyncAnthropic`` lazily on first call.
 
-    The patch is reverted at session teardown so unit tests run
-    afterward (in a single ``pytest`` invocation that includes both
-    suites, e.g. CI's full pass) see an unwrapped class.
+    Lifetime: this is a session-scoped autouse fixture, so once any
+    live test triggers it the patch stays active for the *entire*
+    pytest session and is only reverted at session teardown. Unit
+    tests that run BEFORE the live suite in the same invocation see
+    an unwrapped class; unit tests that run AFTER the live suite has
+    activated the fixture (and before the session ends) would see
+    the patched ``__init__``. In practice this only matters in a
+    single ``pytest`` invocation that mixes ``tests/`` and
+    ``tests/live/`` — CI runs them in separate jobs, and the wrapper
+    is benign for non-live AsyncAnthropic instances anyway (it just
+    counts usage that no test asserts on).
     """
 
     try:
@@ -565,10 +573,16 @@ def _live_cost_cap() -> Any:
         original_init(self, *args, **kwargs)
         _wrap_messages_create(self)
 
+    # Test-only monkeypatch of the SDK's __init__ so every
+    # AsyncAnthropic constructed during the live session gets the
+    # cost-cap wrapper. mypy flags re-assigning a method on a class
+    # (method-assign); intentional here.
     AsyncAnthropic.__init__ = init_wrapper  # type: ignore[method-assign]
     try:
         yield get_tracker()
     finally:
+        # Restore the original at session end so a later non-live
+        # test invocation in the same shell sees an unwrapped class.
         AsyncAnthropic.__init__ = original_init  # type: ignore[method-assign]
 
 
