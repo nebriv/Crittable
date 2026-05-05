@@ -486,11 +486,22 @@ class TurnDriver:
                 _merge_outcomes(cumulative, outcome)
 
                 # Validate cumulative state against the contract.
+                # ``cumulative.critical_inject_attempted_args`` (issue
+                # #151 fix B) lets a missing-DRIVE recovery ground the
+                # broadcast prompt on the inject the model just fired
+                # (or attempted to fire — the dispatcher captures the
+                # args even when fix A rejects the call for missing
+                # pairing). Without this, the recovery used a generic
+                # "skipped the player-facing message" prompt and the
+                # model fell back to a vanilla next-beat brief that
+                # ignored the inject — DRIVE slot satisfied, banner
+                # still un-grounded.
                 validation = validate(
                     session=session,
                     cumulative_slots=cumulative.slots,
                     contract=contract,
                     soft_drive_carve_out_enabled=settings.llm_recovery_drive_soft_on_open_question,
+                    pending_critical_inject_args=cumulative.critical_inject_attempted_args,
                 )
 
                 _logger.info(
@@ -1278,6 +1289,13 @@ def _merge_outcomes(target: DispatchOutcome, src: DispatchOutcome) -> None:
     target.critical_inject_fired = (
         target.critical_inject_fired or src.critical_inject_fired
     )
+    # Issue #151 fix B: most-recent inject attempt wins. Recovery
+    # passes (which run with a narrowed tool surface that excludes
+    # ``inject_critical_event``) never overwrite a fix-B grounding
+    # payload from attempt 1, so the recovery directive sees the
+    # inject context across re-runs.
+    if src.critical_inject_attempted_args is not None:
+        target.critical_inject_attempted_args = src.critical_inject_attempted_args
     target.had_yielding_call = target.had_yielding_call or src.had_yielding_call
     target.had_player_facing_message = (
         target.had_player_facing_message or src.had_player_facing_message

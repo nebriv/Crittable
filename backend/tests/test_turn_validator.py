@@ -342,3 +342,223 @@ def test_directive_factories_produce_expected_pins() -> None:
     assert yield_d.tools_allowlist == frozenset({"set_active_roles"})
     assert yield_d.tool_choice == {"type": "tool", "name": "set_active_roles"}
     assert yield_d.priority > drive.priority  # drive runs first
+
+
+# ---------------------------------------------------------------- issue #151 fix B
+
+
+def test_drive_recovery_directive_grounds_on_critical_inject_args() -> None:
+    """Issue #151 fix B: the recovery directive embeds the inject
+    severity / headline / body into both the system addendum and the
+    user nudge so the model's recovery broadcast lands on the actual
+    event rather than a generic next beat."""
+
+    args = {
+        "severity": "HIGH",
+        "headline": "Media leak — Slack screenshot viral",
+        "body": "Reporter calling for comment in 30 minutes.",
+    }
+    d = drive_recovery_directive(pending_critical_inject_args=args)
+
+    assert "INJECT CONTEXT" in d.system_addendum
+    assert "HIGH" in d.system_addendum
+    assert "Media leak" in d.system_addendum
+    assert "Reporter calling" in d.system_addendum
+    # The original generic note still appears so the bookkeeping rules
+    # / "answer @facilitator first" / "no other tools" guidance are
+    # not lost.
+    assert "RECOVERY" in d.system_addendum
+    # The user nudge points at the inject explicitly.
+    assert "inject_critical_event" in d.user_nudge
+    assert "Media leak" in d.user_nudge
+    # Tool pin / kind are unchanged so audit dashboards keying off
+    # ``kind="missing_drive"`` and the ``broadcast`` pin still work.
+    assert d.kind == "missing_drive"
+    assert d.tools_allowlist == frozenset({"broadcast"})
+    assert d.tool_choice == {"type": "tool", "name": "broadcast"}
+
+
+def test_drive_recovery_directive_combines_inject_and_player_question() -> None:
+    """When BOTH a critical inject and an unanswered ``@facilitator``
+    ask are pending, the user nudge tells the model the answer-order:
+    answer the player first, then ground on the inject. Regression
+    guard against either grounding being silently dropped."""
+
+    d = drive_recovery_directive(
+        pending_player_question="What do we see in Defender logs?",
+        pending_critical_inject_args={
+            "severity": "HIGH",
+            "headline": "Slack leak",
+            "body": "tabloid",
+        },
+    )
+    # Both grounding pieces are present.
+    assert "What do we see in Defender logs?" in d.user_nudge
+    assert "Slack leak" in d.user_nudge
+    # Order is enforced — the @facilitator ask is answered first.
+    assert d.user_nudge.index("@facilitator`") < d.user_nudge.index(
+        "ground on the inject"
+    )
+
+
+def test_drive_recovery_directive_caps_long_inject_fields() -> None:
+    """Recovery prompts ride alongside the prior tool-loop replay; an
+    unbounded inject body would inflate every recovery call. Cap
+    headline at 160 chars and body at 280 chars. Per-field bounds
+    prevent a regression that changes one cap from silently sliding
+    past."""
+
+    from app.sessions.turn_validator import (
+        _INJECT_BODY_PREVIEW_CAP,
+        _INJECT_HEADLINE_PREVIEW_CAP,
+    )
+
+    long_headline = "Headline " + "X" * 400
+    long_body = "Body " + "Y" * 600
+    d = drive_recovery_directive(
+        pending_critical_inject_args={
+            "severity": "HIGH",
+            "headline": long_headline,
+            "body": long_body,
+        }
+    )
+    # Truncation marker present (one of the two fields was truncated).
+    assert "..." in d.system_addendum
+    # Per-field length bounds: each truncated value must respect its
+    # documented cap. The +5 slack covers the surrounding `"..."`
+    # (3 chars), the JSON-quote escape pair (2 chars), and the
+    # leading "Headline "/"Body " literal that's still within cap
+    # but still rendered. We grep the addendum for the "X" / "Y"
+    # filler characters and assert the longest run respects the cap.
+    headline_x_run = max(
+        (
+            len(seg) for seg in d.system_addendum.split("X")
+            if seg == ""
+        ),
+        default=0,
+    )
+    body_y_run = max(
+        (
+            len(seg) for seg in d.system_addendum.split("Y")
+            if seg == ""
+        ),
+        default=0,
+    )
+    # Count consecutive "X"s by another method since the split-on-X
+    # gives empties between consecutive Xs.
+    import re
+
+    x_runs = [len(m.group()) for m in re.finditer(r"X+", d.system_addendum)]
+    y_runs = [len(m.group()) for m in re.finditer(r"Y+", d.system_addendum)]
+    longest_x = max(x_runs, default=0)
+    longest_y = max(y_runs, default=0)
+    # The headline filler is "X" * 400; capped at _INJECT_HEADLINE_PREVIEW_CAP
+    # (with "Headline " prefix consuming part of the cap). The longest
+    # run of X must not exceed the cap.
+    assert longest_x <= _INJECT_HEADLINE_PREVIEW_CAP, (
+        f"headline truncation cap ({_INJECT_HEADLINE_PREVIEW_CAP}) "
+        f"violated; longest X run = {longest_x}"
+    )
+    assert longest_y <= _INJECT_BODY_PREVIEW_CAP, (
+        f"body truncation cap ({_INJECT_BODY_PREVIEW_CAP}) "
+        f"violated; longest Y run = {longest_y}"
+    )
+    # Belt-and-braces: total addendum stays bounded.
+    assert len(d.system_addendum) < 3000
+    _ = headline_x_run, body_y_run  # consumed via re.finditer instead
+
+
+def test_drive_recovery_directive_handles_empty_inject_fields() -> None:
+    """Defensive: model could fire ``inject_critical_event`` with empty
+    headline / body strings (or None). Recovery should still produce
+    a valid prompt rather than crashing on .strip() / format."""
+
+    d = drive_recovery_directive(
+        pending_critical_inject_args={
+            "severity": "",
+            "headline": None,
+            "body": "",
+        }
+    )
+    # System addendum is still well-formed.
+    assert "INJECT CONTEXT" in d.system_addendum
+    # Severity defaults to HIGH on empty / missing input.
+    assert "severity=HIGH" in d.system_addendum
+    # Empty fields render as the JSON-encoded empty string token "".
+    assert 'headline=""' in d.system_addendum
+    assert 'body=""' in d.system_addendum
+
+
+def test_validate_passes_inject_args_into_drive_recovery_directive() -> None:
+    """Integration: when the validator catches missing DRIVE on a turn
+    where the model attempted ``inject_critical_event``, the inject
+    context is plumbed all the way into the recovery directive's
+    user nudge. This is the contract the turn driver depends on."""
+
+    s = _session()
+    res = validate(
+        session=s,
+        cumulative_slots={Slot.YIELD, Slot.ESCALATE},
+        contract=PLAY_CONTRACT_NORMAL,
+        pending_critical_inject_args={
+            "severity": "HIGH",
+            "headline": "Slack screenshot leak",
+            "body": "Reporter calling.",
+        },
+    )
+    assert not res.ok
+    drive = next(v for v in res.violations if v.kind == "missing_drive")
+    assert "Slack screenshot leak" in drive.user_nudge
+    assert "INJECT CONTEXT" in drive.system_addendum
+
+
+def test_validate_without_inject_args_uses_generic_recovery() -> None:
+    """Backwards-compat: when no inject args are passed (the typical
+    DRIVE-recovery path), the validator produces the generic recovery
+    directive. Guards the default branch so a future refactor doesn't
+    accidentally make the inject branch the unconditional path."""
+
+    s = _session()
+    res = validate(
+        session=s,
+        cumulative_slots={Slot.YIELD},
+        contract=PLAY_CONTRACT_NORMAL,
+    )
+    assert not res.ok
+    drive = next(v for v in res.violations if v.kind == "missing_drive")
+    assert "INJECT CONTEXT" not in drive.system_addendum
+    assert "inject_critical_event" not in drive.user_nudge
+
+
+def test_validate_inject_args_neutralise_quote_chars() -> None:
+    """Inject body containing `\"`, newlines, or other control chars
+    (CR, TAB, etc.) must not break the JSON-ish embedding inside the
+    recovery prompt — same hardening we already have for the player-
+    question quote, plus extras for operator-log readability per the
+    security review."""
+
+    s = _session()
+    res = validate(
+        session=s,
+        cumulative_slots={Slot.YIELD, Slot.ESCALATE},
+        contract=PLAY_CONTRACT_NORMAL,
+        pending_critical_inject_args={
+            "severity": "HIGH",
+            "headline": 'Reporter said "we will publish"',
+            "body": "Multi\nline\rwith\ttabs\x00payload.",
+        },
+    )
+    drive = res.violations[0]
+    # Inner quotes are escaped.
+    assert '\\"we will publish\\"' in drive.system_addendum
+    # Newlines, CR, TAB, NUL are all flattened to space (no
+    # control-char passthrough that could break log viewers or
+    # corrupt downstream rendering).
+    assert "Multi\nline" not in drive.system_addendum
+    assert "line\rwith" not in drive.system_addendum
+    assert "with\ttabs" not in drive.system_addendum
+    assert "\x00" not in drive.system_addendum
+    # The flattened form must reach the addendum verbatim — every
+    # control char becomes one space, so the original tokens are
+    # space-separated.
+    assert "Multi line with tabs payload." in drive.system_addendum

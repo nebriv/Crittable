@@ -35,6 +35,18 @@ if TYPE_CHECKING:
 _logger = get_logger("llm.dispatch")
 
 
+# Issue #151 fix A — the set of play-tier tool names that satisfy the
+# Critical-inject chain pairing requirement. Mirrors ``Slot.DRIVE`` in
+# ``sessions/slots.py`` (broadcast / address_role / share_data /
+# pose_choice). Lifted here as a frozenset so the dispatch-time scan
+# avoids importing the slot map (the slot map already imports nothing
+# heavy, but keeping the dispatcher's public surface narrow makes the
+# pairing rule self-contained and greppable).
+_DRIVE_TOOL_NAMES: frozenset[str] = frozenset(
+    {"broadcast", "address_role", "share_data", "pose_choice"}
+)
+
+
 class DispatchOutcome:
     """Aggregates side-effect descriptors so the SessionManager can react."""
 
@@ -52,6 +64,18 @@ class DispatchOutcome:
         # the AI didn't declare any (or the feature flag is off).
         self.declared_workstreams: list[Workstream] = []
         self.critical_inject_fired: bool = False
+        # Issue #151 fix B grounding payload. Set whenever the model
+        # *attempted* an ``inject_critical_event`` call this turn,
+        # whether the call succeeded, was rate-limited, or was rejected
+        # for a missing-pair (fix A) violation. The turn validator
+        # passes this into ``drive_recovery_directive`` so a
+        # missing-DRIVE recovery after an inject-bearing turn knows
+        # exactly which event the model needs to ground its broadcast
+        # on. ``None`` when the turn produced no inject attempt at all.
+        # If multiple injects fire in one batch (rare), the most-recent
+        # attempt wins — operators rarely fire concurrent injects and
+        # the recovery only needs one anchor anyway.
+        self.critical_inject_attempted_args: dict[str, Any] | None = None
         self.had_yielding_call: bool = False
         # Set to True when ``broadcast`` or ``address_role`` fired
         # successfully on this turn. The play-turn driver uses this on
@@ -116,6 +140,38 @@ class ToolDispatcher:
 
         outcome = DispatchOutcome()
         tool_uses = self._dedupe_setup_questions(session, tool_uses, outcome=outcome)
+        # Issue #151 fix A: detect ``inject_critical_event`` calls that
+        # land without a same-batch DRIVE-slot pairing (broadcast /
+        # address_role / share_data / pose_choice). The pairing rule is
+        # also stated in Block 6 ("Critical-inject chain (mandatory)"),
+        # but the model sometimes ignores it on real injects, leaving
+        # players staring at a banner with no per-role direction. The
+        # cumulative outcome's ``critical_inject_attempted_args`` is
+        # populated unconditionally below so the turn validator can
+        # ground a missing-DRIVE recovery on the inject context (fix
+        # B) regardless of whether the inject succeeded or was rejected
+        # here.
+        inject_attempts = [
+            tu.get("input") or {}
+            for tu in tool_uses
+            if tu.get("name") == "inject_critical_event"
+        ]
+        if inject_attempts:
+            # Defensive dict guard — Anthropic's tool-use contract says
+            # ``input`` is an object, but the codebase pattern elsewhere
+            # (see ``use_extension_tool`` at the bottom of ``_handle``)
+            # validates with isinstance before consuming. Mirror the
+            # pattern so a non-dict shape can never poison the recovery
+            # grounding payload (which is otherwise read field-by-field
+            # at the validator's trust boundary).
+            last = inject_attempts[-1]
+            outcome.critical_inject_attempted_args = (
+                dict(last) if isinstance(last, dict) else None
+            )
+        has_drive_pairing = any(
+            tu.get("name") in _DRIVE_TOOL_NAMES for tu in tool_uses
+        )
+        inject_pairing_violation = bool(inject_attempts) and not has_drive_pairing
         coros = [
             self._dispatch_one(
                 session=session,
@@ -123,6 +179,7 @@ class ToolDispatcher:
                 turn_id=turn_id,
                 outcome=outcome,
                 critical_inject_allowed_cb=critical_inject_allowed_cb,
+                inject_pairing_violation=inject_pairing_violation,
             )
             for tu in tool_uses
         ]
@@ -234,6 +291,7 @@ class ToolDispatcher:
         turn_id: str | None,
         outcome: DispatchOutcome,
         critical_inject_allowed_cb: Any,
+        inject_pairing_violation: bool = False,
     ) -> None:
         name = tool_use.get("name", "")
         tool_id = tool_use.get("id", "")
@@ -259,6 +317,7 @@ class ToolDispatcher:
                 tool_id=tool_id,
                 turn_id=turn_id,
                 critical_inject_allowed_cb=critical_inject_allowed_cb,
+                inject_pairing_violation=inject_pairing_violation,
             )
             outcome.add_result(tool_use_id=tool_id, content=content)
             # Successful dispatch — record the slot this tool occupies
@@ -320,6 +379,7 @@ class ToolDispatcher:
         tool_id: str,
         turn_id: str | None,
         critical_inject_allowed_cb: Any,
+        inject_pairing_violation: bool = False,
     ) -> str:
         # ``declare_workstreams`` (Phase A chat-declutter,
         # docs/plans/chat-decluttering.md §3.3) is a setup-tier tool
@@ -680,6 +740,39 @@ class ToolDispatcher:
             return "timeline point pinned"
 
         if name == "inject_critical_event":
+            # Issue #151 fix A: enforce the Critical-inject chain
+            # mandate at dispatch time. Block 6 of the play-tier system
+            # prompt requires that ``inject_critical_event`` lands with
+            # at least one DRIVE-slot tool (broadcast / address_role /
+            # share_data / pose_choice) in the same response so players
+            # see per-role direction alongside the banner. The model
+            # ignores this on real injects with some regularity; the
+            # pre-fix recovery path was the post-turn DRIVE recovery,
+            # which fired *after* paying the cost of a mis-composed
+            # turn. Catch the violation here instead so the strict-
+            # retry pass replays a structured rejection (model self-
+            # corrects on the cheaper layer). The rate-limit check
+            # below would also reject the call, but the pairing error
+            # ships the actionable hint — re-fire as a chain — that
+            # the rate-limit message lacks. The cumulative outcome's
+            # ``critical_inject_attempted_args`` was already populated
+            # by ``dispatch()`` for fix B's recovery grounding, so the
+            # validator still sees the inject context even when this
+            # branch rejects.
+            if inject_pairing_violation:
+                raise _DispatchError(
+                    "inject_critical_event was emitted without a same-"
+                    "response DRIVE-slot tool (`broadcast`, "
+                    "`address_role`, `share_data`, or `pose_choice`). "
+                    "Critical injects MUST land as a chain — without "
+                    "the paired DRIVE call, players see the banner "
+                    "land and then nothing, the turn stalls. Re-fire "
+                    "as: `inject_critical_event(...)`, then a "
+                    "`broadcast` / `address_role` / `share_data` / "
+                    "`pose_choice` naming which active role acts on the "
+                    "inject and what they do, then `set_active_roles` "
+                    "yielding to those roles."
+                )
             allowed = await _maybe_call(critical_inject_allowed_cb)
             if not allowed:
                 raise _DispatchError("critical-event rate limit hit")

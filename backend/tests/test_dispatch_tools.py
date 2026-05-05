@@ -416,6 +416,10 @@ async def test_mark_timeline_point_appends_system_message() -> None:
 
 @pytest.mark.asyncio
 async def test_inject_critical_event_appends_critical_message() -> None:
+    """Happy path: ``inject_critical_event`` paired with a DRIVE tool
+    (per the Critical-inject chain mandate enforced by issue #151 fix
+    A) appends the CRITICAL_INJECT message and marks the slot fired."""
+
     dispatcher = _make_dispatcher()
     session = _build_session()
     outcome = await _dispatch(
@@ -424,16 +428,32 @@ async def test_inject_critical_event_appends_critical_message() -> None:
         _tu(
             "inject_critical_event",
             {"severity": "HIGH", "headline": "Reporter call", "body": "tabloid"},
+            tool_id="tu-inject",
+        ),
+        _tu(
+            "broadcast",
+            {
+                "message": (
+                    "**SOC Analyst** — pull the screenshot's metadata. "
+                    "**CISO** — call legal in the next 5 minutes."
+                )
+            },
+            tool_id="tu-broadcast",
         ),
     )
     assert outcome.critical_inject_fired
-    msg = outcome.appended_messages[0]
-    assert msg.kind == MessageKind.CRITICAL_INJECT
-    assert "HIGH" in msg.body and "Reporter call" in msg.body
+    inject_msg = next(
+        m for m in outcome.appended_messages if m.kind == MessageKind.CRITICAL_INJECT
+    )
+    assert "HIGH" in inject_msg.body and "Reporter call" in inject_msg.body
 
 
 @pytest.mark.asyncio
 async def test_inject_critical_event_respects_rate_limit() -> None:
+    """Rate-limit rejection still fires when the inject is paired (the
+    pairing check in fix A is independent of the rate-limit gate). A
+    paired broadcast still lands; only the inject is rejected."""
+
     dispatcher = _make_dispatcher()
     session = _build_session()
     outcome = await _dispatch(
@@ -442,12 +462,269 @@ async def test_inject_critical_event_respects_rate_limit() -> None:
         _tu(
             "inject_critical_event",
             {"severity": "HIGH", "headline": "x", "body": "y"},
+            tool_id="tu-inject",
+        ),
+        _tu(
+            "broadcast",
+            {"message": "**SOC Analyst** — what's the current alert volume?"},
+            tool_id="tu-broadcast",
         ),
         critical_allowed=False,
     )
-    err = next(r for r in outcome.tool_results if r.get("is_error"))
+    err = next(
+        r
+        for r in outcome.tool_results
+        if r.get("is_error") and r.get("tool_use_id") == "tu-inject"
+    )
     assert "rate limit" in err["content"]
     assert not outcome.critical_inject_fired
+
+
+@pytest.mark.asyncio
+async def test_inject_critical_event_rejected_when_unpaired() -> None:
+    """Issue #151 fix A: a solo ``inject_critical_event`` (no DRIVE-slot
+    tool in the same response) is rejected at dispatch with a clear
+    chain-shape error. The inject's side effects (banner, message
+    append) are skipped so the strict-retry path can replay the
+    structured error to the model on the cheaper layer instead of
+    paying the post-turn DRIVE recovery cost.
+
+    This is the headline regression issue #151 reports — the model
+    fires `inject_critical_event` alone, the validator fires
+    DRIVE+YIELD recovery (two extra LLM calls), the user sees the
+    banner land then a brief stall while the recovery completes."""
+
+    dispatcher = _make_dispatcher()
+    session = _build_session()
+    outcome = await _dispatch(
+        dispatcher,
+        session,
+        _tu(
+            "inject_critical_event",
+            {
+                "severity": "HIGH",
+                "headline": "Reporter call",
+                "body": "tabloid",
+            },
+            tool_id="tu-inject",
+        ),
+    )
+    err = next(
+        r
+        for r in outcome.tool_results
+        if r.get("is_error") and r.get("tool_use_id") == "tu-inject"
+    )
+    assert "without a same-response DRIVE-slot tool" in err["content"]
+    assert "Re-fire as" in err["content"]
+    # No banner / message landed.
+    assert not outcome.critical_inject_fired
+    assert not [
+        m for m in outcome.appended_messages if m.kind == MessageKind.CRITICAL_INJECT
+    ]
+    # Fix B: the attempted args still propagate so the validator can
+    # ground a missing-DRIVE recovery on the inject context.
+    assert outcome.critical_inject_attempted_args == {
+        "severity": "HIGH",
+        "headline": "Reporter call",
+        "body": "tabloid",
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "drive_tool,drive_args",
+    [
+        (
+            "broadcast",
+            {"message": "**SOC Analyst** — pull the metadata; **CISO** — call legal."},
+        ),
+        (
+            "address_role",
+            {
+                "role_id": "role-soc",
+                "message": "Pull the screenshot's metadata in the next 60 seconds.",
+            },
+        ),
+        (
+            "share_data",
+            {
+                "label": "Slack screenshot — viral copy",
+                "data": "url: https://example/slack-screenshot",
+            },
+        ),
+        (
+            "pose_choice",
+            {
+                "role_id": "role-ciso",
+                "question": "Containment posture given the leak?",
+                "options": [
+                    "Isolate the affected hosts immediately",
+                    "Hold for 10 minutes for full scope",
+                ],
+            },
+        ),
+    ],
+)
+async def test_inject_paired_with_any_drive_tool_lands_chain(
+    drive_tool: str, drive_args: dict[str, Any]
+) -> None:
+    """Issue #151 fix A: any DRIVE-slot tool — ``broadcast``,
+    ``address_role``, ``share_data``, or ``pose_choice`` — satisfies
+    the pairing requirement. Catches the failure mode where the rule
+    is enforced too narrowly (e.g. only ``broadcast``) and a legit
+    inject + share_data chain gets blocked."""
+
+    dispatcher = _make_dispatcher()
+    session = _build_session()
+    outcome = await _dispatch(
+        dispatcher,
+        session,
+        _tu(
+            "inject_critical_event",
+            {"severity": "HIGH", "headline": "Reporter call", "body": "tabloid"},
+            tool_id="tu-inject",
+        ),
+        _tu(drive_tool, drive_args, tool_id="tu-drive"),
+    )
+    assert outcome.critical_inject_fired, (
+        f"inject was rejected when paired with {drive_tool!r}; pairing "
+        "should have satisfied fix A"
+    )
+    # The inject's tool_result is non-error.
+    inject_result = next(
+        r for r in outcome.tool_results if r.get("tool_use_id") == "tu-inject"
+    )
+    assert not inject_result.get("is_error")
+
+
+@pytest.mark.asyncio
+async def test_inject_attempted_args_captured_even_when_rejected() -> None:
+    """Issue #151 fix B: regardless of whether the inject succeeds or
+    is rejected for missing pairing, the attempted args propagate on
+    ``DispatchOutcome.critical_inject_attempted_args`` so the turn
+    validator can ground a missing-DRIVE recovery on the inject
+    context. Without this, the recovery would fall back to the
+    generic "skipped the player-facing message" prompt and the model's
+    recovery broadcast would ignore the inject."""
+
+    dispatcher = _make_dispatcher()
+    session = _build_session()
+    outcome = await _dispatch(
+        dispatcher,
+        session,
+        _tu(
+            "inject_critical_event",
+            {
+                "severity": "HIGH",
+                "headline": "Slack screenshot leak",
+                "body": "Reporter call in 30 minutes.",
+            },
+            tool_id="tu-inject",
+        ),
+    )
+    # Inject was rejected (no pairing) but the args are captured.
+    assert outcome.critical_inject_attempted_args is not None
+    assert outcome.critical_inject_attempted_args["headline"] == "Slack screenshot leak"
+    assert outcome.critical_inject_attempted_args["severity"] == "HIGH"
+
+
+@pytest.mark.asyncio
+async def test_multiple_injects_capture_most_recent_args() -> None:
+    """When the model fires multiple injects in one batch (rare but
+    possible — strict retry, model confusion), the most-recent attempt
+    wins as the recovery anchor. Covers the single-anchor contract
+    documented on ``critical_inject_attempted_args``."""
+
+    dispatcher = _make_dispatcher()
+    session = _build_session()
+    outcome = await _dispatch(
+        dispatcher,
+        session,
+        _tu(
+            "inject_critical_event",
+            {"severity": "HIGH", "headline": "First inject", "body": "earlier"},
+            tool_id="tu-inject-1",
+        ),
+        _tu(
+            "inject_critical_event",
+            {"severity": "HIGH", "headline": "Second inject", "body": "later"},
+            tool_id="tu-inject-2",
+        ),
+        _tu(
+            "broadcast",
+            {"message": "**CISO** — both events need a containment call."},
+            tool_id="tu-broadcast",
+        ),
+    )
+    assert outcome.critical_inject_attempted_args is not None
+    assert outcome.critical_inject_attempted_args["headline"] == "Second inject"
+
+
+def test_merge_outcomes_preserves_inject_args_across_recovery_passes() -> None:
+    """Issue #151 fix B grounding payload survives recovery merges.
+
+    The recovery path's narrowed tool surface excludes
+    ``inject_critical_event`` (DRIVE recovery is pinned to
+    ``broadcast`` only), so attempt-2's outcome NEVER carries an
+    inject_attempts entry. Without the merge contract documented here,
+    attempt-1's grounding payload would be silently dropped on
+    re-validation, defeating fix B.
+
+    Locks the contract: src=None must NOT clobber a non-None target.
+    """
+
+    from app.llm.dispatch import DispatchOutcome
+    from app.sessions.turn_driver import _merge_outcomes
+
+    target = DispatchOutcome()
+    target.critical_inject_attempted_args = {
+        "severity": "HIGH",
+        "headline": "Press leak",
+        "body": "Reporter calling.",
+    }
+    src = DispatchOutcome()  # recovery pass — no inject attempt
+    assert src.critical_inject_attempted_args is None
+
+    _merge_outcomes(target, src)
+
+    assert target.critical_inject_attempted_args == {
+        "severity": "HIGH",
+        "headline": "Press leak",
+        "body": "Reporter calling.",
+    }
+
+
+def test_merge_outcomes_replaces_inject_args_when_src_has_newer_attempt() -> None:
+    """Inverse of the preservation test: when a later attempt fires
+    its OWN inject (which is unusual on a recovery pass since DRIVE
+    recovery's tool surface excludes ``inject_critical_event``, but
+    the contract is the same as ``set_active_role_ids`` — last write
+    wins). Documents the merge ordering so a future recovery
+    directive that restores inject visibility behaves predictably."""
+
+    from app.llm.dispatch import DispatchOutcome
+    from app.sessions.turn_driver import _merge_outcomes
+
+    target = DispatchOutcome()
+    target.critical_inject_attempted_args = {
+        "severity": "HIGH",
+        "headline": "First",
+        "body": "old",
+    }
+    src = DispatchOutcome()
+    src.critical_inject_attempted_args = {
+        "severity": "MEDIUM",
+        "headline": "Second",
+        "body": "new",
+    }
+
+    _merge_outcomes(target, src)
+
+    assert target.critical_inject_attempted_args == {
+        "severity": "MEDIUM",
+        "headline": "Second",
+        "body": "new",
+    }
 
 
 # ---------------------------------------------------------------- set_active_roles

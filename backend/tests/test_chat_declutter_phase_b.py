@@ -303,6 +303,13 @@ class TestShareDataWorkstreamDispatch:
 
 
 class TestInjectCriticalEventWorkstreamDispatch:
+    """Workstream-id field tests on ``inject_critical_event`` always
+    pair the inject with a same-batch ``broadcast`` so issue #151 fix
+    A doesn't reject the call as an unpaired chain. The pairing
+    behaviour itself is exercised in ``test_dispatch_tools.py``; here
+    we want the inject to land so we can assert on the message's
+    workstream_id."""
+
     @pytest.mark.asyncio
     async def test_valid_workstream_id_is_recorded(self) -> None:
         dispatcher = _make_dispatcher()
@@ -318,10 +325,22 @@ class TestInjectCriticalEventWorkstreamDispatch:
                     "body": "tabloid leak",
                     "workstream_id": "comms",
                 },
+                tool_id="tu-inject",
+            ),
+            _tu(
+                "broadcast",
+                {
+                    "message": (
+                        "**IR Lead** — confirm escalation. "
+                        "**Comms** — draft the holding statement now."
+                    )
+                },
+                tool_id="tu-broadcast",
             ),
         )
-        msg = outcome.appended_messages[0]
-        assert msg.kind == MessageKind.CRITICAL_INJECT
+        msg = next(
+            m for m in outcome.appended_messages if m.kind == MessageKind.CRITICAL_INJECT
+        )
         assert msg.workstream_id == "comms"
         assert outcome.critical_inject_fired
 
@@ -343,11 +362,25 @@ class TestInjectCriticalEventWorkstreamDispatch:
                     "body": "y",
                     "workstream_id": "made_up",
                 },
+                tool_id="tu-inject",
+            ),
+            _tu(
+                "broadcast",
+                {"message": "**IR Lead** — quick decision needed."},
+                tool_id="tu-broadcast",
             ),
         )
-        assert outcome.tool_results[0]["is_error"] is True
+        # The inject's tool_result is the one carrying the workstream
+        # error; the broadcast lands successfully.
+        inject_result = next(
+            r for r in outcome.tool_results if r.get("tool_use_id") == "tu-inject"
+        )
+        assert inject_result["is_error"] is True
         assert outcome.critical_inject_fired is False
-        assert outcome.appended_messages == []
+        # Only the paired broadcast appended (no inject message).
+        assert not [
+            m for m in outcome.appended_messages if m.kind == MessageKind.CRITICAL_INJECT
+        ]
 
     @pytest.mark.asyncio
     async def test_flag_off_silently_drops_workstream_id(self) -> None:
@@ -366,9 +399,17 @@ class TestInjectCriticalEventWorkstreamDispatch:
                     "body": "y",
                     "workstream_id": "containment",
                 },
+                tool_id="tu-inject",
+            ),
+            _tu(
+                "broadcast",
+                {"message": "**IR Lead** — handle the escalation."},
+                tool_id="tu-broadcast",
             ),
         )
-        msg = outcome.appended_messages[0]
+        msg = next(
+            m for m in outcome.appended_messages if m.kind == MessageKind.CRITICAL_INJECT
+        )
         assert msg.workstream_id is None
         assert outcome.critical_inject_fired
 

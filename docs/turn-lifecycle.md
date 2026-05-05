@@ -564,7 +564,7 @@ When validation fails, the driver runs **one directive per attempt**, lowest
 
 | Directive | Priority | Tools allowed | `tool_choice` | What it tells the model |
 |---|---|---|---|---|
-| `drive_recovery_directive` | **10** | `{"broadcast"}` | `{"type":"tool","name":"broadcast"}` | "Issue a broadcast that (1) answers the open player `?` first, (2) briefs the next decision. Block 4 hard boundaries still apply (no plan disclosure)." |
+| `drive_recovery_directive` | **10** | `{"broadcast"}` | `{"type":"tool","name":"broadcast"}` | "Issue a broadcast that (1) answers the open player `?` first, (2) briefs the next decision. Block 4 hard boundaries still apply (no plan disclosure)." When called with `pending_critical_inject_args=...` (issue #151 fix B), the system addendum prepends the inject's severity/headline/body and the user nudge embeds the headline so the recovery broadcast leads with the inject rather than a generic next-beat brief. |
 | `strict_yield_directive` | **20** | `{"set_active_roles"}` | `{"type":"tool","name":"set_active_roles"}` | "Just emit `set_active_roles` and stop. The brief already landed; this is the one path where Block 6's silent-yield prohibition is overridden." |
 
 ### The compound-violation cascade (sequence)
@@ -719,8 +719,33 @@ see next, no need to name active roles.
 
 `inject_critical_event` is rate-limited (default: 1 per 5 turns). The model is also
 required by Block 6 to follow it with `broadcast` + `set_active_roles` in the same
-turn. If it forgets the broadcast, the cascade still rescues — `inject_critical_event`
-fires `ESCALATE` (not DRIVE), so DRIVE recovery still runs.
+turn. Three layers defend against the model forgetting the broadcast (issue #151):
+
+1. **Block 6 prompt rule** — "Critical-inject chain (mandatory)" tells the model to
+   always pair the inject with a DRIVE-slot tool. Real-model conformance is ~30–50%
+   on this fixture (measured via `backend/scripts/issue_151_before_after.py`).
+2. **Dispatch-time pairing scan (fix A)** — when the dispatcher sees `inject_critical_event`
+   without a same-batch DRIVE-slot tool (`broadcast`, `address_role`, `share_data`,
+   `pose_choice`), the inject is rejected with `is_error=True` carrying a structured
+   chain-shape hint. The banner does NOT fire. The strict-retry loop replays the
+   error so the model self-corrects on the cheaper layer (no extra recovery LLM
+   calls). See `_DRIVE_TOOL_NAMES` in `app/llm/dispatch.py`.
+3. **Inject-grounded DRIVE recovery (fix B)** — if step 2 rejects (or some path lets
+   a solo inject through), the dispatcher captures
+   `outcome.critical_inject_attempted_args` regardless of success/rejection. The
+   turn validator passes that into `drive_recovery_directive(pending_critical_inject_args=…)`
+   which prepends the inject's `severity`/`headline`/`body` to the system addendum
+   AND embeds the headline in the user nudge. Pre-fix, the recovery prompt was
+   generic and the model would broadcast a vanilla next-beat brief that ignored the
+   inject (40% leading-with-inject). Post-fix, every recovery announces the inject
+   as the lead (100% leading-with-inject). The directive `kind` stays
+   `"missing_drive"` for backward compat; operators distinguish via the
+   `drive_recovery_grounded_on_inject` log line emitted by `validate()`.
+
+Adding a new "this tool requires a same-batch X" pairing rule: extend the
+`inject_pairing_violation` scan in `dispatch()` and add the new tool's branch in
+`_handle()`. Add a regression test in `backend/tests/test_dispatch_tools.py`
+mirroring `test_inject_critical_event_rejected_when_unpaired`.
 
 ### 8d. Force-advance
 

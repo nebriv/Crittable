@@ -170,6 +170,51 @@ _DRIVE_RECOVERY_USER_NUDGE_TEMPLATE = (
     "next decision for the active roles."
 )
 
+# Issue #151 fix B — when missing-DRIVE recovery fires AFTER the model
+# attempted ``inject_critical_event`` on the same turn (whether that
+# inject succeeded, was rate-limited, or was rejected for a missing-
+# pair fix-A violation), we ground the recovery prompt on the inject
+# context. Pre-fix the recovery prompt was generic ("you skipped the
+# player-facing message") and the model would fall back to a vanilla
+# next-beat brief that ignored the inject — DRIVE slot satisfied,
+# inject still un-grounded, players still confused. Embedding the
+# inject's headline + body into both the system addendum AND the user
+# nudge tells the model exactly what context to anchor on.
+#
+# Caps: headline at 160 chars, body at 280 chars. The recovery prompt
+# is a system block + a user nudge that ride alongside the prior tool-
+# loop replay; an unbounded inject body would inflate every recovery
+# call. The caps mirror the unrelated player-question quote cap and
+# leave plenty of room for a real inject's signal to land.
+_INJECT_HEADLINE_PREVIEW_CAP = 160
+_INJECT_BODY_PREVIEW_CAP = 280
+_DRIVE_RECOVERY_INJECT_PREFIX_TEMPLATE = (
+    "INJECT CONTEXT: you fired `inject_critical_event` on this turn "
+    "(severity={severity}, headline={headline}, body={body}). The "
+    "chain is `inject + broadcast + yield`; the broadcast is what's "
+    "missing. Your `broadcast` MUST ground on this event — name "
+    "which active role acts on it and what specific decision or "
+    "directed action they take (containment call, comms statement, "
+    "regulator notification, etc.). Do NOT broadcast a generic next-"
+    "beat brief that ignores the inject; that's the failure mode "
+    "this recovery exists to fix.\n\n"
+)
+_DRIVE_RECOVERY_INJECT_USER_NUDGE_TEMPLATE = (
+    "[system] You fired `inject_critical_event` (headline: {headline}) "
+    "without a player-facing follow-up. Issue a `broadcast` now naming "
+    "which active role acts on this inject and what specific decision "
+    "or directed action they take. Do NOT broadcast a generic next "
+    "beat that ignores the inject."
+)
+_DRIVE_RECOVERY_INJECT_USER_NUDGE_WITH_QUESTION_TEMPLATE = (
+    "[system] You fired `inject_critical_event` (headline: {headline}) "
+    "without a player-facing follow-up, AND there is an unanswered "
+    "`@facilitator` ask: {quoted}. Issue a `broadcast` now: answer the "
+    "`@facilitator` ask first, then ground on the inject — name which "
+    "active role acts on it and what specific decision or directed "
+    "action they take."
+)
+
 
 def _format_drive_user_nudge(pending_player_question: str | None) -> str:
     """Build the drive-recovery user nudge, optionally embedding the
@@ -186,13 +231,79 @@ def _format_drive_user_nudge(pending_player_question: str | None) -> str:
 
     if not pending_player_question:
         return _DRIVE_RECOVERY_USER_NUDGE_BASE
-    quoted = pending_player_question.strip()
-    if len(quoted) > 280:
-        quoted = quoted[:277] + "..."
-    # JSON-encode to neutralise any embedded quotes / newlines / tool-
-    # call syntax. The model sees a normal Python repr-like string.
-    safe = quoted.replace("\\", "\\\\").replace('"', '\\"').replace("\n", " ")
-    return _DRIVE_RECOVERY_USER_NUDGE_TEMPLATE.format(quoted=f'"{safe}"')
+    return _DRIVE_RECOVERY_USER_NUDGE_TEMPLATE.format(
+        quoted=_neutralise_quote(pending_player_question, cap=280)
+    )
+
+
+def _neutralise_quote(value: str, *, cap: int) -> str:
+    """Encode a free-form string as a double-quoted token safe to embed
+    in a system / user nudge. Caps at ``cap`` chars (with an ellipsis),
+    escapes backslashes and double quotes, flattens ALL ASCII control
+    characters (CR, LF, TAB, VT, FF, NUL, ESC, etc.) to a single
+    space so the model sees a single-line repr-like token AND
+    operator log viewers don't get confused by carriage-return line-
+    overwrites or NUL truncation when the addendum is logged. Empty
+    / whitespace-only inputs collapse to ``\"\"`` so callers don't
+    have to special-case them.
+    """
+
+    quoted = (value or "").strip()
+    if len(quoted) > cap:
+        quoted = quoted[: cap - 3] + "..."
+    # Flatten ASCII control chars (0x00-0x1F + 0x7F) to space — covers
+    # \n, \r, \t, \v, \f, \b, \a, NUL, DEL, etc. Then escape the JSON-
+    # ish quote chars. Order matters: control-char strip first so the
+    # subsequent backslash-escape pass doesn't have to worry about
+    # embedded `\x00` etc. surviving as literal characters.
+    safe = "".join(" " if (ord(c) < 0x20 or ord(c) == 0x7F) else c for c in quoted)
+    safe = safe.replace("\\", "\\\\").replace('"', '\\"')
+    return f'"{safe}"'
+
+
+def _format_drive_recovery_inject_blocks(
+    *,
+    pending_critical_inject_args: dict[str, Any],
+    pending_player_question: str | None,
+) -> tuple[str, str]:
+    """Build the (system_addendum, user_nudge) pair when the missing-
+    DRIVE recovery fires after a critical-inject attempt this turn.
+
+    Empty / missing fields on the inject args fall back to safe
+    defaults (severity HIGH, empty quoted strings) — the model still
+    sees enough structure to know an inject is in flight. Both pieces
+    are bounded so a runaway inject body can't blow up the recovery
+    call.
+    """
+
+    severity = str(pending_critical_inject_args.get("severity") or "HIGH").strip()
+    if not severity:
+        severity = "HIGH"
+    headline_raw = str(pending_critical_inject_args.get("headline") or "").strip()
+    body_raw = str(pending_critical_inject_args.get("body") or "").strip()
+    headline_quoted = _neutralise_quote(
+        headline_raw, cap=_INJECT_HEADLINE_PREVIEW_CAP
+    )
+    body_quoted = _neutralise_quote(body_raw, cap=_INJECT_BODY_PREVIEW_CAP)
+    inject_prefix = _DRIVE_RECOVERY_INJECT_PREFIX_TEMPLATE.format(
+        severity=severity,
+        headline=headline_quoted,
+        body=body_quoted,
+    )
+    system_addendum = inject_prefix + _DRIVE_RECOVERY_NOTE
+
+    if pending_player_question:
+        user_nudge = (
+            _DRIVE_RECOVERY_INJECT_USER_NUDGE_WITH_QUESTION_TEMPLATE.format(
+                headline=headline_quoted,
+                quoted=_neutralise_quote(pending_player_question, cap=280),
+            )
+        )
+    else:
+        user_nudge = _DRIVE_RECOVERY_INJECT_USER_NUDGE_TEMPLATE.format(
+            headline=headline_quoted,
+        )
+    return system_addendum, user_nudge
 
 
 def strict_yield_directive() -> RecoveryDirective:
@@ -210,7 +321,9 @@ def strict_yield_directive() -> RecoveryDirective:
 
 
 def drive_recovery_directive(
-    *, pending_player_question: str | None = None
+    *,
+    pending_player_question: str | None = None,
+    pending_critical_inject_args: dict[str, Any] | None = None,
 ) -> RecoveryDirective:
     """Recovery: AI yielded (or wants to) without a player-facing
     drive. Pin to ``broadcast`` only.
@@ -220,14 +333,40 @@ def drive_recovery_directive(
     answer. This catches the failure mode where the model under-
     grounds and broadcasts a generic "what's the plan?" — DRIVE slot
     satisfied, original question still ignored.
+
+    ``pending_critical_inject_args`` (issue #151 fix B) embeds the
+    inject's severity / headline / body into both the system addendum
+    and the user nudge when the model attempted ``inject_critical_event``
+    on this turn but failed to land a paired DRIVE-slot tool. The
+    grounding payload comes from
+    ``DispatchOutcome.critical_inject_attempted_args`` and is set
+    regardless of whether the inject succeeded or was rejected for a
+    fix-A pairing violation, so the recovery flow is still grounded
+    on the correct context after fix A short-circuits the inject.
+    When both ``pending_critical_inject_args`` and
+    ``pending_player_question`` are present, the user nudge embeds
+    both — answer the `@facilitator` ask first, then ground on the
+    inject. The directive ``kind`` stays ``"missing_drive"`` so
+    operator dashboards / tests keying off the kind don't break;
+    operators who need to distinguish inject-grounded recoveries can
+    grep the ``system_addendum`` for the ``INJECT CONTEXT`` prefix.
     """
+
+    if pending_critical_inject_args:
+        system_addendum, user_nudge = _format_drive_recovery_inject_blocks(
+            pending_critical_inject_args=pending_critical_inject_args,
+            pending_player_question=pending_player_question,
+        )
+    else:
+        system_addendum = _DRIVE_RECOVERY_NOTE
+        user_nudge = _format_drive_user_nudge(pending_player_question)
 
     return RecoveryDirective(
         kind="missing_drive",
         tools_allowlist=frozenset({"broadcast"}),
         tool_choice={"type": "tool", "name": "broadcast"},
-        system_addendum=_DRIVE_RECOVERY_NOTE,
-        user_nudge=_format_drive_user_nudge(pending_player_question),
+        system_addendum=system_addendum,
+        user_nudge=user_nudge,
         replays_prior_tool_loop=True,
         priority=10,
     )
@@ -309,10 +448,18 @@ def validate(
     cumulative_slots: set[Slot],
     contract: TurnContract,
     soft_drive_carve_out_enabled: bool = False,
+    pending_critical_inject_args: dict[str, Any] | None = None,
 ) -> ValidationResult:
     """Pure validator. Inspects what slots fired this turn (cumulative
     across all attempts) against the contract; returns directives for
     each violation and warnings for soft mismatches.
+
+    ``pending_critical_inject_args`` (issue #151 fix B) is the
+    grounding payload from
+    ``DispatchOutcome.critical_inject_attempted_args``. When set and
+    the validator also catches missing DRIVE, the recovery directive
+    embeds the inject context so the model's recovery broadcast lands
+    on the actual event rather than a generic next beat.
 
     No I/O, no state writes. Safe to unit-test directly.
     """
@@ -358,9 +505,25 @@ def validate(
         else:
             violations.append(
                 drive_recovery_directive(
-                    pending_player_question=pending_question
+                    pending_player_question=pending_question,
+                    pending_critical_inject_args=pending_critical_inject_args,
                 )
             )
+            if pending_critical_inject_args:
+                # Surface the inject-grounded path as a warning string so
+                # operator-side log analysis can grep for it without
+                # parsing the system_addendum prose. Pure observability —
+                # the directive itself already carries the inject
+                # payload.
+                _logger.info(
+                    "drive_recovery_grounded_on_inject",
+                    headline=str(
+                        pending_critical_inject_args.get("headline") or ""
+                    )[:80],
+                    severity=str(
+                        pending_critical_inject_args.get("severity") or "HIGH"
+                    ),
+                )
 
     # Missing YIELD: the turn never advanced. Same as the legacy
     # strict-retry path.

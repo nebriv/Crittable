@@ -8,6 +8,7 @@ or print a clear "set the key" message when it's missing.
 |---|---|---|
 | `run-live-tests.sh` | Whenever you want to run `backend/tests/live/` from inside the Claude Code agent harness (or any environment where setting `ANTHROPIC_API_KEY` directly would collide with the host process's SDK auth). Bridges `LIVE_TEST_ANTHROPIC_API_KEY` -> pytest. | ~$0.10 (full suite) |
 | `live_recovery_check.py` | Before every push that touches `_DRIVE_RECOVERY_NOTE`, `_STRICT_YIELD_NOTE`, `_format_drive_user_nudge`, `Block 6` of the system prompt, or any `drive_recovery_directive` plumbing. | ~$0.03 |
+| `issue_151_before_after.py` | Issue #151 regression demo. Run when changing the dispatcher's inject-pairing scan, the validator's `pending_critical_inject_args` plumbing, or Block 6's "Critical-inject chain" rule. Three probes: (1) live solo-inject baseline rate, (2) dispatcher-level fix-A pre/post comparison (no API), (3) live recovery-grounding fix-B pre/post comparison. Emits a JSON report with `--json`. | ~$0.15 |
 | `diagnostic_full_response.py` | When you suspect a tool is being mis-picked and want to see the full model response (text + all tool_use blocks) across three palette variants. | ~$0.05 |
 
 Both scripts use the production message-build path (`_play_messages`)
@@ -37,6 +38,26 @@ cd backend && ANTHROPIC_API_KEY=sk-ant-... python scripts/live_recovery_check.py
 ```
 
 Add `--verbose` to dump the full request/response for each call.
+
+## issue_151_before_after.py
+
+Reproduces issue #151's "AI silently yields after `inject_critical_event`" failure mode and demonstrates the post-fix engine + recovery behaviour. Three probes:
+
+1. **Solo-inject baseline rate** (`--runs N`, default 5). On a fixture seeded to provoke `inject_critical_event` (a critical-typed inject in the plan, transcript past the inject's trigger), counts how often the live model emits the inject without a same-response DRIVE-slot tool. The fix doesn't change this rate — it changes how the engine *responds* when the rate is non-zero. Last measured at ~50–80% on `claude-sonnet-4-6`.
+2. **Dispatch-layer rejection (fix A)**. Replays a synthetic solo-inject response through the dispatcher in two configurations: pre-fix (pairing scan bypassed → inject lands; `is_error=False`; banner fires) and post-fix (live code → inject rejected with structured chain-shape hint; `is_error=True`; banner does NOT fire). No live API call.
+3. **Recovery grounding (fix B)** (`--recovery-samples N`, default 3). Constructs the post-Fix-A recovery state (model fired inject, dispatcher rejected, validator now firing missing-DRIVE recovery) and runs the same recovery prompt twice — once with the OLD generic addendum, once with the NEW inject-grounded addendum. Two metrics:
+   - **Lenient grounded rate**: at least one inject keyword appears anywhere in the broadcast (uniformly high — the model's own prior tool_use carries the inject context).
+   - **Strict leading-with-inject rate**: the broadcast OPENS with an inject frame ("CRITICAL INJECT", "BREAKING", "MEDIA LEAK", "🚨"). Last measured 40% pre-fix → 100% post-fix.
+
+```bash
+cd backend && ANTHROPIC_API_KEY=sk-ant-... python scripts/issue_151_before_after.py
+# tighter / cheaper:
+python scripts/issue_151_before_after.py --runs 3 --recovery-samples 2
+# JSON report (clean stdout, audit chatter goes to stderr):
+python scripts/issue_151_before_after.py --json > report.json
+```
+
+Inside the harness, prefix the call with `ANTHROPIC_API_KEY="$LIVE_TEST_ANTHROPIC_API_KEY"` to scope the bridged var to the subprocess only (per the same harness-shadowing rule that motivated `run-live-tests.sh`).
 
 ## diagnostic_full_response.py
 
