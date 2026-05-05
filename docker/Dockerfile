@@ -33,6 +33,13 @@ COPY backend/app ./backend/app
 # inside the container ends up missing and the picker silently
 # returns an empty list.
 COPY backend/scenarios ./backend/scenarios
+# Upgrade pip before any install: the bundled pip in python:3.12-slim
+# (25.0.1 at time of writing) ships CVE-2025-8869 (symlink-extraction
+# check missing) and a related path-traversal info-disclosure CVE,
+# both fixed in pip 25.3. The Trivy gate in docker.yml flags these
+# on every push; rather than .trivyignore them, just take the patched
+# pip — it's a five-second image-size-neutral fix.
+RUN pip install --upgrade "pip>=25.3"
 RUN pip install -e ./backend
 
 # Copy built frontend into the location the backend serves static files from

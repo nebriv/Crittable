@@ -86,6 +86,24 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      - name: Trivy image scan (table, informational) — prints CVEs to log
+        # Same scan parameters as the SARIF gate below, but ``exit-code:
+        # "0"`` so this step never fails the build. Its only purpose is
+        # to surface the human-readable CVE table inside the Actions log
+        # — the SARIF gate that follows writes findings to a file and
+        # does not echo to stdout, which historically forced operators
+        # to dig through the Code Scanning tab to learn *which* CVE
+        # tripped the gate. With this step running first, the next
+        # failed run is self-documenting in the log itself.
+        uses: aquasecurity/trivy-action@0.35.0
+        with:
+          image-ref: ${{ steps.scan-target.outputs.ref }}
+          format: table
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "0"
+          vuln-type: os,library
+
       - name: Trivy image scan (HIGH,CRITICAL) — gates the push
         # Scans the locally-loaded image for OS-package and language-dep
         # CVEs BEFORE it reaches the registry. HIGH/CRITICAL findings
