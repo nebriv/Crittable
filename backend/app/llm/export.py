@@ -376,6 +376,48 @@ def _coerce_int(value: Any, *, lo: int, hi: int) -> int:
     return n
 
 
+def _coerce_dict_list(value: Any) -> list[Any]:
+    """Turn whatever the model emitted for an ``array<object>`` field
+    into an iterable. The bug pattern (observed live, 2026-05-04 sweep)
+    is the model emitting the entire ``per_role_scores`` array as a
+    JSON-encoded *string* — a 519-char blob that, when handed to the
+    naive ``list(value)`` extraction, decomposes character-by-character
+    and every entry is dropped as ``non_dict_entry``. The downstream
+    markdown then renders empty ``–`` dashes for every score, which
+    looks like the AAR completely failed.
+
+    We try to decode the string as JSON. If decode succeeds and yields
+    a list, return it. If decode succeeds and yields a single object
+    (rare model variant — wraps the array in an object), wrap in a
+    one-element list so the caller iterates over the single record.
+    Any other shape (None, scalar, decode failure) returns an empty
+    list and lets the caller's per-entry validation log the drop. We
+    deliberately do NOT coerce a non-string scalar — silently
+    promoting an int 5 to ``[5]`` would mask a real schema regression
+    behind a ``non_dict_entry`` log."""
+
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return value
+    if isinstance(value, dict):
+        return [value]
+    if isinstance(value, str):
+        stripped = value.strip()
+        if not stripped:
+            return []
+        try:
+            decoded = json.loads(stripped)
+        except (ValueError, TypeError):
+            return []
+        if isinstance(decoded, list):
+            return decoded
+        if isinstance(decoded, dict):
+            return [decoded]
+        return []
+    return []
+
+
 def _sanitise_report(raw: dict[str, Any], *, session: Session) -> dict[str, Any]:
     # Build the role lookup once. Score-able roles are the human
     # players (kind == "player"); spectators / observers are excluded
@@ -392,7 +434,7 @@ def _sanitise_report(raw: dict[str, Any], *, session: Session) -> dict[str, Any]
 
     cleaned_scores: list[dict[str, Any]] = []
     dropped: list[dict[str, Any]] = []
-    for entry in list(raw.get("per_role_scores") or []):
+    for entry in _coerce_dict_list(raw.get("per_role_scores")):
         if not isinstance(entry, dict):
             dropped.append({"reason": "non_dict_entry", "value": str(entry)[:80]})
             continue
