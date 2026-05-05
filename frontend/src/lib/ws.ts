@@ -3,7 +3,21 @@
  */
 
 export type ServerEvent =
-  | { type: "state_changed"; state: string; active_role_ids: string[]; turn_index: number | null }
+  | {
+      type: "state_changed";
+      state: string;
+      active_role_ids: string[];
+      turn_index: number | null;
+      /**
+       * Issue #111: per-turn progress fraction (0.0–1.0) for the
+       * TURN STATE rail's determinate bar. ``null`` keeps the
+       * indeterminate sweep. Re-broadcast at AI sub-step boundaries
+       * (planning → tool dispatch → emit / yield) with the same
+       * ``state`` value but a fresh fraction; the page handler
+       * picks the new value up via ``refreshSnapshot``.
+       */
+      progress_pct?: number | null;
+    }
   | { type: "message_chunk"; turn_id: string; text: string }
   | {
       type: "message_complete";
@@ -32,7 +46,17 @@ export type ServerEvent =
        *  reply" indicator without the client having to track timing. */
       ai_paused_at_submit?: boolean;
     }
-  | { type: "turn_changed"; turn_index: number; active_role_ids: string[] }
+  | {
+      type: "turn_changed";
+      turn_index: number;
+      active_role_ids: string[];
+      /**
+       * Issue #111: per-turn progress fraction (0.0–1.0) — see the
+       * ``state_changed`` doc above. Fresh turn → fraction resets
+       * (e.g. 0 / N for AWAITING_PLAYERS).
+       */
+      progress_pct?: number | null;
+    }
   | { type: "tool_invocation"; tool: string; args: Record<string, unknown> }
   | { type: "participant_joined"; role_id: string; label: string; display_name: string | null; kind: string }
   | { type: "participant_left"; role_id: string }
@@ -355,10 +379,12 @@ export class WsClient {
             safe.state = parsed.state;
             safe.turn_index = parsed.turn_index;
             safe.active_role_count = parsed.active_role_ids?.length ?? 0;
+            safe.progress_pct = parsed.progress_pct ?? null;
             break;
           case "turn_changed":
             safe.turn_index = parsed.turn_index;
             safe.active_role_count = parsed.active_role_ids?.length ?? 0;
+            safe.progress_pct = parsed.progress_pct ?? null;
             break;
           case "message_chunk":
             safe.turn_id = parsed.turn_id;

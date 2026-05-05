@@ -29,6 +29,7 @@ from .models import (
     SetupNote,
     Turn,
 )
+from .progress import compute_progress_pct
 from .repository import SessionRepository
 from .submission_pipeline import FACILITATOR_MENTION_TOKEN
 from .turn_engine import (
@@ -223,7 +224,21 @@ class SessionManager:
             },
         )
 
-    async def _broadcast_state(self, session: Session) -> None:
+    async def _broadcast_state(
+        self, session: Session, *, record: bool = True
+    ) -> None:
+        """Broadcast a ``state_changed`` event for the current state.
+
+        ``record`` controls whether the event lands in the connection
+        manager's bounded replay buffer. Default ``True`` (state
+        transitions are durable; reconnecting clients need them in the
+        replay). Issue #111's progress-pulse re-broadcasts pass
+        ``record=False`` — the snapshot regenerates ``progress_pct``
+        at fetch time, so the pulse doesn't need to survive in the
+        replay buffer (and using a slot per pulse would evict
+        legitimate state_changed / message_complete events).
+        """
+
         await self._connections.broadcast(
             session.id,
             {
@@ -235,7 +250,12 @@ class SessionManager:
                 "turn_index": (
                     session.current_turn.index if session.current_turn else None
                 ),
+                # Issue #111: per-turn progress fraction so the TURN
+                # STATE rail can render a determinate bar without
+                # waiting for the next snapshot poll.
+                "progress_pct": compute_progress_pct(session),
             },
+            record=record,
         )
 
     # ----------------------------------------------------- session lifecycle
@@ -756,6 +776,10 @@ class SessionManager:
                 "type": "turn_changed",
                 "turn_index": turn.index,
                 "active_role_ids": turn.active_role_ids,
+                # Issue #111: ride the new-turn fan-out so a freshly-
+                # opened turn (e.g. after force-advance reopens an
+                # active set) carries the reset progress fraction.
+                "progress_pct": compute_progress_pct(session),
             },
         )
         self._emit(
@@ -1100,6 +1124,10 @@ class SessionManager:
                         "type": "turn_changed",
                         "turn_index": new_turn.index,
                         "active_role_ids": new_turn.active_role_ids,
+                        # Issue #111: fresh turn → reset progress
+                        # fraction (computed from active/submitted on
+                        # the new turn).
+                        "progress_pct": compute_progress_pct(session),
                     },
                 )
                 self._emit("force_advance", session, by=by_role_id, recovered_from="errored")

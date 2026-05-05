@@ -93,6 +93,17 @@ export interface TurnView {
    */
   ready_role_ids?: string[];
   status: string;
+  /**
+   * Issue #111: per-turn progress fraction (0.0–1.0) for the TURN
+   * STATE rail. Backend single-source-of-truth — see
+   * ``backend/app/sessions/progress.py`` for the per-state policy:
+   * AWAITING_PLAYERS = submitted / active, AI_PROCESSING /
+   * BRIEFING = driver-written sub-step (planning → tool dispatch →
+   * emit / yield), ENDED = 1.0, others = ``null`` (sweep).
+   * ``null`` / undefined means the rail keeps the indeterminate
+   * sweep rather than rendering a determinate bar.
+   */
+  progress_pct?: number | null;
 }
 
 export interface MessageView {
