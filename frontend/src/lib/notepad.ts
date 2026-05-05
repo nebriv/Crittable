@@ -93,18 +93,32 @@ export async function pushSnapshot(
   );
 }
 
+/**
+ * Affordance discriminator for the highlight-action popover. ``pin``
+ * is the original "Add to notes" flow; ``aar_mark`` is "Mark for AAR
+ * review" (issue #117). The server keys idempotency on
+ * ``(action, source_message_id)`` so a single chat message can be
+ * exercised by both affordances without one shadowing the other.
+ */
+export type PinAction = "pin" | "aar_mark";
+
 export async function pinToNotepad(
   sessionId: string,
   token: string,
   text: string,
   sourceMessageId: string | null,
+  action: PinAction,
 ): Promise<void> {
   await notepadFetch(
     `/api/sessions/${sessionId}/notepad/pin?token=${encodeURIComponent(token)}`,
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text, source_message_id: sourceMessageId }),
+      body: JSON.stringify({
+        text,
+        source_message_id: sourceMessageId,
+        action,
+      }),
     },
   );
 }

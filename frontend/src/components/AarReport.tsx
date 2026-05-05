@@ -54,6 +54,15 @@ interface AarReport {
   narrative: string;
   what_went_well: string[];
   gaps: string[];
+  /**
+   * Issue #117 — moments players flagged mid-exercise via the
+   * highlight popover's "Mark for AAR" action. Deliberately
+   * category-agnostic: a flag might be a decision, a question, a
+   * follow-up, a debrief item, a team-level concern, etc. Empty
+   * when the affordance wasn't used and the model didn't flag any
+   * from the transcript; the section is hidden in that case.
+   */
+  flagged_for_review: string[];
   recommendations: string[];
   per_role_scores: PerRoleScore[];
   overall_score: number;
@@ -271,6 +280,13 @@ function LeftColumn({ report }: { report: AarReport }) {
       ) : null}
       {report.gaps.length > 0 ? (
         <BriefBlock title="WHAT DIDN'T" items={report.gaps} tone="warn" />
+      ) : null}
+      {report.flagged_for_review.length > 0 ? (
+        <BriefBlock
+          title="FLAGGED FOR REVIEW"
+          items={report.flagged_for_review}
+          tone="signal"
+        />
       ) : null}
       {report.recommendations.length > 0 ? (
         <BriefBlock

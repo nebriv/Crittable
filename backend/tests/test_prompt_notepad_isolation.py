@@ -53,7 +53,7 @@ def _session_with_notepad_canary() -> Session:
     """Build a minimally-valid Session whose notepad contains the canary
     in every plausible carrier field — markdown_snapshot is the AAR's
     source of truth, but a paranoid future regression might serialize
-    the template_id, contributor list, or pinned_message_ids into a
+    the template_id, contributor list, or pinned_message_keys into a
     prompt block. Plant the canary in all of them."""
     session = Session(
         scenario_prompt="ransomware exercise",
@@ -77,11 +77,16 @@ def _session_with_notepad_canary() -> Session:
     )
     session.notepad.markdown_snapshot = (
         f"## Timeline\nT+02:14 — {CANARY}\n\n"
-        f"## Action Items\n- [ ] {CANARY} — @ir\n"
+        f"## Action Items\n- [ ] {CANARY} — @ir\n\n"
+        # Issue #117: also plant the canary in the AAR Review section
+        # so the play-tier isolation check covers the new section the
+        # AAR pipeline reads from.
+        f"## AAR Review\nT+05:01 — {CANARY}\n"
     )
     session.notepad.template_id = f"custom-{CANARY}"
     session.notepad.contributor_role_ids.append("r_ciso")
-    session.notepad.pinned_message_ids.append(f"msg-{CANARY}")
+    session.notepad.pinned_message_keys.append(f"pin:msg-{CANARY}")
+    session.notepad.pinned_message_keys.append(f"aar_mark:msg-{CANARY}")
     return session
 
 

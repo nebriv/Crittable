@@ -196,11 +196,12 @@ class SessionRecorder:
         # live. Tracked as follow-up: capture + replay the op stream
         # for full edit-by-edit fidelity.
         notepad_snapshot = session.notepad.markdown_snapshot or None
-        # Pinned-message idempotency state. The pinned text is already
-        # baked into ``notepad_snapshot``; capturing the ids list lets
-        # the replayed notepad refuse a double-pin on the same source
-        # message a dev clicks during their replay walk-through.
-        notepad_pinned_message_ids = list(session.notepad.pinned_message_ids)
+        # Pinned-key idempotency state. The pinned text is already
+        # baked into ``notepad_snapshot``; capturing the keys list lets
+        # the replayed notepad refuse a double-pin on the same
+        # ``(action, source_message_id)`` pair a dev clicks during
+        # their replay walk-through (issue #117).
+        notepad_pinned_message_keys = list(session.notepad.pinned_message_keys)
         # Contributors are recorded by role_id in the live session;
         # round-trip them by label so the spawned session's roster
         # resolves to fresh ids without stale references. Unresolved
@@ -251,7 +252,7 @@ class SessionRecorder:
             mock_llm_script=mock_script,
             replay_mode="deterministic" if has_ai_capture else "engine",
             notepad_snapshot=notepad_snapshot,
-            notepad_pinned_message_ids=notepad_pinned_message_ids,
+            notepad_pinned_message_keys=notepad_pinned_message_keys,
             notepad_contributor_role_labels=notepad_contributor_role_labels,
             decision_log=decision_log,
             cost=cost,

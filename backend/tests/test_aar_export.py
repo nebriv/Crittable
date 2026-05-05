@@ -174,6 +174,10 @@ def report() -> dict[str, Any]:
         "recommendations": [
             "Pre-draft regulator notification template",
         ],
+        "flagged_for_review": [
+            "Isolated finance subnet at T+04:12 (CISO call)",
+            "Open question: was the ransom ever revisited after the backup decision?",
+        ],
         "per_role_scores": [
             {
                 "role_id": "role-ciso",
@@ -369,6 +373,7 @@ def test_render_markdown_section_order(
         "## After-action narrative",
         "### What went well",
         "### Gaps",
+        "### Flagged for review",
         "### Recommendations",
         "## Per-role scores",
         "## Overall session score",
@@ -1073,3 +1078,116 @@ def test_extract_report_coerces_string_blob_in_array_string_fields() -> None:
     assert report["what_went_well"] == ["single string instead of an array"]
     assert report["recommendations"] == ["a real first item"]
     assert report["gaps"] == []
+
+
+def test_extract_report_round_trips_flagged_for_review() -> None:
+    """Issue #117 — ``flagged_for_review`` is part of the AAR tool
+    schema and is deliberately category-agnostic (a flag might be a
+    decision, question, follow-up, debrief item, etc.). The extractor
+    coerces it through the same string-list path as the other bullet
+    sections, and the field defaults to ``[]`` when the model omits
+    it (older mock fixtures, pre-#117 recordings)."""
+
+    from app.llm.export import _extract_report
+
+    session = _two_role_session()
+    content = [
+        {
+            "type": "tool_use",
+            "name": "finalize_report",
+            "input": {
+                "executive_summary": "x",
+                "narrative": "y",
+                "flagged_for_review": [
+                    "Isolated finance subnet at T+04:12 (CISO call)",
+                    "Open question: was the ransom ever revisited after the backup decision?",
+                    "Follow-up: legal sign-off on the holding statement",
+                ],
+                "per_role_scores": [],
+                "overall_score": 3,
+                "overall_rationale": "z",
+            },
+        }
+    ]
+    report = _extract_report(content, session=session)
+    assert report["flagged_for_review"] == [
+        "Isolated finance subnet at T+04:12 (CISO call)",
+        "Open question: was the ransom ever revisited after the backup decision?",
+        "Follow-up: legal sign-off on the holding statement",
+    ]
+
+
+def test_extract_report_flagged_for_review_defaults_to_empty_list_when_omitted() -> None:
+    """Backwards-compat with mock fixtures and any recorded scenarios
+    captured before the field existed: an absent ``flagged_for_review``
+    MUST return ``[]`` so the renderer's empty-section gate hides the
+    heading instead of crashing on a missing key."""
+
+    from app.llm.export import _extract_report
+
+    session = _two_role_session()
+    content = [
+        {
+            "type": "tool_use",
+            "name": "finalize_report",
+            "input": {
+                "executive_summary": "x",
+                "narrative": "y",
+                # No ``flagged_for_review`` at all.
+                "per_role_scores": [],
+                "overall_score": 3,
+                "overall_rationale": "z",
+            },
+        }
+    ]
+    report = _extract_report(content, session=session)
+    assert report["flagged_for_review"] == []
+
+
+def test_extract_report_coerces_string_blob_in_flagged_for_review() -> None:
+    """Same string-blob recovery path as the other array<string>
+    fields — issue #117 added a fourth such field."""
+
+    from app.llm.export import _extract_report
+
+    session = _two_role_session()
+    content = [
+        {
+            "type": "tool_use",
+            "name": "finalize_report",
+            "input": {
+                "executive_summary": "x",
+                "narrative": "y",
+                "flagged_for_review": "Single flagged sentence as a blob",
+                "per_role_scores": [],
+                "overall_score": 3,
+                "overall_rationale": "z",
+            },
+        }
+    ]
+    report = _extract_report(content, session=session)
+    assert report["flagged_for_review"] == ["Single flagged sentence as a blob"]
+
+
+def test_render_markdown_hides_flagged_for_review_section_when_empty() -> None:
+    """An exercise where nobody clicked Mark-for-AAR (and the model
+    didn't flag anything from the transcript) should not render an
+    empty ``### Flagged for review`` heading. Mirrors the existing
+    what-went-well / gaps / recommendations empty-section behaviour."""
+
+    from app.llm.export import _render_markdown
+
+    session = _two_role_session()
+    report = {
+        "executive_summary": "x",
+        "narrative": "y",
+        "what_went_well": ["did the thing"],
+        "gaps": [],
+        "recommendations": [],
+        "flagged_for_review": [],  # empty
+        "per_role_scores": [],
+        "overall_score": 3,
+        "overall_rationale": "z",
+    }
+    md = _render_markdown(session, report, audit_events=[])
+    assert "### Flagged for review" not in md

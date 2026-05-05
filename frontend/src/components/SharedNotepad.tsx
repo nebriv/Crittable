@@ -344,27 +344,30 @@ export function SharedNotepad({
     if (editor) editor.setEditable(!locked);
   }, [editor, locked]);
 
-  // "Add to notes" pin from the chat-highlight popover. The popover
-  // POSTs the snippet, then dispatches ``crittable:notepad-pin`` on
-  // the window — only the originating tab inserts; Yjs collab fans
-  // the resulting transaction to peers. Per-tab dispatch (rather
-  // than a server-side broadcast) prevents double-insert when one
-  // user has two tabs of the same role open.
+  // "Add to notes" + "Mark for AAR" pins from the chat-highlight
+  // popover. The popover POSTs the snippet, then dispatches
+  // ``crittable:notepad-pin`` on the window — only the originating tab
+  // inserts; Yjs collab fans the resulting transaction to peers.
+  // Per-tab dispatch (rather than a server-side broadcast) prevents
+  // double-insert when one user has two tabs of the same role open.
   //
   // The server idempotently 204s a re-pin of the same
-  // ``source_message_id`` (a panic-clicker double-tapping the same
-  // chat bubble), but the popover still dispatches the event for
-  // every successful request. ``insertedPinIdsRef`` tracks the ids
-  // we've already written so the second click of the same pin
-  // doesn't double the editor entry. The id is recorded ONLY after
-  // the insert succeeds — if ``appendPinToEditor`` throws, the user
-  // can retry the same pin (per Copilot review on PR #125). Bounded
-  // to the last ``MAX_INSERTED_PIN_IDS`` ids in FIFO order so a long
-  // session doesn't grow the Set unboundedly.
-  const insertedPinIdsRef = useRef<string[]>([]);
+  // ``(action, source_message_id)`` pair (a panic-clicker double-
+  // tapping the same affordance on the same chat bubble), but the
+  // popover still dispatches the event for every successful request.
+  // ``insertedPinKeysRef`` tracks the ``f"{section}:{messageId}"``
+  // pairs we've already written so the second click of the same
+  // affordance doesn't double the editor entry — but a click of the
+  // OTHER affordance on the same message is still allowed through.
+  // The key is recorded ONLY after the insert succeeds — if
+  // ``appendPinToEditor`` throws, the user can retry the same pin
+  // (per Copilot review on PR #125). Bounded to the last
+  // ``MAX_INSERTED_PIN_IDS`` keys in FIFO order so a long session
+  // doesn't grow the Set unboundedly.
+  const insertedPinKeysRef = useRef<string[]>([]);
   useEffect(() => {
     if (!editor) return;
-    const inserted = insertedPinIdsRef.current;
+    const inserted = insertedPinKeysRef.current;
     function onPin(e: Event): void {
       const detail = (e as CustomEvent<NotepadPinEventDetail>).detail;
       if (!detail || !detail.text) return;
@@ -372,20 +375,20 @@ export function SharedNotepad({
         console.warn("[notepad] pin received while locked; dropping");
         return;
       }
-      if (
-        detail.sourceMessageId &&
-        inserted.includes(detail.sourceMessageId)
-      ) {
+      const dedupeKey = detail.sourceMessageId
+        ? `${detail.section}:${detail.sourceMessageId}`
+        : null;
+      if (dedupeKey && inserted.includes(dedupeKey)) {
         console.debug(
-          "[notepad] pin already inserted for source",
-          detail.sourceMessageId,
+          "[notepad] pin already inserted for",
+          dedupeKey,
         );
         return;
       }
       try {
-        appendPinToEditor(editor!, detail.text, sessionStartedAt);
-        if (detail.sourceMessageId) {
-          inserted.push(detail.sourceMessageId);
+        appendPinToEditor(editor!, detail.text, sessionStartedAt, detail.section);
+        if (dedupeKey) {
+          inserted.push(dedupeKey);
           if (inserted.length > MAX_INSERTED_PIN_IDS) {
             inserted.splice(0, inserted.length - MAX_INSERTED_PIN_IDS);
           }
@@ -531,7 +534,7 @@ export function SharedNotepad({
             title={
               locked
                 ? "Notepad is read-only; the export link still works."
-                : "Hidden from the AI during play; the AI reads it only at the end of the session, when generating the final report. Plan and debrief freely."
+                : "Hidden from the AI during play. At end of session, the AI reads the whole notepad to write the final report — including anything you've flagged via 'Mark for AAR'. Plan and debrief freely."
             }
           />
           {/* Signal-tinted button styling (same pattern as AAR's MARKDOWN /
@@ -578,10 +581,16 @@ export function SharedNotepad({
 
         {/* Coachmark: visible to ALL roles, even non-creators. Empty
             notepad on first visit needs the highlight-to-pin tip; non-
-            creators don't get the picker, but they do get this hint. */}
+            creators don't get the picker, but they do get this hint.
+            Names BOTH affordances explicitly (issue #117) so a first-
+            time user discovers Mark-for-AAR alongside Add-to-notes
+            without having to highlight something to find out. */}
         {isEmpty ? (
           <div className="text-[11px] text-ink-400">
-            Tip: highlight any chat message to pin it here.
+            Tip: highlight any chat message to pin it here (
+            <span className="mono">+</span> Add to notes) or flag it
+            for the post-mortem (<span className="mono">▶</span> Mark
+            for AAR).
             <span className="mono ml-2 text-ink-500">
               (Ctrl/⌘+Shift+T inserts a T+MM:SS timestamp.)
             </span>

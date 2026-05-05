@@ -588,6 +588,17 @@ AAR_TOOL: dict[str, Any] = {
             "what_went_well": {"type": "array", "items": {"type": "string"}},
             "gaps": {"type": "array", "items": {"type": "string"}},
             "recommendations": {"type": "array", "items": {"type": "string"}},
+            # Issue #117 — moments the players flagged during the
+            # exercise via the "Mark for AAR" highlight action (and
+            # any others the model judges flag-worthy when reading
+            # the transcript). Deliberately category-agnostic: a flag
+            # might be a decision, a question, a follow-up, something
+            # to debrief, a team-level concern, etc. The renderer
+            # surfaces them as a single ``### Flagged for review``
+            # section so operators have one scannable list of "things
+            # the room said were worth coming back to" without having
+            # to force each one into decision / gap / win shapes.
+            "flagged_for_review": {"type": "array", "items": {"type": "string"}},
             "per_role_scores": {
                 "type": "array",
                 "items": {

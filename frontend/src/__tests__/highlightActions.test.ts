@@ -23,15 +23,18 @@ import {
 } from "../lib/highlightActions";
 
 describe("highlightActions default registry", () => {
-  it("ships exactly one v1 action — pin to notepad", () => {
-    expect(defaultHighlightActions).toHaveLength(1);
+  it("ships pin-to-notepad and mark-for-aar (issue #117)", () => {
+    expect(defaultHighlightActions).toHaveLength(2);
     expect(defaultHighlightActions[0].id).toBe("pin-to-notepad");
     expect(defaultHighlightActions[0].label).toBe("Add to notes");
+    expect(defaultHighlightActions[1].id).toBe("mark-for-aar");
+    expect(defaultHighlightActions[1].label).toBe("Mark for AAR");
   });
 
-  it("default action has no isAvailable gate (works for any source kind)", () => {
-    const action = defaultHighlightActions[0];
-    expect(action.isAvailable).toBeUndefined();
+  it("default actions have no isAvailable gate (work for any source kind)", () => {
+    for (const action of defaultHighlightActions) {
+      expect(action.isAvailable).toBeUndefined();
+    }
   });
 });
 
@@ -133,6 +136,7 @@ describe("pin-to-notepad action — window event dispatch", () => {
     expect(seen[0]).toEqual({
       text: "selected snippet",
       sourceMessageId: "msg_42",
+      section: "timeline",
     });
   });
 
@@ -168,6 +172,24 @@ describe("pin-to-notepad action — window event dispatch", () => {
     expect(seen[0].text).toContain("link");
   });
 
+  it("POSTs with action='pin' for the Add-to-notes flow", async () => {
+    const fetchMock = globalThis.fetch as ReturnType<typeof vi.fn>;
+    const action = defaultHighlightActions[0];
+    await action.onSelect({
+      text: "x",
+      sourceMessageId: "msg_pin",
+      sourceKind: "ai",
+      roleId: "r",
+      sessionId: "s",
+      token: "t",
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [, init] = fetchMock.mock.calls[0];
+    const body = JSON.parse(init.body as string);
+    expect(body.action).toBe("pin");
+    expect(body.source_message_id).toBe("msg_pin");
+  });
+
   it("does NOT dispatch the event if the POST rejects — caller decides toast wording", async () => {
     globalThis.fetch = vi.fn().mockResolvedValue(
       new Response(JSON.stringify({ detail: "rate limited" }), { status: 429 }),
@@ -180,6 +202,116 @@ describe("pin-to-notepad action — window event dispatch", () => {
         action.onSelect({
           text: "selected snippet",
           sourceMessageId: "msg_42",
+          sourceKind: "ai",
+          roleId: "r",
+          sessionId: "s",
+          token: "t",
+        }),
+      ).rejects.toBeDefined();
+    } finally {
+      window.removeEventListener(NOTEPAD_PIN_EVENT, handler);
+    }
+    expect(handler).not.toHaveBeenCalled();
+  });
+});
+
+describe("mark-for-aar action — issue #117", () => {
+  let originalFetch: typeof globalThis.fetch | undefined;
+  beforeEach(() => {
+    originalFetch = globalThis.fetch;
+    globalThis.fetch = vi.fn().mockResolvedValue(
+      new Response(null, { status: 204 }),
+    );
+  });
+  afterEach(() => {
+    if (originalFetch) globalThis.fetch = originalFetch;
+  });
+
+  function getMarkForAar(): HighlightAction {
+    const found = defaultHighlightActions.find((a) => a.id === "mark-for-aar");
+    if (!found) throw new Error("mark-for-aar action missing from registry");
+    return found;
+  }
+
+  it("POSTs with action='aar_mark' so the server keys idempotency separately", async () => {
+    const fetchMock = globalThis.fetch as ReturnType<typeof vi.fn>;
+    await getMarkForAar().onSelect({
+      text: "decision sentence",
+      sourceMessageId: "msg_aar",
+      sourceKind: "ai",
+      roleId: "r",
+      sessionId: "s",
+      token: "t",
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [, init] = fetchMock.mock.calls[0];
+    const body = JSON.parse(init.body as string);
+    expect(body.action).toBe("aar_mark");
+    expect(body.source_message_id).toBe("msg_aar");
+    expect(body.text).toBe("decision sentence");
+  });
+
+  it("dispatches NOTEPAD_PIN_EVENT with section='aar_review'", async () => {
+    const seen: NotepadPinEventDetail[] = [];
+    const handler = (e: Event) => {
+      seen.push((e as CustomEvent<NotepadPinEventDetail>).detail);
+    };
+    window.addEventListener(NOTEPAD_PIN_EVENT, handler);
+    try {
+      await getMarkForAar().onSelect({
+        text: "important moment",
+        sourceMessageId: "msg_aar",
+        sourceKind: "chat",
+        roleId: "r",
+        sessionId: "s",
+        token: "t",
+      });
+    } finally {
+      window.removeEventListener(NOTEPAD_PIN_EVENT, handler);
+    }
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).toEqual({
+      text: "important moment",
+      sourceMessageId: "msg_aar",
+      section: "aar_review",
+    });
+  });
+
+  it("sanitises dispatched text the same way as pin-to-notepad", async () => {
+    const seen: NotepadPinEventDetail[] = [];
+    const handler = (e: Event) => {
+      seen.push((e as CustomEvent<NotepadPinEventDetail>).detail);
+    };
+    window.addEventListener(NOTEPAD_PIN_EVENT, handler);
+    try {
+      await getMarkForAar().onSelect({
+        text: "# heading\n[bait](http://evil) <img src=x>",
+        sourceMessageId: "msg_aar_xss",
+        sourceKind: "ai",
+        roleId: "r",
+        sessionId: "s",
+        token: "t",
+      });
+    } finally {
+      window.removeEventListener(NOTEPAD_PIN_EVENT, handler);
+    }
+    expect(seen).toHaveLength(1);
+    expect(seen[0].text).not.toMatch(/^#/);
+    expect(seen[0].text).not.toContain("](http");
+    expect(seen[0].text).not.toContain("<img");
+  });
+
+  it("does NOT dispatch the event if the POST rejects", async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ detail: "locked" }), { status: 409 }),
+    );
+    const handler = vi.fn();
+    window.addEventListener(NOTEPAD_PIN_EVENT, handler);
+    try {
+      await expect(
+        getMarkForAar().onSelect({
+          text: "x",
+          sourceMessageId: "msg_aar",
           sourceKind: "ai",
           roleId: "r",
           sessionId: "s",

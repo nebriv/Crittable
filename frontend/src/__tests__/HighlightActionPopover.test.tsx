@@ -9,7 +9,10 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { HighlightActionPopover } from "../components/HighlightActionPopover";
-import type { HighlightAction } from "../lib/highlightActions";
+import {
+  defaultHighlightActions,
+  type HighlightAction,
+} from "../lib/highlightActions";
 // Range.prototype.getBoundingClientRect is stubbed globally in
 // src/test-setup.ts (jsdom doesn't ship it; the popover needs it).
 
@@ -196,6 +199,43 @@ describe("HighlightActionPopover", () => {
     // MUST stay alive — clearing it would terminate the drag-select
     // mid-stream, which was the user-reported regression.
     expect(window.getSelection()?.isCollapsed).toBe(false);
+  });
+
+  it("renders BOTH default actions when given the default registry (issue #117)", async () => {
+    // Acceptance criterion for issue #117: 'when you highlight a text
+    // blurb I want the option to flag for AAR review'. Both buttons
+    // must be present in the popover when the default registry is
+    // wired through; without this assertion a registry-filter
+    // regression that hid the new action would be invisible.
+    render(
+      <>
+        <div
+          data-testid="bubble"
+          data-highlightable="true"
+          data-message-id="msg_default"
+          data-message-kind="ai"
+        >
+          AI inject text
+        </div>
+        <HighlightActionPopover
+          sessionId="s"
+          roleId="r"
+          token="t"
+          actions={defaultHighlightActions}
+        />
+      </>,
+    );
+    await act(async () => {
+      dispatchSelectionInside(screen.getByTestId("bubble"), "AI inject text");
+    });
+    const addToNotes = await screen.findByRole("menuitem", {
+      name: /add to notes/i,
+    });
+    const markForAar = await screen.findByRole("menuitem", {
+      name: /mark for aar/i,
+    });
+    expect(addToNotes).toBeTruthy();
+    expect(markForAar).toBeTruthy();
   });
 
   it("hides the menu on Escape", async () => {

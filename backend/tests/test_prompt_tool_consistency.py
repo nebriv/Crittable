@@ -216,6 +216,7 @@ _NON_TOOL_ALLOWLIST = frozenset(
         "gaps",
         "recommendations",
         "narrative",
+        "flagged_for_review",
         "score",
         # AAR per-role-scores entry sub-fields (the AAR system block
         # now calls these out by name when explaining the JSON-array-

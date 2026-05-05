@@ -53,9 +53,15 @@ function asSourceKind(raw: string | null | undefined): HighlightSourceKind {
   return "chat";
 }
 
-// Approximate menu width (mono labels + glyphs). Used for off-edge
-// clamping; doesn't need to be exact, just within 30 px.
-const MENU_APPROX_WIDTH = 160;
+// Approximate per-button width and container overhead used by the
+// off-edge clamp. With multiple actions in the registry (issue #117
+// added the second), a fixed total-width constant under-clamped on
+// narrow viewports and let the menu's right edge render off-screen.
+// Scale the width by visible-action count instead — see ``menuWidth``
+// computation below.
+const MENU_BUTTON_APPROX_WIDTH = 130; // mono label + glyph + button padding
+const MENU_HORIZONTAL_OVERHEAD = 16; // container px + borders
+const MENU_GAP = 4; // ``gap-1`` between buttons
 const MENU_APPROX_HEIGHT = 36;
 
 export function HighlightActionPopover({
@@ -301,15 +307,29 @@ export function HighlightActionPopover({
   // sides so it never renders off-screen or under viewport chrome.
   // Flip below the selection when there isn't room above (selection
   // near the top of the viewport).
+  //
+  // The width clamp scales with the number of visible actions (issue
+  // #117 added a second action; a fixed 160 px constant under-clamped
+  // a two-button menu and let its right edge render off-screen on
+  // narrow viewports — flagged BLOCK by the UI/UX review). Per-button
+  // approx width covers a mono uppercase label (≤14 chars) + glyph +
+  // button padding/border; container overhead covers the wrapping
+  // ``px-1`` + borders; ``MENU_GAP`` accounts for the inter-button
+  // ``gap-1``.
   const vw = window.innerWidth;
   const vh = window.innerHeight;
+  const buttonCount = visibleActions.length;
+  const menuWidth =
+    MENU_HORIZONTAL_OVERHEAD +
+    buttonCount * MENU_BUTTON_APPROX_WIDTH +
+    Math.max(0, buttonCount - 1) * MENU_GAP;
   const flipBelow = state.rect.top < MENU_APPROX_HEIGHT + 8;
   const rawTop = flipBelow
     ? state.rect.bottom + 8
     : state.rect.top - MENU_APPROX_HEIGHT;
   const top = Math.max(8, Math.min(rawTop, vh - MENU_APPROX_HEIGHT - 8));
-  const rawLeft = state.rect.left + state.rect.width / 2 - MENU_APPROX_WIDTH / 2;
-  const left = Math.max(8, Math.min(rawLeft, vw - MENU_APPROX_WIDTH - 8));
+  const rawLeft = state.rect.left + state.rect.width / 2 - menuWidth / 2;
+  const left = Math.max(8, Math.min(rawLeft, vw - menuWidth - 8));
 
   function handleMenuKey(e: ReactKeyboardEvent<HTMLDivElement>): void {
     if (e.key === "ArrowRight" || e.key === "ArrowDown") {
@@ -345,7 +365,15 @@ export function HighlightActionPopover({
           type="button"
           role="menuitem"
           tabIndex={idx === focusedIdx ? 0 : -1}
-          aria-keyshortcuts={idx === 0 ? "Enter" : undefined}
+          // ``title`` surfaces the per-action description as a hover/
+          // focus tooltip — the cheapest way to disambiguate two
+          // similarly-shaped affordances (issue #117 added the second).
+          title={action.description}
+          aria-label={
+            action.description
+              ? `${action.label}. ${action.description}`
+              : undefined
+          }
           disabled={pending === action.id}
           onClick={() => onClick(action)}
           className="mono rounded-r-1 border border-transparent bg-ink-850 px-2 py-1 text-[11px] uppercase tracking-[0.12em] text-ink-100 hover:border-signal-deep disabled:opacity-50"
