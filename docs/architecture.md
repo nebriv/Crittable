@@ -139,13 +139,13 @@ Two ad-hoc paths the validator replaced:
 
 | Slot | Tools | What it represents |
 |---|---|---|
-| `DRIVE` | `broadcast`, `address_role` | A player-facing question / addressable narrative beat |
-| `YIELD` | `set_active_roles` | Advances the turn |
-| `NARRATE` | `inject_event` | Stage-direction system note |
-| `PIN` | `mark_timeline_point` | Sidebar timeline pin (no chat bubble) |
-| `ESCALATE` | `inject_critical_event` | Headline-grade banner — must chain to DRIVE+YIELD |
-| `TERMINATE` | ~~`end_session`~~ | Removed from the AI palette in 2026-05-02 (issue #104). Slot retained as defensive dead code; only the creator can end the exercise (REST + WS). |
+| `DRIVE` | `broadcast`, `address_role`, `share_data`, `pose_choice` | Player-facing message — answer, brief, data dump, or A/B fork |
+| `YIELD` | `set_active_roles` | Advances the turn to the next active roles |
+| `ESCALATE` | `inject_critical_event` | Headline-grade banner — must chain to DRIVE + YIELD on the same turn |
 | `BOOKKEEPING` | `track_role_followup` / `resolve_role_followup` / `request_artifact` / `lookup_resource` / `use_extension_tool` / extension tools | Side effects that neither drive nor yield |
+| ~~`NARRATE`~~ | ~~`inject_event`~~ | Removed from the active play palette in the 2026-04-30 redesign. Slot retained as defensive dead code in [`slots.py`](../backend/app/sessions/slots.py). |
+| ~~`PIN`~~ | ~~`mark_timeline_point`~~ | Same — removed in the 2026-04-30 redesign; dead-code slot only. |
+| ~~`TERMINATE`~~ | ~~`end_session`~~ | Removed in 2026-05-02 (issue #104). The AI cannot end the exercise; only the creator can, via `POST /api/sessions/{id}/end` or the WS `request_end_session` event. |
 
 ### Contracts (play tier)
 
@@ -261,33 +261,68 @@ egress). See [`llm_providers.md`](llm_providers.md).
 
 ## Tools surfaced to Claude
 
-Built-ins (play tier):
+Built-ins (play tier — every play turn must end with a yield):
 
-- `address_role`, `broadcast`, `inject_event`,
-  `inject_critical_event` — narration tools.
-- `set_active_roles` — yield (the only "advance the turn" tool).
-- `request_artifact` — ask a role for a structured deliverable.
-- `mark_timeline_point` — pin a beat to the right-sidebar timeline
-  (sidebar-only; produces no chat bubble).
+- `broadcast` / `address_role` — narrate to all roles or speak
+  directly to one (player-facing DRIVE).
+- `share_data` — player-facing data dump (logs, IOCs, IR runbook
+  excerpts) addressed to one or more roles. Counts as DRIVE.
+- `pose_choice` — multi-option decision prompt. Counts as DRIVE.
+- `set_active_roles` — yield. The only tool that advances the turn.
+  Every play turn must end with a `set_active_roles` call.
+- `inject_critical_event` — escalation banner. **Must chain to
+  DRIVE + YIELD on the same turn**; standalone calls are rejected
+  by the validator and trigger the recovery cascade.
+- `request_artifact` — ask a role for a structured deliverable
+  (IR plan, comms draft).
 - `track_role_followup` / `resolve_role_followup` — per-role todo
   list the AI maintains across turns; surfaced back to the model as
   Block 11 of the system prompt.
-- `use_extension_tool`, `lookup_resource` — operator extensions.
+- `use_extension_tool` / `lookup_resource` — operator extensions.
 
-(`end_session` was removed in 2026-05-02 / issue #104; only the creator
-can wrap the exercise, via `POST /api/sessions/{id}/end` or the WS
-`request_end_session` event.)
+Removed from the play palette:
 
-Setup-only:
+- `end_session` — removed 2026-05-02 (issue #104). Only the creator
+  can end the exercise, via `POST /api/sessions/{id}/end` or the WS
+  `request_end_session` event.
+- `inject_event` / `mark_timeline_point` — removed in the 2026-04-30
+  redesign (the four DRIVE tools subsume their use cases). Slot
+  enums kept in [`slots.py`](../backend/app/sessions/slots.py) as
+  defensive dead code.
+
+Setup-only (state == `SETUP`, `tool_choice = {"type":"any"}` always):
 
 - `ask_setup_question`, `propose_scenario_plan`, `finalize_setup`.
+- `declare_workstreams` — added when `WORKSTREAMS_ENABLED=true`
+  (default). See [`docs/plans/chat-decluttering.md`](plans/chat-decluttering.md).
 
-AAR-only: `finalize_report`.
+AAR-only (state == `ENDED`, `tool_choice = {"type":"tool","name":"finalize_report"}`):
+
+- `finalize_report`.
 
 Tool descriptions in
 [`backend/app/llm/tools.py`](../backend/app/llm/tools.py) carry the
 detail; the tool-use protocol in
-[`prompts.md`](prompts.md) covers the chaining patterns.
+[`prompts.md`](prompts.md) covers the chaining patterns; the
+authoring rules live in [`tool-design.md`](tool-design.md).
+
+## Operator runtime controls
+
+Beyond the engine-side guardrails, the creator has a handful of
+runtime escape hatches surfaced in the UI ("God Mode" panel) and via
+REST:
+
+| Action | Endpoint | Purpose |
+|---|---|---|
+| **Force-advance** | `POST /api/sessions/{id}/force-advance` | Skip a stalled turn (any participant). Bypasses the ready-quorum gate. |
+| **Pause / Resume AI** | `POST /api/sessions/{id}/pause` & `/resume` | Wave 3 / issue #69. Halts the play-turn pump so the room can have an out-of-band discussion without the AI advancing. |
+| **End session** | `POST /api/sessions/{id}/end` | Creator-only as of issue #104. Kicks AAR generation. |
+| **Proxy respond** / **Proxy submit pending** | `POST /api/sessions/{id}/admin/proxy-respond` & `/admin/proxy-submit-pending` | Submit on behalf of an absent role (solo testing, missing-player escape). Subject to the same per-role-per-turn cap as a real submission. |
+| **Abort turn** | `POST /api/sessions/{id}/admin/abort-turn` | Drop the in-flight AI turn and roll back to `AWAITING_PLAYERS`. Recovery for stuck retries. |
+| **Retry AAR** | `POST /api/sessions/{id}/admin/retry-aar` | Re-run AAR generation if the first attempt failed (the export endpoint returns `500` when this happens). |
+| **Edit plan fields** | `POST /api/sessions/{id}/plan` | Inline edit of `key_objectives` / `guardrails` / `injects` / `out_of_scope` / `success_criteria` mid-exercise. Title and `narrative_arc` are immutable post-finalize. |
+| **Reissue / revoke join token** | `POST /api/sessions/{id}/roles/{role_id}/reissue` & `/revoke` | Kick a participant and mint a fresh signed link. |
+| **Shared notepad** | `GET /api/sessions/{id}/notepad/templates` & `/notepad/export.md` | Read the player-facing markdown notepad (locked at session end; reachable for `EXPORT_RETENTION_MIN`). |
 
 ## Extensions (Skills-style)
 
@@ -326,17 +361,36 @@ to see the trace.
   scaffolding, docs. **Complete** (milestone #1, all 10 issues
   closed).
 - **Phase 2** — full MVP. **Complete** (milestone #2, all 9 epics
-  closed: #11–#19). Bow-tying additions in PR #29:
-  - Per-tier sampling + timeout knobs, `ANTHROPIC_BASE_URL`,
+  closed: #11–#19). Layered on top of Phase 2 since:
+  - **Phase-policy engine guardrails** (state assertions, tool
+    filter, tool-choice posture, dispatcher rejection of forbidden
+    calls). PR #29.
+  - **Slot-based turn validator + recovery cascade** with the
+    retry-feedback loop. The model sees its own prior `tool_use` +
+    dispatcher `tool_result` blocks on retry and self-corrects.
+    See [`turn-lifecycle.md`](turn-lifecycle.md).
+  - **Per-tier sampling + timeout knobs**, `ANTHROPIC_BASE_URL`,
     `LLM_STRICT_RETRY_MAX`, `MAX_SETUP_TURNS`,
-    `MAX_PARTICIPANT_SUBMISSION_CHARS`.
-  - `phase_policy.py` engine-side guardrails (state assertions,
-    tool filter, tool-choice posture).
-  - Retry-feedback loop (model sees its own prior tool_use +
-    dispatcher rejections on strict retry).
-  - HTTP access log middleware with token scrubber.
-  - AI auto-interject on direct questions.
-  - Multi-section setup intro + dev-mode auto-start.
+    `MAX_PARTICIPANT_SUBMISSION_CHARS`,
+    `MAX_SUBMISSIONS_PER_ROLE_PER_TURN`.
+  - **Wave 1 — per-submission intent + ready-quorum gate** (issue
+    #134, PR #148). `submit_response` carries
+    `intent: "ready" | "discuss"`; the AI advances when
+    `set(active) ⊆ set(ready_role_ids)`. Force-advance bypasses.
+  - **Wave 2 — composer mentions + AI auto-interject on
+    `@facilitator`** (PR #152). Replaces the trailing-`?` heuristic.
+  - **Wave 3 — pause / resume AI toggle** (issue #69, PR #157).
+  - **Chat-declutter** — workstream metadata, transcript filter
+    pills, manual override, AAR isolation, creator markdown
+    exports (`/exports/timeline.md`, `/exports/full-record.md`).
+    PRs #119, #150, #152, #156, #158. Master kill-switch:
+    `WORKSTREAMS_ENABLED` (default true).
+  - **Mark-for-AAR** via the highlight registry (issue #117, PR #169).
+  - **Shared notepad** (issue #98, PR #115).
+  - **Live-tests workflow** with per-run dollar cap (issue #74).
+  - **Setup-wizard chrome** through SETUP + READY; creator role
+    moved to step 3 (PR #167).
+  - **Validator state surfaced to creator UI** (issue #70, PR #173).
 - **Phase 3** — value-add (persistence, OAuth/SSO, scenario library,
   voice, observability, scale-out, native non-Anthropic LLM
   adapters). Tracked under epics labelled `phase-3` (#20–#25).

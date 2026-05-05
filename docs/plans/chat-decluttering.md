@@ -1,7 +1,10 @@
 # Chat-declutter — design plan
 
-**Status:** Draft · 2026-05-02 · feeds Phase 3 (milestone #3)
+**Status:** **Delivered** (Phase A → iter-4 polish, 2026-05-03 → 2026-05-04). Kept as the design rationale; the live behaviour is reflected in `WORKSTREAMS_ENABLED` ([`configuration.md`](../configuration.md)), the `declare_workstreams` setup tool ([`backend/app/llm/tools.py`](../../backend/app/llm/tools.py)), and the transcript/composer chrome in [`frontend/src/`](../../frontend/src/).
+
+**Original status:** Draft · 2026-05-02 · feeds Phase 3 (milestone #3)
 **Owner:** unassigned
+**Shipped via:** PR #119 (plan) · PR #150 (Phase A — workstream metadata + AAR isolation) · PR #152 (Phase C + Wave 2 — composer mentions + facilitator routing) · PR #156 (Phase B — visible filter chrome) · PR #158 (iter-4 polish — rail tabs, manual override, exports, flag flip to default-on)
 **Cross-refs:** PR #116 (closed, mockups archived on `claude/threaded-replies-investigation-1eekS`) · PR #115 (merged, highlight-to-notepad) · issue #117 (Mark-for-AAR affordance, implemented as a sibling action in the highlight registry — pins under the notepad's `## AAR Review` section, surfaced to the AAR via a dedicated `<player_aar_marked_verbatim>` priority block)
 
 ## TL;DR

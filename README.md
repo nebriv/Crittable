@@ -50,48 +50,99 @@ itself while the room is still warm.
 
 ## Quickstart
 
-### GitHub Codespaces
+> **Minimum viable config:** export `ANTHROPIC_API_KEY` and run one of
+> the recipes below. Everything else has a sensible default.
+> See [Environment variables](#environment-variables) for the
+> shortlist that actually matters and
+> [`docs/configuration.md`](docs/configuration.md) for the full
+> reference.
+
+### GitHub Codespaces (zero-install)
 
 Open the repo in Codespaces. The devcontainer installs both halves.
-Add `ANTHROPIC_API_KEY` to your Codespaces secrets and the env var is
-forwarded into the container.
+Add `ANTHROPIC_API_KEY` to your Codespaces secrets — it's forwarded
+into the container automatically. Then run `docker compose up --build`
+in the terminal and click the forwarded port.
 
 ### Local Docker (single container)
 
 ```bash
+export ANTHROPIC_API_KEY=sk-ant-…
 docker compose up --build
 # visit http://localhost:8000
 ```
 
-Or directly:
+Or pull the published image directly (no clone needed):
 
 ```bash
 docker run --rm -p 8000:8000 \
   -e ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY" \
   ghcr.io/nebriv/crittable:latest
 ```
-<!--
-The Docker workflow (.github/workflows/docker.yml) publishes to
-``ghcr.io/nebriv/crittable`` — derived from ``github.repository``
-lowercased. The next push to ``main`` (or a tagged release) will be
-the first one published under the new image name; before then, the
-last tag published under the old ``ai-tabletop-facilitator`` name is
-still pullable from GHCR if you have a pinned reference.
--->
 
 ### Local development (no Docker)
 
+Two terminals — backend reload + Vite HMR:
+
 ```bash
-# Backend
+# Terminal 1 — backend (auto-reload on save)
+export ANTHROPIC_API_KEY=sk-ant-…
 cd backend && pip install -e ".[dev]"
 uvicorn app.main:app --reload --app-dir .
 
-# Frontend (separate terminal)
+# Terminal 2 — frontend (Vite dev server)
 cd frontend && npm ci && npm run dev
 ```
 
-The frontend dev server proxies `/api` and `/ws` to `localhost:8000` so
+The Vite dev server proxies `/api` and `/ws` to `localhost:8000`, so
 the two halves co-develop without CORS friction.
+
+## Environment variables
+
+The full reference is [`docs/configuration.md`](docs/configuration.md).
+This section is the **shortlist** — the variables that actually
+matter day-to-day. Everything else has a working default.
+
+### Required to start
+
+| Var | Why |
+|---|---|
+| `ANTHROPIC_API_KEY` | The app refuses to start without it. Also accepts an Anthropic-compatible endpoint via `ANTHROPIC_BASE_URL` (see below). |
+
+### Required before any non-toy deployment
+
+The app boots without these — but **set them before exposing it to
+anyone**. The hardening checklist in
+[`docs/configuration.md`](docs/configuration.md#before-going-public--hardening-checklist)
+is the long form.
+
+| Var | Default | Why |
+|---|---|---|
+| `SESSION_SECRET` | randomly generated, with a startup warning | HMAC key for join tokens. Not setting this means tokens are invalidated on every restart. Use 32+ random bytes. |
+| `CORS_ORIGINS` | `*` | Comma-separated allowlist. Lock to your actual origin(s). |
+| `RATE_LIMIT_ENABLED` | `false` | Flip to `true` and tune `RATE_LIMIT_REQ_PER_MIN` (default 60). |
+
+### Useful day-to-day
+
+| Var | Default | Why |
+|---|---|---|
+| `ANTHROPIC_BASE_URL` | _unset_ | Point at Bedrock / Vertex / OpenRouter / Ollama via litellm. See [`docs/llm_providers.md`](docs/llm_providers.md). |
+| `ANTHROPIC_MODEL_PLAY` / `_SETUP` / `_AAR` / `_GUARDRAIL` | Sonnet 4.6 / Sonnet 4.6 / Opus 4.7 / Haiku 4.5 | Per-tier model overrides. Drop the setup tier to Haiku if you want cheaper setup turns (with a small XML-fallback risk; see configuration.md). |
+| `LOG_LEVEL` / `LOG_FORMAT` | `INFO` / `json` | Lower to `DEBUG` for verbose; switch to `console` for human-readable output during local dev. |
+| `MAX_TURNS_PER_SESSION` | `40` | Soft warning at 80%, hard stop at limit. |
+| `INPUT_GUARDRAIL_ENABLED` | `true` | Cheap Haiku off-topic / prompt-injection pre-classifier. |
+
+### Dev-only — never enable in production
+
+| Var | Default | Why |
+|---|---|---|
+| `DEV_FAST_SETUP` | `false` | Skip AI setup; land in `READY` with a generic plan. Useful for iterating on play UI. |
+| `DEV_TOOLS_ENABLED` | `false` | Exposes `/api/dev/scenarios/*` and the God Mode Scenarios panel. **Allows unauthenticated session creation** — never set in production. The app emits a `dev_tools_enabled_unauth_path_active` warning at boot if it's on. |
+| `AAR_INLINE_ON_END` | `false` | Tests-only: blocks the end-session response on AAR generation. |
+
+For everything else — per-tier sampling, retry budgets, session
+limits, the chat-declutter kill-switch, extension loaders — see
+[`docs/configuration.md`](docs/configuration.md).
 
 ## Session lifecycle (the phase machine)
 
@@ -120,25 +171,37 @@ boundaries are enforced in code:
 
 ## Documentation
 
-- [`docs/PLAN.md`](docs/PLAN.md) — architecture and phase plan (source of
-  truth).
-- [`docs/architecture.md`](docs/architecture.md) — diagrams, request flows,
-  phase policy, retry-feedback loop.
+**Operate / deploy:**
 - [`docs/configuration.md`](docs/configuration.md) — every env var,
   defaults, "before going public" hardening checklist.
 - [`docs/llm_providers.md`](docs/llm_providers.md) — swap to Bedrock /
   Vertex / OpenRouter / local Ollama via `ANTHROPIC_BASE_URL`.
 - [`docs/extensions.md`](docs/extensions.md) — Skills-style custom tools /
   resources / prompts.
-- [`docs/prompts.md`](docs/prompts.md) — system-prompt blocks, guardrails,
-  tool-use protocol, AAR rubric.
+
+**Architecture / engine internals (read before touching the matching code):**
+- [`docs/architecture.md`](docs/architecture.md) — live diagrams,
+  request flows, phase policy, retry-feedback loop.
 - [`docs/turn-lifecycle.md`](docs/turn-lifecycle.md) — **load-bearing
   reference for the play-turn engine.** Read before touching
   `app/sessions/turn_*` or `app/llm/dispatch.py`.
-- [`docs/tool-design.md`](docs/tool-design.md) — **tool authoring
-  guidelines.** Read before adding, renaming, or rewording any tool.
-- [`CLAUDE.md`](CLAUDE.md) — guidance for Claude Code sessions on this
-  repo (six-agent review protocol, logging rules, dependency intake).
+- [`docs/tool-design.md`](docs/tool-design.md) — tool authoring
+  guidelines. Read before adding, renaming, or rewording any tool.
+- [`docs/prompts.md`](docs/prompts.md) — system-prompt blocks,
+  guardrails, tool-use protocol, AAR rubric.
+- [`docs/prompt-writing-rules.md`](docs/prompt-writing-rules.md) —
+  prompt style guide (shape-not-phrase rule, deflection patterns,
+  trust-boundary first). Read before editing any prompt block.
+- [`docs/PLAN.md`](docs/PLAN.md) — original architecture & phase plan.
+  Historical reference; for the current state, prefer
+  `architecture.md` and `configuration.md`.
+
+**Working in the repo:**
+- [`CONTRIBUTING.md`](CONTRIBUTING.md) — local setup, conventions,
+  the six-agent review protocol.
+- [`CLAUDE.md`](CLAUDE.md) — guidance for Claude Code sessions on
+  this repo (logging rules, dependency intake, model-output trust
+  boundary, communication transport choices).
 
 ## Development
 

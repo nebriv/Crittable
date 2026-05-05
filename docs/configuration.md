@@ -1,6 +1,42 @@
 # Configuration
 
-All configuration is via environment variables, parsed by `pydantic-settings` in `backend/app/config.py` (lands in Phase 2). Phase 1 uses none of these directly; this page is the contract that Phase 2 implements.
+All configuration is via environment variables, parsed by
+`pydantic-settings` in [`backend/app/config.py`](../backend/app/config.py).
+This page is the authoritative contract; the module is the
+implementation.
+
+## Quick start — the env you actually need
+
+The vast majority of operators only set one variable.
+
+```bash
+export ANTHROPIC_API_KEY=sk-ant-…
+docker compose up --build
+```
+
+That's the entire required surface. Everything else has a working
+default. Three small layers above that:
+
+| Layer | Vars | When |
+|---|---|---|
+| **Required** | `ANTHROPIC_API_KEY` | Always — the app refuses to start without it. |
+| **Before going public** | `SESSION_SECRET`, `CORS_ORIGINS`, `RATE_LIMIT_ENABLED` | Before anyone outside your machine touches the app. The app boots without these but warns loudly. See [the hardening checklist](#before-going-public--hardening-checklist). |
+| **Tweaks worth knowing** | `ANTHROPIC_BASE_URL`, `ANTHROPIC_MODEL_<TIER>`, `LOG_LEVEL`, `MAX_TURNS_PER_SESSION`, `INPUT_GUARDRAIL_ENABLED` | When you want to point at a non-Anthropic backend, change models, see more logs, change cost caps, or disable the off-topic guardrail. |
+| **Dev-only — never set in production** | `DEV_FAST_SETUP`, `DEV_TOOLS_ENABLED`, `AAR_INLINE_ON_END` | Iterating on the play UI / running scenario replays / running tests. Each one degrades security or correctness if left on. |
+
+The rest of this page is the long form: every var, its default, and
+why you'd touch it.
+
+> **Heads-up: don't shadow `ANTHROPIC_*` in agent harnesses.** The
+> Anthropic SDK auto-discovers `ANTHROPIC_API_KEY`, `ANTHROPIC_BASE_URL`,
+> `ANTHROPIC_AUTH_TOKEN`. Setting any of them as a session-wide env var
+> in a Claude Code harness shadows the harness's own credentials. For
+> the live-test workflow we wrap the variable as
+> `LIVE_TEST_ANTHROPIC_API_KEY` and bridge it inline (see
+> [`backend/scripts/run-live-tests.sh`](../backend/scripts/run-live-tests.sh)
+> and the corresponding section in [`CLAUDE.md`](../CLAUDE.md)).
+> This restriction does NOT apply to GitHub Actions, Docker, or local
+> shells — name the variable `ANTHROPIC_API_KEY` directly there.
 
 ## Required
 
@@ -64,7 +100,9 @@ rationale for each default lives in `backend/app/config.py`
 | `MAX_CRITICAL_INJECTS_PER_5_TURNS` | `1` | Rate limit on `inject_critical_event` |
 | `EXPORT_RETENTION_MIN` | `60` | Minutes to keep an ENDED session's export available (covers AAR markdown, structured AAR JSON, **and the shared notepad** — `notepad/export.md` is reachable for the same window). |
 | `WS_HEARTBEAT_S` | `20` | WebSocket heartbeat interval |
-| `INPUT_GUARDRAIL_ENABLED` | `true` | Toggle the Haiku off-topic pre-classifier |
+| `INPUT_GUARDRAIL_ENABLED` | `true` | Toggle the Haiku off-topic / prompt-injection pre-classifier (single-word verdict). |
+| `DUPLICATE_SUBMISSION_WINDOW_SECONDS` | `30` | Reject a participant submission if it matches the role's previous body (whitespace-stripped) within this window. Backstop for the no-feedback retype loop on issue #63. Set `0` to disable. |
+| `AUDIT_RING_SIZE` | `2000` | Capacity of the in-memory audit ring buffer surfaced to the AAR appendix and `/debug` endpoint. |
 | `DEV_FAST_SETUP` | `false` | Dev/testing only: skip the AI setup dialogue at session creation, drop a generic default plan, and land in `READY`. **Never enable in production.** A creator can also trigger this mid-flow via `POST /api/sessions/{id}/setup/skip`. |
 | `DEV_TOOLS_ENABLED` | `false` | Dev/testing only: expose the `/api/dev/scenarios/...` endpoints (scenario list / play / record). Required for the "Scenarios" panel inside God Mode to load — without this flag the panel renders a "Scenarios — disabled" empty state. **Never enable in production**: `/play` accepts UNAUTHENTICATED callers in this mode — an attacker can mint sessions and harvest the creator token from the response body without any prior credential. `main.py` emits a `dev_tools_enabled_unauth_path_active` startup WARNING when the flag is on so the misconfiguration shows up in operator log scans. See `backend/scenarios/README.md` and the "Scenario replay" section in `CLAUDE.md`. |
 | `AAR_INLINE_ON_END` | `false` | Tests-only knob: run AAR generation inline (rather than as a background task) when `end_session` is called. Required by the unit-test suite because Starlette's sync `TestClient` doesn't reliably progress cross-request `asyncio.create_task` work and the polling client would otherwise see `aar_status="pending"` forever. The parent `backend/tests/conftest.py` sets this on every test run. **Never enable in production**: blocks the `POST /end` request handler on the AAR pipeline (5–60 s). |
@@ -124,6 +162,7 @@ Defaults preserve historical behaviour so unset = no change.
 | `EXTENSIONS_TOOLS_JSON` / `EXTENSIONS_TOOLS_PATH` | JSON list of `ExtensionTool` definitions, inline or from a file path |
 | `EXTENSIONS_RESOURCES_JSON` / `EXTENSIONS_RESOURCES_PATH` | Same for `ExtensionResource` |
 | `EXTENSIONS_PROMPTS_JSON` / `EXTENSIONS_PROMPTS_PATH` | Same for `ExtensionPrompt` |
+| `EXTENSION_TEMPLATE_MAX_BYTES` | `8192` (default; minimum 64) | Hard byte ceiling on a rendered `templated_text` extension result. The Jinja sandbox already bans dangerous filters / loaders; this cap is the runaway-output backstop. |
 
 ## Before going public — hardening checklist
 
