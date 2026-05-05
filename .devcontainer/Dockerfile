@@ -5,6 +5,6 @@
 # update (e.g. docker-in-docker) then fails with NO_PUBKEY. Removing the file
 # is safe — nothing in this repo uses Yarn, and the Node devcontainer feature
 # can install it on demand.
-FROM mcr.microsoft.com/devcontainers/python:1-3.12-bookworm
+FROM mcr.microsoft.com/devcontainers/python:3.14-bookworm
 
 RUN rm -f /etc/apt/sources.list.d/yarn.list
