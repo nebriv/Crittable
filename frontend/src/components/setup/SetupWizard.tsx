@@ -67,10 +67,11 @@ interface Props {
   playerCount?: number;
   /**
    * Discard the current session and return to the intro form.
-   * Rendered as a small "Abandon session" link at the bottom of the
-   * post-creation panel — gives the operator an out without forcing
-   * them to navigate back through the lockup link in the rail. Skip
-   * this prop on the intro phase (no session to abandon).
+   * Forwarded to ``WizardRail``'s ABANDON SESSION button at the
+   * bottom of the rail (see WizardRail.tsx) — placed there
+   * post-creation so it's never adjacent to step 06's
+   * ``START SESSION`` button. Skip this prop on the intro phase
+   * (no session to abandon).
    */
   onAbandonSession?: () => void;
 }

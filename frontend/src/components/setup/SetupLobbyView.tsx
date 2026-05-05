@@ -78,6 +78,17 @@ export function SetupLobbyView(props: Props) {
     }
   }
 
+  // Both surface (a) the page-level error banner via ``onError`` AND
+  // (b) a console.warn breadcrumb. Per CLAUDE.md's logging rules,
+  // every page-level setError call should be paired with a
+  // matching console.warn so a user pasting their console into a bug
+  // report has the failure context.
+  function reportError(action: string, err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.warn(`[SetupLobbyView] ${action} failed`, msg, err);
+    props.onError(msg);
+  }
+
   async function handleAdd(e: FormEvent) {
     e.preventDefault();
     if (!newRole.trim()) return;
@@ -91,7 +102,7 @@ export function SetupLobbyView(props: Props) {
       if (ok) markCopied(r.role_id);
       props.onRoleAdded();
     } catch (err) {
-      props.onError(err instanceof Error ? err.message : String(err));
+      reportError("add role", err);
     }
   }
 
@@ -105,7 +116,7 @@ export function SetupLobbyView(props: Props) {
       const url = `${origin}/play/${props.sessionId}/${encodeURIComponent(r.token)}`;
       if (await writeUrl(url)) markCopied(roleId);
     } catch (err) {
-      props.onError(err instanceof Error ? err.message : String(err));
+      reportError("reissue role", err);
     }
   }
 
@@ -127,7 +138,7 @@ export function SetupLobbyView(props: Props) {
       if (await writeUrl(url)) markCopied(roleId);
       props.onRoleChanged();
     } catch (err) {
-      props.onError(err instanceof Error ? err.message : String(err));
+      reportError("revoke role", err);
     }
   }
 
@@ -137,7 +148,7 @@ export function SetupLobbyView(props: Props) {
       await api.removeRole(props.sessionId, props.creatorToken, roleId);
       props.onRoleChanged();
     } catch (err) {
-      props.onError(err instanceof Error ? err.message : String(err));
+      reportError("remove role", err);
     }
   }
 

@@ -20,8 +20,12 @@ import { Eyebrow } from "../brand/Eyebrow";
  * action in the rail keeps it geographically distant from step 06's
  * START SESSION button (which lives in the main panel sidecar).
  *
- * Below the ``lg`` breakpoint the rail collapses into a horizontal
- * top strip so a 390 px viewport doesn't lose the entire panel area.
+ * Responsive behaviour is owned by ``SetupWizard``'s parent grid:
+ * below the ``lg`` breakpoint the grid switches from
+ * ``[260px_1fr]`` to a single column so the rail stacks ABOVE the
+ * panel as a vertical strip (NOT a horizontal top bar — the rail's
+ * own children stay in column flow). At ``lg`` and up the rail
+ * sits on the left as designed in the brand mock.
  */
 export const WIZARD_STEPS = [
   { id: 1, name: "Scenario" },

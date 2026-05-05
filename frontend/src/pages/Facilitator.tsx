@@ -1206,29 +1206,44 @@ export function Facilitator() {
       );
     }
     return (
-      <SetupWizard
-        phase={phase}
-        setupParts={setupParts}
-        setSetupParts={setSetupParts}
-        creatorLabel={creatorLabel}
-        setCreatorLabel={setCreatorLabel}
-        creatorDisplayName={creatorDisplayName}
-        setCreatorDisplayName={setCreatorDisplayName}
-        setupRoles={setupRoles}
-        setSetupRoles={setSetupRoles}
-        setupRoleDraft={setupRoleDraft}
-        setSetupRoleDraft={setSetupRoleDraft}
-        devMode={devMode}
-        setDevMode={onToggleDevMode}
-        busy={busy}
-        busyMessage={busyMessage}
-        error={error}
-        onSubmit={handleCreate}
-        snapshot={snapshot}
-        playerCount={playerCount}
-        postCreationContent={postCreationContent}
-        onAbandonSession={handleNewSession}
-      />
+      <>
+        {/* CriticalEventBanner has to render here too — the in-session
+            <main> wrapper isn't reached during the setup/ready early
+            return, so without this, ``critical_event`` WS frames
+            during the lobby (e.g. an inject-as-warning, an admin
+            interject) would set ``criticalBanner`` state and the user
+            would never see it. Same component + dismiss handler as
+            the in-session render below. */}
+        {criticalBanner ? (
+          <CriticalEventBanner
+            {...criticalBanner}
+            onAcknowledge={() => setCriticalBanner(null)}
+          />
+        ) : null}
+        <SetupWizard
+          phase={phase}
+          setupParts={setupParts}
+          setSetupParts={setSetupParts}
+          creatorLabel={creatorLabel}
+          setCreatorLabel={setCreatorLabel}
+          creatorDisplayName={creatorDisplayName}
+          setCreatorDisplayName={setCreatorDisplayName}
+          setupRoles={setupRoles}
+          setSetupRoles={setSetupRoles}
+          setupRoleDraft={setupRoleDraft}
+          setSetupRoleDraft={setSetupRoleDraft}
+          devMode={devMode}
+          setDevMode={onToggleDevMode}
+          busy={busy}
+          busyMessage={busyMessage}
+          error={error}
+          onSubmit={handleCreate}
+          snapshot={snapshot}
+          playerCount={playerCount}
+          postCreationContent={postCreationContent}
+          onAbandonSession={handleNewSession}
+        />
+      </>
     );
   }
 
