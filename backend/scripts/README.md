@@ -92,7 +92,9 @@ Run them after any change to:
 cd backend && ANTHROPIC_API_KEY=sk-ant-... pytest tests/live/ -v
 ```
 
-Auto-skipped without the key. Cost ~$0.10 per full run.
+Auto-skipped without the key. Cost ~$0.10 per tool-routing run; the
+full live suite (incl. AAR / consistency / edge-fixture / long-context)
+is ~$1.40.
 
 Inside the Claude Code agent harness, **don't** set `ANTHROPIC_API_KEY`
 as a session-wide secret — it shadows the harness's own SDK auth and
@@ -107,3 +109,51 @@ backend/scripts/run-live-tests.sh -k test_aar    # pytest filter
 
 See [`docs/tool-design.md`](../../docs/tool-design.md) for the
 authoring guidelines this suite enforces.
+
+### CI: gated live-tests workflow
+
+[`.github/workflows/live-tests.yml`](../../.github/workflows/live-tests.yml)
+runs the live suite automatically on:
+
+* **PRs to `main` that touch routing- or prompt-relevant paths** —
+  `backend/app/llm/**`, `backend/app/sessions/**`,
+  `backend/app/extensions/**`, `backend/tests/live/**`, the diagnostic
+  scripts in this directory, or the workflow file itself.
+* **The `live-tests` label** on a PR with a relevant path change.
+  (For PRs where the label is the only trigger and no relevant
+  paths changed, use `workflow_dispatch`.)
+* **`workflow_dispatch`** — Actions-UI button. Optional inputs:
+  `pytest_args` (narrow filter), `cost_cap_usd` (override the per-run
+  dollar cap), `anthropic_model_play` (validate Sonnet N → N+1
+  migration).
+
+There is no scheduled cron — see [`docs/tool-design.md`](../../docs/tool-design.md)
+"CI: when the live suite runs automatically" for the rationale and
+the cheap "weekly Monday cron" / "routing-only nightly" options if
+you ever want periodic drift checks.
+
+Fork PRs run with `pull_request` (NOT `pull_request_target`), so
+secrets are not injected; the live conftest's auto-skip cleanly
+marks every test SKIP. A maintainer can `workflow_dispatch` against
+the fork's head ref after code-review.
+
+### Per-run dollar cap
+
+The live conftest installs a session-scoped wrapper around
+`AsyncAnthropic.messages.create` that records `response.usage` and
+multiplies by the per-million-token rate from `app/llm/cost.py`. When
+the cumulative spend crosses `LIVE_TEST_COST_CAP_USD` (default
+**$1.50**; standing suite ~$1.40), the in-flight test finishes and
+the next teardown sets `session.shouldstop` to halt cleanly.
+
+* Override per-run: `LIVE_TEST_COST_CAP_USD=2.50 pytest tests/live/`.
+* Disable (intentional stress run): `LIVE_TEST_COST_CAP_USD=0 ...`.
+* Typos / negatives fall back to the default — a typo should NEVER
+  silently uncork the budget.
+* Pass it inline (`VAR=value command ...`) rather than exporting it
+  in a shell rc or in `.env` — keep the override scoped to one run
+  so a forgotten `export` doesn't quietly raise the ceiling for the
+  whole machine.
+
+The terminal summary always prints `live-API spend: $X.XXXX across
+N call(s)` regardless of whether the cap fired.

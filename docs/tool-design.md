@@ -203,13 +203,83 @@ this loop:
 ## Cost notes
 
 The live tool-routing suite costs ~$0.10 per full run (9 tests × ~$0.01
-each). It's auto-skipped unless `ANTHROPIC_API_KEY` is set, so normal
-CI doesn't spend on it. Run it:
+each). The full live suite (incl. AAR / consistency / edge-fixture /
+long-context cases) is ~$1.40 per run. Auto-skipped unless
+`ANTHROPIC_API_KEY` is set. Run it:
 
 - After every prompt edit to Block 6.
 - After every tool description change.
 - After adding any new tool.
 - Before tagging a release.
+
+## CI: when the live suite runs automatically
+
+[`.github/workflows/live-tests.yml`](../.github/workflows/live-tests.yml)
+gates the live suite behind explicit triggers — every-PR-runs would
+quietly multiply the per-PR spend by N. The triggers are OR-ed:
+
+| Trigger | When it fires | Why |
+|---|---|---|
+| `pull_request` path filter | PR to `main` touches `backend/app/llm/**`, `backend/app/sessions/**`, `backend/app/extensions/**`, `backend/app/config.py`, `backend/tests/live/**`, the conftest, the cost-cap test, the diagnostic scripts, or the workflow itself | The change can plausibly regress model routing, so verify before merge. |
+| `labeled` event | The `live-tests` label is added to a PR that also touched a relevant path | Re-fire after a label tweak. For label-only PRs (no relevant path change), use `workflow_dispatch` instead. |
+| `workflow_dispatch` | A maintainer clicks "Run workflow" in the Actions UI | Manual one-shots, fork PRs after code-review, ad-hoc filters via the `pytest_args` input, and Anthropic-side drift checks ("did the model change under us?"). |
+
+There is **no scheduled cron** — this is a side project and a daily
+run at ~$1.40/run would be ~$42/month for a tripwire the path-filter
+mostly already catches. If you ever want a periodic drift check, the
+cheap option is a weekly Monday cron (~$6/month) matching
+`security.yml`'s cadence — drop a `schedule:` block back into
+`live-tests.yml`:
+
+```yaml
+  schedule:
+    - cron: "0 13 * * 1"   # Mondays 13:00 UTC
+```
+
+Tool-routing-only nightly (`pytest tests/live/test_tool_routing.py`,
+~$0.10/run, ~$3/month) is even cheaper if you only care about
+routing drift.
+
+The job uses `pull_request` (NOT `pull_request_target`) so fork-PR
+runs do not get the secret — the live conftest's auto-skip then
+cleanly marks every test as SKIP. To live-test a fork PR after
+code-review, a maintainer dispatches the workflow against the PR's
+head ref via the Actions UI.
+
+### Per-run dollar cap
+
+[`backend/tests/live/cost_cap.py`](../backend/tests/live/cost_cap.py)
+intercepts every `AsyncAnthropic.messages.create` AND
+`messages.stream` call during the live session, multiplies
+`usage.input_tokens` / `output_tokens` / cache tokens by the
+per-million rate from
+[`app/llm/cost.py`](../backend/app/llm/cost.py), and aborts the run
+when the cumulative spend crosses the cap. Default cap: **$2.00**
+(standing suite is ~$1.40, ~$0.60 / 40% headroom for new tests,
+latency variance, and one retried flake). A tighter default would
+false-trip on routine variance and push contributors toward
+`LIVE_TEST_COST_CAP_USD=0`, which is exactly the failure mode the
+cap exists to prevent. Override per-run via the
+`LIVE_TEST_COST_CAP_USD` env var or the `workflow_dispatch` input.
+Set to `0` to disable for an intentional stress run. Bad values
+(typos, negatives) fall back to the default rather than silently
+disabling — a misconfigured cap should NEVER quietly torch the
+budget.
+
+The terminal summary always prints `live-API spend: $X.XXXX across
+N call(s)` so a contributor sees what they spent on every run, not
+only when the cap fires.
+
+### Live tests on fork PRs
+
+Fork PRs do NOT auto-run live tests. The workflow uses
+`pull_request` (not `pull_request_target`), so secrets aren't
+injected for forks; a maintainer dispatches the workflow against
+the fork's head ref via the Actions UI after a code-review pass.
+Contributors from forks: if your change touches `backend/app/llm/**`,
+`backend/app/sessions/**`, or `backend/app/extensions/**`, mention
+"please run live tests" in the PR description so a maintainer knows
+to dispatch.
 
 ## Sequence diagram — adding a new tool
 

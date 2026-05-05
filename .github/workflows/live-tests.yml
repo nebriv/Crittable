@@ -1,0 +1,187 @@
+name: Live tests
+
+# Two-tier CI per issue #74. The free unit suite (``ci.yml``) runs on
+# every push and PR; this workflow runs the live-API tests in
+# ``backend/tests/live/`` only when there's a real chance a model-
+# behaviour regression slipped in.
+#
+# Triggers
+# --------
+#
+# 1. PR that touches routing-, prompt-, or live-test-relevant paths
+#    against ``main``. The path filter scopes the spend to PRs where
+#    a regression is plausible. ``types: labeled`` re-fires when a
+#    label changes — useful for adding the ``live-tests`` label to a
+#    PR that already touched relevant paths. (For PRs where the
+#    label is the ONLY trigger and no relevant paths changed, use
+#    ``workflow_dispatch``.)
+# 2. ``workflow_dispatch`` for manual re-runs and one-shots from
+#    forks (where secrets aren't auto-injected). Operator can pass
+#    pytest filter args and an ad-hoc cost-cap override.
+#
+# No scheduled cron. This is a side project; a daily run on the
+# standing suite (~$1.40 / run) would burn ~$42/month for a tripwire
+# the path-filtered PR runs mostly already catch. If we ever want
+# periodic Anthropic-drift checks, the cheap options are documented
+# in ``docs/tool-design.md`` § "CI: when the live suite runs
+# automatically": a weekly Monday cron (~$6/month) or a
+# routing-only nightly (~$3/month).
+#
+# Fork safety
+# -----------
+#
+# This workflow uses ``pull_request`` (NOT ``pull_request_target``).
+# Per the GitHub trust-boundary docs, ``pull_request`` from a fork
+# does NOT inject secrets — ``ANTHROPIC_API_KEY`` is unset, the live
+# conftest's auto-skip fires, and every test is marked SKIP cleanly.
+# A maintainer who wants to live-test a fork PR after code-review
+# triggers ``workflow_dispatch`` against the PR's head ref. We
+# explicitly do NOT use ``pull_request_target`` because that runs the
+# fork's code with secrets in scope (the standard worm-on-tap risk).
+# A cosmetic ``if:`` on the job skips fork-PR runs entirely so we
+# don't burn runner minutes printing "skipped".
+
+on:
+  pull_request:
+    branches: ["main"]
+    # ``labeled`` lets a PR re-fire the suite when the ``live-tests``
+    # label is added; the actual label-name check happens at the
+    # job's ``if:`` so unrelated labels don't trigger spend.
+    types: [opened, synchronize, reopened, labeled]
+    paths:
+      # Engine call sites — every prompt edit, every tool description
+      # change, every dispatcher / validator / driver change.
+      - "backend/app/llm/**"
+      - "backend/app/sessions/**"
+      - "backend/app/extensions/**"
+      # Settings layer — ``Settings.model_for(...)``, ``temperature_for``,
+      # and ``require_anthropic_key`` decide which model the live
+      # suite actually routes against. A change here can flip the
+      # tier model or the temperature without touching prompts/tools.
+      - "backend/app/config.py"
+      # The live tests themselves and their fixtures.
+      - "backend/tests/live/**"
+      # The conftest dummy-key shim that gates the auto-skip.
+      - "backend/tests/conftest.py"
+      # Cost-cap unit tests (so a regression in the cap math is
+      # caught alongside the live run).
+      - "backend/tests/test_live_cost_cap.py"
+      # Diagnostic scripts that share the same fixtures + production
+      # message-build path.
+      - "backend/scripts/run-live-tests.sh"
+      - "backend/scripts/live_recovery_check.py"
+      - "backend/scripts/issue_151_before_after.py"
+      - "backend/scripts/diagnostic_full_response.py"
+      # And the workflow itself, so a typo here is caught on the
+      # same PR rather than on the next unrelated change.
+      - ".github/workflows/live-tests.yml"
+  workflow_dispatch:
+    inputs:
+      pytest_args:
+        description: "Pytest filter (e.g. '-k test_aar' or 'tests/live/test_tool_routing.py')."
+        required: false
+        default: ""
+      cost_cap_usd:
+        description: "Override LIVE_TEST_COST_CAP_USD ($). Blank = workflow default (2.00)."
+        required: false
+        default: ""
+      anthropic_model_play:
+        description: "Override ANTHROPIC_MODEL_PLAY (e.g. 'claude-sonnet-4-7'). Blank = backend default (claude-sonnet-4-6). Useful for validating a Sonnet N → N+1 migration without code changes."
+        required: false
+        default: ""
+
+# At most one live-tests run per branch — a force-push storm on a
+# single branch fans out into N parallel runs all billing the same
+# key without this. ``cancel-in-progress: true`` pre-empts the
+# in-flight run rather than queues behind it. NOTE: this is per-ref
+# (per-branch / per-PR), not global. 10 simultaneous PRs each touch
+# a relevant path → 10 parallel runs, max 10 × $LIVE_TEST_COST_CAP_USD.
+# Per-branch concurrency is the intent of the issue spec ("at most 1
+# live-test job per branch") and matches typical dev cadence; the
+# per-run dollar cap is the primary $ guardrail. If cross-branch
+# spend ever becomes a concern, tighten to ``group: live-tests-global``.
+concurrency:
+  group: live-tests-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  live-tests:
+    # Skip fork PR runs. ``pull_request`` from a fork would have no
+    # secrets anyway (every test would auto-skip), but launching a
+    # runner just to print SKIP wastes minutes. The non-fork path is
+    # the upstream repo or any branch within it; ``head.repo.full_name``
+    # is the source repo of the PR in fork PRs.
+    if: |
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    # Hard cap matches CLAUDE.md "stuck job stops billing" rule.
+    # Standing suite finishes in ~7 min on the configured runner;
+    # 10 min covers fixture-class regressions without going wild.
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+          cache-dependency-path: backend/pyproject.toml
+
+      - name: Install
+        # Mirrors ci.yml's install (``.[dev]``). The live suite needs
+        # the same set; no extra deps.
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+
+      - name: Run live-API suite (with dollar cap)
+        # ``ANTHROPIC_API_KEY`` is the standard SDK env var; pytest
+        # picks it up via ``Settings.require_anthropic_key()`` exactly
+        # as production does. ``LIVE_TEST_COST_CAP_USD`` is honoured
+        # by ``backend/tests/live/cost_cap.py``.
+        #
+        # ``--maxfail=5`` bails after 5 failures — past that we're
+        # almost certainly chasing a systemic break, not individual
+        # cases, and continuing burns budget.
+        #
+        # Workflow-dispatch inputs reach this step via ENV, NOT via
+        # direct ``${{ ... }}`` interpolation into the ``run:`` body.
+        # That blocks the GitHub Actions script-injection footgun
+        # where a malicious input string would close the shell quote
+        # and inject Actions-side commands. Even though dispatch is
+        # gated by repo write-access (so the trust boundary already
+        # excludes anonymous attackers), passing through env means a
+        # compromised maintainer credential can only inject SHELL
+        # code, not Actions-side workflow steps. ``cost_cap_usd`` is
+        # also re-validated inside ``cost_cap.py`` against numeric
+        # parsing -- a non-numeric override falls back to the default.
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          PYTEST_ARGS: ${{ inputs.pytest_args || '' }}
+          LIVE_TEST_COST_CAP_USD: ${{ inputs.cost_cap_usd != '' && inputs.cost_cap_usd || '2.00' }}
+          # Override the play-tier model only when the dispatch input
+          # is non-empty; blank lets the backend's documented default
+          # (``claude-sonnet-4-6``) apply. Reaches the backend via
+          # the standard ``Settings.model_for("play")`` resolution.
+          ANTHROPIC_MODEL_PLAY: ${{ inputs.anthropic_model_play || '' }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${ANTHROPIC_API_KEY:-}" ]]; then
+            # Single chip in the Actions UI rather than two consecutive
+            # warnings. Triggered by fork PRs (intentional — no secrets
+            # for forks per fork-safety policy) or by an upstream PR
+            # before the secret is configured in repo settings.
+            echo "::warning::ANTHROPIC_API_KEY secret not set; live tests will auto-skip (configure the secret in repo settings, or for a fork PR ask a maintainer to dispatch the workflow against your head ref after code-review)."
+          fi
+          # Word-split PYTEST_ARGS so a multi-arg filter like
+          # ``-k test_aar -x`` survives. shellcheck disable=SC2086
+          # is intentional.
+          # shellcheck disable=SC2086
+          pytest tests/live/ -v --maxfail=5 ${PYTEST_ARGS}
