@@ -84,3 +84,31 @@ def test_audit_isolation_per_session() -> None:
     assert len(log.dump("s1")) == 1
     assert log.dump("s1")[0].kind == "a"
     assert log.dump("nope") == []
+
+
+def test_audit_for_kinds_filters_to_requested_kinds() -> None:
+    """Issue #70 (security review LOW): the polled ``/activity``
+    rollup uses ``for_kinds`` to skip uninteresting events at
+    iteration time instead of materializing the whole ring buffer.
+    """
+
+    log = AuditLog(ring_size=20)
+    log.emit(AuditEvent(kind="tool_use", session_id="s", payload={"i": 1}))
+    log.emit(AuditEvent(kind="turn_validation", session_id="s", payload={"i": 2}))
+    log.emit(AuditEvent(kind="session_event", session_id="s", payload={"i": 3}))
+    log.emit(
+        AuditEvent(kind="turn_recovery_directive", session_id="s", payload={"i": 4})
+    )
+    out = log.for_kinds(
+        "s", kinds=("turn_validation", "turn_recovery_directive")
+    )
+    assert [e.kind for e in out] == [
+        "turn_validation",
+        "turn_recovery_directive",
+    ]
+    # Oldest-first preserves chronological order — same as ``dump``.
+    assert [e.payload["i"] for e in out] == [2, 4]
+    # Empty session returns empty list (no error).
+    assert log.for_kinds("nope", kinds=("turn_validation",)) == []
+    # No matches in the buffer returns empty list.
+    assert log.for_kinds("s", kinds=("nope",)) == []

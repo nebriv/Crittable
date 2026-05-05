@@ -156,6 +156,10 @@ const baseProps = {
   cost: null,
   messageCount: 0,
   activeTiers: [] as string[],
+  // Issue #70: multi-state LLM chip needs ai_paused + recoveryStatus + turnErrored.
+  aiPaused: false,
+  recoveryStatus: null as { kind: string; attempt?: number; budget?: number } | null,
+  turnErrored: false,
   buildSha: "abcdef0",
   buildTs: "2026-05-01T00:00:00Z",
 };
@@ -341,6 +345,141 @@ describe("BottomActionBar — phase CTAs (issue #62)", () => {
       />,
     );
     expect(screen.getByText("LLM: guardrail+play")).toBeInTheDocument();
+  });
+
+  // Issue #70: multi-state LLM chip — distinguish recovering / paused
+  // / waiting-for-players / recovery-failed from the legacy binary
+  // "thinking-or-idle" chip. Each branch is the cure for an
+  // operationally-distinct state that used to read as "LLM: idle"
+  // and was the diagnostic gap behind the silent-yield 5-hour log
+  // dive.
+  it("renders 'LLM: idle (paused)' when the AI is paused with no calls in flight", () => {
+    render(
+      <BottomActionBar
+        {...baseProps}
+        phase="play"
+        playerCount={2}
+        hasFinalizedPlan={true}
+        aarStatus={null}
+        aiPaused={true}
+      />,
+    );
+    expect(screen.getByText("LLM: idle (paused)")).toBeInTheDocument();
+  });
+
+  it("renders 'LLM: waiting for players' on AWAITING_PLAYERS with no calls in flight", () => {
+    render(
+      <BottomActionBar
+        {...baseProps}
+        phase="play"
+        playerCount={2}
+        hasFinalizedPlan={true}
+        aarStatus={null}
+        backendState="AWAITING_PLAYERS"
+      />,
+    );
+    expect(
+      screen.getByText("LLM: waiting for players"),
+    ).toBeInTheDocument();
+  });
+
+  it("renders 'LLM: recovering N/M (kind)' during a recovery cascade", () => {
+    render(
+      <BottomActionBar
+        {...baseProps}
+        phase="play"
+        playerCount={2}
+        hasFinalizedPlan={true}
+        aarStatus={null}
+        recoveryStatus={{
+          kind: "missing_drive",
+          attempt: 2,
+          budget: 3,
+        }}
+      />,
+    );
+    // Check substring rather than full string so "last attempt" cue
+    // is verified separately in its own case.
+    expect(
+      screen.getByText(/LLM: recovering 2\/3.*missing drive/),
+    ).toBeInTheDocument();
+  });
+
+  it("appends 'last attempt' when recovery hits the budget (UI/UX HIGH #2)", () => {
+    render(
+      <BottomActionBar
+        {...baseProps}
+        phase="play"
+        playerCount={2}
+        hasFinalizedPlan={true}
+        aarStatus={null}
+        recoveryStatus={{
+          kind: "missing_yield",
+          attempt: 3,
+          budget: 3,
+        }}
+      />,
+    );
+    expect(
+      screen.getByText(/LLM: recovering 3\/3 — last attempt/),
+    ).toBeInTheDocument();
+  });
+
+  it("appends '· paused' to the in-flight chip when paused mid-recovery (User Agent MEDIUM #6)", () => {
+    render(
+      <BottomActionBar
+        {...baseProps}
+        phase="play"
+        playerCount={2}
+        hasFinalizedPlan={true}
+        aarStatus={null}
+        aiPaused={true}
+        recoveryStatus={{
+          kind: "missing_drive",
+          attempt: 2,
+          budget: 3,
+        }}
+      />,
+    );
+    expect(
+      screen.getByText(/LLM: recovering 2\/3.*missing drive.*· paused/),
+    ).toBeInTheDocument();
+  });
+
+  it("renders crit 'LLM: recovery FAILED' when the current turn errored (User Agent HIGH #3)", () => {
+    render(
+      <BottomActionBar
+        {...baseProps}
+        phase="play"
+        playerCount={2}
+        hasFinalizedPlan={true}
+        aarStatus={null}
+        turnErrored={true}
+      />,
+    );
+    expect(screen.getByText("LLM: recovery FAILED")).toBeInTheDocument();
+    // Even with concurrent recovery + active tiers, the errored
+    // signal wins the chip because it's the operator's call to act
+    // on. Without this, the silent-yield class of bug stays hidden
+    // the moment the strict-retry loop exits.
+  });
+
+  it("turnErrored wins over recoveryStatus + activeTiers (priority order)", () => {
+    render(
+      <BottomActionBar
+        {...baseProps}
+        phase="play"
+        playerCount={2}
+        hasFinalizedPlan={true}
+        aarStatus={null}
+        turnErrored={true}
+        recoveryStatus={{ kind: "missing_yield", attempt: 3, budget: 3 }}
+        activeTiers={["play"]}
+      />,
+    );
+    expect(screen.getByText("LLM: recovery FAILED")).toBeInTheDocument();
+    expect(screen.queryByText(/recovering/)).not.toBeInTheDocument();
+    expect(screen.queryByText("LLM: play")).not.toBeInTheDocument();
   });
 
   it("expands the cost chip to show the token breakdown", () => {
