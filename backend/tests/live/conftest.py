@@ -65,6 +65,10 @@ from app.sessions.models import (
 )
 from app.sessions.turn_driver import _play_messages
 from tests.conftest import DUMMY_ANTHROPIC_API_KEY
+from tests.live.cost_cap import (
+    _wrap_messages_create,
+    get_tracker,
+)
 
 
 def _load_project_root_dotenv() -> None:
@@ -217,10 +221,17 @@ def anthropic_client() -> Any:
         "should have skipped this test. If you see this assertion, "
         "the path-matching in the auto-skip likely failed for this item."
     )
-    return AsyncAnthropic(
+    client = AsyncAnthropic(
         api_key=key,
         base_url=settings.anthropic_base_url,
     )
+    # The session-scoped __init__ patch in ``_live_cost_cap`` already
+    # wraps every AsyncAnthropic; this is belt-and-braces for the
+    # case where this fixture is called before the autouse fixture
+    # has executed (parametrize ordering is not formally guaranteed
+    # to put session-scope before function-scope on the first item).
+    _wrap_messages_create(client)
+    return client
 
 
 @pytest.fixture
@@ -517,3 +528,96 @@ def text_content(resp: Any) -> str:
 
 def tool_names(resp: Any) -> list[str]:
     return [u.name for u in tool_uses(resp)]
+
+
+# ---------------------------------------------------------------- cost cap
+
+
+@pytest.fixture(autouse=True, scope="session")
+def _live_cost_cap() -> Any:
+    """Patch ``AsyncAnthropic.__init__`` so every client built during
+    the live session is wrapped with the cost-tracking ``messages.create``.
+
+    Catches three categories of caller:
+      1. The ``anthropic_client`` fixture above.
+      2. The per-test ``judge_client`` fixture in
+         ``test_aar_quality_judge.py``.
+      3. ``LLMClient`` in ``app/llm/client.py`` (used by the
+         ``AARGenerator`` and the setup driver), which constructs
+         ``AsyncAnthropic`` lazily on first call.
+
+    The patch is reverted at session teardown so unit tests run
+    afterward (in a single ``pytest`` invocation that includes both
+    suites, e.g. CI's full pass) see an unwrapped class.
+    """
+
+    try:
+        from anthropic import AsyncAnthropic
+    except ImportError:
+        # Live tests will skip via the auto-skip hook anyway; nothing
+        # to wrap.
+        yield None
+        return
+
+    original_init = AsyncAnthropic.__init__
+
+    def init_wrapper(self: Any, *args: Any, **kwargs: Any) -> None:
+        original_init(self, *args, **kwargs)
+        _wrap_messages_create(self)
+
+    AsyncAnthropic.__init__ = init_wrapper  # type: ignore[method-assign]
+    try:
+        yield get_tracker()
+    finally:
+        AsyncAnthropic.__init__ = original_init  # type: ignore[method-assign]
+
+
+def pytest_runtest_teardown(item: pytest.Item, nextitem: pytest.Item | None) -> None:
+    """Halt the suite cleanly when the cost cap fires.
+
+    The ``_CostTracker.record`` path doesn't call ``pytest.exit``
+    directly because that would raise inside an in-flight ``await``,
+    leaving the HTTP request orphaned. Instead, the tracker just
+    flips ``abort_message``; this hook checks the flag at the next
+    test-teardown boundary and asks pytest to stop. The current test
+    finishes; subsequent tests are skipped.
+    """
+
+    tracker = get_tracker()
+    if tracker.abort_message is None:
+        return
+    session = getattr(item, "session", None)
+    if session is None:
+        return
+    # Don't clobber a prior shouldstop reason — if some other plugin
+    # / fixture already asked pytest to halt, that diagnosis is more
+    # useful than ours. ``shouldstop`` is a documented pytest hook
+    # attribute; setting it to a truthy string halts the run at the
+    # next safe point.
+    if not getattr(session, "shouldstop", None):
+        session.shouldstop = tracker.abort_message
+
+
+def pytest_terminal_summary(
+    terminalreporter: Any, exitstatus: int, config: pytest.Config
+) -> None:
+    """Always print the cumulative live-test cost so a contributor
+    can see "I just spent $X" on every run, not only when the cap
+    fires. Quiet when no live calls were recorded (unit-only run).
+    """
+
+    tracker = get_tracker()
+    if tracker.calls == 0:
+        return
+    cap_label = (
+        f"cap ${tracker.cap_usd:.2f}"
+        if tracker.cap_enabled
+        else "cap disabled"
+    )
+    line = (
+        f"live-API spend: ${tracker.cumulative_usd:.4f} across "
+        f"{tracker.calls} call(s) ({cap_label})"
+    )
+    terminalreporter.write_sep("=", line)
+    if tracker.abort_message is not None:
+        terminalreporter.write_line(tracker.abort_message)

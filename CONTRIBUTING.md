@@ -104,6 +104,19 @@ and forwards `ANTHROPIC_API_KEY` from your Codespaces secrets.
 For UI changes, start the dev server and exercise the feature in a
 browser. Type-checks verify code correctness, not feature correctness.
 
+### Live tests on fork PRs
+
+The `live-tests` workflow (`.github/workflows/live-tests.yml`) does
+NOT auto-run on fork PRs — secrets aren't injected for forks, so the
+suite would all-skip anyway. If your change touches
+`backend/app/llm/**`, `backend/app/sessions/**`, or
+`backend/app/extensions/**`, **mention "please run live tests" in the
+PR description** so a maintainer can dispatch the workflow against
+your head ref after a code-review pass. See
+[`docs/tool-design.md`](docs/tool-design.md) §"CI: when the live
+suite runs automatically" for the full trigger matrix and
+fork-safety rationale.
+
 ## Conventions
 
 - **Python:** `ruff` + `mypy --strict`. No `print` or stdlib `logging` in
