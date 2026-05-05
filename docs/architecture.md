@@ -310,19 +310,23 @@ authoring rules live in [`tool-design.md`](tool-design.md).
 
 Beyond the engine-side guardrails, the creator has a handful of
 runtime escape hatches surfaced in the UI ("God Mode" panel) and via
-REST:
+REST. Unless noted otherwise the endpoint is **creator-only**
+(`require_creator`); the notepad endpoints accept any seated
+participant.
 
 | Action | Endpoint | Purpose |
 |---|---|---|
-| **Force-advance** | `POST /api/sessions/{id}/force-advance` | Skip a stalled turn (any participant). Bypasses the ready-quorum gate. |
-| **Pause / Resume AI** | `POST /api/sessions/{id}/pause` & `/resume` | Wave 3 / issue #69. Halts the play-turn pump so the room can have an out-of-band discussion without the AI advancing. |
+| **Force-advance** | `POST /api/sessions/{id}/force-advance` | Skip a stalled turn (any participant). Bypasses the ready-quorum gate. Also the recovery follow-up after `abort-turn`. |
+| **Pause / Resume `@facilitator` interjects** | `POST /api/sessions/{id}/pause` & `/resume` | Wave 3 / issue #69. **Limited scope** — only silences the side-channel `run_interject` reply when a player `@facilitator`'s the AI. Normal play turns still advance on the ready quorum; this is not a full engine pause. |
 | **End session** | `POST /api/sessions/{id}/end` | Creator-only as of issue #104. Kicks AAR generation. |
 | **Proxy respond** / **Proxy submit pending** | `POST /api/sessions/{id}/admin/proxy-respond` & `/admin/proxy-submit-pending` | Submit on behalf of an absent role (solo testing, missing-player escape). Subject to the same per-role-per-turn cap as a real submission. |
-| **Abort turn** | `POST /api/sessions/{id}/admin/abort-turn` | Drop the in-flight AI turn and roll back to `AWAITING_PLAYERS`. Recovery for stuck retries. |
+| **Abort turn** | `POST /api/sessions/{id}/admin/abort-turn` | Marks the in-flight AI turn `errored`. Does NOT itself reopen the turn — the operator follows up with `/force-advance` to open a fresh `AWAITING_PLAYERS` turn for the humans. Two-step recovery for stuck retries. |
 | **Retry AAR** | `POST /api/sessions/{id}/admin/retry-aar` | Re-run AAR generation if the first attempt failed (the export endpoint returns `500` when this happens). |
 | **Edit plan fields** | `POST /api/sessions/{id}/plan` | Inline edit of `key_objectives` / `guardrails` / `injects` / `out_of_scope` / `success_criteria` mid-exercise. Title and `narrative_arc` are immutable post-finalize. |
-| **Reissue / revoke join token** | `POST /api/sessions/{id}/roles/{role_id}/reissue` & `/revoke` | Kick a participant and mint a fresh signed link. |
-| **Shared notepad** | `GET /api/sessions/{id}/notepad/templates` & `/notepad/export.md` | Read the player-facing markdown notepad (locked at session end; reachable for `EXPORT_RETENTION_MIN`). |
+| **Reissue join token** | `POST /api/sessions/{id}/roles/{role_id}/reissue` | Re-mint the role's join URL **without invalidating the existing token**. Use when the creator lost the link and just needs to recover it; anyone already holding the old URL keeps working. |
+| **Revoke join token** | `POST /api/sessions/{id}/roles/{role_id}/revoke` | Bumps `role.token_version` so any old token starts failing with 401 on the next request, then mints a fresh one. Use this — not `reissue` — to actually kick whoever is holding the old link. |
+| **Notepad starter templates** | `GET /api/sessions/{id}/notepad/templates` | Participant-readable catalog of empty-state templates the editor can apply locally. Only the creator can record the chosen template id on the session. |
+| **Notepad markdown export** | `GET /api/sessions/{id}/notepad/export.md` | Participant-readable snapshot of the current shared notepad with a contributor header. Available before AND after the session ends, for `EXPORT_RETENTION_MIN` minutes after end. |
 
 ## Extensions (Skills-style)
 
