@@ -6,12 +6,12 @@ session itself. Callers (notably ``open_turn``) also pass payload
 kwargs that historically *re-included* one of these names — silently
 overwriting the manager-derived value.
 
-Once ``cache_logger_on_first_use`` is disabled (the test_mode path
-landed in PR #122 / scenario-replay system), the duplicate kwarg
-raises ``TypeError`` from inside structlog's bound logger. This file
-locks in the filter that strips reserved keys from ``payload`` before
-forwarding to the logger, so a future regression that re-introduces
-the duplicate trips here loudly.
+With ``cache_logger_on_first_use`` disabled (the unified config we
+ship today), the duplicate kwarg raises ``TypeError`` from inside
+structlog's bound logger. This file locks in the filter that strips
+reserved keys from ``payload`` before forwarding to the logger, so
+a future regression that re-introduces the duplicate trips here
+loudly.
 """
 
 from __future__ import annotations

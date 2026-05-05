@@ -3,7 +3,7 @@
 Declarative session-lifecycle definitions for solo-dev testing and e2e
 regression. Each `*.json` file in this directory becomes a scenario the
 dev-tools API exposes via `GET /api/dev/scenarios` (when
-`DEV_TOOLS_ENABLED=true` or `TEST_MODE=true`).
+`DEV_TOOLS_ENABLED=true`).
 
 ## Running a scenario
 
@@ -145,13 +145,13 @@ won't catch its regressions.
 
 ## Security gating
 
-All `/api/dev/scenarios/...` endpoints 404 unless `DEV_TOOLS_ENABLED=true`
-or `TEST_MODE=true`. Beyond the flag, per-endpoint auth differs:
+All `/api/dev/scenarios/...` endpoints 404 unless `DEV_TOOLS_ENABLED=true`.
+Beyond the flag, per-endpoint auth differs:
 
 | Endpoint | Auth required |
 |---|---|
 | `GET /api/dev/scenarios` | None (just metadata; the gate is the security boundary) |
-| `POST /api/dev/scenarios/{id}/play` | None when `DEV_TOOLS_ENABLED=true` (the wizard's no-token picker depends on this); valid token when only `TEST_MODE=true` (preview/CI safety) |
+| `POST /api/dev/scenarios/{id}/play` | None (the wizard's no-token picker depends on this; the dev-tools gate itself is the security boundary) |
 | `POST /api/dev/sessions/{id}/record` | Creator token bound to the target session, with token-version check |
 
 **Never enable `DEV_TOOLS_ENABLED=true` on a deployed instance.** With

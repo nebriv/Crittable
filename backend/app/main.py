@@ -180,11 +180,31 @@ def create_app(
     # ``configure_logging`` is idempotent; the lifespan re-runs it harmlessly.
     configure_logging(cfg)
     _bootstrap_log = get_logger("startup")
-    if not cfg.test_mode:
-        cfg.require_anthropic_key()
-        _bootstrap_log.info("anthropic_api_key_present", test_mode=False)
-    else:
-        _bootstrap_log.info("anthropic_api_key_check_skipped", test_mode=True)
+    cfg.require_anthropic_key()
+    _bootstrap_log.info("anthropic_api_key_present")
+    if cfg.dev_tools_enabled:
+        # Loud-on-startup so an accidental prod deploy with the dev
+        # flag set shows up in operator log scans. The endpoints
+        # accept unauthenticated session creation in this mode — see
+        # ``backend/app/devtools/api.py::play_scenario`` for the
+        # auth model.
+        _bootstrap_log.warning(
+            "dev_tools_enabled_unauth_path_active",
+            note=(
+                "DEV_TOOLS_ENABLED=true exposes /api/dev/scenarios/* "
+                "to unauthenticated callers. /play returns a creator "
+                "token in the response body. Never enable in production."
+            ),
+        )
+    if cfg.aar_inline_on_end:
+        _bootstrap_log.warning(
+            "aar_inline_on_end_active",
+            note=(
+                "AAR_INLINE_ON_END=true blocks the POST /end request "
+                "handler on the AAR pipeline (5–60 s). This is a "
+                "tests-only convenience; never enable in production."
+            ),
+        )
 
     app = FastAPI(
         title="Crittable",

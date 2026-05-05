@@ -117,17 +117,13 @@ class Settings(BaseSettings):
         # ``int_parsing`` error on ``""``. This is the docker-compose
         # ``${VAR:-}`` pattern: when the operator hasn't set ``VAR``
         # in their ``.env`` Compose passes the literal empty string
-        # to the container. Without this flag, ``DEV_TOOLS_ENABLED``,
-        # ``TEST_MODE``, and similar bool fields crashed the app on
-        # startup with ``ValidationError: Input should be a valid
-        # boolean, unable to interpret input ''`` — producing a
-        # restart loop. Asserted by
-        # ``tests/test_config.py::test_empty_env_vars_fall_back_to_defaults``.
+        # to the container. Without this flag, ``DEV_TOOLS_ENABLED``
+        # and similar bool fields crashed the app on startup with
+        # ``ValidationError: Input should be a valid boolean, unable
+        # to interpret input ''`` — producing a restart loop. Asserted
+        # by ``tests/test_config.py::test_empty_env_vars_fall_back_to_defaults``.
         env_ignore_empty=True,
     )
-
-    # ---- Mode ----------------------------------------------------------
-    test_mode: bool = Field(default=False, alias="TEST_MODE")
 
     # ---- Anthropic -----------------------------------------------------
     anthropic_api_key: SecretStr | None = Field(default=None, alias="ANTHROPIC_API_KEY")
@@ -311,15 +307,24 @@ class Settings(BaseSettings):
     dev_fast_setup: bool = Field(default=False, alias="DEV_FAST_SETUP")
 
     # When true, the ``/api/dev/scenarios/...`` endpoints (scenario list,
-    # play, record) become available to creator-token holders. These let
-    # a single dev drive a multi-participant session by replaying a
-    # canned JSON scenario through the live engine, plus dump a finished
-    # session as a replayable scenario. The endpoints are gated because
-    # a leaked creator token plus this flag would let an attacker spawn
-    # arbitrary sessions and read their join links — nothing critical
-    # but more than a deployed instance should expose. ``TEST_MODE`` also
-    # implies this. **Never set this in production.**
+    # play, record) become available. Session-spawning endpoints
+    # (``/play``) accept UNAUTHENTICATED requests in this mode — the
+    # wizard's "replay scenario" path on the home screen has no token
+    # to present yet, and requiring one would block the most common
+    # dev use case. The dev-tools gate itself is the security boundary.
+    # **Never set this in production**: an unauthenticated caller can
+    # mint sessions via ``/play`` and harvest the creator token in the
+    # response, then read every join link. ``main.py`` emits a startup
+    # WARNING when this flag is on so an accidental deploy is loud in
+    # the logs.
     dev_tools_enabled: bool = Field(default=False, alias="DEV_TOOLS_ENABLED")
+    # When true, ``end_session`` runs AAR generation inline rather than
+    # spawning a background task. Tests need this because Starlette's
+    # sync ``TestClient`` doesn't reliably progress cross-request
+    # ``asyncio.create_task`` work, and the polling client would otherwise
+    # see ``aar_status="pending"`` forever. Production code keeps the
+    # background-task path so ``POST /end`` stays fast.
+    aar_inline_on_end: bool = Field(default=False, alias="AAR_INLINE_ON_END")
     # Filesystem path the dev-tools scenario loader scans for ``*.json``
     # files. The empty-string default means "auto-detect" — the
     # ``resolved_dev_scenarios_path()`` helper computes the
@@ -481,15 +486,13 @@ class Settings(BaseSettings):
         return secrets.token_urlsafe(32)
 
     def require_anthropic_key(self) -> str:
-        """Return the Anthropic API key or raise unless we're in test mode."""
+        """Return the Anthropic API key or raise."""
 
         if self.anthropic_api_key is not None:
             return str(self.anthropic_api_key.get_secret_value())
-        if self.test_mode:
-            return "test-mode-no-key"
         raise RuntimeError(
-            "ANTHROPIC_API_KEY is required. Set it in the environment, "
-            "or set TEST_MODE=true if you are running unit tests."
+            "ANTHROPIC_API_KEY is required. Set it in the environment "
+            "before starting the app."
         )
 
 

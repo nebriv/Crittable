@@ -53,19 +53,25 @@ def judge_client() -> AsyncAnthropic:
     rationale (matches the production resolution path; ``.env`` works
     the same as a shell env var).
 
-    Asserts ``not test_mode`` defensively — the conftest auto-skip
-    should have caught a test-mode run already, but the placeholder
-    string ``"test-mode-no-key"`` slipping into a real API call is
+    Asserts the resolved key is not the parent-conftest dummy
+    defensively — the conftest auto-skip should have caught a dummy-
+    key run already, but the dummy slipping into a real API call is
     exactly the failure mode the multi-layer guard exists to prevent.
+    The dummy-key constant is imported from ``tests/conftest.py`` so
+    the three callsites stay in lockstep.
     """
 
+    from tests.conftest import DUMMY_ANTHROPIC_API_KEY
+
     settings = get_settings()
-    assert not settings.test_mode, (
-        "judge_client fixture must not run with test_mode=True; "
-        "the live conftest's auto-skip should have intercepted this."
+    key = settings.require_anthropic_key()
+    assert key != DUMMY_ANTHROPIC_API_KEY, (
+        "judge_client fixture must not run with the test-conftest "
+        "dummy key; the live conftest's auto-skip should have "
+        "intercepted this."
     )
     return AsyncAnthropic(
-        api_key=settings.require_anthropic_key(),
+        api_key=key,
         base_url=settings.anthropic_base_url,
     )
 

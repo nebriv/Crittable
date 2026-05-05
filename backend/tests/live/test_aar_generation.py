@@ -356,11 +356,12 @@ def _build_user_payload(session: Session, audit: AuditLog) -> str:
 
 # NOTE: there used to be a module-level "defense in depth" skip guard
 # here that evaluated ``get_settings()`` at IMPORT time. It was a
-# misfire: the parent ``backend/tests/conftest.py`` force-sets
-# ``TEST_MODE=true`` BEFORE this module is imported, so ``test_mode``
-# is always True at import; the guard always fired; every test in
+# misfire: the parent ``backend/tests/conftest.py`` injects a dummy
+# ``ANTHROPIC_API_KEY`` BEFORE this module is imported, so the key
+# always resolved at import; the guard always fired; every test in
 # this file was silently skipped on every run. The directory-level
 # ``backend/tests/live/conftest.py`` handles the real skip-when-no-
-# key / skip-when-TEST_MODE check via ``pytest_collection_modifyitems``
-# (which runs AFTER all imports and clears TEST_MODE before checking),
-# so the duplicate guard was both broken and redundant. Removed.
+# real-key check via ``pytest_collection_modifyitems`` (which runs
+# AFTER all imports, pops the dummy, and re-checks against ``.env``
+# / shell-exported values), so the duplicate guard was both broken
+# and redundant. Removed.

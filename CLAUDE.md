@@ -52,22 +52,13 @@ Authoritative design doc: [`docs/PLAN.md`](docs/PLAN.md). Architecture details (
 
 All config is via environment variables. The full reference lives in [`docs/configuration.md`](docs/configuration.md). Required at minimum: `ANTHROPIC_API_KEY`. Hardening checklist before any non-toy deployment is also there (set `CORS_ORIGINS`, enable rate limit, set `SESSION_SECRET`, etc.).
 
-## `TEST_MODE` is an anti-pattern (tracked for deletion)
+## Test API-key handling (no `TEST_MODE`)
 
-`Settings.test_mode` (alias `TEST_MODE`) is a force-enabled bool that, when set, causes `Settings.require_anthropic_key()` to return the literal placeholder string `"test-mode-no-key"` instead of raising on a missing key. `backend/tests/conftest.py` force-sets it for every test run so unit tests can boot without a real key.
+`backend/tests/conftest.py` injects a dummy `ANTHROPIC_API_KEY=dummy-key-for-tests` so unit tests can boot `Settings` without a real key. There is **no `TEST_MODE` placeholder** — `Settings.require_anthropic_key()` simply raises `RuntimeError` whenever `ANTHROPIC_API_KEY` is unset. Don't reintroduce it.
 
-**This has bitten us at least twice in production-shaped ways**, both around the live-API test suite. Symptoms:
+Live-API tests (`backend/tests/live/`) need a real key. The directory's `conftest.py` runs at collection time: pops the dummy, loads the project-root `.env` so a contributor's key actually reaches `os.environ`, and skips the live tests cleanly when no real key is found. The dummy is restored before unit tests run so they still boot. The `anthropic_client` and `judge_client` fixtures defensively assert the resolved key is not the dummy.
 
-1. **Confusing 401s.** Live tests run with `TEST_MODE=true` inherited from the parent conftest → `require_anthropic_key()` returns the placeholder string → SDK sends it to Anthropic → 401 `invalid x-api-key` for every test, even when the user's real key is in `.env`. The 401 looks like an environment / billing issue but is actually the placeholder leaking past the auto-skip.
-2. **Asymmetric guardrail "passes."** When the guardrail's classifier gets a 401, it fail-opens to `verdict="on_topic"`. About a third of the prompt-injection catalog also expects `"on_topic"` (clean inputs), so they pass coincidentally — making it look like the guardrail is partially working when in fact zero classifications actually completed.
-
-The current mitigation (in `backend/tests/live/conftest.py`'s `pytest_collection_modifyitems`):
-
-- Snapshot `TEST_MODE`, clear it, reset `Settings`, run the auto-skip with the real env state, restore `TEST_MODE` for subsequent unit tests.
-- The `anthropic_client` and `judge_client` fixtures hard-assert `not test_mode` defensively.
-- `backend/tests/test_live_fixtures.py` source-greps `tests/live/` for the bad patterns (`os.environ["ANTHROPIC_API_KEY"]` reads, `"tests/live" in str(...)` substring matching) and fails loud at CI time.
-
-The proper fix is to **delete `TEST_MODE` entirely** and have the unit-test conftest inject a dummy `ANTHROPIC_API_KEY` instead. Tracked as a separate issue (filed when the joint-PR work merges) — do not extend `TEST_MODE`'s reach in the meantime. If you reach for it, you're probably about to add the next instance of this bug class.
+`backend/tests/test_live_fixtures.py` source-greps `tests/live/` for `os.environ["ANTHROPIC_API_KEY"]` reads and `"tests/live" in str(...)` substring matches — both ways the original `TEST_MODE` trap shipped — and fails loud at CI time.
 
 ## Never shadow `ANTHROPIC_*` in the agent harness
 
@@ -449,8 +440,7 @@ scenarios.
 - `backend/app/devtools/runner.py` — driver. Two-mode dispatch.
 - `backend/app/devtools/recorder.py` — Session → Scenario.
 - `backend/app/devtools/api.py` — gated REST surface
-  (`/api/dev/scenarios/...`); requires `DEV_TOOLS_ENABLED=true` or
-  `TEST_MODE=true`.
+  (`/api/dev/scenarios/...`); requires `DEV_TOOLS_ENABLED=true`.
 - `backend/scenarios/*.json` — preset scenarios.
 - `backend/tests/scenarios/` — runner + API tests (incl. the
   AI-fidelity round-trip).

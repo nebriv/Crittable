@@ -34,8 +34,9 @@ What it locks:
    conftest's auto-skip originally used ``"tests/live" in str(item.fspath)``
    to filter items.  That works on Linux (paths use ``/``) but
    silently fails on Windows (paths use ``\\``), letting every live
-   test run with the placeholder ``"test-mode-no-key"`` API key and
-   producing 31 confusing 401s.  The production fix uses
+   test run with the parent-conftest dummy API key (when ``TEST_MODE``
+   was still around it became ``"test-mode-no-key"``) and producing
+   31 confusing 401s.  The production fix uses
    ``pathlib.Path(...).parts`` to compare path segments — this
    regression test forbids the substring pattern from re-appearing
    on any path that contains the ``"tests/live"`` segment, in any
@@ -76,6 +77,12 @@ _ALLOWED = {
     # Settings first and only falls back to ``os.environ`` when the
     # import fails — that fallback is the documented escape hatch.
     "judge.py",
+    # ``conftest.py`` is fixture infrastructure, not a test. It owns
+    # the env-state dance that bridges the parent-conftest dummy key
+    # to a real ``.env``-loaded key for live runs. The bug this test
+    # guards is "a TEST FILE reads ``os.environ`` instead of going
+    # through Settings", which is a different code path.
+    "conftest.py",
 }
 
 
@@ -161,7 +168,7 @@ def test_no_forward_slash_path_substring_matching_in_tests_live() -> None:
         "where path separators are ``\\``, letting code that should "
         "have been filtered run instead. The auto-skip in the live "
         "conftest was originally written this way and let live tests "
-        'run with TEST_MODE=true → "test-mode-no-key" → 401 in the '
+        "run with the dummy unit-test API key, producing 401s in the "
         "field.\n\n"
         "Replace with:\n"
         "    parts = pathlib.Path(str(item.fspath)).parts\n"

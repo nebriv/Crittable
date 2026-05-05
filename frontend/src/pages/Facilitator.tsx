@@ -145,11 +145,11 @@ export function Facilitator() {
   // bypass the 5–30 s setup loop. Use only for local QA.
   //
   // Default flips ON when the backend has ``DEV_TOOLS_ENABLED=true``
-  // (or ``TEST_MODE=true``) — operators running with the dev-tools
-  // flag almost always want the dev shortcuts too. The mount-time
-  // probe is a single GET /api/dev/scenarios; a 404 (gate closed)
-  // leaves the toggle unchecked, a 200 flips it on. Operator can
-  // still uncheck it for any individual session.
+  // — operators running with the dev-tools flag almost always want
+  // the dev shortcuts too. The mount-time probe is a single
+  // GET /api/dev/scenarios; a 404 (gate closed) leaves the toggle
+  // unchecked, a 200 flips it on. Operator can still uncheck it
+  // for any individual session.
   const [devMode, setDevMode] = useState(false);
   useEffect(() => {
     let cancelled = false;

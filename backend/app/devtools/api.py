@@ -1,10 +1,10 @@
 """Dev-tools REST surface — scenario list / play / record / download.
 
-Mounted only when ``settings.dev_tools_enabled`` or ``settings.test_mode``
-is true. The router itself is created unconditionally so the routes
-exist; a single ``_require_dev_tools`` gate at the top of every
-handler 404s the request when the flag is off, so a deployed instance
-with the flag flipped off never reveals scenario filenames.
+Mounted only when ``settings.dev_tools_enabled`` is true. The router
+itself is created unconditionally so the routes exist; a single
+``_require_dev_tools`` gate at the top of every handler 404s the
+request when the flag is off, so a deployed instance with the flag
+flipped off never reveals scenario filenames.
 """
 
 from __future__ import annotations
@@ -53,7 +53,7 @@ def _require_dev_tools(req: Request) -> None:
     """
 
     s = _settings(req)
-    if not (s.dev_tools_enabled or s.test_mode):
+    if not s.dev_tools_enabled:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "not found")
 
 
@@ -175,15 +175,8 @@ def register_devtools_routes(app: FastAPI) -> None:
         _require_dev_tools(request)
         scenarios = _safe_load_scenarios(request)
         path = _resolved_scenarios_path(request)
-        s = _settings(request)
-        # Surface whether ``/play`` requires a token in this
-        # environment so the wizard's no-token picker can hide
-        # itself in TEST_MODE-only deploys (CI / preview) where
-        # the call would 401. ``DEV_TOOLS_ENABLED`` opens the
-        # unauth path.
         return {
             "path": str(path),
-            "play_token_required": not s.dev_tools_enabled,
             "scenarios": [
                 {
                     "id": sid,
@@ -215,31 +208,13 @@ def register_devtools_routes(app: FastAPI) -> None:
           that flag set, no token is required — the wizard's
           "replay scenario" path on the home screen has no token
           to present yet, and requiring one would block the most
-          common dev use case.
-        * ``TEST_MODE=true`` (CI / preview) STILL requires a valid
-          token. CI environments are sometimes network-reachable
-          (e.g. PR preview deploys) and we don't want an unauth'd
-          caller harvesting tokens there. Closes Security review H1
-          for that environment specifically.
-        * Production (neither flag) → 404 from ``_require_dev_tools``
+          common dev use case. The dev-tools gate itself is the
+          security boundary for this environment.
+        * Production (flag unset) → 404 from ``_require_dev_tools``
           before this branch is reached.
         """
 
         _require_dev_tools(request)
-        s = _settings(request)
-        if not s.dev_tools_enabled:
-            # ``test_mode``-only path: token still required.
-            token = request.query_params.get("token")
-            if not token:
-                raise HTTPException(
-                    status.HTTP_401_UNAUTHORIZED, "token required"
-                )
-            try:
-                _authn(request).verify(token)
-            except InvalidTokenError as exc:
-                raise HTTPException(
-                    status.HTTP_401_UNAUTHORIZED, str(exc)
-                ) from exc
         scenarios = _safe_load_scenarios(request)
         scenario = scenarios.get(scenario_id)
         if scenario is None:

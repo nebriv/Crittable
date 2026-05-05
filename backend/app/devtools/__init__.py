@@ -31,9 +31,9 @@ the audit log is tracked as follow-up. Today, replays of a recording
 either inject the captured AI messages directly (deterministic, no
 LLM) or re-drive the live LLM (engine mode).
 
-Gating: ``DEV_TOOLS_ENABLED=true`` (or ``TEST_MODE=true``) is required
-for the API surface; never wire these endpoints for unauthenticated
-access on a deployed instance.
+Gating: ``DEV_TOOLS_ENABLED=true`` is required for the API surface;
+never wire these endpoints for unauthenticated access on a deployed
+instance.
 """
 
 from __future__ import annotations

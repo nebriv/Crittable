@@ -30,7 +30,6 @@ def _env(monkeypatch) -> None:
     monkeypatch.setenv("ANTHROPIC_MODEL_SETUP", "mock-setup")
     monkeypatch.setenv("ANTHROPIC_MODEL_AAR", "mock-aar")
     monkeypatch.setenv("ANTHROPIC_MODEL_GUARDRAIL", "mock-guardrail")
-    monkeypatch.setenv("TEST_MODE", "true")
     monkeypatch.setenv("SESSION_SECRET", "x" * 32)
     monkeypatch.setenv("INPUT_GUARDRAIL_ENABLED", "false")
     reset_settings_cache()
@@ -274,3 +273,63 @@ async def test_submit_response_allows_distinct_bodies(client: TestClient) -> Non
         role_id=seats["other_role_id"],
         content="different body",
     )
+
+
+# ----------------- AAR_INLINE_ON_END branch coverage --------------------
+
+
+@pytest.mark.asyncio
+async def test_trigger_aar_generation_inline_when_flag_on(monkeypatch) -> None:
+    """``AAR_INLINE_ON_END=true`` must run the AAR pipeline inline so
+    sync ``TestClient`` callers get a ready AAR back from the
+    follow-up ``GET /export.md`` poll. The parent conftest sets the
+    flag on for the whole test run; this test pins the contract.
+    """
+
+    from app.sessions.manager import SessionManager
+
+    awaited = []
+    spawned = []
+
+    class _StubManager(SessionManager):
+        async def _generate_aar_bg(self, session_id: str) -> None:  # type: ignore[override]
+            awaited.append(session_id)
+
+        def _spawn_bg(self, coro: Any) -> None:  # type: ignore[override]
+            spawned.append(coro)
+            coro.close()
+
+    settings = type("S", (), {"aar_inline_on_end": True})()
+    mgr = _StubManager.__new__(_StubManager)
+    mgr._settings = settings  # type: ignore[attr-defined]
+    await mgr.trigger_aar_generation("sid-123")
+    assert awaited == ["sid-123"]
+    assert spawned == []
+
+
+@pytest.mark.asyncio
+async def test_trigger_aar_generation_background_when_flag_off() -> None:
+    """``AAR_INLINE_ON_END=false`` (production default) must run AAR
+    via the background-task path so ``POST /end`` stays fast. Catches
+    a future polarity-flip regression on the flag.
+    """
+
+    from app.sessions.manager import SessionManager
+
+    awaited = []
+    spawned = []
+
+    class _StubManager(SessionManager):
+        async def _generate_aar_bg(self, session_id: str) -> None:  # type: ignore[override]
+            awaited.append(session_id)
+
+        def _spawn_bg(self, coro: Any) -> None:  # type: ignore[override]
+            spawned.append(coro)
+            coro.close()
+
+    settings = type("S", (), {"aar_inline_on_end": False})()
+    mgr = _StubManager.__new__(_StubManager)
+    mgr._settings = settings  # type: ignore[attr-defined]
+    await mgr.trigger_aar_generation("sid-456")
+    assert awaited == []
+    assert len(spawned) == 1

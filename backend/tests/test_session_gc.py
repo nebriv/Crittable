@@ -37,7 +37,7 @@ def _make_session(
 
 @pytest.mark.asyncio
 async def test_gc_evicts_ended_session_past_retention() -> None:
-    settings = Settings(EXPORT_RETENTION_MIN=1, TEST_MODE=True, SESSION_SECRET="x" * 32)
+    settings = Settings(EXPORT_RETENTION_MIN=1, SESSION_SECRET="x" * 32)  # type: ignore[call-arg]
     repo = InMemoryRepository(max_sessions=10)
     audit = AuditLog(ring_size=64)
     gc = SessionGC(settings=settings, repository=repo, audit=audit, sweep_interval_s=10)
@@ -72,7 +72,7 @@ async def test_gc_ignores_non_ended_session_with_stale_ended_at() -> None:
     leaves ``ended_at`` populated on a live session, the reaper must not
     evict it."""
 
-    settings = Settings(EXPORT_RETENTION_MIN=1, TEST_MODE=True, SESSION_SECRET="x" * 32)
+    settings = Settings(EXPORT_RETENTION_MIN=1, SESSION_SECRET="x" * 32)  # type: ignore[call-arg]
     repo = InMemoryRepository(max_sessions=10)
     audit = AuditLog(ring_size=64)
     gc = SessionGC(settings=settings, repository=repo, audit=audit, sweep_interval_s=10)
@@ -95,7 +95,7 @@ async def test_gc_skips_session_with_aar_in_flight() -> None:
     background task starts. With an aggressive retention setting the reaper
     would otherwise delete the session out from under the generator."""
 
-    settings = Settings(EXPORT_RETENTION_MIN=1, TEST_MODE=True, SESSION_SECRET="x" * 32)
+    settings = Settings(EXPORT_RETENTION_MIN=1, SESSION_SECRET="x" * 32)  # type: ignore[call-arg]
     repo = InMemoryRepository(max_sessions=10)
     audit = AuditLog(ring_size=64)
     gc = SessionGC(settings=settings, repository=repo, audit=audit, sweep_interval_s=10)
@@ -125,7 +125,7 @@ async def test_gc_skips_ended_without_ended_at_timestamp() -> None:
     """Defensive: an ENDED row missing ``ended_at`` (legacy / corrupt) is
     left alone rather than evicted on the next pass."""
 
-    settings = Settings(EXPORT_RETENTION_MIN=1, TEST_MODE=True, SESSION_SECRET="x" * 32)
+    settings = Settings(EXPORT_RETENTION_MIN=1, SESSION_SECRET="x" * 32)  # type: ignore[call-arg]
     repo = InMemoryRepository(max_sessions=10)
     audit = AuditLog(ring_size=64)
     gc = SessionGC(settings=settings, repository=repo, audit=audit, sweep_interval_s=10)
@@ -145,7 +145,7 @@ async def test_gc_tombstone_buffer_is_bounded() -> None:
     """The tombstone list caps so a long-running operator's process doesn't
     leak unbounded session ids."""
 
-    settings = Settings(EXPORT_RETENTION_MIN=1, TEST_MODE=True, SESSION_SECRET="x" * 32)
+    settings = Settings(EXPORT_RETENTION_MIN=1, SESSION_SECRET="x" * 32)  # type: ignore[call-arg]
     repo = InMemoryRepository(max_sessions=10)
     audit = AuditLog(ring_size=64)
     gc = SessionGC(
@@ -176,7 +176,7 @@ async def test_gc_emits_audit_event_before_dropping_buffer() -> None:
     """The ``session_evicted`` audit event must reach the durable JSONL
     stdout sink before the per-session ring buffer is dropped."""
 
-    settings = Settings(EXPORT_RETENTION_MIN=1, TEST_MODE=True, SESSION_SECRET="x" * 32)
+    settings = Settings(EXPORT_RETENTION_MIN=1, SESSION_SECRET="x" * 32)  # type: ignore[call-arg]
     repo = InMemoryRepository(max_sessions=10)
 
     seen: list[str] = []
@@ -204,7 +204,7 @@ async def test_gc_emits_audit_event_before_dropping_buffer() -> None:
 async def test_gc_start_stop_runs_periodic_sweep(monkeypatch) -> None:
     """The reaper task wakes up, sweeps, and exits cleanly on stop."""
 
-    settings = Settings(EXPORT_RETENTION_MIN=1, TEST_MODE=True, SESSION_SECRET="x" * 32)
+    settings = Settings(EXPORT_RETENTION_MIN=1, SESSION_SECRET="x" * 32)  # type: ignore[call-arg]
     repo = InMemoryRepository(max_sessions=10)
     audit = AuditLog(ring_size=64)
     gc = SessionGC(
@@ -235,7 +235,6 @@ async def test_gc_start_stop_runs_periodic_sweep(monkeypatch) -> None:
 def _make_client(monkeypatch) -> TestClient:
     # Long retention so the lifespan-attached reaper doesn't fire during the
     # request flow; the test calls into the reaper directly.
-    monkeypatch.setenv("TEST_MODE", "true")
     monkeypatch.setenv("SESSION_SECRET", "x" * 32)
     monkeypatch.setenv("INPUT_GUARDRAIL_ENABLED", "false")
     monkeypatch.setenv("EXPORT_RETENTION_MIN", "60")

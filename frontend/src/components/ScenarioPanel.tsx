@@ -207,8 +207,7 @@ export function ScenarioPanel({
         <p className="text-xs text-ink-300">
           Dev-tools gate is closed. Set{" "}
           <code className="font-mono text-warn">DEV_TOOLS_ENABLED=true</code> in
-          your backend env (or <code className="font-mono text-warn">TEST_MODE=true</code>{" "}
-          for tests), restart the backend, and reload this tab.
+          your backend env, restart the backend, and reload this tab.
         </p>
         <p className="text-[11px] text-ink-400">
           The <code className="font-mono">/api/dev/scenarios</code> endpoint
