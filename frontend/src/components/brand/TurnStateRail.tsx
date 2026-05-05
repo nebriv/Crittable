@@ -111,7 +111,13 @@ function TurnStateRow({ step, done, active, progressPct }: RowProps) {
             overflow: "hidden",
           }}
           // Determinate bar advertises its value; sweep is decorative.
+          // ``aria-label`` is required when ``role="progressbar"`` is
+          // set — without it screen readers announce an unnamed
+          // progressbar. Referencing the active row's label
+          // (e.g. "AI PROCESSING progress") gives blind operators
+          // the same context sighted users get from the adjacent text.
           role={hasDeterminate ? "progressbar" : undefined}
+          aria-label={hasDeterminate ? `${labels[step]} progress` : undefined}
           aria-valuemin={hasDeterminate ? 0 : undefined}
           aria-valuemax={hasDeterminate ? 100 : undefined}
           aria-valuenow={

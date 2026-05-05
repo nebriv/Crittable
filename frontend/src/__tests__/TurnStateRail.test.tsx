@@ -46,6 +46,11 @@ describe("TurnStateRail", () => {
     expect(bar.getAttribute("aria-valuemin")).toBe("0");
     expect(bar.getAttribute("aria-valuemax")).toBe("100");
     expect(bar.getAttribute("aria-valuenow")).toBe("42");
+    // ARIA requires an accessible name for ``role="progressbar"``;
+    // we reference the active row's label so screen readers announce
+    // e.g. "AI PROCESSING progress, 42 percent" rather than an
+    // unnamed progressbar.
+    expect(bar.getAttribute("aria-label")).toBe("AI PROCESSING progress");
   });
 
   it("treats progressPct=0 as a real value (not nullish)", () => {
