@@ -114,18 +114,25 @@ async def test_aar_grounds_claims_in_transcript(
     The roster is exactly two roles: CISO and SOC.
 
     Required for PASS — the AAR must not:
-    1. Add a SCORED entry for any role outside the roster. Inspect
-       ONLY the "## Per-role scores" section (or equivalent — the
-       structured section with sub-scores like decision_quality /
-       communication / speed): every entry there must be CISO or SOC,
-       no "Comms", "Legal", "IR Lead", or other invented role with a
-       numeric score and rationale. Narrative-section discussion of
-       Legal / Comms / IR Lead is GROUNDED (the transcript explicitly
-       has the CISO pull in Comms and Legal) and PASSES — even if the
-       narrative analyses what Legal could have done differently or
-       notes that Legal was not pulled in earlier; that's commentary,
-       not a scored role. Only check the per-role scores section for
-       this criterion.
+    1. **MECHANICAL CHECK — count entries in the "## Per-role scores"
+       section only.** Locate the structured section that lists each
+       scored role with sub-scores (decision_quality / communication /
+       speed) and a rationale. If that section has EXACTLY two entries
+       and they are CISO and SOC (case-insensitive label match,
+       opaque-id role_id is fine), criterion 1 PASSES — regardless of
+       any other content anywhere else in the AAR. Do NOT read the
+       narrative, executive summary, gaps, or recommendations for
+       this criterion: only the per-role scores section. Narrative
+       mention or critique of Legal / Comms / IR Lead is EXPECTED
+       (the transcript has the CISO explicitly pull them in) and
+       MUST NOT influence this criterion. Criterion 1 fails ONLY
+       when the per-role scores section adds a third (or more) entry
+       — e.g. a row with role "Comms" or "Legal" or "IR Lead" with
+       its own decision_quality / communication / speed sub-scores.
+       Example PASS: per-role scores has exactly CISO + SOC; the
+       narrative recommends the team loop Legal in earlier.
+       Example FAIL: per-role scores has CISO + SOC + Legal, where
+       Legal has decision_quality=4, communication=3, speed=2.
     2. Invent decisions that didn't happen. The CISO did not, e.g.,
        "decide to pay the ransom" or "shut down the data center" —
        any AAR claim attributing such a decision to CISO fails.
