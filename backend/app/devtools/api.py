@@ -1,10 +1,12 @@
 """Dev-tools REST surface — scenario list / play / record / download.
 
-Mounted only when ``settings.dev_tools_enabled`` is true. The router
-itself is created unconditionally so the routes exist; a single
+The router is registered unconditionally by ``app.main.create_app``
+so the routes always exist on the FastAPI instance; a single
 ``_require_dev_tools`` gate at the top of every handler 404s the
-request when the flag is off, so a deployed instance with the flag
-flipped off never reveals scenario filenames.
+request unless ``settings.dev_tools_enabled`` is true. A deployed
+instance with the flag off therefore returns 404 for every dev-tools
+path — the routes exist but never reveal scenario filenames or
+session metadata.
 """
 
 from __future__ import annotations

@@ -6,7 +6,7 @@ All configuration is via environment variables, parsed by `pydantic-settings` in
 
 | Var | Effect |
 |---|---|
-| `ANTHROPIC_API_KEY` | Anthropic API key. The app refuses to start without it. The pytest suite injects a dummy value automatically via `backend/tests/conftest.py`; production / dev shells must export a real key (or set it in a project-root `.env`). |
+| `ANTHROPIC_API_KEY` | Anthropic API key. The app refuses to start without it. The pytest suite injects a dummy value automatically via `backend/tests/conftest.py`; production / dev shells must export a real key into the process env. The app's `Settings` itself is configured with `env_file=None` and does not read a `.env` file directly — operators using a `.env` need an external loader (`docker compose` reads it for `${VAR}` interpolation, `direnv` exports it, the live-test conftest has a tiny inline parser). |
 
 ## Models (tiered)
 

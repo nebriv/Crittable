@@ -279,57 +279,59 @@ async def test_submit_response_allows_distinct_bodies(client: TestClient) -> Non
 
 
 @pytest.mark.asyncio
-async def test_trigger_aar_generation_inline_when_flag_on(monkeypatch) -> None:
+async def test_trigger_aar_generation_inline_when_flag_on(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """``AAR_INLINE_ON_END=true`` must run the AAR pipeline inline so
     sync ``TestClient`` callers get a ready AAR back from the
     follow-up ``GET /export.md`` poll. The parent conftest sets the
     flag on for the whole test run; this test pins the contract.
     """
 
-    from app.sessions.manager import SessionManager
+    manager = client.app.state.manager
+    awaited: list[str] = []
+    spawned: list[Any] = []
 
-    awaited = []
-    spawned = []
+    async def _fake_generate(session_id: str) -> None:
+        awaited.append(session_id)
 
-    class _StubManager(SessionManager):
-        async def _generate_aar_bg(self, session_id: str) -> None:  # type: ignore[override]
-            awaited.append(session_id)
+    def _fake_spawn(coro: Any) -> None:
+        spawned.append(coro)
+        coro.close()
 
-        def _spawn_bg(self, coro: Any) -> None:  # type: ignore[override]
-            spawned.append(coro)
-            coro.close()
+    monkeypatch.setattr(manager, "_generate_aar_bg", _fake_generate)
+    monkeypatch.setattr(manager, "_spawn_bg", _fake_spawn)
+    monkeypatch.setattr(manager._settings, "aar_inline_on_end", True)
 
-    settings = type("S", (), {"aar_inline_on_end": True})()
-    mgr = _StubManager.__new__(_StubManager)
-    mgr._settings = settings  # type: ignore[attr-defined]
-    await mgr.trigger_aar_generation("sid-123")
+    await manager.trigger_aar_generation("sid-123")
     assert awaited == ["sid-123"]
     assert spawned == []
 
 
 @pytest.mark.asyncio
-async def test_trigger_aar_generation_background_when_flag_off() -> None:
+async def test_trigger_aar_generation_background_when_flag_off(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """``AAR_INLINE_ON_END=false`` (production default) must run AAR
     via the background-task path so ``POST /end`` stays fast. Catches
     a future polarity-flip regression on the flag.
     """
 
-    from app.sessions.manager import SessionManager
+    manager = client.app.state.manager
+    awaited: list[str] = []
+    spawned: list[Any] = []
 
-    awaited = []
-    spawned = []
+    async def _fake_generate(session_id: str) -> None:
+        awaited.append(session_id)
 
-    class _StubManager(SessionManager):
-        async def _generate_aar_bg(self, session_id: str) -> None:  # type: ignore[override]
-            awaited.append(session_id)
+    def _fake_spawn(coro: Any) -> None:
+        spawned.append(coro)
+        coro.close()
 
-        def _spawn_bg(self, coro: Any) -> None:  # type: ignore[override]
-            spawned.append(coro)
-            coro.close()
+    monkeypatch.setattr(manager, "_generate_aar_bg", _fake_generate)
+    monkeypatch.setattr(manager, "_spawn_bg", _fake_spawn)
+    monkeypatch.setattr(manager._settings, "aar_inline_on_end", False)
 
-    settings = type("S", (), {"aar_inline_on_end": False})()
-    mgr = _StubManager.__new__(_StubManager)
-    mgr._settings = settings  # type: ignore[attr-defined]
-    await mgr.trigger_aar_generation("sid-456")
+    await manager.trigger_aar_generation("sid-456")
     assert awaited == []
     assert len(spawned) == 1
