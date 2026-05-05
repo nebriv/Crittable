@@ -713,21 +713,51 @@ async def probe_3_recovery_grounding(
             "inject this run, so falling back to a representative payload)"
         )
 
-    session = _build_inject_imminent_session()
-    base_system_blocks = build_play_system_blocks(session, registry=_empty_registry())
+    # PR #170 Copilot review Comment 5: vary BOTH state AND directive
+    # so the comparison actually models legacy-vs-current behaviour.
+    # The pre-fix branch builds a session whose transcript carries
+    # the CRITICAL_INJECT bubble (the inject landed pre-Fix-A) and
+    # splices a SUCCESS tool_result; the post-fix branch leaves the
+    # transcript clean (Fix A rejected the inject before it reached
+    # session.messages) and splices a REJECTION tool_result. Each
+    # uses its corresponding directive (generic for pre, grounded
+    # for post). Without varying both, we'd be measuring "same state,
+    # two directives" — which is informative but not the legacy
+    # vs current comparison we set out to do.
+    #
+    # ``workstreams_enabled=True`` matches production (PR #170
+    # Copilot review Comment 4).
+    pre_session = _build_inject_imminent_session()
+    pre_session.messages.append(
+        Message(
+            kind=MessageKind.CRITICAL_INJECT,
+            tool_name="inject_critical_event",
+            body=(
+                f"[{inject_args.get('severity', 'HIGH')}] "
+                f"{inject_args.get('headline', '')} — "
+                f"{inject_args.get('body', '')}"
+            ),
+            tool_args=dict(inject_args),
+        )
+    )
+    pre_system_blocks = build_play_system_blocks(
+        pre_session, registry=_empty_registry(), workstreams_enabled=True
+    )
+    post_session = _build_inject_imminent_session()
+    post_system_blocks = build_play_system_blocks(
+        post_session, registry=_empty_registry(), workstreams_enabled=True
+    )
 
-    # Build the OLD (generic) and NEW (inject-grounded) directives. The
-    # OLD shape is recovered by calling ``drive_recovery_directive``
-    # without the new ``pending_critical_inject_args`` kwarg, which
-    # matches the pre-fix code path.
     pre_directive = drive_recovery_directive()
     post_directive = drive_recovery_directive(
         pending_critical_inject_args=inject_args,
     )
 
-    base_messages = _play_messages(session, strict=False)
-    if base_messages and base_messages[-1]["role"] == "user":
-        base_messages.pop()
+    def _base_messages(s: Session) -> list[dict[str, Any]]:
+        msgs = _play_messages(s, strict=False)
+        if msgs and msgs[-1]["role"] == "user":
+            msgs.pop()
+        return msgs
 
     prior_assistant = [
         {
@@ -737,47 +767,59 @@ async def probe_3_recovery_grounding(
             "input": inject_args,
         }
     ]
-    # The post-Fix-A scenario uses the rejection tool_result the
-    # production dispatcher emits today.
-    rejection_content = (
+    pre_fix_tool_result = [
+        {
+            "type": "tool_result",
+            "tool_use_id": "tu-inject",
+            "content": "critical event surfaced",
+            "is_error": False,
+        }
+    ]
+    post_fix_a_tool_result_content = (
         "inject_critical_event was emitted without a same-response "
-        "DRIVE-slot tool (`broadcast`, `address_role`, `share_data`, or "
-        "`pose_choice`). Critical injects MUST land as a chain — the "
-        "banner alone leaves players staring at the screen. Re-fire as: "
-        "`inject_critical_event(...)`, then a `broadcast` / "
-        "`address_role` naming which active role acts on the inject "
-        "and what they do, then `set_active_roles` yielding to those "
-        "roles."
+        "actor-naming tool (`broadcast`, `address_role`, or "
+        "`pose_choice`). Critical injects MUST land as a chain — re-"
+        "fire as a chain."
     )
     post_fix_a_tool_result = [
         {
             "type": "tool_result",
             "tool_use_id": "tu-inject",
-            "content": rejection_content,
+            "content": post_fix_a_tool_result_content,
             "is_error": True,
         }
     ]
 
-    def _build_recovery_messages(directive: Any) -> list[dict[str, Any]]:
+    def _build_messages(
+        base: list[dict[str, Any]],
+        tool_result: list[dict[str, Any]],
+        directive: Any,
+    ) -> list[dict[str, Any]]:
         return [
-            *base_messages,
+            *base,
             {"role": "assistant", "content": prior_assistant},
             {
                 "role": "user",
                 "content": [
-                    *post_fix_a_tool_result,
+                    *tool_result,
                     {"type": "text", "text": directive.user_nudge},
                 ],
             },
         ]
 
-    def _build_system(directive: Any) -> list[dict[str, Any]]:
-        return [*base_system_blocks, {"type": "text", "text": directive.system_addendum}]
+    def _build_system(
+        base_system: list[dict[str, Any]], directive: Any
+    ) -> list[dict[str, Any]]:
+        return [*base_system, {"type": "text", "text": directive.system_addendum}]
 
-    pre_messages = _build_recovery_messages(pre_directive)
-    post_messages = _build_recovery_messages(post_directive)
-    pre_system = _build_system(pre_directive)
-    post_system = _build_system(post_directive)
+    pre_messages = _build_messages(
+        _base_messages(pre_session), pre_fix_tool_result, pre_directive
+    )
+    post_messages = _build_messages(
+        _base_messages(post_session), post_fix_a_tool_result, post_directive
+    )
+    pre_system = _build_system(pre_system_blocks, pre_directive)
+    post_system = _build_system(post_system_blocks, post_directive)
     tools = [t for t in PLAY_TOOLS if t["name"] in pre_directive.tools_allowlist]
 
     result = Probe3Result(samples=samples)

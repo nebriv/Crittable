@@ -514,7 +514,7 @@ async def test_inject_critical_event_rejected_when_unpaired() -> None:
         for r in outcome.tool_results
         if r.get("is_error") and r.get("tool_use_id") == "tu-inject"
     )
-    assert "without a same-response DRIVE-slot tool" in err["content"]
+    assert "without a same-response actor-naming tool" in err["content"]
     assert "Re-fire as" in err["content"]
     # No banner / message landed.
     assert not outcome.critical_inject_fired
@@ -546,13 +546,6 @@ async def test_inject_critical_event_rejected_when_unpaired() -> None:
             },
         ),
         (
-            "share_data",
-            {
-                "label": "Slack screenshot — viral copy",
-                "data": "url: https://example/slack-screenshot",
-            },
-        ),
-        (
             "pose_choice",
             {
                 "role_id": "role-ciso",
@@ -565,14 +558,16 @@ async def test_inject_critical_event_rejected_when_unpaired() -> None:
         ),
     ],
 )
-async def test_inject_paired_with_any_drive_tool_lands_chain(
+async def test_inject_paired_with_actor_naming_tool_lands_chain(
     drive_tool: str, drive_args: dict[str, Any]
 ) -> None:
-    """Issue #151 fix A: any DRIVE-slot tool — ``broadcast``,
-    ``address_role``, ``share_data``, or ``pose_choice`` — satisfies
-    the pairing requirement. Catches the failure mode where the rule
-    is enforced too narrowly (e.g. only ``broadcast``) and a legit
-    inject + share_data chain gets blocked."""
+    """Issue #151 fix A: an actor-naming tool — ``broadcast``,
+    ``address_role``, or ``pose_choice`` — satisfies the pairing
+    requirement. ``share_data`` is excluded (PR #170 Copilot review):
+    a raw data dump can satisfy the DRIVE slot without giving any
+    concrete direction, so it would still leave players staring at a
+    banner with no per-role action. The exclusion has its own
+    regression test below."""
 
     dispatcher = _make_dispatcher()
     session = _build_session()
@@ -591,6 +586,145 @@ async def test_inject_paired_with_any_drive_tool_lands_chain(
         "should have satisfied fix A"
     )
     # The inject's tool_result is non-error.
+    inject_result = next(
+        r for r in outcome.tool_results if r.get("tool_use_id") == "tu-inject"
+    )
+    assert not inject_result.get("is_error")
+
+
+@pytest.mark.asyncio
+async def test_inject_paired_only_with_share_data_is_rejected() -> None:
+    """Issue #151 PR #170 Copilot review: ``share_data`` is in the
+    DRIVE slot for chat purposes but does NOT name an actor. The
+    Critical-inject chain mandate requires a follow-up that tells
+    players WHO acts on the inject, so an inject + share_data + yield
+    would still leave players staring at a banner-with-data and no
+    direction. Rejected as a chain violation."""
+
+    dispatcher = _make_dispatcher()
+    session = _build_session()
+    outcome = await _dispatch(
+        dispatcher,
+        session,
+        _tu(
+            "inject_critical_event",
+            {"severity": "HIGH", "headline": "Reporter call", "body": "tabloid"},
+            tool_id="tu-inject",
+        ),
+        _tu(
+            "share_data",
+            {
+                "label": "Slack screenshot — viral copy",
+                "data": "url: https://example/slack-screenshot",
+            },
+            tool_id="tu-share",
+        ),
+    )
+    inject_result = next(
+        r for r in outcome.tool_results if r.get("tool_use_id") == "tu-inject"
+    )
+    assert inject_result.get("is_error") is True
+    assert "share_data" in inject_result["content"], (
+        "rejection message should explicitly call out share_data so "
+        "the model knows it's not a substitute on the chain"
+    )
+    assert not outcome.critical_inject_fired
+
+
+@pytest.mark.asyncio
+async def test_inject_rolled_back_when_paired_drive_tool_fails_validation() -> None:
+    """Issue #151 PR #170 Copilot Comment 1: the pre-dispatch pairing
+    scan only checks for tool *names* in the batch. If the paired
+    DRIVE-shaped tool fires but later fails its own validation (here:
+    ``address_role(role_id="bogus")`` raising for unknown role), the
+    DRIVE slot never lands but the inject did. Pre-fix, this left the
+    banner visible while the validator's missing-DRIVE recovery
+    cascaded — exactly the UX fix A is supposed to prevent.
+
+    The post-dispatch slot-pairing check now retroactively rolls back
+    the inject in this case: ``critical_inject_fired=False``,
+    ``CRITICAL_INJECT`` stripped from ``appended_messages``,
+    ``Slot.ESCALATE`` dropped, and the inject's tool_result rewritten
+    as ``is_error=True`` with the chain-shape hint. The
+    ``critical_inject_attempted_args`` STAYS set so fix B's recovery
+    grounding still has the inject context."""
+
+    dispatcher = _make_dispatcher()
+    session = _build_session()
+    outcome = await _dispatch(
+        dispatcher,
+        session,
+        _tu(
+            "inject_critical_event",
+            {"severity": "HIGH", "headline": "Reporter call", "body": "tabloid"},
+            tool_id="tu-inject",
+        ),
+        # Paired by NAME (address_role is in the pairing set) but
+        # bogus role_id — address_role will raise _DispatchError, so
+        # the DRIVE slot never fires.
+        _tu(
+            "address_role",
+            {"role_id": "role-not-real", "message": "do the thing"},
+            tool_id="tu-address-bad",
+        ),
+    )
+
+    # Inject was rolled back: no banner (slot dropped, fired=False),
+    # no CRITICAL_INJECT message, tool_result rewritten as error.
+    assert outcome.critical_inject_fired is False
+    assert not [
+        m for m in outcome.appended_messages if m.kind == MessageKind.CRITICAL_INJECT
+    ]
+    inject_result = next(
+        r for r in outcome.tool_results if r.get("tool_use_id") == "tu-inject"
+    )
+    assert inject_result["is_error"] is True
+    assert "no DRIVE slot actually fired" in inject_result["content"]
+    # Address_role's own rejection still surfaced separately so the
+    # model sees both the chain-shape hint and the role_id error.
+    address_result = next(
+        r for r in outcome.tool_results if r.get("tool_use_id") == "tu-address-bad"
+    )
+    assert address_result["is_error"] is True
+    # Fix B: grounding payload survives the rollback.
+    assert outcome.critical_inject_attempted_args == {
+        "severity": "HIGH",
+        "headline": "Reporter call",
+        "body": "tabloid",
+    }
+
+
+@pytest.mark.asyncio
+async def test_inject_with_valid_pair_does_not_roll_back() -> None:
+    """Inverse of the above: when the paired DRIVE tool fires
+    SUCCESSFULLY, the slot-pairing rollback must NOT trigger. Guards
+    against the post-dispatch check being over-eager and discarding
+    valid injects."""
+
+    dispatcher = _make_dispatcher()
+    session = _build_session()
+    outcome = await _dispatch(
+        dispatcher,
+        session,
+        _tu(
+            "inject_critical_event",
+            {"severity": "HIGH", "headline": "Reporter call", "body": "tabloid"},
+            tool_id="tu-inject",
+        ),
+        _tu(
+            "address_role",
+            {
+                "role_id": "role-soc",
+                "message": "Pull the screenshot's metadata in the next 60 seconds.",
+            },
+            tool_id="tu-address-good",
+        ),
+    )
+
+    assert outcome.critical_inject_fired is True
+    assert [
+        m for m in outcome.appended_messages if m.kind == MessageKind.CRITICAL_INJECT
+    ], "valid chain should leave the inject's CRITICAL_INJECT message in place"
     inject_result = next(
         r for r in outcome.tool_results if r.get("tool_use_id") == "tu-inject"
     )

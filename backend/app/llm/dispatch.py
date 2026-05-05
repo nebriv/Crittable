@@ -36,14 +36,20 @@ _logger = get_logger("llm.dispatch")
 
 
 # Issue #151 fix A — the set of play-tier tool names that satisfy the
-# Critical-inject chain pairing requirement. Mirrors ``Slot.DRIVE`` in
-# ``sessions/slots.py`` (broadcast / address_role / share_data /
-# pose_choice). Lifted here as a frozenset so the dispatch-time scan
-# avoids importing the slot map (the slot map already imports nothing
-# heavy, but keeping the dispatcher's public surface narrow makes the
-# pairing rule self-contained and greppable).
-_DRIVE_TOOL_NAMES: frozenset[str] = frozenset(
-    {"broadcast", "address_role", "share_data", "pose_choice"}
+# Critical-inject chain pairing requirement. NOT the full DRIVE-slot
+# set (``share_data`` is in DRIVE for slot purposes — a player-facing
+# data dump — but the inject chain mandate in Block 6 specifically
+# requires a follow-up that NAMES which role acts on the inject and
+# WHAT they do; a raw data dump can satisfy the slot without giving
+# any concrete direction, so the banner-without-guidance failure mode
+# would still slip through). Limited to ``broadcast`` (named-actor
+# narration), ``address_role`` (single-addressee imperative), and
+# ``pose_choice`` (single-addressee A/B/C decision prompt) per the
+# PR #170 Copilot review. Block 6's prose still mentions ``broadcast``
+# / ``address_role`` only; ``pose_choice`` is included here because
+# it satisfies the same "name an actor + give a concrete ask" shape.
+_INJECT_PAIRING_TOOL_NAMES: frozenset[str] = frozenset(
+    {"broadcast", "address_role", "pose_choice"}
 )
 
 
@@ -168,10 +174,10 @@ class ToolDispatcher:
             outcome.critical_inject_attempted_args = (
                 dict(last) if isinstance(last, dict) else None
             )
-        has_drive_pairing = any(
-            tu.get("name") in _DRIVE_TOOL_NAMES for tu in tool_uses
+        has_inject_pairing = any(
+            tu.get("name") in _INJECT_PAIRING_TOOL_NAMES for tu in tool_uses
         )
-        inject_pairing_violation = bool(inject_attempts) and not has_drive_pairing
+        inject_pairing_violation = bool(inject_attempts) and not has_inject_pairing
         coros = [
             self._dispatch_one(
                 session=session,
@@ -184,7 +190,95 @@ class ToolDispatcher:
             for tu in tool_uses
         ]
         await asyncio.gather(*coros)
+        # Issue #151 PR #170 Copilot fix (Comment 1): the pre-dispatch
+        # pairing scan above only checks that a paired tool *name* is
+        # present in the batch. If that paired call later fails its own
+        # validation (e.g. ``address_role(role_id="bogus")`` raises
+        # ``_DispatchError`` for unknown role; ``share_data`` rejected
+        # for a bad workstream_id; etc.), the DRIVE slot never fires
+        # but the inject still landed (banner appended, slot ESCALATE
+        # set). The validator would then run DRIVE recovery — exactly
+        # the post-turn cost fix A is supposed to avoid. Catch this
+        # post-dispatch by re-checking slots: if ESCALATE landed
+        # without a successful DRIVE, retroactively reject the inject.
+        # This works because the WS ``critical_event`` broadcast was
+        # deferred to the apply layer (see the inject handler) — the
+        # banner has not yet reached clients, so rolling back here is
+        # invisible to participants.
+        if Slot.ESCALATE in outcome.slots and Slot.DRIVE not in outcome.slots:
+            self._rollback_inject(
+                outcome=outcome,
+                tool_uses=tool_uses,
+                session_id=session.id,
+                turn_id=turn_id,
+            )
         return outcome
+
+    def _rollback_inject(
+        self,
+        *,
+        outcome: DispatchOutcome,
+        tool_uses: list[dict[str, Any]],
+        session_id: str,
+        turn_id: str | None,
+    ) -> None:
+        """Retroactively reject an ``inject_critical_event`` whose
+        paired DRIVE-shaped tool fired by name but failed its own
+        validation. Restores the outcome to the same shape the pre-
+        dispatch pairing scan would have produced if the model had
+        emitted the inject solo:
+
+          * ``Slot.ESCALATE`` removed
+          * ``critical_inject_fired = False``
+          * ``CRITICAL_INJECT`` messages stripped from
+            ``appended_messages``
+          * the inject's ``tool_result`` content replaced with the
+            chain-shape rejection and ``is_error=True``
+
+        ``critical_inject_attempted_args`` STAYS set so the validator
+        still has the inject context for fix B's recovery grounding.
+        """
+
+        outcome.slots.discard(Slot.ESCALATE)
+        outcome.critical_inject_fired = False
+        outcome.appended_messages = [
+            m for m in outcome.appended_messages
+            if m.kind != MessageKind.CRITICAL_INJECT
+        ]
+        # Find the inject tool_use_id(s) so we can rewrite the
+        # corresponding tool_result entries. There can in principle be
+        # multiple injects in one batch (rare, but real); rewrite all
+        # of them.
+        inject_tool_use_ids = {
+            tu.get("id", "")
+            for tu in tool_uses
+            if tu.get("name") == "inject_critical_event"
+        }
+        rejection_content = (
+            "inject_critical_event was emitted with a paired tool name "
+            "in the batch but the paired call failed its own validation "
+            "(e.g. unknown role_id, invalid workstream_id), so no DRIVE "
+            "slot actually fired — players would have seen the banner "
+            "with no per-role direction. Re-fire the inject as a chain "
+            "where the paired `broadcast` / `address_role` / "
+            "`pose_choice` references valid roster ids."
+        )
+        for tr in outcome.tool_results:
+            if tr.get("tool_use_id") in inject_tool_use_ids:
+                tr["content"] = rejection_content
+                tr["is_error"] = True
+        self._audit.emit(
+            AuditEvent(
+                kind="tool_use_rejected",
+                session_id=session_id,
+                turn_id=turn_id,
+                payload={
+                    "name": "inject_critical_event",
+                    "reason": "post_dispatch_inject_pairing_violation",
+                    "rolled_back": sorted(inject_tool_use_ids),
+                },
+            )
+        )
 
     def _dedupe_setup_questions(
         self,
@@ -743,11 +837,14 @@ class ToolDispatcher:
             # Issue #151 fix A: enforce the Critical-inject chain
             # mandate at dispatch time. Block 6 of the play-tier system
             # prompt requires that ``inject_critical_event`` lands with
-            # at least one DRIVE-slot tool (broadcast / address_role /
-            # share_data / pose_choice) in the same response so players
-            # see per-role direction alongside the banner. The model
-            # ignores this on real injects with some regularity; the
-            # pre-fix recovery path was the post-turn DRIVE recovery,
+            # at least one same-response actor-naming tool (``broadcast``
+            # / ``address_role`` / ``pose_choice``) so players see per-
+            # role direction alongside the banner. ``share_data`` is
+            # *not* in the pairing set — a raw data dump can satisfy
+            # the DRIVE slot without giving any concrete direction
+            # (PR #170 Copilot review). The model ignores the chain
+            # mandate on real injects with some regularity; the pre-
+            # fix recovery path was the post-turn DRIVE recovery,
             # which fired *after* paying the cost of a mis-composed
             # turn. Catch the violation here instead so the strict-
             # retry pass replays a structured rejection (model self-
@@ -762,16 +859,17 @@ class ToolDispatcher:
             if inject_pairing_violation:
                 raise _DispatchError(
                     "inject_critical_event was emitted without a same-"
-                    "response DRIVE-slot tool (`broadcast`, "
-                    "`address_role`, `share_data`, or `pose_choice`). "
-                    "Critical injects MUST land as a chain — without "
-                    "the paired DRIVE call, players see the banner "
-                    "land and then nothing, the turn stalls. Re-fire "
-                    "as: `inject_critical_event(...)`, then a "
-                    "`broadcast` / `address_role` / `share_data` / "
-                    "`pose_choice` naming which active role acts on the "
-                    "inject and what they do, then `set_active_roles` "
-                    "yielding to those roles."
+                    "response actor-naming tool (`broadcast`, "
+                    "`address_role`, or `pose_choice`). Critical injects "
+                    "MUST land as a chain — without the paired call, "
+                    "players see the banner land and then nothing, the "
+                    "turn stalls. (`share_data` does NOT satisfy the "
+                    "chain — a raw data dump doesn't tell anyone WHO "
+                    "should act on the inject.) Re-fire as: "
+                    "`inject_critical_event(...)`, then a `broadcast` / "
+                    "`address_role` / `pose_choice` naming which active "
+                    "role acts on the inject and what they do, then "
+                    "`set_active_roles` yielding to those roles."
                 )
             allowed = await _maybe_call(critical_inject_allowed_cb)
             if not allowed:
@@ -806,15 +904,15 @@ class ToolDispatcher:
                 )
             )
             outcome.critical_inject_fired = True
-            await self._connections.broadcast(
-                session.id,
-                {
-                    "type": "critical_event",
-                    "severity": args.get("severity", "HIGH"),
-                    "headline": args.get("headline", ""),
-                    "body": args.get("body", ""),
-                },
-            )
+            # Issue #151 PR #170 Copilot fix: the ``critical_event`` WS
+            # broadcast (the red-banner event) is deferred to the apply
+            # layer (``turn_driver._apply_play_outcome``). Otherwise a
+            # paired DRIVE-shaped tool that LATER fails its own
+            # validation (e.g. ``address_role(role_id="bogus")`` raises
+            # for unknown role) would let the inject's banner reach
+            # clients before the post-dispatch slot check could roll
+            # the inject back. Apply layer broadcasts only injects that
+            # survive the slot check.
             return "critical event surfaced"
 
         if name == "set_active_roles":

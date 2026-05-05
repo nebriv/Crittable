@@ -509,21 +509,6 @@ def validate(
                     pending_critical_inject_args=pending_critical_inject_args,
                 )
             )
-            if pending_critical_inject_args:
-                # Surface the inject-grounded path as a warning string so
-                # operator-side log analysis can grep for it without
-                # parsing the system_addendum prose. Pure observability —
-                # the directive itself already carries the inject
-                # payload.
-                _logger.info(
-                    "drive_recovery_grounded_on_inject",
-                    headline=str(
-                        pending_critical_inject_args.get("headline") or ""
-                    )[:80],
-                    severity=str(
-                        pending_critical_inject_args.get("severity") or "HIGH"
-                    ),
-                )
 
     # Missing YIELD: the turn never advanced. Same as the legacy
     # strict-retry path.

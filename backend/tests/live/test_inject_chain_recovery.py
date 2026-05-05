@@ -165,34 +165,22 @@ def inject_imminent_session() -> Session:
 
 @pytest.fixture
 def post_solo_inject_session(inject_imminent_session: Session) -> Session:
-    """The session AFTER the model fired an unpaired inject — the
-    state at which the validator's missing-DRIVE recovery would run
-    in production. The CRITICAL_INJECT message is appended; no DRIVE
-    landed; players have nothing to act on. Used by the recovery-
-    grounding test to drive the production recovery LLM call shape."""
+    """The session AFTER fix A rejected an unpaired inject — the
+    state at which the validator's missing-DRIVE recovery runs in
+    production today.
 
-    s = inject_imminent_session
-    s.messages.append(
-        Message(
-            kind=MessageKind.CRITICAL_INJECT,
-            tool_name="inject_critical_event",
-            body=(
-                "[HIGH] Slack screenshot leaked to press — Reporter calling "
-                "for comment in 30 minutes about an internal incident-"
-                "channel screenshot circulating on regional Twitter."
-            ),
-            tool_args={
-                "severity": "HIGH",
-                "headline": "Slack screenshot leaked to press",
-                "body": (
-                    "Reporter calling for comment in 30 minutes about an "
-                    "internal incident-channel screenshot circulating on "
-                    "regional Twitter."
-                ),
-            },
-        )
-    )
-    return s
+    Crucially this fixture does NOT append a ``CRITICAL_INJECT``
+    message: with fix A in place, the dispatcher rejects the solo
+    inject and the banner never reaches ``session.messages``. The
+    recovery LLM call has only the model's own prior tool_use (which
+    we splice into the spliced-tool-loop in the test) plus the
+    rejection tool_result + the recovery directive's grounding
+    payload to anchor on. Pre-#170-Copilot-review the fixture mirrored
+    the pre-fix-A success path (inject in transcript, success
+    tool_result), which didn't actually exercise the post-fix
+    recovery flow."""
+
+    return inject_imminent_session
 
 
 # ---------------------------------------------------------------- tests
@@ -230,11 +218,14 @@ async def test_inject_critical_event_chain_probe(
     ``tool_use`` blocks under a normal prompt). That's a real
     regression worth catching."""
 
+    # PR #170 Copilot review Comment 4: pass workstreams_enabled=True
+    # to match production (Settings default).
     resp = await call_play(
         anthropic_client,
         model=play_model,
         session=inject_imminent_session,
         registry=empty_registry,
+        workstreams_enabled=True,
     )
     names = tool_names(resp)
     assert names, (
@@ -301,8 +292,17 @@ async def test_drive_recovery_after_inject_grounds_on_event(
     # tool_result, then the directive's user nudge as a trailing user
     # text block. The system addendum rides on top of the standard
     # play system blocks.
+    #
+    # ``workstreams_enabled=True`` matches the production default
+    # (``Settings.workstreams_enabled`` defaults to True) so this
+    # probe exercises the same prompt the real engine sends — without
+    # this, a future workstreams-related prompt edit could regress
+    # tool composition without the live test catching it (PR #170
+    # Copilot review Comment 4).
     base_system_blocks = build_play_system_blocks(
-        post_solo_inject_session, registry=empty_registry
+        post_solo_inject_session,
+        registry=empty_registry,
+        workstreams_enabled=True,
     )
     system_blocks = [
         *base_system_blocks,
@@ -327,12 +327,24 @@ async def test_drive_recovery_after_inject_grounds_on_event(
             "input": inject_args,
         }
     ]
+    # Post-Fix-A reality (PR #170 Copilot review Comment 3): the
+    # dispatcher rejects the solo inject with a structured error and
+    # ``is_error=True``. The recovery directive's grounding payload
+    # is the only inject context the model sees alongside its own
+    # prior attempt; the CRITICAL_INJECT bubble that the pre-fix
+    # version of this fixture appended is gone, because fix A
+    # short-circuits the inject before it reaches the transcript.
     prior_tool_result = [
         {
             "type": "tool_result",
             "tool_use_id": "tu-inject",
-            "content": "critical event surfaced",
-            "is_error": False,
+            "content": (
+                "inject_critical_event was emitted without a same-"
+                "response actor-naming tool (`broadcast`, "
+                "`address_role`, or `pose_choice`). Critical injects "
+                "MUST land as a chain — re-fire as a chain."
+            ),
+            "is_error": True,
         }
     ]
     messages = [

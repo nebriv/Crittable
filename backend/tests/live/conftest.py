@@ -502,10 +502,21 @@ async def call_play(
     registry: Any,
     tools: list[dict[str, Any]] | None = None,
     tool_choice: dict[str, Any] | None = None,
+    workstreams_enabled: bool = False,
 ) -> Any:
-    """Call the live API with the production message-build path."""
+    """Call the live API with the production message-build path.
 
-    system_blocks = build_play_system_blocks(session, registry=registry)
+    ``workstreams_enabled`` defaults to ``False`` to preserve the
+    existing live-test behaviour. Pass ``True`` explicitly when a
+    test needs production-parity prompts (production
+    ``Settings.workstreams_enabled`` defaults to ``True``); an audit
+    of every existing call site is tracked separately so this default
+    can be flipped without surprising regressions in tests not
+    designed for the workstream-aware prompt."""
+
+    system_blocks = build_play_system_blocks(
+        session, registry=registry, workstreams_enabled=workstreams_enabled
+    )
     messages = _play_messages(session, strict=False)
     kwargs: dict[str, Any] = {
         "model": model,
