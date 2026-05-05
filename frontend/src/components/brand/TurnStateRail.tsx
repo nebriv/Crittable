@@ -50,9 +50,14 @@ interface RowProps {
   step: StepId;
   done?: boolean;
   active?: boolean;
+  /** Issue #111: per-turn progress fraction in [0.0, 1.0] for the
+   *  active row's bar. ``null`` / undefined → keep the indeterminate
+   *  sweep; a number → render a determinate width-driven bar. Only
+   *  the active row consumes this; non-active rows ignore it. */
+  progressPct?: number | null;
 }
 
-function TurnStateRow({ step, done, active }: RowProps) {
+function TurnStateRow({ step, done, active, progressPct }: RowProps) {
   const labels: Record<StepId, string> = {
     setup: "SETUP",
     briefing: "BRIEFING",
@@ -66,6 +71,19 @@ function TurnStateRow({ step, done, active }: RowProps) {
       ? "var(--signal)"
       : "var(--ink-500)";
   const dot = done ? "●" : active ? "◉" : "○";
+  // Issue #111: when the backend supplied a real progress fraction,
+  // render a determinate bar (width = pct * 100%) instead of the
+  // indeterminate ``tt-stream`` sweep. ``null`` / undefined falls
+  // back to the sweep so the rail still reads as "the system is
+  // doing something" before the engine has a meaningful sub-step
+  // (e.g. very early in a play turn before the LLM call returns).
+  // The width transition is short and ease-out so a step from 0.40
+  // → 0.70 reads as a smooth fill rather than a jump.
+  const hasDeterminate =
+    typeof progressPct === "number" && Number.isFinite(progressPct);
+  const clampedPct = hasDeterminate
+    ? Math.max(0, Math.min(1, progressPct as number))
+    : 0;
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
       <span className="mono" style={{ fontSize: 12, color, width: 14 }}>
@@ -83,12 +101,6 @@ function TurnStateRow({ step, done, active }: RowProps) {
         {labels[step]}
       </span>
       {active ? (
-        // Indeterminate progress sweep — the engine doesn't yet expose
-        // a real "% of turn complete" signal (tracked in #TBD-issue),
-        // so we render a left-to-right gradient stream so the active
-        // step still reads as "the system is doing something" rather
-        // than a static stub. When the backend ships per-turn progress,
-        // swap this for a width-driven bar bound to that percentage.
         <div
           style={{
             position: "relative",
@@ -98,19 +110,54 @@ function TurnStateRow({ step, done, active }: RowProps) {
             borderRadius: 1,
             overflow: "hidden",
           }}
-          aria-hidden="true"
+          // Determinate bar advertises its value; sweep is decorative.
+          // ``aria-label`` is required when ``role="progressbar"`` is
+          // set — without it screen readers announce an unnamed
+          // progressbar. Referencing the active row's label
+          // (e.g. "AI PROCESSING progress") gives blind operators
+          // the same context sighted users get from the adjacent text.
+          role={hasDeterminate ? "progressbar" : undefined}
+          aria-label={hasDeterminate ? `${labels[step]} progress` : undefined}
+          aria-valuemin={hasDeterminate ? 0 : undefined}
+          aria-valuemax={hasDeterminate ? 100 : undefined}
+          aria-valuenow={
+            hasDeterminate ? Math.round(clampedPct * 100) : undefined
+          }
+          aria-hidden={hasDeterminate ? undefined : "true"}
         >
-          <div
-            style={{
-              position: "absolute",
-              top: 0,
-              bottom: 0,
-              width: "40%",
-              background:
-                "linear-gradient(90deg, transparent, var(--signal) 35%, var(--signal) 65%, transparent)",
-              animation: "tt-stream 1.8s ease-in-out infinite",
-            }}
-          />
+          {hasDeterminate ? (
+            <div
+              style={{
+                position: "absolute",
+                top: 0,
+                bottom: 0,
+                left: 0,
+                width: `${clampedPct * 100}%`,
+                background: "var(--signal)",
+                transition: "width 300ms ease-out",
+              }}
+            />
+          ) : (
+            // Both ``className="animate-tt-stream"`` AND inline
+            // ``animation`` are needed: the inline style fires the
+            // sweep at runtime, and the class is the hook that the
+            // ``prefers-reduced-motion`` rule in ``index.css`` uses
+            // to disable it (``animation: none !important`` beats the
+            // inline declaration). Pre-PR the inline-only sweep
+            // slipped past the reduced-motion override.
+            <div
+              className="animate-tt-stream"
+              style={{
+                position: "absolute",
+                top: 0,
+                bottom: 0,
+                width: "40%",
+                background:
+                  "linear-gradient(90deg, transparent, var(--signal) 35%, var(--signal) 65%, transparent)",
+                animation: "tt-stream 1.8s ease-in-out infinite",
+              }}
+            />
+          )}
         </div>
       ) : null}
     </div>
@@ -121,9 +168,13 @@ interface Props {
   state: string | null | undefined;
   /** Optional subtitle for the section header (e.g. "awaiting 1 of 3"). */
   subtitle?: string;
+  /** Issue #111: backend-supplied per-turn progress fraction. See
+   *  ``backend/app/sessions/progress.py`` for the per-state policy.
+   *  ``null`` / undefined → indeterminate sweep. */
+  progressPct?: number | null;
 }
 
-export function TurnStateRail({ state, subtitle }: Props) {
+export function TurnStateRail({ state, subtitle, progressPct }: Props) {
   const active = activeStep(state);
   const activeIdx = STEPS.findIndex((s) => s.id === active);
   return (
@@ -147,6 +198,7 @@ export function TurnStateRail({ state, subtitle }: Props) {
             step={s.id}
             done={activeIdx >= 0 ? i < activeIdx : false}
             active={s.id === active}
+            progressPct={s.id === active ? progressPct : null}
           />
         ))}
       </div>

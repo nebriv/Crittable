@@ -1308,7 +1308,10 @@ export function Facilitator() {
             />
           ) : null}
           <div className="rounded-r-3 border border-ink-600 bg-ink-850">
-            <TurnStateRail state={snapshot.state} />
+            <TurnStateRail
+              state={snapshot.state}
+              progressPct={snapshot.current_turn?.progress_pct ?? null}
+            />
           </div>
           <SessionActivityPanel
             sessionId={state.sessionId}

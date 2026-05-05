@@ -47,6 +47,7 @@ from .models import (
     Turn,
 )
 from .phase_policy import assert_state, tool_choice_for
+from .progress import compute_progress_pct
 from .slots import Slot
 from .turn_engine import critical_inject_allowed
 from .turn_validator import (
@@ -62,6 +63,58 @@ _logger = get_logger("session.turn_driver")
 class TurnDriver:
     def __init__(self, *, manager: SessionManager) -> None:
         self._manager = manager
+
+    async def _set_progress(
+        self,
+        session: Session,
+        turn: Turn,
+        value: float,
+    ) -> None:
+        """Write ``turn.ai_progress_pct`` and re-broadcast ``state_changed``.
+
+        Issue #111: the TURN STATE rail's bar binds to
+        ``current_turn.progress_pct``. Each AI sub-step boundary
+        (planning → tool dispatch → emit / yield) calls this so the
+        bar advances from the indeterminate sweep into a determinate
+        fraction.
+
+        **Monotonic** (review-pass): the bar never goes backwards
+        within a single turn. A recovery pass whose bucket value
+        falls below the prior attempt's high-water mark stays at the
+        high-water mark until the next sub-step actually advances
+        past it. Without this, a visible bar drop on recovery reads
+        as "the system rewound" — flagged HIGH by the user-persona
+        review. The ``ai_status`` event already labels recovery
+        passes (``recovery: missing_yield`` etc.); the bar is the
+        ambient signal, ai_status is the explicit one.
+
+        Callers pass ``1.0`` only at the validation-success boundary;
+        sub-step buckets stay below it so the bar reaches 100% only
+        when the AI step is genuinely done, not while still thinking.
+
+        ``record=False`` on the underlying broadcast: progress pulses
+        are stale on reconnect (the snapshot fetch regenerates the
+        value from session state) and would otherwise consume slots
+        in the bounded 256-event replay buffer, evicting legitimate
+        ``state_changed`` / ``message_complete`` events that a
+        reconnecting client needs (security review MEDIUM).
+        """
+
+        clamped = max(0.0, min(1.0, value))
+        current = turn.ai_progress_pct or 0.0
+        if clamped <= current:
+            return
+        turn.ai_progress_pct = clamped
+        try:
+            await self._manager._broadcast_state(session, record=False)
+        except Exception as exc:
+            _logger.warning(
+                "progress_broadcast_failed",
+                session_id=session.id,
+                turn_id=turn.id,
+                progress_pct=clamped,
+                error=str(exc),
+            )
 
     async def _emit_ai_status(
         self,
@@ -363,6 +416,17 @@ class TurnDriver:
                     turn_index=turn.index,
                 )
 
+                # Issue #111: bar pulse — "starting" the (re)attempt.
+                # Coarse buckets per the issue's "anything is better
+                # than the constant sweep" criterion. The monotonic
+                # clamp inside ``_set_progress`` absorbs recovery-pass
+                # values that fall below the prior attempt's high-water
+                # mark (the bar stalls until the next sub-step
+                # genuinely advances past it).
+                await self._set_progress(
+                    session, turn, 0.10 + 0.20 * (attempt - 1)
+                )
+
                 # Build messages. On a recovery pass replace the trailing
                 # kickoff/strict nudge with the directive's user_nudge,
                 # then splice the prior assistant tool_use blocks +
@@ -430,6 +494,12 @@ class TurnDriver:
                     session_id=session.id, tier="play", result=result, turn_id=turn.id
                 )
 
+                # Issue #111: bar pulse — LLM call returned, about to
+                # dispatch tools.
+                await self._set_progress(
+                    session, turn, 0.40 + 0.20 * (attempt - 1)
+                )
+
                 tool_uses = _tool_uses(result)
                 outcome = await dispatcher.dispatch(
                     session=session,
@@ -439,6 +509,12 @@ class TurnDriver:
                         session,
                         max_per_5_turns=settings.max_critical_injects_per_5_turns,
                     ),
+                )
+
+                # Issue #111: bar pulse — tools dispatched, about to
+                # validate / apply outcome.
+                await self._set_progress(
+                    session, turn, 0.70 + 0.10 * (attempt - 1)
                 )
 
                 # Harvest the model's natural text content as the
@@ -536,6 +612,15 @@ class TurnDriver:
                     )
 
                 if validation.ok:
+                    # Issue #111: bar pulse — validation passed, about
+                    # to apply the outcome. 1.0 is the only place a
+                    # sub-step pulse hits 100%; the next state
+                    # transition resets the bar to the new state's
+                    # natural fraction (0 / N for AWAITING_PLAYERS,
+                    # 1.0 again for ENDED). The CSS ``transition: width
+                    # 300ms`` makes the brief 1.0 frame visible to the
+                    # operator before the snap (user-persona H2).
+                    await self._set_progress(session, turn, 1.0)
                     # Persist + advance state.
                     await self._apply_play_outcome(
                         session,
@@ -983,6 +1068,8 @@ class TurnDriver:
                     "state": session.state.value,
                     "active_role_ids": [],
                     "turn_index": turn.index,
+                    # Issue #111: ENDED → 1.0 (terminal state, bar fills).
+                    "progress_pct": compute_progress_pct(session),
                 },
             )
             # AI-initiated end — kick the AAR generator. Mirrors what the
@@ -1101,6 +1188,9 @@ class TurnDriver:
                     "type": "turn_changed",
                     "turn_index": new_turn.index,
                     "active_role_ids": new_turn.active_role_ids,
+                    # Issue #111: fresh AWAITING_PLAYERS turn — bar
+                    # resets to 0 / N (no submissions yet).
+                    "progress_pct": compute_progress_pct(session),
                 },
             )
             await self._manager.connections().broadcast(
@@ -1110,6 +1200,7 @@ class TurnDriver:
                     "state": session.state.value,
                     "active_role_ids": new_turn.active_role_ids,
                     "turn_index": new_turn.index,
+                    "progress_pct": compute_progress_pct(session),
                 },
             )
         else:

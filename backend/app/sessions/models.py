@@ -190,6 +190,17 @@ class Turn(BaseModel):
     ended_at: datetime | None = None
     error_reason: str | None = None
     retried_with_strict: bool = False
+    # Issue #111: per-turn AI sub-step progress (0.0–1.0). Written by
+    # ``turn_driver.run_play_turn`` at known sub-step boundaries
+    # (planning → tool dispatch → emit / yield) so the frontend's
+    # TURN STATE rail can render a determinate bar instead of the
+    # indeterminate sweep. ``None`` while the turn has not yet
+    # produced a meaningful sub-step (e.g. waiting on the LLM call to
+    # start) — the rail falls back to the sweep in that case.
+    # Only populated while ``session.state`` is AI_PROCESSING /
+    # BRIEFING; AWAITING_PLAYERS computes its own progress from
+    # ``submitted_role_ids / active_role_ids`` at snapshot time.
+    ai_progress_pct: float | None = None
 
 
 class ScenarioInject(BaseModel):

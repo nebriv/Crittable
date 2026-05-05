@@ -20,6 +20,7 @@ from ..auth.authz import (
 from ..extensions.registry import FrozenRegistry
 from ..sessions.manager import SessionManager
 from ..sessions.models import ParticipantKind, ScenarioPlan, SessionState
+from ..sessions.progress import compute_progress_pct
 from ..sessions.repository import SessionNotFoundError
 from ..sessions.turn_driver import TurnDriver
 from ..sessions.turn_engine import IllegalTransitionError
@@ -333,6 +334,12 @@ def register_api_routes(app: FastAPI) -> None:
                     # contributions that don't yet flip the AI to advance).
                     "ready_role_ids": session.current_turn.ready_role_ids,
                     "status": session.current_turn.status,
+                    # Issue #111: per-turn progress fraction (0.0–1.0)
+                    # for the TURN STATE rail's determinate progress
+                    # bar. ``None`` keeps the indeterminate sweep
+                    # rendering — see ``sessions/progress.py`` for the
+                    # per-state policy.
+                    "progress_pct": compute_progress_pct(session),
                 }
                 if session.current_turn
                 else None
