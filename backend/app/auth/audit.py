@@ -123,7 +123,12 @@ class AuditLog:
         buf = self._buffers.get(session_id)
         if not buf:
             return []
-        return [evt for evt in buf if evt.kind in kinds]
+        # Promote ``kinds`` to a frozenset for O(1) membership lookup
+        # — the polled-endpoint path runs this filter on every 3 s
+        # tick per active session, and ``in tuple`` is O(k) linear
+        # (Copilot review #173).
+        kinds_set = frozenset(kinds)
+        return [evt for evt in buf if evt.kind in kinds_set]
 
     def drop(self, session_id: str) -> None:
         """Forget a session's audit trail (used after export retention)."""

@@ -41,7 +41,11 @@ interface TurnDiagnostics {
 
 interface ActivitySnapshot {
   state: string;
-  ai_paused?: boolean;
+  // Issue #70: ``/activity`` always returns these — the backend
+  // populates them unconditionally on every poll. Per CLAUDE.md
+  // "NO BACKWARDS COMPATIBILITY" they're typed as required so a
+  // future field drop is caught at typecheck time, not at runtime.
+  ai_paused: boolean;
   turn: {
     index: number;
     status: string;
@@ -57,9 +61,9 @@ interface ActivitySnapshot {
   turn_count: number;
   message_count: number;
   setup_note_count: number;
-  recent_diagnostics?: ActivityDiagnostic[];
-  recent_turn_diagnostics?: TurnDiagnostics[];
-  legacy_carve_out_enabled?: boolean;
+  recent_diagnostics: ActivityDiagnostic[];
+  recent_turn_diagnostics: TurnDiagnostics[];
+  legacy_carve_out_enabled: boolean;
 }
 
 interface Props {
