@@ -708,3 +708,368 @@ def test_render_markdown_logs_when_finalize_report_missing(
         "expected an `aar_finalize_report_missing` warning when the "
         f"fallback path fires; saw stdout: {captured.out!r}, stderr: {captured.err!r}"
     )
+
+
+# ---------------------------------------------------------------- AAR trust-boundary fuzz
+#
+# These tests probe the trust-boundary helpers in ``_extract_report`` /
+# ``_sanitise_report`` with deliberately misshapen model output, locking
+# in the contract: every shape the model has ever emitted must produce
+# a well-formed report (or an empty default), never a crash and never
+# a corrupt downstream render. Live-API tests catch the average model
+# behavior; these tests catch the rare-shape behavior the live tests
+# don't reliably hit.
+
+
+def _two_role_session() -> Session:
+    """Minimal ENDED session with two scoreable roles. Reused by the
+    fuzz tests below so the role-id resolver has real ids to validate
+    against."""
+
+    return Session(
+        scenario_prompt="(fuzz)",
+        state=SessionState.ENDED,
+        roles=[
+            Role(id="role-ciso", label="CISO", display_name="Alex", is_creator=True),
+            Role(id="role-soc", label="SOC", display_name="Bo"),
+        ],
+        creator_role_id="role-ciso",
+    )
+
+
+def test_coerce_dict_list_passthroughs() -> None:
+    """``_coerce_dict_list`` returns the input list unchanged when the
+    model emitted a real list (the happy path)."""
+
+    from app.llm.export import _coerce_dict_list
+
+    payload = [{"role_id": "role-ciso"}, {"role_id": "role-soc"}]
+    assert _coerce_dict_list(payload) is payload
+
+
+def test_coerce_dict_list_wraps_lone_dict() -> None:
+    """A single object (not a list) gets wrapped — rare model variant
+    where the schema's ``array<object>`` came back as a bare object."""
+
+    from app.llm.export import _coerce_dict_list
+
+    one = {"role_id": "role-ciso"}
+    assert _coerce_dict_list(one) == [one]
+
+
+def test_coerce_dict_list_decodes_json_string_array() -> None:
+    """The bug from the 2026-05-04 sweep: ``per_role_scores`` arrived
+    as a JSON-encoded string. ``_coerce_dict_list`` json.loads's it
+    and returns the parsed list."""
+
+    from app.llm.export import _coerce_dict_list
+
+    encoded = (
+        '[{"role_id": "role-ciso", "decision_quality": 4, '
+        '"communication": 3, "speed": 5, "rationale": "called isolate"}]'
+    )
+    decoded = _coerce_dict_list(encoded)
+    assert isinstance(decoded, list)
+    assert len(decoded) == 1
+    assert decoded[0]["role_id"] == "role-ciso"
+    assert decoded[0]["decision_quality"] == 4
+
+
+def test_coerce_dict_list_decodes_json_string_object() -> None:
+    """Variant: model wrapped the array in an object and stringified
+    it. Decode yields a dict; we wrap in a one-element list."""
+
+    from app.llm.export import _coerce_dict_list
+
+    encoded = '{"role_id": "role-ciso", "decision_quality": 4}'
+    decoded = _coerce_dict_list(encoded)
+    assert isinstance(decoded, list)
+    assert len(decoded) == 1
+    assert decoded[0]["role_id"] == "role-ciso"
+
+
+def test_coerce_dict_list_garbage_inputs_return_empty() -> None:
+    """None, empty string, garbled string, scalar, and JSON-decode-but-
+    not-list-or-dict (e.g. JSON number, JSON string) all return ``[]``
+    and let the caller log the drop. The only path that returns a
+    non-empty list is a list/dict/decoded list/decoded object input."""
+
+    from app.llm.export import _coerce_dict_list
+
+    assert _coerce_dict_list(None) == []
+    assert _coerce_dict_list("") == []
+    assert _coerce_dict_list("   ") == []
+    # JSON-decodable but wrong shape (number, string).
+    assert _coerce_dict_list("42") == []
+    assert _coerce_dict_list('"hello"') == []
+    # Not JSON-decodable at all.
+    assert _coerce_dict_list("not json{[") == []
+    # Non-string scalar — deliberately NOT coerced. Empty list lets
+    # the caller's per-entry validator log the drop, instead of
+    # silently promoting 5 → [5] and hiding the bug.
+    assert _coerce_dict_list(5) == []
+    assert _coerce_dict_list(True) == []
+
+
+def test_coerce_dict_list_emits_warning_on_decode(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Per Copilot review #1 / #8: every coercion or whole-field drop
+    must emit a WARNING with enough context that a prompt regression
+    is visible from the audit log alone. Silent success (model
+    already returned a list) emits nothing — that's the happy path.
+
+    structlog writes to stdout via PrintLoggerFactory, so we capture
+    via capsys rather than the python-logging caplog."""
+
+    from app.llm.export import _coerce_dict_list
+
+    # Happy path — no warning.
+    _coerce_dict_list([{"role_id": "role-ciso"}])
+    out, err = capsys.readouterr()
+    assert "aar_dict_list_coerced" not in (out + err)
+    assert "aar_dict_list_dropped" not in (out + err)
+
+    # JSON-string array — coerced + warning.
+    _coerce_dict_list('[{"role_id": "role-ciso"}]')
+    out, err = capsys.readouterr()
+    log = out + err
+    assert "aar_dict_list_coerced" in log
+    assert "json_string_array" in log
+
+    # Single dict wrap — coerced + warning.
+    _coerce_dict_list({"role_id": "role-ciso"})
+    out, err = capsys.readouterr()
+    log = out + err
+    assert "aar_dict_list_coerced" in log
+
+    # Garbage string — dropped + warning.
+    _coerce_dict_list("not json{[")
+    out, err = capsys.readouterr()
+    log = out + err
+    assert "aar_dict_list_dropped" in log
+    assert "json_decode_failed" in log
+
+    # JSON-decoded to wrong shape — dropped + warning.
+    _coerce_dict_list("42")
+    out, err = capsys.readouterr()
+    log = out + err
+    assert "aar_dict_list_dropped" in log
+    assert "json_decoded_to_unsupported_shape" in log
+
+    # Non-string scalar — dropped + warning.
+    _coerce_dict_list(5)
+    out, err = capsys.readouterr()
+    log = out + err
+    assert "aar_dict_list_dropped" in log
+    assert "unsupported_scalar" in log
+
+
+def test_extract_report_recovers_from_stringified_per_role_scores() -> None:
+    """End-to-end: a tool_use whose ``per_role_scores`` is the JSON-
+    encoded string from the live failure mode. The post-fix extractor
+    decodes it, validates the role_ids against the session roster, and
+    produces a populated per_role_scores section.
+    """
+
+    from app.llm.export import _extract_report
+
+    session = _two_role_session()
+    encoded_scores = (
+        '[{"role_id": "role-ciso", "decision_quality": 4, '
+        '"communication": 4, "speed": 5, "rationale": "called isolate"}, '
+        '{"role_id": "role-soc", "decision_quality": 3, '
+        '"communication": 4, "speed": 4, "rationale": "pulled telemetry"}]'
+    )
+    content = [
+        {
+            "type": "tool_use",
+            "name": "finalize_report",
+            "input": {
+                "executive_summary": "good run",
+                "narrative": "beat 1: detection. beat 2: contained.",
+                "per_role_scores": encoded_scores,  # ← the bug shape
+                "overall_score": 4,
+                "overall_rationale": "solid",
+            },
+        }
+    ]
+    report = _extract_report(content, session=session)
+    scores = report["per_role_scores"]
+    assert len(scores) == 2, (
+        f"expected 2 per-role scores after decoding the JSON string; "
+        f"got {len(scores)}: {scores}"
+    )
+    by_id = {s["role_id"]: s for s in scores}
+    assert by_id["role-ciso"]["decision_quality"] == 4
+    assert by_id["role-soc"]["rationale"] == "pulled telemetry"
+
+
+def test_extract_report_resolves_case_insensitive_label_as_role_id() -> None:
+    """Per-role-scores entry with a role *label* in the ``role_id`` field
+    (instead of the canonical opaque id) is RESOLVED, not dropped. This
+    is the documented contract — see ``_sanitise_report``'s
+    ``by_label_lower`` lookup. The "drop, don't repair" rule from
+    CLAUDE.md applies to identifiers we can't resolve; case-insensitive
+    label resolution against the seated roster IS resolution, not
+    repair, because the roster is canonical and the label is
+    unambiguous within it.
+
+    This test pins that contract so a future "drop labels too" change
+    is a deliberate decision, not silent drift. Per Copilot review #10,
+    without this test the existing ``unknown_role_id`` test reads as
+    if the trust-boundary rule were stricter than it actually is."""
+
+    from app.llm.export import _extract_report
+
+    session = _two_role_session()
+    content = [
+        {
+            "type": "tool_use",
+            "name": "finalize_report",
+            "input": {
+                "executive_summary": "x",
+                "narrative": "y",
+                "per_role_scores": [
+                    {
+                        "role_id": "CISO",  # ← label, not opaque id
+                        "decision_quality": 4,
+                        "communication": 4,
+                        "speed": 4,
+                        "rationale": "label resolves to canonical id",
+                    },
+                    {
+                        "role_id": "soc",  # ← lowercase label
+                        "decision_quality": 3,
+                        "communication": 3,
+                        "speed": 3,
+                        "rationale": "lowercase also resolves",
+                    },
+                ],
+                "overall_score": 3,
+                "overall_rationale": "ok",
+            },
+        }
+    ]
+    report = _extract_report(content, session=session)
+    scores = report["per_role_scores"]
+    # Both labels resolve — neither is dropped.
+    assert len(scores) == 2
+    by_id = {s["role_id"]: s for s in scores}
+    assert "role-ciso" in by_id
+    assert "role-soc" in by_id
+    # The canonical id is what got written — not the label the model
+    # supplied. The extractor rewrites to canonical.
+    assert by_id["role-ciso"]["rationale"] == "label resolves to canonical id"
+    assert by_id["role-soc"]["rationale"] == "lowercase also resolves"
+
+
+def test_extract_report_drops_unknown_role_ids_in_array_input() -> None:
+    """``per_role_scores`` arrives as a real list with one valid role and
+    one invented role. The validator drops the invented one and keeps
+    the real one — the contract documented in CLAUDE.md's model-output
+    trust-boundary section ("drop, don't repair")."""
+
+    from app.llm.export import _extract_report
+
+    session = _two_role_session()
+    content = [
+        {
+            "type": "tool_use",
+            "name": "finalize_report",
+            "input": {
+                "executive_summary": "x",
+                "narrative": "y",
+                "per_role_scores": [
+                    {
+                        "role_id": "role-ciso",
+                        "decision_quality": 3,
+                        "communication": 3,
+                        "speed": 3,
+                        "rationale": "ok",
+                    },
+                    {
+                        "role_id": "role-comms",  # ← invented
+                        "decision_quality": 5,
+                        "communication": 5,
+                        "speed": 5,
+                        "rationale": "made up",
+                    },
+                ],
+                "overall_score": 3,
+                "overall_rationale": "ok",
+            },
+        }
+    ]
+    report = _extract_report(content, session=session)
+    scores = report["per_role_scores"]
+    assert len(scores) == 1
+    assert scores[0]["role_id"] == "role-ciso"
+
+
+def test_extract_report_clamps_out_of_range_subscores() -> None:
+    """Numeric fields are clamped to 0-5. The model emits 7 (above
+    range) and -1 (below range); the extractor clamps to 5 / 0."""
+
+    from app.llm.export import _extract_report
+
+    session = _two_role_session()
+    content = [
+        {
+            "type": "tool_use",
+            "name": "finalize_report",
+            "input": {
+                "executive_summary": "x",
+                "narrative": "y",
+                "per_role_scores": [
+                    {
+                        "role_id": "role-ciso",
+                        "decision_quality": 7,   # over
+                        "communication": -1,     # under
+                        "speed": "not a number", # garbage → 0
+                        "rationale": "edge",
+                    },
+                ],
+                "overall_score": 99,
+                "overall_rationale": "z",
+            },
+        }
+    ]
+    report = _extract_report(content, session=session)
+    scores = report["per_role_scores"]
+    assert len(scores) == 1
+    assert scores[0]["decision_quality"] == 5
+    assert scores[0]["communication"] == 0
+    assert scores[0]["speed"] == 0
+    assert report["overall_score"] == 5
+
+
+def test_extract_report_coerces_string_blob_in_array_string_fields() -> None:
+    """``what_went_well`` / ``gaps`` / ``recommendations`` declared
+    array<string> in the schema. The model occasionally emits a single
+    string blob. ``_coerce_str_list`` wraps it as ``[blob]`` so the
+    renderer doesn't iterate the string per-character."""
+
+    from app.llm.export import _extract_report
+
+    session = _two_role_session()
+    content = [
+        {
+            "type": "tool_use",
+            "name": "finalize_report",
+            "input": {
+                "executive_summary": "x",
+                "narrative": "y",
+                "what_went_well": "single string instead of an array",
+                "gaps": [],  # legitimately empty — not a coercion test
+                "recommendations": ["a real first item"],
+                "per_role_scores": [],
+                "overall_score": 3,
+                "overall_rationale": "z",
+            },
+        }
+    ]
+    report = _extract_report(content, session=session)
+    assert report["what_went_well"] == ["single string instead of an array"]
+    assert report["recommendations"] == ["a real first item"]
+    assert report["gaps"] == []

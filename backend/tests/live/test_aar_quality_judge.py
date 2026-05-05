@@ -95,7 +95,7 @@ async def test_aar_grounds_claims_in_transcript(
     invent a 7th decision."""
 
     gen = AARGenerator(llm=aar_client, audit=aar_audit)
-    md = await gen.generate(aar_session)
+    md, _ = await gen.generate(aar_session)
     artifact = _truncate_for_judge(md)
 
     rubric = """
@@ -114,10 +114,25 @@ async def test_aar_grounds_claims_in_transcript(
     The roster is exactly two roles: CISO and SOC.
 
     Required for PASS — the AAR must not:
-    1. Invent a role that wasn't in the roster (no "Comms team",
-       "Legal team", "IR Lead" listed AS A SCORED ROLE in the
-       per-role scores section). Mentioning them as in-narrative
-       parties (CISO PULLED IN Legal) is fine; scoring them is not.
+    1. **MECHANICAL CHECK — count entries in the "## Per-role scores"
+       section only.** Locate the structured section that lists each
+       scored role with sub-scores (decision_quality / communication /
+       speed) and a rationale. If that section has EXACTLY two entries
+       and they are CISO and SOC (case-insensitive label match,
+       opaque-id role_id is fine), criterion 1 PASSES — regardless of
+       any other content anywhere else in the AAR. Do NOT read the
+       narrative, executive summary, gaps, or recommendations for
+       this criterion: only the per-role scores section. Narrative
+       mention or critique of Legal / Comms / IR Lead is EXPECTED
+       (the transcript has the CISO explicitly pull them in) and
+       MUST NOT influence this criterion. Criterion 1 fails ONLY
+       when the per-role scores section adds a third (or more) entry
+       — e.g. a row with role "Comms" or "Legal" or "IR Lead" with
+       its own decision_quality / communication / speed sub-scores.
+       Example PASS: per-role scores has exactly CISO + SOC; the
+       narrative recommends the team loop Legal in earlier.
+       Example FAIL: per-role scores has CISO + SOC + Legal, where
+       Legal has decision_quality=4, communication=3, speed=2.
     2. Invent decisions that didn't happen. The CISO did not, e.g.,
        "decide to pay the ransom" or "shut down the data center" —
        any AAR claim attributing such a decision to CISO fails.
@@ -149,7 +164,7 @@ async def test_aar_per_role_scores_are_differentiated(
     from SOC's, who mostly reported telemetry."""
 
     gen = AARGenerator(llm=aar_client, audit=aar_audit)
-    md = await gen.generate(aar_session)
+    md, _ = await gen.generate(aar_session)
     artifact = _truncate_for_judge(md)
 
     rubric = """
@@ -193,7 +208,7 @@ async def test_aar_gaps_and_recommendations_are_concrete(
     is the failure mode this test guards against."""
 
     gen = AARGenerator(llm=aar_client, audit=aar_audit)
-    md = await gen.generate(aar_session)
+    md, _ = await gen.generate(aar_session)
     artifact = _truncate_for_judge(md)
 
     rubric = """
@@ -239,7 +254,7 @@ async def test_aar_participant_view_strips_creator_only(
     leak via paraphrase elsewhere."""
 
     gen = AARGenerator(llm=aar_client, audit=aar_audit)
-    full = await gen.generate(aar_session)
+    full, _ = await gen.generate(aar_session)
     stripped = strip_creator_only(full)
     artifact = _truncate_for_judge(stripped)
 

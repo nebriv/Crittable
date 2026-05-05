@@ -217,6 +217,13 @@ _NON_TOOL_ALLOWLIST = frozenset(
         "recommendations",
         "narrative",
         "score",
+        # AAR per-role-scores entry sub-fields (the AAR system block
+        # now calls these out by name when explaining the JSON-array-
+        # of-objects contract for ``per_role_scores``).
+        "per_role_scores",
+        "decision_quality",
+        "communication",
+        "speed",
         # Workstream-related field names + example IDs the prompt
         # copy uses to illustrate ``declare_workstreams`` / the
         # ``workstream_id`` field. Added when the iter-4 polish PR
