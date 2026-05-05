@@ -4,6 +4,25 @@ on:
   push:
     branches: ["main"]
     tags: ["v*"]
+  pull_request:
+    # Validate the build + Trivy gate on every PR that touches the
+    # runtime image, BEFORE merge. PR #135 introduced the Trivy gate
+    # on push-to-main only, which meant a CVE could land on main and
+    # block every subsequent push (the way it did 2026-05-03 →
+    # 2026-05-05). Running the same workflow on PRs catches the
+    # regression in the PR's own CI; the auth + push steps below are
+    # gated on ``github.event_name == 'push'`` so PR runs build and
+    # scan but never publish to GHCR.
+    branches: ["main"]
+    paths:
+      # Anything that ends up in the image, plus the workflow itself.
+      # Pure docs / design / test-only PRs don't need a Trivy scan.
+      - "docker/**"
+      - "backend/pyproject.toml"
+      - "backend/app/**"
+      - "backend/scenarios/**"
+      - "frontend/**"
+      - ".github/workflows/docker.yml"
 
 permissions:
   contents: read
@@ -29,6 +48,11 @@ jobs:
       - uses: docker/setup-buildx-action@v3
 
       - name: Log in to GHCR
+        # Only push events publish to GHCR; PR runs build + scan only.
+        # Skipping the login on PRs avoids a noisy auth attempt and is
+        # required for fork PRs (where ``GITHUB_TOKEN`` is read-only and
+        # ``packages: write`` is downgraded).
+        if: github.event_name == 'push'
         uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
@@ -127,7 +151,14 @@ jobs:
         # Always upload, even if the scan failed — findings land in the
         # Security tab and can be triaged from there instead of
         # disappearing with the failed run.
-        if: always()
+        #
+        # Only on push events: the Code Scanning view shows the current
+        # state of ``main``, not pre-merge PR speculation. PR runs still
+        # gate the merge via the Trivy step's exit code; we just don't
+        # let PR-only findings clutter the Security tab. (Also avoids a
+        # silent SARIF upload failure on fork PRs where
+        # ``security-events: write`` is downgraded.)
+        if: always() && github.event_name == 'push'
         uses: github/codeql-action/upload-sarif@v3
         with:
           sarif_file: trivy-results.sarif
@@ -137,8 +168,14 @@ jobs:
         # Re-runs the build with the same inputs to publish to GHCR.
         # The previous build's ``cache-to`` populated the gha cache, so
         # this is a near-instant cache hit — no real rebuild happens.
-        # Skipped automatically if the Trivy step failed because steps
-        # default to ``if: success()``.
+        #
+        # Two gates: ``success()`` so a failed Trivy scan skips the
+        # push (the original guarantee), AND
+        # ``github.event_name == 'push'`` so PR runs never publish.
+        # Both are required because specifying any ``if:`` overrides
+        # the default ``if: success()`` GitHub Actions applies to
+        # subsequent steps.
+        if: success() && github.event_name == 'push'
         uses: docker/build-push-action@v6
         with:
           context: .
