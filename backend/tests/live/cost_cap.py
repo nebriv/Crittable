@@ -9,7 +9,8 @@ Why we need this even with low per-test cost
 --------------------------------------------
 
 The standing suite is ~$1.40 / full run. CI runs it on a path filter
-plus a nightly schedule; a misconfigured workflow that fan-outs into
+plus ``workflow_dispatch`` (no scheduled cron — see
+``docs/tool-design.md``); a misconfigured workflow that fan-outs into
 N parallel jobs (or a contributor who pushes 30 times in an hour while
 iterating) can multiply that bill by 10x in minutes. Anthropic's TPM
 and RPM rate limits gate request volume but **not dollars** — at 100
