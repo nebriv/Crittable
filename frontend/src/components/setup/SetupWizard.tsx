@@ -2,7 +2,8 @@ import { FormEvent, ReactNode, useEffect, useMemo, useState } from "react";
 import { api, type SessionSnapshot } from "../../api/client";
 import { Eyebrow } from "../brand/Eyebrow";
 import { StatusChip } from "../brand/StatusChip";
-import { WizardRail, type WizardStepId } from "./WizardRail";
+import { WizardRail } from "./WizardRail";
+import type { WizardStepId } from "./wizardSteps";
 
 /**
  * Pre-creation form state. Owned by ``Facilitator``; the wizard is a

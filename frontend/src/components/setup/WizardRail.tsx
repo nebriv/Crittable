@@ -1,5 +1,6 @@
 import { confirmLeaveSession } from "../../lib/leaveGuard";
 import { Eyebrow } from "../brand/Eyebrow";
+import { WIZARD_STEPS, type WizardStepId } from "./wizardSteps";
 
 /**
  * Setup-wizard left rail. Six steps mapped to the brand mock:
@@ -27,17 +28,6 @@ import { Eyebrow } from "../brand/Eyebrow";
  * own children stay in column flow). At ``lg`` and up the rail
  * sits on the left as designed in the brand mock.
  */
-export const WIZARD_STEPS = [
-  { id: 1, name: "Scenario" },
-  { id: 2, name: "Environment" },
-  { id: 3, name: "Roles" },
-  { id: 4, name: "Injects & schedule" },
-  { id: 5, name: "Invite players" },
-  { id: 6, name: "Review & launch" },
-] as const;
-
-export type WizardStepId = (typeof WIZARD_STEPS)[number]["id"];
-
 interface Props {
   current: WizardStepId;
   /** Set of step ids the user has completed (rendered with a ✓). */
