@@ -54,12 +54,25 @@ async def test_player_decision_routes_consistently_across_repeats(
     empty_registry: Any,
 ) -> None:
     """Run the same player-decision fixture 3 times. Every run must
-    route to a prose tool (broadcast or address_role).
+    route to a prose tool **AND** the routings must match across
+    runs — same tool family, no rotation between broadcast /
+    address_role / share_data / inject_critical_event.
 
     This is the deterministic version of the existing
     ``test_player_decision_routes_to_broadcast`` single-call check.
     The single-call test passes ~60% of the time on a flaky prompt;
     this 3x version fails any flake immediately.
+
+    Two assertions:
+    1. Every run contains a prose tool. (covers "no prose tool at
+       all" — the original failure mode the inject-only flake hit.)
+    2. The "primary tool family" (broadcast vs address_role) is the
+       same across all 3 runs. A run that produces ``[broadcast]``
+       and another that produces ``[broadcast, share_data]`` is
+       still a routing inconsistency the prompt should bind. We
+       don't compare exact tool sets (set_active_roles is always
+       there; auxiliary tools may legitimately vary) — we compare
+       which prose tool the model chose as the primary.
 
     Cost: 3 Sonnet calls (~$0.04).
     """
@@ -85,6 +98,36 @@ async def test_player_decision_routes_consistently_across_repeats(
         f"{routings})"
     )
 
+    # Cross-run consistency: which primary prose tool did the model pick?
+    # Sorted tuple of {broadcast, address_role} ∩ names is stable per run;
+    # if the model alternates (broadcast in run 1, address_role in run 2)
+    # that's still a routing flake worth catching.
+    primary_per_run = [
+        tuple(sorted(set(n for n in names if n in _PRIMARY_PROSE_TOOLS)))
+        for names in routings
+    ]
+    distinct_primaries = set(primary_per_run)
+    assert len(distinct_primaries) == 1, (
+        "model rotated between prose-tool families across the 3 runs; "
+        "the same fixture should route to the same primary tool every "
+        "time. primary tool per run: "
+        f"{primary_per_run} (full routings: {routings})"
+    )
+
+    # Also assert no run added share_data or inject_critical_event as
+    # an auxiliary — those are routing decisions for different pattern
+    # families, not auxiliary noise.
+    forbidden_auxiliaries = {"share_data", "inject_critical_event"}
+    bad_aux = [
+        names for names in routings
+        if any(n in forbidden_auxiliaries for n in names)
+    ]
+    assert not bad_aux, (
+        "tactical-commit ack-and-advance must not pull in share_data or "
+        "inject_critical_event as auxiliaries; those belong to different "
+        f"pattern families. routings: {routings}"
+    )
+
 
 # ---------------------------------------------------------------- paraphrase robustness
 
@@ -100,50 +143,93 @@ _TACTICAL_DECISION_PARAPHRASES = [
 ]
 
 
-@pytest.mark.parametrize("phrasing", _TACTICAL_DECISION_PARAPHRASES)
 async def test_tactical_decision_routes_robustly_across_paraphrases(
     anthropic_client: Any,
     play_model: str,
     briefing_session: Any,
     empty_registry: Any,
-    phrasing: str,
 ) -> None:
-    """Three semantically equivalent player tactical decisions, same
-    expected routing (prose ack-and-advance).
+    """All three semantically equivalent paraphrases must route to the
+    SAME tool family — not just "some prose tool each time."
 
     Catches a regression where the prompt teaches the model to match a
     specific phrasing (e.g. literal ``"isolate"``) instead of intent.
-    All three paraphrases describe a tactical containment commit; all
-    three should produce a prose response from the model.
+    A regression where one phrasing routes to ``broadcast`` and
+    another to ``share_data`` or ``inject_critical_event+broadcast``
+    must fail this test.
 
-    Cost: 3 Sonnet calls × $0.012 = ~$0.04 (one per paraphrase via
-    parametrize).
+    Implementation: a single test (not parametrized) runs all three
+    paraphrases sequentially and asserts:
+
+    1. Every paraphrase produces a prose tool (none defaults to a
+       non-routing path).
+    2. The set of tool families is identical across paraphrases —
+       no broadcast→share_data, no broadcast→inject swap.
+    3. No paraphrase pulls in share_data or inject_critical_event
+       as auxiliaries (different pattern family).
+
+    Cost: 3 Sonnet calls × $0.012 = ~$0.04.
     """
 
-    session = briefing_session
-    session.messages.extend([
-        Message(
-            kind=MessageKind.AI_TEXT,
-            tool_name="broadcast",
-            body="**CISO** — isolate or monitor first?",
-        ),
-        Message(
-            kind=MessageKind.PLAYER,
-            role_id=session.creator_role_id,
-            body=phrasing,
-        ),
-    ])
+    routings_by_phrasing: dict[str, list[str]] = {}
+    for phrasing in _TACTICAL_DECISION_PARAPHRASES:
+        session = briefing_session.model_copy(deep=True)
+        session.messages.extend([
+            Message(
+                kind=MessageKind.AI_TEXT,
+                tool_name="broadcast",
+                body="**CISO** — isolate or monitor first?",
+            ),
+            Message(
+                kind=MessageKind.PLAYER,
+                role_id=session.creator_role_id,
+                body=phrasing,
+            ),
+        ])
+        resp = await call_play(
+            anthropic_client,
+            model=play_model,
+            session=session,
+            registry=empty_registry,
+        )
+        names = tool_names(resp)
+        assert names, (
+            f"no tool calls for phrasing={phrasing!r}; "
+            f"stop_reason={resp.stop_reason}"
+        )
+        routings_by_phrasing[phrasing] = names
 
-    resp = await call_play(
-        anthropic_client,
-        model=play_model,
-        session=session,
-        registry=empty_registry,
-    )
-    names = tool_names(resp)
-    assert names, f"no tool calls; phrasing={phrasing!r}; stop_reason={resp.stop_reason}"
-    assert any(n in _PRIMARY_PROSE_TOOLS for n in names), (
+    # 1. Every paraphrase produces a prose tool.
+    bad = {
+        p: r for p, r in routings_by_phrasing.items()
+        if not any(n in _PRIMARY_PROSE_TOOLS for n in r)
+    }
+    assert not bad, (
         "tactical decision (no question, no data ask) must route to a "
-        "prose tool regardless of phrasing; "
-        f"got {names} for phrasing {phrasing!r}"
+        f"prose tool regardless of phrasing; missing on: {bad}"
+    )
+
+    # 2. Same primary tool family across all paraphrases.
+    primary_per_phrasing = {
+        p: tuple(sorted(set(n for n in r if n in _PRIMARY_PROSE_TOOLS)))
+        for p, r in routings_by_phrasing.items()
+    }
+    distinct_primaries = set(primary_per_phrasing.values())
+    assert len(distinct_primaries) == 1, (
+        "model rotated between prose-tool families across paraphrases; "
+        "same intent should produce same routing. primary tool per "
+        f"phrasing: {primary_per_phrasing} "
+        f"(full routings: {routings_by_phrasing})"
+    )
+
+    # 3. No paraphrase pulls in share_data or inject_critical_event.
+    forbidden_auxiliaries = {"share_data", "inject_critical_event"}
+    bad_aux = {
+        p: r for p, r in routings_by_phrasing.items()
+        if any(n in forbidden_auxiliaries for n in r)
+    }
+    assert not bad_aux, (
+        "tactical-commit paraphrases must not pull in share_data or "
+        "inject_critical_event as auxiliaries; those belong to "
+        f"different pattern families. paraphrases tripping: {bad_aux}"
     )

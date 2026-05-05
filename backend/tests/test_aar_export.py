@@ -811,6 +811,60 @@ def test_coerce_dict_list_garbage_inputs_return_empty() -> None:
     assert _coerce_dict_list(True) == []
 
 
+def test_coerce_dict_list_emits_warning_on_decode(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Per Copilot review #1 / #8: every coercion or whole-field drop
+    must emit a WARNING with enough context that a prompt regression
+    is visible from the audit log alone. Silent success (model
+    already returned a list) emits nothing — that's the happy path.
+
+    structlog writes to stdout via PrintLoggerFactory, so we capture
+    via capsys rather than the python-logging caplog."""
+
+    from app.llm.export import _coerce_dict_list
+
+    # Happy path — no warning.
+    _coerce_dict_list([{"role_id": "role-ciso"}])
+    out, err = capsys.readouterr()
+    assert "aar_dict_list_coerced" not in (out + err)
+    assert "aar_dict_list_dropped" not in (out + err)
+
+    # JSON-string array — coerced + warning.
+    _coerce_dict_list('[{"role_id": "role-ciso"}]')
+    out, err = capsys.readouterr()
+    log = out + err
+    assert "aar_dict_list_coerced" in log
+    assert "json_string_array" in log
+
+    # Single dict wrap — coerced + warning.
+    _coerce_dict_list({"role_id": "role-ciso"})
+    out, err = capsys.readouterr()
+    log = out + err
+    assert "aar_dict_list_coerced" in log
+
+    # Garbage string — dropped + warning.
+    _coerce_dict_list("not json{[")
+    out, err = capsys.readouterr()
+    log = out + err
+    assert "aar_dict_list_dropped" in log
+    assert "json_decode_failed" in log
+
+    # JSON-decoded to wrong shape — dropped + warning.
+    _coerce_dict_list("42")
+    out, err = capsys.readouterr()
+    log = out + err
+    assert "aar_dict_list_dropped" in log
+    assert "json_decoded_to_unsupported_shape" in log
+
+    # Non-string scalar — dropped + warning.
+    _coerce_dict_list(5)
+    out, err = capsys.readouterr()
+    log = out + err
+    assert "aar_dict_list_dropped" in log
+    assert "unsupported_scalar" in log
+
+
 def test_extract_report_recovers_from_stringified_per_role_scores() -> None:
     """End-to-end: a tool_use whose ``per_role_scores`` is the JSON-
     encoded string from the live failure mode. The post-fix extractor
@@ -849,6 +903,65 @@ def test_extract_report_recovers_from_stringified_per_role_scores() -> None:
     by_id = {s["role_id"]: s for s in scores}
     assert by_id["role-ciso"]["decision_quality"] == 4
     assert by_id["role-soc"]["rationale"] == "pulled telemetry"
+
+
+def test_extract_report_resolves_case_insensitive_label_as_role_id() -> None:
+    """Per-role-scores entry with a role *label* in the ``role_id`` field
+    (instead of the canonical opaque id) is RESOLVED, not dropped. This
+    is the documented contract — see ``_sanitise_report``'s
+    ``by_label_lower`` lookup. The "drop, don't repair" rule from
+    CLAUDE.md applies to identifiers we can't resolve; case-insensitive
+    label resolution against the seated roster IS resolution, not
+    repair, because the roster is canonical and the label is
+    unambiguous within it.
+
+    This test pins that contract so a future "drop labels too" change
+    is a deliberate decision, not silent drift. Per Copilot review #10,
+    without this test the existing ``unknown_role_id`` test reads as
+    if the trust-boundary rule were stricter than it actually is."""
+
+    from app.llm.export import _extract_report
+
+    session = _two_role_session()
+    content = [
+        {
+            "type": "tool_use",
+            "name": "finalize_report",
+            "input": {
+                "executive_summary": "x",
+                "narrative": "y",
+                "per_role_scores": [
+                    {
+                        "role_id": "CISO",  # ← label, not opaque id
+                        "decision_quality": 4,
+                        "communication": 4,
+                        "speed": 4,
+                        "rationale": "label resolves to canonical id",
+                    },
+                    {
+                        "role_id": "soc",  # ← lowercase label
+                        "decision_quality": 3,
+                        "communication": 3,
+                        "speed": 3,
+                        "rationale": "lowercase also resolves",
+                    },
+                ],
+                "overall_score": 3,
+                "overall_rationale": "ok",
+            },
+        }
+    ]
+    report = _extract_report(content, session=session)
+    scores = report["per_role_scores"]
+    # Both labels resolve — neither is dropped.
+    assert len(scores) == 2
+    by_id = {s["role_id"]: s for s in scores}
+    assert "role-ciso" in by_id
+    assert "role-soc" in by_id
+    # The canonical id is what got written — not the label the model
+    # supplied. The extractor rewrites to canonical.
+    assert by_id["role-ciso"]["rationale"] == "label resolves to canonical id"
+    assert by_id["role-soc"]["rationale"] == "lowercase also resolves"
 
 
 def test_extract_report_drops_unknown_role_ids_in_array_input() -> None:

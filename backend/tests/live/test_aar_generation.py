@@ -84,7 +84,7 @@ async def test_aar_generator_emits_finalize_report(
     a freeform text reply) under the current prompt."""
 
     gen = AARGenerator(llm=aar_client, audit=aar_audit)
-    md = await gen.generate(aar_session)
+    md, _ = await gen.generate(aar_session)
 
     # Required sections (sanity — empty model output would not include them).
     for section in (
@@ -139,7 +139,7 @@ async def test_aar_report_includes_per_role_scores_for_seated_roles(
         tools=[AAR_TOOL],
         session_id=aar_session.id,
     )
-    report = _extract_report(raw.content)
+    report = _extract_report(raw.content, session=aar_session)
 
     assert report.get("per_role_scores"), (
         f"finalize_report missing per_role_scores: {list(report.keys())}"
@@ -186,7 +186,7 @@ async def test_aar_report_overall_score_in_range(
         tools=[AAR_TOOL],
         session_id=aar_session.id,
     )
-    report = _extract_report(raw.content)
+    report = _extract_report(raw.content, session=aar_session)
 
     score = report.get("overall_score")
     assert isinstance(score, int) and 1 <= score <= 5, (
@@ -221,7 +221,7 @@ async def test_aar_report_grounds_recommendations_in_transcript(
         tools=[AAR_TOOL],
         session_id=aar_session.id,
     )
-    report = _extract_report(raw.content)
+    report = _extract_report(raw.content, session=aar_session)
 
     recs = report.get("recommendations") or []
     gaps = report.get("gaps") or []
@@ -280,7 +280,7 @@ async def test_aar_report_what_went_well_and_gaps_non_empty(
         tools=[AAR_TOOL],
         session_id=aar_session.id,
     )
-    report = _extract_report(raw.content)
+    report = _extract_report(raw.content, session=aar_session)
 
     well = report.get("what_went_well") or []
     gaps = report.get("gaps") or []
@@ -313,7 +313,7 @@ async def test_aar_report_no_temperature_param_for_opus(
     return without exception means the strip is still in place."""
 
     gen = AARGenerator(llm=aar_client, audit=aar_audit)
-    md = await gen.generate(aar_session)
+    md, _ = await gen.generate(aar_session)
     # If the call had errored on a temperature rejection, generate() would
     # have raised. A non-empty markdown body is enough confirmation here.
     assert md.startswith("# "), (
@@ -354,22 +354,13 @@ def _build_user_payload(session: Session, audit: AuditLog) -> str:
     )
 
 
-# Suite-level guard — the directory-level conftest skips when the API key
-# is missing OR when ``TEST_MODE`` is set, but defending in depth here
-# gives a clearer error if someone runs the file directly with
-# ``pytest tests/live/test_aar_generation.py``.  Resolves through
-# ``Settings`` (pydantic-settings) so a key in ``.env`` is honoured the
-# same as a shell-exported env var — matches the production resolution
-# path. ``test_mode`` is also gated because the parent conftest force-
-# sets ``TEST_MODE=true`` for unit-test convenience; with it on, the
-# placeholder ``"test-mode-no-key"`` would reach the API and 401.
-_settings = get_settings()
-if _settings.anthropic_api_key is None or _settings.test_mode:  # pragma: no cover - import-time guard
-    pytestmark.append(
-        pytest.mark.skip(
-            reason=(
-                "live-API tests require ANTHROPIC_API_KEY and "
-                "TEST_MODE unset"
-            )
-        )
-    )
+# NOTE: there used to be a module-level "defense in depth" skip guard
+# here that evaluated ``get_settings()`` at IMPORT time. It was a
+# misfire: the parent ``backend/tests/conftest.py`` force-sets
+# ``TEST_MODE=true`` BEFORE this module is imported, so ``test_mode``
+# is always True at import; the guard always fired; every test in
+# this file was silently skipped on every run. The directory-level
+# ``backend/tests/live/conftest.py`` handles the real skip-when-no-
+# key / skip-when-TEST_MODE check via ``pytest_collection_modifyitems``
+# (which runs AFTER all imports and clears TEST_MODE before checking),
+# so the duplicate guard was both broken and redundant. Removed.

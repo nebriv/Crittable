@@ -376,7 +376,7 @@ def _coerce_int(value: Any, *, lo: int, hi: int) -> int:
     return n
 
 
-def _coerce_dict_list(value: Any) -> list[Any]:
+def _coerce_dict_list(value: Any, *, field: str = "per_role_scores") -> list[Any]:
     """Turn whatever the model emitted for an ``array<object>`` field
     into an iterable. The bug pattern (observed live, 2026-05-04 sweep)
     is the model emitting the entire ``per_role_scores`` array as a
@@ -394,27 +394,81 @@ def _coerce_dict_list(value: Any) -> list[Any]:
     list and lets the caller's per-entry validation log the drop. We
     deliberately do NOT coerce a non-string scalar — silently
     promoting an int 5 to ``[5]`` would mask a real schema regression
-    behind a ``non_dict_entry`` log."""
+    behind a ``non_dict_entry`` log.
+
+    **Observability.** Every coercion or whole-field drop emits a
+    WARNING with enough context to spot a prompt regression from the
+    audit log alone. The `field` arg names which structured-output
+    field tripped (today only ``per_role_scores`` calls in, but the
+    helper is generic). Silent success — i.e. the model already
+    returned a real list — emits no log; that's the happy path."""
 
     if value is None:
         return []
     if isinstance(value, list):
         return value
     if isinstance(value, dict):
+        _logger.warning(
+            "aar_dict_list_coerced",
+            field=field,
+            from_shape="dict",
+            to_shape="list[dict]",
+            count=1,
+        )
         return [value]
     if isinstance(value, str):
         stripped = value.strip()
         if not stripped:
+            _logger.warning(
+                "aar_dict_list_dropped",
+                field=field,
+                reason="empty_string",
+                preview="",
+            )
             return []
         try:
             decoded = json.loads(stripped)
-        except (ValueError, TypeError):
+        except (ValueError, TypeError) as exc:
+            _logger.warning(
+                "aar_dict_list_dropped",
+                field=field,
+                reason="json_decode_failed",
+                error=str(exc),
+                preview=stripped[:120],
+            )
             return []
         if isinstance(decoded, list):
+            _logger.warning(
+                "aar_dict_list_coerced",
+                field=field,
+                from_shape="json_string_array",
+                to_shape="list",
+                count=len(decoded),
+            )
             return decoded
         if isinstance(decoded, dict):
+            _logger.warning(
+                "aar_dict_list_coerced",
+                field=field,
+                from_shape="json_string_object",
+                to_shape="list[dict]",
+                count=1,
+            )
             return [decoded]
+        _logger.warning(
+            "aar_dict_list_dropped",
+            field=field,
+            reason="json_decoded_to_unsupported_shape",
+            decoded_type=type(decoded).__name__,
+            preview=stripped[:120],
+        )
         return []
+    _logger.warning(
+        "aar_dict_list_dropped",
+        field=field,
+        reason="unsupported_scalar",
+        scalar_type=type(value).__name__,
+    )
     return []
 
 
