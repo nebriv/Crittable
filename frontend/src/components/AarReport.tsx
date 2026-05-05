@@ -55,13 +55,14 @@ interface AarReport {
   what_went_well: string[];
   gaps: string[];
   /**
-   * Issue #117 — pivotal moments / decisions curated by the players
-   * mid-exercise via the highlight popover's "Mark for AAR" action.
-   * Empty when the affordance wasn't used and the model didn't
-   * synthesise any from the transcript; the section is hidden in that
-   * case.
+   * Issue #117 — moments players flagged mid-exercise via the
+   * highlight popover's "Mark for AAR" action. Deliberately
+   * category-agnostic: a flag might be a decision, a question, a
+   * follow-up, a debrief item, a team-level concern, etc. Empty
+   * when the affordance wasn't used and the model didn't flag any
+   * from the transcript; the section is hidden in that case.
    */
-  key_decisions: string[];
+  flagged_for_review: string[];
   recommendations: string[];
   per_role_scores: PerRoleScore[];
   overall_score: number;
@@ -280,10 +281,10 @@ function LeftColumn({ report }: { report: AarReport }) {
       {report.gaps.length > 0 ? (
         <BriefBlock title="WHAT DIDN'T" items={report.gaps} tone="warn" />
       ) : null}
-      {report.key_decisions.length > 0 ? (
+      {report.flagged_for_review.length > 0 ? (
         <BriefBlock
-          title="KEY DECISIONS"
-          items={report.key_decisions}
+          title="FLAGGED FOR REVIEW"
+          items={report.flagged_for_review}
           tone="signal"
         />
       ) : null}

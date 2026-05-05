@@ -31,9 +31,9 @@ function _report(overrides: Partial<PerRoleScore>[] = []): unknown {
     narrative: "Detection at 03:14 → containment by 03:46 → comms drafted.",
     what_went_well: ["Fast triage", "Clear comms"],
     gaps: ["Legal looped in late"],
-    key_decisions: [
+    flagged_for_review: [
       "Isolated finance subnet at T+04:12",
-      "Declined ransom; pivoted to backup restore",
+      "Open question: revisit ransom decision after backup restore?",
     ],
     recommendations: ["Pre-stage legal contact in IR runbook"],
     per_role_scores:

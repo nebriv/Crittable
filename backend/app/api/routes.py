@@ -1612,11 +1612,15 @@ def register_api_routes(app: FastAPI) -> None:
             "narrative": session.aar_report.get("narrative", ""),
             "what_went_well": session.aar_report.get("what_went_well", []),
             "gaps": session.aar_report.get("gaps", []),
-            # Issue #117 — surfaced through the same JSON-export shape
-            # so the frontend ``AarReport`` (and any external consumers
-            # of ``/export.json``) can render the curated decisions
-            # without re-deriving them from ``narrative``.
-            "key_decisions": session.aar_report.get("key_decisions", []),
+            # Issue #117 — flagged-for-AAR moments curated by the
+            # players via the highlight popover (and any others the
+            # model chose to flag from the transcript). Category-
+            # agnostic — see ``AAR_TOOL.flagged_for_review`` for the
+            # rationale. Defaults to ``[]`` so older recordings
+            # without the field still render cleanly.
+            "flagged_for_review": session.aar_report.get(
+                "flagged_for_review", []
+            ),
             "recommendations": session.aar_report.get("recommendations", []),
             "per_role_scores": scores,
             "overall_score": session.aar_report.get("overall_score", 0),

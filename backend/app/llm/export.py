@@ -196,7 +196,7 @@ def _extract_aar_marked_verbatim(markdown: str) -> list[str]:
     de-duplicated, sanitised list. Issue #117 — players click "Mark for
     AAR" on chat snippets and the snippet lands as a paragraph under
     this heading; the AAR LLM treats the resulting list as a strong
-    priority signal for ``key_decisions`` / ``narrative`` / etc.
+    flag for ``flagged_for_review`` / ``narrative`` / etc.
 
     Reads:
     1. Walk the markdown line-by-line.
@@ -625,10 +625,10 @@ def _sanitise_report(raw: dict[str, Any], *, session: Session) -> dict[str, Any]
         "what_went_well": _coerce_str_list(raw.get("what_went_well")),
         "gaps": _coerce_str_list(raw.get("gaps")),
         "recommendations": _coerce_str_list(raw.get("recommendations")),
-        # Issue #117 — pivotal moments the players flagged via Mark
-        # for AAR (and any others the model judged decision-grade).
-        # Same string-list coercion as the other bullet sections.
-        "key_decisions": _coerce_str_list(raw.get("key_decisions")),
+        # Issue #117 — category-agnostic flags from "Mark for AAR"
+        # (decisions, questions, follow-ups, debrief items, …). Same
+        # string-list coercion as the other bullet sections.
+        "flagged_for_review": _coerce_str_list(raw.get("flagged_for_review")),
         "per_role_scores": cleaned_scores,
         "overall_score": _coerce_int(raw.get("overall_score"), lo=0, hi=5),
         "overall_rationale": str(raw.get("overall_rationale") or ""),
@@ -678,13 +678,16 @@ def _render_markdown(
         lines.append("### Gaps")
         lines.extend(_render_bullets(report["gaps"]))
         lines.append("")
-    # Issue #117 — render the players' Mark-for-AAR-curated decisions
-    # as a sibling section to What-went-well / Gaps / Recommendations.
-    # Hidden when empty so an exercise that didn't use the affordance
-    # doesn't get an awkward placeholder.
-    if report.get("key_decisions"):
-        lines.append("### Key decisions")
-        lines.extend(_render_bullets(report["key_decisions"]))
+    # Issue #117 — render the moments players flagged via Mark-for-
+    # AAR as a sibling section to What-went-well / Gaps / Recs. The
+    # affordance is category-agnostic (a flag might be a decision, a
+    # question, a follow-up, a debrief item, …) so the heading is
+    # too — operators get a single scannable list rather than a
+    # forced-categorization. Hidden when empty so an exercise that
+    # didn't use the affordance doesn't get an awkward placeholder.
+    if report.get("flagged_for_review"):
+        lines.append("### Flagged for review")
+        lines.extend(_render_bullets(report["flagged_for_review"]))
         lines.append("")
     if report.get("recommendations"):
         lines.append("### Recommendations")

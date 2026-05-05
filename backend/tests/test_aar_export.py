@@ -174,9 +174,9 @@ def report() -> dict[str, Any]:
         "recommendations": [
             "Pre-draft regulator notification template",
         ],
-        "key_decisions": [
+        "flagged_for_review": [
             "Isolated finance subnet at T+04:12 (CISO call)",
-            "Declined ransom; pivoted to backup restore",
+            "Open question: was the ransom ever revisited after the backup decision?",
         ],
         "per_role_scores": [
             {
@@ -373,7 +373,7 @@ def test_render_markdown_section_order(
         "## After-action narrative",
         "### What went well",
         "### Gaps",
-        "### Key decisions",
+        "### Flagged for review",
         "### Recommendations",
         "## Per-role scores",
         "## Overall session score",
@@ -1080,11 +1080,13 @@ def test_extract_report_coerces_string_blob_in_array_string_fields() -> None:
     assert report["gaps"] == []
 
 
-def test_extract_report_round_trips_key_decisions() -> None:
-    """Issue #117 — ``key_decisions`` is part of the AAR tool schema; the
-    extractor must coerce it through the same string-list path as the
-    other bullet sections, and the field must default to ``[]`` when the
-    model omits it (older mock fixtures, pre-#117 recordings)."""
+def test_extract_report_round_trips_flagged_for_review() -> None:
+    """Issue #117 — ``flagged_for_review`` is part of the AAR tool
+    schema and is deliberately category-agnostic (a flag might be a
+    decision, question, follow-up, debrief item, etc.). The extractor
+    coerces it through the same string-list path as the other bullet
+    sections, and the field defaults to ``[]`` when the model omits
+    it (older mock fixtures, pre-#117 recordings)."""
 
     from app.llm.export import _extract_report
 
@@ -1096,9 +1098,10 @@ def test_extract_report_round_trips_key_decisions() -> None:
             "input": {
                 "executive_summary": "x",
                 "narrative": "y",
-                "key_decisions": [
+                "flagged_for_review": [
                     "Isolated finance subnet at T+04:12 (CISO call)",
-                    "Declined ransom; pivoted to backup restore",
+                    "Open question: was the ransom ever revisited after the backup decision?",
+                    "Follow-up: legal sign-off on the holding statement",
                 ],
                 "per_role_scores": [],
                 "overall_score": 3,
@@ -1107,17 +1110,18 @@ def test_extract_report_round_trips_key_decisions() -> None:
         }
     ]
     report = _extract_report(content, session=session)
-    assert report["key_decisions"] == [
+    assert report["flagged_for_review"] == [
         "Isolated finance subnet at T+04:12 (CISO call)",
-        "Declined ransom; pivoted to backup restore",
+        "Open question: was the ransom ever revisited after the backup decision?",
+        "Follow-up: legal sign-off on the holding statement",
     ]
 
 
-def test_extract_report_key_decisions_defaults_to_empty_list_when_omitted() -> None:
+def test_extract_report_flagged_for_review_defaults_to_empty_list_when_omitted() -> None:
     """Backwards-compat with mock fixtures and any recorded scenarios
-    captured before the field existed: an absent ``key_decisions`` MUST
-    return ``[]`` so the renderer's empty-section gate hides the
-    section instead of crashing on a missing key."""
+    captured before the field existed: an absent ``flagged_for_review``
+    MUST return ``[]`` so the renderer's empty-section gate hides the
+    heading instead of crashing on a missing key."""
 
     from app.llm.export import _extract_report
 
@@ -1129,7 +1133,7 @@ def test_extract_report_key_decisions_defaults_to_empty_list_when_omitted() -> N
             "input": {
                 "executive_summary": "x",
                 "narrative": "y",
-                # No ``key_decisions`` at all.
+                # No ``flagged_for_review`` at all.
                 "per_role_scores": [],
                 "overall_score": 3,
                 "overall_rationale": "z",
@@ -1137,11 +1141,11 @@ def test_extract_report_key_decisions_defaults_to_empty_list_when_omitted() -> N
         }
     ]
     report = _extract_report(content, session=session)
-    assert report["key_decisions"] == []
+    assert report["flagged_for_review"] == []
 
 
-def test_extract_report_coerces_string_blob_in_key_decisions() -> None:
-    """Same string-blob recovery path as the existing array<string>
+def test_extract_report_coerces_string_blob_in_flagged_for_review() -> None:
+    """Same string-blob recovery path as the other array<string>
     fields — issue #117 added a fourth such field."""
 
     from app.llm.export import _extract_report
@@ -1154,7 +1158,7 @@ def test_extract_report_coerces_string_blob_in_key_decisions() -> None:
             "input": {
                 "executive_summary": "x",
                 "narrative": "y",
-                "key_decisions": "Single decision sentence as a blob",
+                "flagged_for_review": "Single flagged sentence as a blob",
                 "per_role_scores": [],
                 "overall_score": 3,
                 "overall_rationale": "z",
@@ -1162,14 +1166,14 @@ def test_extract_report_coerces_string_blob_in_key_decisions() -> None:
         }
     ]
     report = _extract_report(content, session=session)
-    assert report["key_decisions"] == ["Single decision sentence as a blob"]
+    assert report["flagged_for_review"] == ["Single flagged sentence as a blob"]
 
 
-def test_render_markdown_hides_key_decisions_section_when_empty() -> None:
+def test_render_markdown_hides_flagged_for_review_section_when_empty() -> None:
     """An exercise where nobody clicked Mark-for-AAR (and the model
-    didn't synthesise any decisions) should not render an empty
-    ``### Key decisions`` heading. Mirrors the existing what-went-well /
-    gaps / recommendations empty-section behaviour."""
+    didn't flag anything from the transcript) should not render an
+    empty ``### Flagged for review`` heading. Mirrors the existing
+    what-went-well / gaps / recommendations empty-section behaviour."""
 
     from app.llm.export import _render_markdown
 
@@ -1180,10 +1184,10 @@ def test_render_markdown_hides_key_decisions_section_when_empty() -> None:
         "what_went_well": ["did the thing"],
         "gaps": [],
         "recommendations": [],
-        "key_decisions": [],  # empty
+        "flagged_for_review": [],  # empty
         "per_role_scores": [],
         "overall_score": 3,
         "overall_rationale": "z",
     }
     md = _render_markdown(session, report, audit_events=[])
-    assert "### Key decisions" not in md
+    assert "### Flagged for review" not in md
