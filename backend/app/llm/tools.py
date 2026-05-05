@@ -588,6 +588,13 @@ AAR_TOOL: dict[str, Any] = {
             "what_went_well": {"type": "array", "items": {"type": "string"}},
             "gaps": {"type": "array", "items": {"type": "string"}},
             "recommendations": {"type": "array", "items": {"type": "string"}},
+            # Issue #117 — pivotal decisions / moments curated by the
+            # players via the "Mark for AAR" highlight action (or
+            # surfaced from the transcript directly when the marked
+            # pool is thin). Free-form short bullets; no structured
+            # decider/timestamp split — that's what the transcript and
+            # the operator's timeline.md export are for.
+            "key_decisions": {"type": "array", "items": {"type": "string"}},
             "per_role_scores": {
                 "type": "array",
                 "items": {

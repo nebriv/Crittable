@@ -363,6 +363,26 @@ def test_extract_aar_marked_verbatim_drops_injection_attempts() -> None:
     assert all("player_aar_marked" not in i for i in items)
 
 
+def test_extract_aar_marked_verbatim_strips_long_session_stamps() -> None:
+    """Issue #117 follow-up — sessions running 100+ minutes produce
+    stamps like ``T+120:03 — ...`` (``relativeStamp`` pads with two
+    zeros but doesn't cap at 99). The pin-lead regex must accept 2+
+    minute digits or the timestamp scaffolding leaks into the
+    extracted line. Per Copilot review on PR #169."""
+    md = (
+        "## AAR Review\n"
+        "T+05:14 — short stamp line\n"
+        "T+120:03 — long stamp line (2hr+ session)\n"
+        "T+1234:56 — pathological stamp (just in case)\n"
+    )
+    items = _extract_aar_marked_verbatim(md)
+    assert items == [
+        "short stamp line",
+        "long stamp line (2hr+ session)",
+        "pathological stamp (just in case)",
+    ]
+
+
 def test_extract_aar_marked_verbatim_caps_runaway_pinning() -> None:
     """Defense against a verbose pinner — extractor caps at 20 lines
     per session so the AAR-prompt token budget can't be exhausted by

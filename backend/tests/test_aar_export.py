@@ -174,6 +174,10 @@ def report() -> dict[str, Any]:
         "recommendations": [
             "Pre-draft regulator notification template",
         ],
+        "key_decisions": [
+            "Isolated finance subnet at T+04:12 (CISO call)",
+            "Declined ransom; pivoted to backup restore",
+        ],
         "per_role_scores": [
             {
                 "role_id": "role-ciso",
@@ -369,6 +373,7 @@ def test_render_markdown_section_order(
         "## After-action narrative",
         "### What went well",
         "### Gaps",
+        "### Key decisions",
         "### Recommendations",
         "## Per-role scores",
         "## Overall session score",
@@ -1073,3 +1078,112 @@ def test_extract_report_coerces_string_blob_in_array_string_fields() -> None:
     assert report["what_went_well"] == ["single string instead of an array"]
     assert report["recommendations"] == ["a real first item"]
     assert report["gaps"] == []
+
+
+def test_extract_report_round_trips_key_decisions() -> None:
+    """Issue #117 — ``key_decisions`` is part of the AAR tool schema; the
+    extractor must coerce it through the same string-list path as the
+    other bullet sections, and the field must default to ``[]`` when the
+    model omits it (older mock fixtures, pre-#117 recordings)."""
+
+    from app.llm.export import _extract_report
+
+    session = _two_role_session()
+    content = [
+        {
+            "type": "tool_use",
+            "name": "finalize_report",
+            "input": {
+                "executive_summary": "x",
+                "narrative": "y",
+                "key_decisions": [
+                    "Isolated finance subnet at T+04:12 (CISO call)",
+                    "Declined ransom; pivoted to backup restore",
+                ],
+                "per_role_scores": [],
+                "overall_score": 3,
+                "overall_rationale": "z",
+            },
+        }
+    ]
+    report = _extract_report(content, session=session)
+    assert report["key_decisions"] == [
+        "Isolated finance subnet at T+04:12 (CISO call)",
+        "Declined ransom; pivoted to backup restore",
+    ]
+
+
+def test_extract_report_key_decisions_defaults_to_empty_list_when_omitted() -> None:
+    """Backwards-compat with mock fixtures and any recorded scenarios
+    captured before the field existed: an absent ``key_decisions`` MUST
+    return ``[]`` so the renderer's empty-section gate hides the
+    section instead of crashing on a missing key."""
+
+    from app.llm.export import _extract_report
+
+    session = _two_role_session()
+    content = [
+        {
+            "type": "tool_use",
+            "name": "finalize_report",
+            "input": {
+                "executive_summary": "x",
+                "narrative": "y",
+                # No ``key_decisions`` at all.
+                "per_role_scores": [],
+                "overall_score": 3,
+                "overall_rationale": "z",
+            },
+        }
+    ]
+    report = _extract_report(content, session=session)
+    assert report["key_decisions"] == []
+
+
+def test_extract_report_coerces_string_blob_in_key_decisions() -> None:
+    """Same string-blob recovery path as the existing array<string>
+    fields — issue #117 added a fourth such field."""
+
+    from app.llm.export import _extract_report
+
+    session = _two_role_session()
+    content = [
+        {
+            "type": "tool_use",
+            "name": "finalize_report",
+            "input": {
+                "executive_summary": "x",
+                "narrative": "y",
+                "key_decisions": "Single decision sentence as a blob",
+                "per_role_scores": [],
+                "overall_score": 3,
+                "overall_rationale": "z",
+            },
+        }
+    ]
+    report = _extract_report(content, session=session)
+    assert report["key_decisions"] == ["Single decision sentence as a blob"]
+
+
+def test_render_markdown_hides_key_decisions_section_when_empty() -> None:
+    """An exercise where nobody clicked Mark-for-AAR (and the model
+    didn't synthesise any decisions) should not render an empty
+    ``### Key decisions`` heading. Mirrors the existing what-went-well /
+    gaps / recommendations empty-section behaviour."""
+
+    from app.llm.export import _render_markdown
+
+    session = _two_role_session()
+    report = {
+        "executive_summary": "x",
+        "narrative": "y",
+        "what_went_well": ["did the thing"],
+        "gaps": [],
+        "recommendations": [],
+        "key_decisions": [],  # empty
+        "per_role_scores": [],
+        "overall_score": 3,
+        "overall_rationale": "z",
+    }
+    md = _render_markdown(session, report, audit_events=[])
+    assert "### Key decisions" not in md

@@ -174,8 +174,12 @@ def _extract_action_items_verbatim(markdown: str) -> list[str]:
 # Markers the frontend writes when ``Mark for AAR`` inserts a snippet
 # (``frontend/src/lib/notepadEditor.ts::appendPinToEditor``). Stripped
 # from the extracted verbatim line so the AAR LLM sees the snippet, not
-# the timestamp scaffolding.
-_AAR_PIN_LEAD_RE = re.compile(r"^(?:T\+\d{2}:\d{2}\s*—\s*|↳\s*)")
+# the timestamp scaffolding. Minutes use ``\d{2,}`` (not ``\d{2}``)
+# because ``relativeStamp`` pads with ``padStart(2, "0")`` but does
+# NOT cap at 99 — a session running ≥100 minutes produces stamps like
+# ``T+120:03 — ...`` and the regex must keep stripping them so they
+# don't leak into the extracted AAR-marked line.
+_AAR_PIN_LEAD_RE = re.compile(r"^(?:T\+\d{2,}:\d{2}\s*—\s*|↳\s*)")
 # Heading text to search for. Single source of truth on the backend
 # side; mirrors ``PIN_SECTION_HEADINGS["aar_review"].matches`` on the
 # client. Case-insensitive whole-line match against the trimmed line.
@@ -621,6 +625,10 @@ def _sanitise_report(raw: dict[str, Any], *, session: Session) -> dict[str, Any]
         "what_went_well": _coerce_str_list(raw.get("what_went_well")),
         "gaps": _coerce_str_list(raw.get("gaps")),
         "recommendations": _coerce_str_list(raw.get("recommendations")),
+        # Issue #117 — pivotal moments the players flagged via Mark
+        # for AAR (and any others the model judged decision-grade).
+        # Same string-list coercion as the other bullet sections.
+        "key_decisions": _coerce_str_list(raw.get("key_decisions")),
         "per_role_scores": cleaned_scores,
         "overall_score": _coerce_int(raw.get("overall_score"), lo=0, hi=5),
         "overall_rationale": str(raw.get("overall_rationale") or ""),
@@ -669,6 +677,14 @@ def _render_markdown(
     if report.get("gaps"):
         lines.append("### Gaps")
         lines.extend(_render_bullets(report["gaps"]))
+        lines.append("")
+    # Issue #117 — render the players' Mark-for-AAR-curated decisions
+    # as a sibling section to What-went-well / Gaps / Recommendations.
+    # Hidden when empty so an exercise that didn't use the affordance
+    # doesn't get an awkward placeholder.
+    if report.get("key_decisions"):
+        lines.append("### Key decisions")
+        lines.extend(_render_bullets(report["key_decisions"]))
         lines.append("")
     if report.get("recommendations"):
         lines.append("### Recommendations")

@@ -183,6 +183,11 @@ def test_export_json_returns_200_with_well_formed_body(client: TestClient) -> No
         "IR Lead established clean comms cadence.",
     ]
     assert body["gaps"] == ["Legal escalation lagged by 2 turns."]
+    # Issue #117 — ``key_decisions`` is part of the JSON contract
+    # even when the fixture dict pre-dates the field; the route's
+    # ``.get("key_decisions", [])`` default keeps the response shape
+    # stable so older recordings render cleanly.
+    assert body["key_decisions"] == []
     assert body["recommendations"] == [
         "Pre-stage Legal-on-call rotation in the runbook.",
     ]

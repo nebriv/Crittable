@@ -1612,6 +1612,11 @@ def register_api_routes(app: FastAPI) -> None:
             "narrative": session.aar_report.get("narrative", ""),
             "what_went_well": session.aar_report.get("what_went_well", []),
             "gaps": session.aar_report.get("gaps", []),
+            # Issue #117 — surfaced through the same JSON-export shape
+            # so the frontend ``AarReport`` (and any external consumers
+            # of ``/export.json``) can render the curated decisions
+            # without re-deriving them from ``narrative``.
+            "key_decisions": session.aar_report.get("key_decisions", []),
             "recommendations": session.aar_report.get("recommendations", []),
             "per_role_scores": scores,
             "overall_score": session.aar_report.get("overall_score", 0),

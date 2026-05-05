@@ -54,6 +54,14 @@ interface AarReport {
   narrative: string;
   what_went_well: string[];
   gaps: string[];
+  /**
+   * Issue #117 — pivotal moments / decisions curated by the players
+   * mid-exercise via the highlight popover's "Mark for AAR" action.
+   * Empty when the affordance wasn't used and the model didn't
+   * synthesise any from the transcript; the section is hidden in that
+   * case.
+   */
+  key_decisions: string[];
   recommendations: string[];
   per_role_scores: PerRoleScore[];
   overall_score: number;
@@ -271,6 +279,13 @@ function LeftColumn({ report }: { report: AarReport }) {
       ) : null}
       {report.gaps.length > 0 ? (
         <BriefBlock title="WHAT DIDN'T" items={report.gaps} tone="warn" />
+      ) : null}
+      {report.key_decisions.length > 0 ? (
+        <BriefBlock
+          title="KEY DECISIONS"
+          items={report.key_decisions}
+          tone="signal"
+        />
       ) : null}
       {report.recommendations.length > 0 ? (
         <BriefBlock
