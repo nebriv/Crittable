@@ -220,10 +220,25 @@ quietly multiply the per-PR spend by N. The triggers are OR-ed:
 
 | Trigger | When it fires | Why |
 |---|---|---|
-| `pull_request` path filter | PR to `main` touches `backend/app/llm/**`, `backend/app/sessions/**`, `backend/app/extensions/**`, `backend/tests/live/**`, the conftest, the cost-cap test, the diagnostic scripts, or the workflow itself | The change can plausibly regress model routing, so verify before merge. |
+| `pull_request` path filter | PR to `main` touches `backend/app/llm/**`, `backend/app/sessions/**`, `backend/app/extensions/**`, `backend/app/config.py`, `backend/tests/live/**`, the conftest, the cost-cap test, the diagnostic scripts, or the workflow itself | The change can plausibly regress model routing, so verify before merge. |
 | `labeled` event | The `live-tests` label is added to a PR that also touched a relevant path | Re-fire after a label tweak. For label-only PRs (no relevant path change), use `workflow_dispatch` instead. |
-| `workflow_dispatch` | A maintainer clicks "Run workflow" in the Actions UI | Manual one-shots, fork PRs after code-review, ad-hoc filters via the `pytest_args` input. |
-| `schedule` (nightly 08:00 UTC) | Daily | Catches "Anthropic shipped a model update under us" / "the per-turn reminder regressed at depth" drift the path filter wouldn't see. |
+| `workflow_dispatch` | A maintainer clicks "Run workflow" in the Actions UI | Manual one-shots, fork PRs after code-review, ad-hoc filters via the `pytest_args` input, and Anthropic-side drift checks ("did the model change under us?"). |
+
+There is **no scheduled cron** — this is a side project and a daily
+run at ~$1.40/run would be ~$42/month for a tripwire the path-filter
+mostly already catches. If you ever want a periodic drift check, the
+cheap option is a weekly Monday cron (~$6/month) matching
+`security.yml`'s cadence — drop a `schedule:` block back into
+`live-tests.yml`:
+
+```yaml
+  schedule:
+    - cron: "0 13 * * 1"   # Mondays 13:00 UTC
+```
+
+Tool-routing-only nightly (`pytest tests/live/test_tool_routing.py`,
+~$0.10/run, ~$3/month) is even cheaper if you only care about
+routing drift.
 
 The job uses `pull_request` (NOT `pull_request_target`) so fork-PR
 runs do not get the secret — the live conftest's auto-skip then

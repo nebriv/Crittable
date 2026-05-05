@@ -122,11 +122,15 @@ runs the live suite automatically on:
 * **The `live-tests` label** on a PR with a relevant path change.
   (For PRs where the label is the only trigger and no relevant
   paths changed, use `workflow_dispatch`.)
-* **Nightly cron at 08:00 UTC** — catches model-behaviour drift the
-  path filter wouldn't see (Anthropic deprecates / retrains under us).
-* **`workflow_dispatch`** — Actions-UI button. Optional `pytest_args`
-  input for narrow filters; optional `cost_cap_usd` input to override
-  the per-run dollar cap.
+* **`workflow_dispatch`** — Actions-UI button. Optional inputs:
+  `pytest_args` (narrow filter), `cost_cap_usd` (override the per-run
+  dollar cap), `anthropic_model_play` (validate Sonnet N → N+1
+  migration).
+
+There is no scheduled cron — see [`docs/tool-design.md`](../../docs/tool-design.md)
+"CI: when the live suite runs automatically" for the rationale and
+the cheap "weekly Monday cron" / "routing-only nightly" options if
+you ever want periodic drift checks.
 
 Fork PRs run with `pull_request` (NOT `pull_request_target`), so
 secrets are not injected; the live conftest's auto-skip cleanly

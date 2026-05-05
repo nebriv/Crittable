@@ -15,12 +15,17 @@ name: Live tests
 #    PR that already touched relevant paths. (For PRs where the
 #    label is the ONLY trigger and no relevant paths changed, use
 #    ``workflow_dispatch``.)
-# 2. Nightly cron at 08:00 UTC. Catches "Anthropic shipped a model
-#    update under us" / "the per-turn reminder regressed at depth"
-#    drift the path filter wouldn't see.
-# 3. ``workflow_dispatch`` for manual re-runs and one-shots from
+# 2. ``workflow_dispatch`` for manual re-runs and one-shots from
 #    forks (where secrets aren't auto-injected). Operator can pass
 #    pytest filter args and an ad-hoc cost-cap override.
+#
+# No scheduled cron. This is a side project; a daily run on the
+# standing suite (~$1.40 / run) would burn ~$42/month for a tripwire
+# the path-filtered PR runs mostly already catch. If we ever want
+# periodic Anthropic-drift checks, the cheap options are documented
+# in ``docs/tool-design.md`` § "CI: when the live suite runs
+# automatically": a weekly Monday cron (~$6/month) or a
+# routing-only nightly (~$3/month).
 #
 # Fork safety
 # -----------
@@ -84,10 +89,6 @@ on:
         description: "Override ANTHROPIC_MODEL_PLAY (e.g. 'claude-sonnet-4-7'). Blank = backend default (claude-sonnet-4-6). Useful for validating a Sonnet N → N+1 migration without code changes."
         required: false
         default: ""
-  schedule:
-    # 08:00 UTC daily. After Anthropic's typical model-rollout window
-    # (US working day) so the nightly catches drift the same morning.
-    - cron: "0 8 * * *"
 
 # At most one live-tests run per branch — a force-push storm on a
 # single branch fans out into N parallel runs all billing the same
