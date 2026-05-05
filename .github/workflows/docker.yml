@@ -95,7 +95,7 @@ jobs:
         # to dig through the Code Scanning tab to learn *which* CVE
         # tripped the gate. With this step running first, the next
         # failed run is self-documenting in the log itself.
-        uses: aquasecurity/trivy-action@0.35.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: ${{ steps.scan-target.outputs.ref }}
           format: table
@@ -113,7 +113,7 @@ jobs:
         # CVEs with no upstream patch — the scheduled security.yml run
         # is the catch-all for "still no fix after a week" tracking.
         id: trivy
-        uses: aquasecurity/trivy-action@0.35.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: ${{ steps.scan-target.outputs.ref }}
           format: sarif
