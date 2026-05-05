@@ -175,7 +175,7 @@ describe("WsYjsProvider — lock-state handling (issue #160)", () => {
     provider.stop();
   });
 
-  it("preserves non-notepad-scope error pass-through (locked or not)", () => {
+  it("ignores non-notepad-scope error frames entirely (those belong to the parent page)", () => {
     const fake = makeFakeWs();
     const { provider, onError } = makeProvider(fake);
     provider.start();
@@ -187,8 +187,9 @@ describe("WsYjsProvider — lock-state handling (issue #160)", () => {
       message: "boom",
     });
 
-    // The provider only inspects scope:"notepad" errors. Other scopes
-    // are intentionally ignored (the parent page handles them).
+    // The provider's ``onError`` is for notepad-scope errors only.
+    // Other scopes are not its concern — the page-level WS handler
+    // surfaces those. (Copilot review on PR #171, LOW.)
     expect(onError).not.toHaveBeenCalled();
     provider.stop();
   });
@@ -244,5 +245,163 @@ describe("WsYjsProvider — lock-state handling (issue #160)", () => {
     expect(onLockPending).toHaveBeenCalledWith(5);
     expect(provider.isLocked).toBe(false);
     provider.stop();
+  });
+
+  // ---- Idempotent lock transition (Copilot review on PR #171, HIGH) ----
+
+  it("fires onLocked exactly ONCE across multiple lock signals (replay buffer + live event)", () => {
+    const fake = makeFakeWs();
+    const { provider, onLocked } = makeProvider(fake);
+    provider.start();
+
+    // Replay buffer (sync-response with locked=true) followed by the
+    // live notepad_locked event — both common in reconnect scenarios.
+    fake.emit({
+      type: "notepad_sync_response",
+      state: "",
+      locked: true,
+      template_id: null,
+    });
+    fake.emit({ type: "notepad_locked", locked_at: null });
+    fake.emit({ type: "notepad_locked", locked_at: null });
+
+    expect(onLocked).toHaveBeenCalledTimes(1);
+    expect(provider.isLocked).toBe(true);
+    provider.stop();
+  });
+
+  it("fires onLocked exactly ONCE for repeated notepad_locked events", () => {
+    const fake = makeFakeWs();
+    const { provider, onLocked } = makeProvider(fake);
+    provider.start();
+
+    fake.emit({ type: "notepad_locked", locked_at: null });
+    fake.emit({ type: "notepad_locked", locked_at: null });
+    fake.emit({ type: "notepad_locked", locked_at: null });
+
+    expect(onLocked).toHaveBeenCalledTimes(1);
+    provider.stop();
+  });
+
+  // ---- Initial sync-request retry (Copilot review on PR #171, BLOCK) ----
+
+  it("retries the initial sync_request when the WS is not yet open, until it succeeds", async () => {
+    vi.useFakeTimers();
+    try {
+      // Start with send() throwing (WS not open yet), then flip the
+      // fake's send to succeed after the first scheduled retry. We
+      // assert that the request is re-sent once the WS opens.
+      let openYet = false;
+      const sent: ClientEvent[] = [];
+      const fake = {
+        send(event: ClientEvent): void {
+          if (!openYet) throw new Error("websocket not open");
+          sent.push(event);
+        },
+        subscribe(): () => void {
+          return () => {};
+        },
+      };
+      const provider = new WsYjsProvider(
+        new Y.Doc(),
+        new Awareness(new Y.Doc()),
+        fake as unknown as WsClient,
+        () => {},
+        () => {},
+        () => {},
+      );
+      provider.start();
+
+      // First attempt during start() failed silently; nothing sent yet.
+      expect(sent).toHaveLength(0);
+
+      // WS opens — advance past the first 100ms backoff.
+      openYet = true;
+      vi.advanceTimersByTime(100);
+
+      expect(sent.some((e) => e.type === "notepad_sync_request")).toBe(true);
+      provider.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("gives up the initial sync_request after MAX_SYNC_RETRIES with a warn log", async () => {
+    vi.useFakeTimers();
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const fake = {
+        send(): void {
+          throw new Error("websocket not open");
+        },
+        subscribe(): () => void {
+          return () => {};
+        },
+      };
+      const provider = new WsYjsProvider(
+        new Y.Doc(),
+        new Awareness(new Y.Doc()),
+        fake as unknown as WsClient,
+        () => {},
+        () => {},
+        () => {},
+      );
+      provider.start();
+
+      // 100 + 200 + 400 + 800 + 1600 = 3100 ms covers all 5 retries.
+      vi.advanceTimersByTime(4000);
+
+      expect(
+        warnSpy.mock.calls.some(
+          (c) =>
+            typeof c[0] === "string" &&
+            c[0].includes("initial sync_request gave up"),
+        ),
+      ).toBe(true);
+      provider.stop();
+    } finally {
+      warnSpy.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  it("stop() cancels the pending sync-request retry timer", () => {
+    vi.useFakeTimers();
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const fake = {
+        send(): void {
+          throw new Error("websocket not open");
+        },
+        subscribe(): () => void {
+          return () => {};
+        },
+      };
+      const provider = new WsYjsProvider(
+        new Y.Doc(),
+        new Awareness(new Y.Doc()),
+        fake as unknown as WsClient,
+        () => {},
+        () => {},
+        () => {},
+      );
+      provider.start();
+      provider.stop();
+
+      // Advance past every backoff window — no further send calls or
+      // give-up warns should fire because stop() cleared the timer.
+      vi.advanceTimersByTime(4000);
+
+      expect(
+        warnSpy.mock.calls.some(
+          (c) =>
+            typeof c[0] === "string" &&
+            c[0].includes("initial sync_request gave up"),
+        ),
+      ).toBe(false);
+    } finally {
+      warnSpy.mockRestore();
+      vi.useRealTimers();
+    }
   });
 });

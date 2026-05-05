@@ -52,6 +52,13 @@ export class WsYjsProvider {
   // the provider from scratch via the parent useEffect, so a fresh
   // session starts unlocked.
   private locked = false;
+  // Bounded-retry timer for the initial ``notepad_sync_request``. The
+  // page may mount the SharedNotepad before the WS finishes its open
+  // handshake; in that race ``ws.send`` throws "websocket not open" and
+  // the request would otherwise be silently dropped — the client would
+  // be left without the current notepad state until someone edited.
+  // Cleared on ``stop()``. (Copilot review on PR #171, BLOCK.)
+  private syncRetryTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(
     public readonly doc: Y.Doc,
@@ -65,6 +72,21 @@ export class WsYjsProvider {
   /** Read-only view of the lock flag (test hook + future debuggability). */
   get isLocked(): boolean {
     return this.locked;
+  }
+
+  /** Idempotent lock transition. Sets the flag, logs once, and fires
+   *  ``onLocked`` exactly once across multiple lock signals (replay
+   *  buffer's ``notepad_locked`` plus a follow-up
+   *  ``notepad_sync_response.locked=true`` is the canonical race).
+   *  Without this guard the parent saw duplicate ``setLocked(true)``
+   *  + ``setErrorMsg(null)`` calls — the second clear could wipe a
+   *  fresh non-lock error toast that arrived between the two events.
+   *  (Copilot review on PR #171, HIGH.) */
+  private setLockedOnce(source: "sync_response" | "lock_event"): void {
+    if (this.locked) return;
+    this.locked = true;
+    console.info("[notepad] locked", { source });
+    this.onLocked();
   }
 
   start(): void {
@@ -111,15 +133,45 @@ export class WsYjsProvider {
 
     this.unsub = this.ws.subscribe((evt) => this.handle(evt));
 
-    // Send initial sync request. The WS may not be open yet — guard.
+    // Send initial sync request. The WS may not be open yet — retry
+    // with bounded exponential backoff so a race between
+    // editor-mount and the WS open handshake doesn't leave the
+    // client without the current notepad state. ``WsClient.send``
+    // throws ``"websocket not open"`` when ``socket.readyState !==
+    // OPEN``; we re-arm a setTimeout up to MAX_SYNC_RETRIES times
+    // (~3.1s total wall-clock at 100 / 200 / 400 / 800 / 1600 ms),
+    // then give up loud. Cleared in ``stop()``.
+    this.requestInitialSync(0);
+  }
+
+  private static readonly MAX_SYNC_RETRIES = 5;
+
+  private requestInitialSync(attempt: number): void {
     try {
       this.ws.send({ type: "notepad_sync_request" });
-    } catch {
-      // Will retry on the next open via the page-level reconnect logic.
+      this.syncRetryTimer = null;
+      return;
+    } catch (err) {
+      if (attempt >= WsYjsProvider.MAX_SYNC_RETRIES) {
+        console.warn(
+          "[notepad] initial sync_request gave up after retries",
+          { attempts: attempt + 1, lastError: String(err) },
+        );
+        this.syncRetryTimer = null;
+        return;
+      }
+      const delayMs = 100 * 2 ** attempt;
+      this.syncRetryTimer = setTimeout(() => {
+        this.requestInitialSync(attempt + 1);
+      }, delayMs);
     }
   }
 
   stop(): void {
+    if (this.syncRetryTimer) {
+      clearTimeout(this.syncRetryTimer);
+      this.syncRetryTimer = null;
+    }
     if (this.yObserver) {
       this.doc.off("update", this.yObserver);
       this.yObserver = null;
@@ -148,9 +200,7 @@ export class WsYjsProvider {
           console.warn("[notepad] sync apply failed", err);
         }
         if (evt.locked) {
-          this.locked = true;
-          console.info("[notepad] locked", { source: "sync_response" });
-          this.onLocked();
+          this.setLockedOnce("sync_response");
         }
         break;
       }
@@ -182,9 +232,7 @@ export class WsYjsProvider {
         this.onLockPending(evt.locks_in_seconds);
         break;
       case "notepad_locked":
-        this.locked = true;
-        console.info("[notepad] locked", { source: "lock_event" });
-        this.onLocked();
+        this.setLockedOnce("lock_event");
         break;
       case "error":
         if (evt.scope === "notepad") {
