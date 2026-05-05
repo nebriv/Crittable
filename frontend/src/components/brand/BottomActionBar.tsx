@@ -48,6 +48,29 @@ interface Props {
   cost: CostSnapshot | null;
   messageCount: number;
   activeTiers: string[];
+  /** Issue #70: AI paused via the Pause-AI toggle. Surfaces as
+   *  "LLM: idle (paused)" so the operator can tell the engine apart
+   *  from "the AI is just waiting on players". */
+  aiPaused: boolean;
+  /** Issue #70: validator-recovery breadcrumb. ``recovery`` is the
+   *  directive kind (``missing_drive`` / ``missing_yield``);
+   *  ``attempt`` / ``budget`` come from the strict-retry loop in
+   *  ``turn_driver.run_play_turn``. When set, the chip renders
+   *  ``LLM: recovering N/M (kind)`` so a stuck recovery is visible
+   *  without scanning the activity panel. */
+  recoveryStatus: {
+    kind: string;
+    attempt?: number;
+    budget?: number;
+  } | null;
+  /** Issue #70 (review): when the current turn errored after the
+   *  recovery budget was exhausted, the chip needs to sticky-stay on
+   *  a crit-tinted "recovery FAILED" until the operator
+   *  force-advances or starts a new turn. Without this, the chip
+   *  cleared to "LLM: idle (waiting for players)" the moment the
+   *  recovery loop exited — exactly the silent-yield-style
+   *  ambiguity the issue exists to kill (User Agent HIGH #3). */
+  turnErrored: boolean;
   buildSha: string;
   buildTs: string;
 }
@@ -172,20 +195,14 @@ export function BottomActionBar(props: Props) {
       >
         Last: {lastEventLabel}
       </span>
-      {props.activeTiers.length > 0 ? (
-        <span
-          role="status"
-          aria-live="polite"
-          className="mono rounded-r-1 border border-warn bg-warn-bg px-2 py-0.5 text-[10px] font-semibold uppercase text-warn"
-          title={`Active LLM tier(s): ${props.activeTiers.join(", ")}`}
-        >
-          LLM: {props.activeTiers.join("+")}
-        </span>
-      ) : (
-        <span className="mono rounded-r-1 bg-ink-800 px-2 py-0.5 text-[10px] uppercase text-ink-500">
-          LLM: idle
-        </span>
-      )}
+      <LlmStateChip
+        activeTiers={props.activeTiers}
+        recoveryStatus={props.recoveryStatus}
+        aiPaused={props.aiPaused}
+        backendState={props.backendState}
+        turnErrored={props.turnErrored}
+      />
+
 
       <CostChipMini cost={props.cost} />
 
@@ -236,6 +253,143 @@ export function BottomActionBar(props: Props) {
         ● {props.wsStatus.toUpperCase()}
       </span>
     </footer>
+  );
+}
+
+/**
+ * Multi-state LLM status chip (issue #70 + first-pass review fixes).
+ * The original chip was binary: either ``LLM: <tiers>`` (something in
+ * flight) or ``LLM: idle``. That collapsed four operationally-distinct
+ * cases into one ambiguous "idle" label and was the diagnostic gap
+ * behind the 2026-04-30 silent-yield 5-hour log dive — the operator
+ * couldn't tell apart "AI is thinking", "AI is waiting on players",
+ * "AI is paused", and "AI yielded silently".
+ *
+ * Priority order (top wins):
+ *   1. ``turnErrored`` true       → ``LLM: recovery FAILED`` (crit) —
+ *      sticky-stays after recovery exhausted so the bar reflects the
+ *      real engine state (User Agent HIGH #3). Cleared by
+ *      force-advance / starting a new turn.
+ *   2. ``recoveryStatus`` set     → ``LLM: recovering N/M (kind)`` (warn).
+ *      When ``attempt === budget`` the label adds "last attempt" so
+ *      colorblind operators get a non-color cue (UI/UX HIGH #2).
+ *      When ``aiPaused`` is also true, suffix "· paused" so the
+ *      operator can confirm pause took effect (User Agent MEDIUM #6).
+ *   3. ``activeTiers`` non-empty  → ``LLM: <tiers>`` (warn — "thinking").
+ *      Same paused-suffix rule applies.
+ *   4. ``aiPaused`` true          → ``LLM: idle (paused)`` (info-tinted).
+ *   5. ``AWAITING_PLAYERS``       → ``LLM: waiting for players`` (default).
+ *   6. fallback                   → ``LLM: idle`` (default).
+ *
+ * `aria-live="polite"` is set ONLY on the recovery + crit branches —
+ * the bug class the chip exists to surface. The generic in-flight
+ * chip lights for every play turn so announcing it would be
+ * announce-fatigue (UI/UX MEDIUM #5).
+ */
+function LlmStateChip({
+  activeTiers,
+  recoveryStatus,
+  aiPaused,
+  backendState,
+  turnErrored,
+}: {
+  activeTiers: string[];
+  recoveryStatus: { kind: string; attempt?: number; budget?: number } | null;
+  aiPaused: boolean;
+  backendState: string;
+  turnErrored: boolean;
+}) {
+  const pausedSuffix = aiPaused ? " · paused" : "";
+  // 1) Recovery exhausted — turn errored after strict-retry budget.
+  //    Crit-tinted, sticky-stays until next state transition. This
+  //    is the case the issue exists to make obvious; without it, the
+  //    chip would clear to "waiting for players" the moment the
+  //    recovery loop exited.
+  if (turnErrored) {
+    return (
+      <span
+        role="status"
+        aria-live="polite"
+        className="mono rounded-r-1 border border-crit bg-crit/30 px-2 py-0.5 text-[10px] font-semibold uppercase text-crit"
+        title="The current turn errored after the recovery budget was exhausted. Use Force-advance or End session to recover."
+      >
+        LLM: recovery FAILED
+      </span>
+    );
+  }
+  // 2) Recovery cascade is the loudest in-flight signal — "the AI is
+  //    mid-recovery" is the precise state the original silent-yield
+  //    bug was invisible in. Render even when ``activeTiers`` is
+  //    empty (between the failing attempt and the next LLM call).
+  if (recoveryStatus) {
+    const a = recoveryStatus.attempt;
+    const b = recoveryStatus.budget;
+    const aLabel = a ?? "?";
+    const bLabel = b ?? "?";
+    const kind = recoveryStatus.kind.replace(/_/g, " ");
+    const lastAttempt =
+      typeof a === "number" && typeof b === "number" && a >= b;
+    return (
+      <span
+        role="status"
+        aria-live="polite"
+        className="mono rounded-r-1 border border-warn bg-warn-bg px-2 py-0.5 text-[10px] font-semibold uppercase text-warn"
+        title={`Validator recovery in flight — kind=${recoveryStatus.kind}, attempt ${aLabel}/${bLabel}.${lastAttempt ? " This is the last attempt — turn will error if it fails." : ""}${aiPaused ? " AI pause is queued for next call." : ""}`}
+      >
+        LLM: recovering {aLabel}/{bLabel}
+        {lastAttempt ? " — last attempt" : ""} ({kind}){pausedSuffix}
+      </span>
+    );
+  }
+  // 3) Anything in flight — the legacy "thinking" signal. Tooltip
+  //    lists every tier so guardrail+play stacks are inspectable.
+  //    No aria-live — this fires every play turn and would be
+  //    announce-fatigue.
+  if (activeTiers.length > 0) {
+    return (
+      <span
+        className="mono rounded-r-1 border border-warn bg-warn-bg px-2 py-0.5 text-[10px] font-semibold uppercase text-warn"
+        title={`Active LLM tier(s): ${activeTiers.join(", ")}.${aiPaused ? " AI pause is queued for next call." : ""}`}
+      >
+        LLM: {activeTiers.join("+")}
+        {pausedSuffix}
+      </span>
+    );
+  }
+  // 4) Operator has paused the AI's facilitator-reply path. No
+  //    in-flight call is expected; this is *not* a regression.
+  if (aiPaused) {
+    return (
+      <span
+        className="mono rounded-r-1 border border-info bg-info-bg px-2 py-0.5 text-[10px] uppercase text-info"
+        title="AI is paused — facilitator-mention replies will queue until resumed."
+      >
+        LLM: idle (paused)
+      </span>
+    );
+  }
+  // 5) Engine waiting on players — "idle by design". Distinguishes
+  //    healthy AWAITING_PLAYERS from "AI yielded silently and the
+  //    engine doesn't know it" (which now would surface in the
+  //    SessionActivityPanel's per-turn validator rollup).
+  if (backendState === "AWAITING_PLAYERS") {
+    return (
+      <span
+        className="mono rounded-r-1 bg-ink-800 px-2 py-0.5 text-[10px] uppercase text-ink-300"
+        title="No LLM call in flight — the engine is waiting for player submissions / ready signals."
+      >
+        LLM: waiting for players
+      </span>
+    );
+  }
+  // 6) Catch-all — pre-session, between-turns, post-end.
+  return (
+    <span
+      className="mono rounded-r-1 bg-ink-800 px-2 py-0.5 text-[10px] uppercase text-ink-500"
+      title="No LLM call in flight."
+    >
+      LLM: idle
+    </span>
   );
 }
 

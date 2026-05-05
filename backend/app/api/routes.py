@@ -164,6 +164,111 @@ class WorkstreamOverrideBody(BaseModel):
         return v
 
 
+def _compute_turn_diagnostics(
+    audit_events: list[Any],
+    turn_id_to_index: dict[str, int],
+    *,
+    max_turns: int | None = None,
+) -> list[dict[str, Any]]:
+    """Roll ``turn_validation`` + ``turn_recovery_directive`` audit
+    rows into a per-turn summary structure for the creator UI.
+
+    Issue #70: pre-fix, validator state lived in stdout-only structlog
+    events that the ``/debug`` and ``/activity`` endpoints couldn't
+    see. Now both audit-row kinds are emitted alongside the structlog
+    line; this helper aggregates them by ``turn_id`` so the panel can
+    render `Turn 6: drive ✗ → recovered via broadcast (attempt 2),
+    yield ✓ (attempt 3)` without log access.
+
+    Parameters
+    ----------
+    audit_events:
+        Ordered list of :class:`AuditEvent` (oldest first).
+    turn_id_to_index:
+        Map of ``turn.id`` -> ``turn.index`` so we can render in
+        index order even though the audit log keys by id.
+    max_turns:
+        Optional cap on the number of *most recent* turns returned
+        (newest-first selection, then re-sorted ascending). The
+        ``/activity`` endpoint passes a small cap (3) to keep its
+        response cheap; ``/debug`` passes ``None`` for the full set.
+
+    Returns a list of dicts shaped:
+
+    .. code-block:: python
+
+        {
+          "turn_index": 5,                     # 0-based; UI adds +1
+          "validations": [
+            {"attempt": 1, "slots": ["yield"], "violations": ["missing_drive"],
+             "warnings": [], "ok": False},
+            {"attempt": 2, "slots": ["drive", "yield"], "violations": [],
+             "warnings": [], "ok": True},
+          ],
+          "recoveries": [
+            {"attempt": 1, "kind": "missing_drive", "tools": ["broadcast"]},
+          ],
+        }
+    """
+
+    by_turn: dict[str, dict[str, Any]] = {}
+    for evt in audit_events:
+        if evt.kind not in {"turn_validation", "turn_recovery_directive"}:
+            continue
+        if not evt.turn_id:
+            continue
+        bucket = by_turn.setdefault(
+            evt.turn_id,
+            {"validations": [], "recoveries": []},
+        )
+        if evt.kind == "turn_validation":
+            bucket["validations"].append(
+                {
+                    "attempt": evt.payload.get("attempt"),
+                    "slots": evt.payload.get("slots", []),
+                    "violations": evt.payload.get("violations", []),
+                    "warnings": evt.payload.get("warnings", []),
+                    "ok": evt.payload.get("ok", False),
+                    "ts": evt.ts.isoformat(),
+                }
+            )
+        else:
+            # ``directive_kind`` is the field name in the audit payload
+            # (the on-the-wire ``kind`` would collide with
+            # ``SessionManager._emit``'s positional ``kind`` param).
+            # The rollup re-publishes it as ``kind`` for the frontend
+            # so the panel doesn't need to know about the workaround.
+            bucket["recoveries"].append(
+                {
+                    "attempt": evt.payload.get("attempt"),
+                    "kind": evt.payload.get("directive_kind"),
+                    "tools": evt.payload.get("tools", []),
+                    "ts": evt.ts.isoformat(),
+                }
+            )
+
+    out: list[dict[str, Any]] = []
+    for turn_id, bucket in by_turn.items():
+        idx = turn_id_to_index.get(turn_id)
+        if idx is None:
+            continue
+        # Sort the per-turn lists by attempt so the UI can render in
+        # natural order regardless of audit-buffer ordering.
+        bucket["validations"].sort(key=lambda v: v.get("attempt") or 0)
+        bucket["recoveries"].sort(key=lambda r: r.get("attempt") or 0)
+        out.append(
+            {
+                "turn_index": idx,
+                "validations": bucket["validations"],
+                "recoveries": bucket["recoveries"],
+            }
+        )
+    out.sort(key=lambda d: d["turn_index"])
+    if max_turns is not None and len(out) > max_turns:
+        out = out[-max_turns:]
+    return out
+
+
 def register_api_routes(app: FastAPI) -> None:
     router = APIRouter(prefix="/api")
 
@@ -1757,8 +1862,31 @@ def register_api_routes(app: FastAPI) -> None:
         import time as _t
 
         now = _t.monotonic()
+        # Issue #70: roll up validator + recovery audit rows so the
+        # activity panel can render per-turn slot/recovery breadcrumbs
+        # without needing the heavier ``/debug`` payload. Cap to the 3
+        # most-recent turns so the polled response stays small even on
+        # 50-turn sessions. Uses the filtered ``for_kinds`` accessor
+        # (security review LOW) — the polled endpoint only cares
+        # about two of ~20 audit-row kinds; calling ``dump`` and
+        # filtering would copy the full O(N=AUDIT_RING_SIZE) ring on
+        # every poll.
+        audit_events = manager.audit().for_kinds(
+            session_id,
+            kinds=("turn_validation", "turn_recovery_directive"),
+        )
+        turn_id_to_index = {t.id: t.index for t in session.turns}
+        recent_turn_diagnostics = _compute_turn_diagnostics(
+            audit_events, turn_id_to_index, max_turns=3
+        )
+        settings = manager.settings()
         return {
             "state": session.state.value,
+            # Issue #70: ``ai_paused`` was previously only on
+            # ``/snapshot``; surfacing here lets the creator activity
+            # panel + LLM chip distinguish "idle (paused)" from "idle
+            # (waiting for players)" without a separate fetch.
+            "ai_paused": session.ai_paused,
             "turn": (
                 {
                     "index": session.current_turn.index,
@@ -1807,6 +1935,20 @@ def register_api_routes(app: FastAPI) -> None:
                 }
                 for evt in manager.audit().recent_diagnostics(session_id)
             ],
+            # Issue #70: per-turn validator + recovery rollup so the
+            # activity panel can render `Turn 6: drive ✗ → recovered
+            # via broadcast (attempt 2), yield ✓ (attempt 3)` for the
+            # most-recent few turns.
+            "recent_turn_diagnostics": recent_turn_diagnostics,
+            # Issue #70: surface the legacy soft-drive carve-out flag
+            # so a misconfigured deployment is visible in the creator
+            # UI rather than only in the boot log. The flag is the
+            # known way to silence the validator's most important
+            # check; if it's enabled in production the operator MUST
+            # see it.
+            "legacy_carve_out_enabled": (
+                settings.llm_recovery_drive_soft_on_open_question
+            ),
         }
 
     @router.get("/sessions/{session_id}/debug")
@@ -1832,9 +1974,14 @@ def register_api_routes(app: FastAPI) -> None:
         registry = _registry(request)
         audit = manager.audit().dump(session_id)
         in_flight = manager.llm().in_flight_for(session_id)
+        settings = manager.settings()
         import time as _t
 
         now = _t.monotonic()
+        # Issue #70: full per-turn rollup for the God Mode / debug
+        # surface — no cap, includes every turn in the buffer.
+        turn_id_to_index = {t.id: t.index for t in session.turns}
+        turn_diagnostics = _compute_turn_diagnostics(audit, turn_id_to_index)
         return {
             "session": {
                 "id": session.id,
@@ -1845,6 +1992,11 @@ def register_api_routes(app: FastAPI) -> None:
                 "cost": session.cost.model_dump(),
                 "aar_status": session.aar_status,
                 "aar_error": session.aar_error,
+                # Issue #70: ``ai_paused`` is part of the operator-
+                # facing view of "what is the engine doing?"; include
+                # it here so debug consumers don't have to fetch the
+                # snapshot endpoint separately.
+                "ai_paused": session.ai_paused,
                 "created_at": session.created_at.isoformat(),
                 "ended_at": session.ended_at.isoformat() if session.ended_at else None,
             },
@@ -1909,6 +2061,18 @@ def register_api_routes(app: FastAPI) -> None:
                     {"name": p.name, "description": p.description, "scope": p.scope}
                     for p in registry.prompts.values()
                 ],
+            },
+            # Issue #70: full per-turn validator + recovery rollup.
+            "turn_diagnostics": turn_diagnostics,
+            # Issue #70: surface engine kill-switches the operator may
+            # have flipped on for emergency rollback. Each one widens
+            # the silent-yield surface; God Mode operators MUST be
+            # able to see them at a glance.
+            "engine_flags": {
+                "legacy_carve_out_enabled": (
+                    settings.llm_recovery_drive_soft_on_open_question
+                ),
+                "drive_required": settings.llm_recovery_drive_required,
             },
         }
 

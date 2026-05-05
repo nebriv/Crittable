@@ -1722,6 +1722,26 @@ export function Facilitator() {
           for (const tier of aiCalls.values()) seen.add(tier);
           return Array.from(seen).sort();
         })()}
+        // Issue #70: extra inputs for the multi-state LLM chip.
+        // ``aiPaused`` from the snapshot covers reload after the
+        // ``ai_pause_state_changed`` event has rolled out of the
+        // replay buffer; ``recoveryStatus`` from the live ``aiStatus``
+        // (set by the WS ``ai_status`` event the turn-driver emits at
+        // each strict-retry attempt) drives the
+        // ``LLM: recovering N/M (kind)`` label; ``turnErrored`` is
+        // the sticky crit signal once the recovery budget is
+        // exhausted (review pass: User Agent HIGH #3).
+        aiPaused={Boolean(snapshot.ai_paused)}
+        recoveryStatus={
+          aiStatus && aiStatus.phase === "play" && aiStatus.recovery
+            ? {
+                kind: aiStatus.recovery,
+                attempt: aiStatus.attempt,
+                budget: aiStatus.budget,
+              }
+            : null
+        }
+        turnErrored={snapshot.current_turn?.status === "errored"}
         buildSha={__ATF_GIT_SHA__}
         buildTs={__ATF_BUILD_TS__}
       />

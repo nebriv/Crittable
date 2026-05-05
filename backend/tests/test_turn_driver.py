@@ -189,3 +189,86 @@ def test_ai_status_events_are_not_recorded_in_replay_buffer(client: TestClient) 
     thinkings = [e for e in rec.events if e.get("type") == "ai_thinking"]
     for evt in thinkings:
         assert evt["_record"] is False, evt
+
+
+def test_run_play_turn_emits_turn_validation_audit_event(
+    client: TestClient,
+) -> None:
+    """Issue #70: every validator pass MUST land in the audit ring
+    buffer (not just stdout) so the creator's ``/debug`` and
+    ``/activity`` endpoints can render a per-turn slot/recovery
+    summary without log access. A clean play turn produces at least
+    one ``turn_validation`` row with ``ok=True``.
+    """
+
+    seats = _seat_two(client)
+    _drive_to_play(client, seats)
+
+    audit_events = client.app.state.manager.audit().dump(seats["sid"])
+    validations = [evt for evt in audit_events if evt.kind == "turn_validation"]
+    assert validations, (
+        "expected at least one turn_validation audit row during play turn"
+    )
+    # Each row carries enough info to drive the panel: attempt, slots,
+    # violations, warnings, ok. The first attempt of a clean turn is ok.
+    first = validations[0]
+    assert first.turn_id is not None
+    payload = first.payload
+    assert "attempt" in payload
+    assert "slots" in payload
+    assert "violations" in payload
+    assert "warnings" in payload
+    assert "ok" in payload
+
+
+def test_debug_endpoint_includes_turn_diagnostics(client: TestClient) -> None:
+    """Issue #70: the rolled-up per-turn diagnostics MUST be on the
+    ``/debug`` payload. Without this the creator panel has no way to
+    render `Turn 6: drive ✓ yield ✓` without scraping audit events
+    client-side. Also verifies ``ai_paused`` and ``engine_flags``
+    surface so a misconfigured deploy is visible at a glance.
+    """
+
+    seats = _seat_two(client)
+    _drive_to_play(client, seats)
+
+    sid = seats["sid"]
+    cr = seats["creator_token"]
+    body = client.get(f"/api/sessions/{sid}/debug?token={cr}").json()
+
+    assert "turn_diagnostics" in body
+    assert isinstance(body["turn_diagnostics"], list)
+    # ai_paused on the session block lets a debug consumer see the
+    # pause state without a separate snapshot fetch.
+    assert "ai_paused" in body["session"]
+    # engine_flags expose the kill-switches an operator may have
+    # flipped on for emergency rollback. Both keys must be present
+    # so a missing key isn't silently treated as "off" by the UI.
+    flags = body["engine_flags"]
+    assert "legacy_carve_out_enabled" in flags
+    assert "drive_required" in flags
+
+
+def test_activity_endpoint_includes_recent_turn_diagnostics(
+    client: TestClient,
+) -> None:
+    """Issue #70: ``/activity`` is the polled (3 s) creator panel so
+    its rollup is bounded — at most the most-recent 3 turns —
+    keeping the response cheap on long sessions. ``ai_paused`` and
+    ``legacy_carve_out_enabled`` must also surface here so the
+    BottomActionBar's LLM chip + the panel's red banner have the
+    data they need without a second fetch.
+    """
+
+    seats = _seat_two(client)
+    _drive_to_play(client, seats)
+
+    sid = seats["sid"]
+    cr = seats["creator_token"]
+    body = client.get(f"/api/sessions/{sid}/activity?token={cr}").json()
+
+    assert "recent_turn_diagnostics" in body
+    assert isinstance(body["recent_turn_diagnostics"], list)
+    assert len(body["recent_turn_diagnostics"]) <= 3
+    assert "ai_paused" in body
+    assert "legacy_carve_out_enabled" in body

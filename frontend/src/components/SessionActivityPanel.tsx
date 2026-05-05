@@ -10,8 +10,38 @@ interface ActivityDiagnostic {
   hint?: string | null;
 }
 
+/**
+ * Issue #70: per-attempt validator pass landed in the audit log by
+ * ``turn_driver.run_play_turn``. The panel renders one row per
+ * attempt so the operator sees `Turn 6: drive ✗ → recovered via
+ * broadcast (attempt 2), yield ✓ (attempt 3)` without needing log
+ * access.
+ */
+interface ValidationAttempt {
+  attempt: number | null;
+  slots: string[];
+  violations: string[];
+  warnings: string[];
+  ok: boolean;
+  ts?: string;
+}
+
+interface RecoveryAttempt {
+  attempt: number | null;
+  kind: string | null;
+  tools: string[];
+  ts?: string;
+}
+
+interface TurnDiagnostics {
+  turn_index: number;
+  validations: ValidationAttempt[];
+  recoveries: RecoveryAttempt[];
+}
+
 interface ActivitySnapshot {
   state: string;
+  ai_paused?: boolean;
   turn: {
     index: number;
     status: string;
@@ -28,6 +58,8 @@ interface ActivitySnapshot {
   message_count: number;
   setup_note_count: number;
   recent_diagnostics?: ActivityDiagnostic[];
+  recent_turn_diagnostics?: TurnDiagnostics[];
+  legacy_carve_out_enabled?: boolean;
 }
 
 interface Props {
@@ -152,6 +184,46 @@ export function SessionActivityPanel({
         <p className="text-xs text-ink-400">Loading…</p>
       ) : (
         <>
+          {/* Issue #70: surface the legacy soft-drive carve-out
+              kill-switch in red so a misconfigured deployment is
+              visible without log access. The flag default is false;
+              if it's true, an operator flipped it on for emergency
+              rollback and forgot to flip it back. The validator
+              treats this as a downgrade ("warning, not violation")
+              for the AI's "missing DRIVE on a player @facilitator"
+              case — exactly the kind of silent-yield window the
+              issue exists to make visible. */}
+          {data.legacy_carve_out_enabled ? (
+            <div
+              role="alert"
+              className="rounded border border-warn bg-warn/30 p-2 text-[11px] text-warn"
+            >
+              <p className="font-semibold uppercase tracking-wider">
+                Legacy carve-out enabled
+              </p>
+              <p className="mt-0.5 text-ink-200">
+                <span className="mono">
+                  LLM_RECOVERY_DRIVE_SOFT_ON_OPEN_QUESTION=True
+                </span>{" "}
+                is set on the backend. The validator will downgrade the
+                missing-DRIVE check to a warning when a player @-mentions
+                the facilitator, which can let the AI silently yield.
+              </p>
+              <p className="mt-1 text-ink-200">
+                Safe for testing; <strong>disable for production</strong>.
+                To turn off, set{" "}
+                <span className="mono">
+                  LLM_RECOVERY_DRIVE_SOFT_ON_OPEN_QUESTION=False
+                </span>{" "}
+                in the backend environment and restart.
+              </p>
+            </div>
+          ) : null}
+          {data.ai_paused ? (
+            <p className="rounded border border-info bg-info-bg px-2 py-1 text-[11px] text-info">
+              AI is paused — facilitator-mention replies queue until resumed.
+            </p>
+          ) : null}
           <p className="text-xs text-ink-300">
             Turn{" "}
             <span className="font-semibold text-ink-100">
@@ -276,10 +348,212 @@ export function SessionActivityPanel({
               </ul>
             </details>
           ) : null}
+
+          {/* Issue #70: per-turn validator + recovery rollup. Pre-fix
+              this lived only in stdout-only structlog events; a
+              silent-yield regression took 5 hours to diagnose because
+              the creator panel couldn't tell apart "AI is thinking"
+              from "AI yielded silently". Now each attempt of each
+              turn shows up here as `drive ✓ yield ✓` (success) or
+              `drive ✗ yield ✓ — missing_drive recovered via broadcast`
+              (recovered) or `drive ✗ yield ✗` (warnings highlighted in
+              red). The rollup is creator-only and capped to the most
+              recent 3 turns server-side to keep the polled response
+              cheap on long sessions. */}
+          {data.recent_turn_diagnostics &&
+          data.recent_turn_diagnostics.length > 0 ? (
+            <details
+              open
+              className="rounded border border-ink-600 bg-ink-900 p-1.5 text-xs"
+            >
+              <summary
+                className="cursor-pointer text-ink-300"
+                aria-label={`Validator rollup, last ${data.recent_turn_diagnostics.length} turns`}
+              >
+                Validator rollup · last{" "}
+                {data.recent_turn_diagnostics.length} turn
+                {data.recent_turn_diagnostics.length === 1 ? "" : "s"}
+              </summary>
+              <ul className="mt-1 flex flex-col gap-1">
+                {data.recent_turn_diagnostics.map((td) => (
+                  <TurnDiagnosticsRow key={td.turn_index} diagnostics={td} />
+                ))}
+              </ul>
+              {/* Issue #70 review (User Agent MEDIUM #5): point the
+                  operator at God Mode for the full history rather
+                  than leaving them stuck at the most-recent-3-turns
+                  cap. Plain text — God Mode is the same window so a
+                  link would just be "scroll up to that pill". */}
+              <p className="mt-1 text-[10px] text-ink-500">
+                For older turns, open <strong>God Mode</strong> →
+                turn_diagnostics.
+              </p>
+            </details>
+          ) : null}
         </>
       )}
 
       {error ? <p className="text-[10px] text-crit">poll: {error}</p> : null}
     </section>
+  );
+}
+
+/**
+ * Per-turn validator-attempt + recovery breadcrumb row.
+ *
+ * Each turn can produce 1..N validation attempts (one per LLM call
+ * inside ``run_play_turn``'s strict-retry loop). Between attempts the
+ * validator may queue a recovery directive — a narrowed follow-up LLM
+ * call pinned to a specific tool. The row shows attempts in order,
+ * each with the slots that fired (DRIVE / YIELD / etc.) and a
+ * green ✓ / red ✗ tick per slot. A recovery directive that fired
+ * between attempts renders as a "↪ recovered via <tool> (kind:
+ * missing_drive)" hint underneath. Warnings (e.g. "drive missing but
+ * downgraded — legacy carve-out fired") render in red with no ✓ to
+ * make the silent-yield class of bug visually obvious.
+ */
+function TurnDiagnosticsRow({
+  diagnostics,
+}: {
+  diagnostics: TurnDiagnostics;
+}) {
+  // Build a quick lookup: which directive ran AFTER each attempt.
+  // Recovery directives are queued at the end of an attempt and
+  // executed on attempt+1; we pair recovery.attempt with that
+  // failing-attempt number so the UI groups them with the attempt
+  // that triggered them.
+  const recoveriesByAttempt = new Map<number, RecoveryAttempt>();
+  for (const r of diagnostics.recoveries) {
+    if (r.attempt !== null) recoveriesByAttempt.set(r.attempt, r);
+  }
+  const finalAttempt =
+    diagnostics.validations.length > 0
+      ? diagnostics.validations[diagnostics.validations.length - 1]
+      : null;
+  // Three outcomes drive the top-of-row badge (User Agent HIGH #2):
+  //  - ``ok``        — first attempt passed cleanly. Green.
+  //  - ``recovered`` — final attempt passed AFTER >= 1 retries. Warn —
+  //                    it WORKED but a regression in the underlying
+  //                    behavior is worth tracking.
+  //  - ``violations``— final attempt failed. Crit — turn errored or
+  //                    will need force-advance.
+  const overallOk = finalAttempt?.ok === true;
+  const attemptCount = diagnostics.validations.length;
+  const recovered = overallOk && attemptCount > 1;
+  return (
+    <li className="rounded bg-ink-900 px-2 py-1 text-[11px] text-ink-200">
+      <p className="flex items-center gap-1.5">
+        <span className="font-semibold text-ink-100">
+          Turn {diagnostics.turn_index + 1}
+        </span>
+        {finalAttempt ? (
+          recovered ? (
+            <span
+              className="rounded bg-warn-bg px-1 text-warn"
+              title={`Final attempt validation passed after ${attemptCount} attempts. The first attempt(s) needed recovery — fine, but worth tracking.`}
+            >
+              recovered ({attemptCount} attempts)
+            </span>
+          ) : overallOk ? (
+            <span
+              className="rounded bg-signal/30 px-1 text-signal"
+              title="First-attempt validation passed cleanly."
+            >
+              ok
+            </span>
+          ) : (
+            <span
+              className="rounded bg-crit/30 px-1 text-crit"
+              title="Final attempt did NOT pass — turn errored or was force-advanced."
+            >
+              violations
+            </span>
+          )
+        ) : (
+          <span className="text-ink-500">no validator pass yet</span>
+        )}
+      </p>
+      <ul className="mt-0.5 flex flex-col gap-0.5 pl-3">
+        {diagnostics.validations.map((v, idx) => {
+          const recovery =
+            v.attempt !== null ? recoveriesByAttempt.get(v.attempt) : null;
+          // Final attempt = "current state of the turn". Prior
+          // attempts = "history that the recovery loop already
+          // resolved" (User Agent MEDIUM #7). Prior-attempt
+          // violations rendered in warn (medium severity) instead of
+          // crit (high severity) so the row doesn't read as multiple
+          // active bugs.
+          const isFinal = idx === diagnostics.validations.length - 1;
+          const violationTone =
+            isFinal && !v.ok ? "text-crit" : "text-warn";
+          return (
+            <li
+              key={`v-${v.attempt}-${v.ts ?? "na"}`}
+              className="border-l border-ink-700 pl-2"
+            >
+              <span className="text-ink-300">
+                attempt {v.attempt}: {renderSlotTicks(v, isFinal)}
+              </span>
+              {v.violations.length > 0 ? (
+                <span className={`ml-1 ${violationTone}`}>
+                  · violations: {v.violations.join(", ")}
+                </span>
+              ) : null}
+              {v.warnings.length > 0 ? (
+                <span
+                  className="ml-1 text-warn"
+                  title={v.warnings.join(" · ")}
+                >
+                  ⚠ warnings: {v.warnings.length}
+                </span>
+              ) : null}
+              {recovery ? (
+                <p className="text-warn">
+                  ↪ recovered via {recovery.tools.join(", ") || "—"} (kind:{" "}
+                  <span className="mono">{recovery.kind ?? "?"}</span>)
+                </p>
+              ) : null}
+            </li>
+          );
+        })}
+      </ul>
+    </li>
+  );
+}
+
+const SLOT_LABELS = {
+  drive: "drive",
+  yield: "yield",
+} as const;
+
+function renderSlotTicks(v: ValidationAttempt, isFinal: boolean) {
+  // Show only the contract-relevant slots — drive + yield — since the
+  // bookkeeping / pin / narrate / escalate slots aren't required for
+  // turn validity and would clutter the row.
+  // ``isFinal`` mutes prior-attempt ✗ marks so the row reads as one
+  // resolved history (User Agent MEDIUM #7).
+  // ``aria-hidden`` on the glyph itself prevents SR from reading
+  // "check mark drive" awkwardly — the textual label below is what
+  // SR users hear (UI/UX LOW #8).
+  const fired = new Set(v.slots);
+  const missing = new Set(v.violations);
+  return (Object.keys(SLOT_LABELS) as Array<keyof typeof SLOT_LABELS>).map(
+    (slot) => {
+      const has = fired.has(slot);
+      const isMissing = missing.has(`missing_${slot}`);
+      const tone = has
+        ? "text-signal"
+        : isMissing
+          ? isFinal
+            ? "text-crit"
+            : "text-warn"
+          : "text-ink-500";
+      return (
+        <span key={slot} className={`ml-1 ${tone}`}>
+          <span aria-hidden="true">{has ? "✓" : "✗"}</span>{" "}
+          {SLOT_LABELS[slot]}
+        </span>
+      );
+    },
   );
 }

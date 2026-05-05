@@ -98,6 +98,33 @@ class AuditLog:
                     break
         return out
 
+    def for_kinds(
+        self,
+        session_id: str,
+        *,
+        kinds: tuple[str, ...],
+    ) -> list[AuditEvent]:
+        """Filtered, oldest-first view of the per-session ring buffer.
+
+        Issue #70 (security review LOW): ``/activity`` polls every 3 s
+        and only needs ``turn_validation`` + ``turn_recovery_directive``
+        rows. Calling :meth:`dump` (a full O(N=AUDIT_RING_SIZE) copy)
+        and then filtering wastes work on long sessions. ``for_kinds``
+        skips uninteresting events at iteration time — same iteration
+        cost as ``recent_diagnostics`` but in chronological order so
+        callers that *aggregate* (rather than show "latest N") avoid
+        a re-sort.
+
+        Distinct from :meth:`recent_diagnostics` because this returns
+        ALL matching events (not a head-N cap) and in oldest-first
+        order (matching :meth:`dump`).
+        """
+
+        buf = self._buffers.get(session_id)
+        if not buf:
+            return []
+        return [evt for evt in buf if evt.kind in kinds]
+
     def drop(self, session_id: str) -> None:
         """Forget a session's audit trail (used after export retention)."""
 

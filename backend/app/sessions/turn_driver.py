@@ -590,6 +590,25 @@ class TurnDriver:
                     warnings=validation.warnings,
                     ok=validation.ok,
                 )
+                # Issue #70: also persist as an AuditEvent so the
+                # creator's /activity + /debug endpoints can surface
+                # validator state without log access. Mirrors the
+                # ``phase_policy_dropped_tools`` pattern — emit the
+                # structlog line for stdout scrapers AND the audit row
+                # for the creator UI rollup. The two MUST stay in sync;
+                # if a future change drops the structlog line, drop the
+                # audit emission too (and vice versa) so the contract
+                # stays "one validation pass = one audit row".
+                self._manager._emit(
+                    "turn_validation",
+                    session,
+                    turn_index=turn.index,
+                    attempt=attempt,
+                    slots=sorted(s.value for s in cumulative.slots),
+                    violations=[d.kind for d in validation.violations],
+                    warnings=list(validation.warnings),
+                    ok=validation.ok,
+                )
 
                 # Issue #151 fix B observability — surface inject-grounded
                 # recovery firings so operators can grep for them and
@@ -647,6 +666,27 @@ class TurnDriver:
                     turn_index=turn.index,
                     attempt=attempt,
                     kind=active_directive.kind,
+                    tools=sorted(active_directive.tools_allowlist),
+                )
+                # Issue #70: same audit-row pairing as
+                # ``turn_validation`` above. The creator UI uses these
+                # rows to render ``Turn 6: drive ✗ → recovered via
+                # broadcast (attempt 2)`` without log access. The
+                # ``attempt`` here is the *failing* attempt — the
+                # next-attempt directive gets queued for attempt+1.
+                # Note the keyword is ``directive_kind``: ``_emit``'s
+                # first positional parameter is named ``kind`` so a
+                # ``kind=`` kwarg here would collide with it (the
+                # original review-pass bug). The frontend reads
+                # ``payload.kind`` via the ``_compute_turn_diagnostics``
+                # rollup, which translates ``directive_kind`` →
+                # ``kind`` so the wire shape is unchanged.
+                self._manager._emit(
+                    "turn_recovery_directive",
+                    session,
+                    turn_index=turn.index,
+                    attempt=attempt,
+                    directive_kind=active_directive.kind,
                     tools=sorted(active_directive.tools_allowlist),
                 )
 
