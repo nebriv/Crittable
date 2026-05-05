@@ -27,11 +27,13 @@ export interface SetupParts {
  *     creator info) lives in <Facilitator/> and is passed through
  *     here as props. Once the user submits step 3 we call onSubmit
  *     and the existing handleCreate flow runs unchanged.
- *   - Post-creation steps render the existing SetupView /
- *     ReadyView-style content via the ``children`` slot. The wizard
- *     just provides the chrome (left rail + main panel header +
- *     footer nav). This keeps the engine-side state machine
- *     untouched.
+ *   - Post-creation steps render their content via the
+ *     ``postCreationContent`` slot — the wizard provides only the
+ *     chrome (left rail + main panel header). The slot's content
+ *     decides its own primary CTA (e.g. step 06's
+ *     ``SetupReviewView`` owns the START SESSION button, since the
+ *     ``BottomActionBar`` isn't rendered inside wizard chrome).
+ *     This keeps the engine-side state machine untouched.
  */
 
 export type WizardPhase = "intro" | "setup" | "ready";
@@ -63,6 +65,15 @@ interface Props {
   snapshot?: SessionSnapshot | null;
   /** Player count from snapshot — used to decide step 5 vs 6. */
   playerCount?: number;
+  /**
+   * Discard the current session and return to the intro form.
+   * Forwarded to ``WizardRail``'s ABANDON SESSION button at the
+   * bottom of the rail (see WizardRail.tsx) — placed there
+   * post-creation so it's never adjacent to step 06's
+   * ``START SESSION`` button. Skip this prop on the intro phase
+   * (no session to abandon).
+   */
+  onAbandonSession?: () => void;
 }
 
 const ROLE_DEFAULTS = ["IR Lead", "Legal", "Comms"] as const;
@@ -105,25 +116,38 @@ export function SetupWizard(props: Props) {
     return s;
   }, [props.phase, introStep, current]);
 
+  // Intro-phase rail back-nav: clicking a completed step returns to
+  // it without losing form state. Post-creation we leave it disabled
+  // (the step is derived from backend state and there's no
+  // backwards transition path).
+  const onJumpToStep = (id: WizardStepId) => {
+    if (props.phase !== "intro") return;
+    if (id !== 1 && id !== 2 && id !== 3) return;
+    setIntroStep(id);
+  };
+
   return (
     <main
-      style={{
-        minHeight: "100vh",
-        display: "grid",
-        gridTemplateColumns: "260px 1fr",
-        background: "var(--ink-900)",
-      }}
+      // Tailwind responsive grid: stack rail on top below ``lg``
+      // (≤ 1023 px) so a 390 px viewport still gets a usable panel,
+      // sit it on the left at ``lg`` and up. ``min-h-screen`` keeps
+      // the rail+panel filling the viewport at any size.
+      className="grid min-h-screen grid-cols-1 lg:grid-cols-[260px_minmax(0,1fr)]"
+      style={{ background: "var(--ink-900)" }}
     >
-      <WizardRail current={current} done={done} />
+      <WizardRail
+        current={current}
+        done={done}
+        onJumpToStep={props.phase === "intro" ? onJumpToStep : undefined}
+        onAbandonSession={
+          props.phase !== "intro" ? props.onAbandonSession : undefined
+        }
+      />
       <section
-        style={{
-          padding: "32px 48px",
-          display: "flex",
-          flexDirection: "column",
-          gap: 20,
-          minHeight: 0,
-          overflow: "auto",
-        }}
+        // Smaller padding at narrow viewports so the panel breathes;
+        // restore brand-mock 32/48 spacing at ``lg`` and above.
+        className="flex flex-col gap-5 overflow-auto p-5 lg:p-8 lg:px-12"
+        style={{ minHeight: 0 }}
       >
         {props.phase === "intro" ? (
           <IntroStepBody
@@ -132,7 +156,11 @@ export function SetupWizard(props: Props) {
             {...props}
           />
         ) : (
-          <PostCreationBody current={current} content={props.postCreationContent} />
+          <PostCreationBody
+            current={current}
+            content={props.postCreationContent}
+            error={props.error}
+          />
         )}
       </section>
     </main>
@@ -142,9 +170,11 @@ export function SetupWizard(props: Props) {
 function PostCreationBody({
   current,
   content,
+  error,
 }: {
   current: WizardStepId;
   content: ReactNode;
+  error: string | null;
 }) {
   const titles: Record<WizardStepId, { eyebrow: string; title: string }> = {
     1: { eyebrow: "STEP 01 · SCENARIO", title: "Scenario" },
@@ -175,9 +205,31 @@ function PostCreationBody({
           {t.title}
         </h1>
       </header>
+      {/* Surface page-level error from Facilitator state during post-
+          creation steps too — the intro path renders this inside the
+          form's NavRow, but the wizard's post-creation slot otherwise
+          had nowhere to show api-call failures (kick / role-add /
+          finalize errors got swallowed visually). */}
+      {error ? (
+        <p
+          className="mono"
+          role="alert"
+          style={{
+            margin: 0,
+            color: "var(--crit)",
+            fontSize: 12,
+            letterSpacing: "0.04em",
+          }}
+        >
+          {error}
+        </p>
+      ) : null}
       <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
         {content}
       </div>
+      {/* ABANDON SESSION lives in the rail (WizardRail) post-creation
+          so it never sits adjacent to step-06's START SESSION button —
+          the two right-hand actions had a misclick adjacency risk. */}
     </>
   );
 }
@@ -388,10 +440,9 @@ function NavRow({
 }
 
 /**
- * Step 1 — Scenario brief + creator-role inputs + dev-mode toggle.
- * The team / constraints fields are kept on this step too so a
- * minimal session can be created in 30 seconds (the user just fills
- * step 1 and clicks NEXT through the rest with empty fields).
+ * Step 1 — Scenario brief + dev-mode toggle. Creator-role / display-name
+ * inputs moved to Step 3 (Roles) per issue #159 — "Set the scene"
+ * shouldn't ask about who you are, only about what happened.
  */
 function Step1Body(props: IntroBodyProps) {
   return (
@@ -420,28 +471,6 @@ function Step1Body(props: IntroBodyProps) {
         onChange={(v) => props.setSetupParts((p) => ({ ...p, team: v }))}
         placeholder="Roles, seniority, on-call posture."
       />
-      <div
-        style={{
-          display: "grid",
-          gridTemplateColumns: "1fr 1fr",
-          gap: 12,
-        }}
-      >
-        <MonoInput
-          label="CREATOR ROLE"
-          required
-          value={props.creatorLabel}
-          onChange={props.setCreatorLabel}
-          placeholder="Your role label (e.g. CISO)"
-        />
-        <MonoInput
-          label="DISPLAY NAME"
-          required
-          value={props.creatorDisplayName}
-          onChange={props.setCreatorDisplayName}
-          placeholder="Your display name"
-        />
-      </div>
     </>
   );
 }
@@ -491,18 +520,84 @@ function Step3Body(props: IntroBodyProps) {
     props.setupRoles.length === ROLE_DEFAULTS.length &&
     ROLE_DEFAULTS.every((d, i) => props.setupRoles[i] === d);
   return (
-    <fieldset
-      aria-label="Roles to invite"
-      style={{
-        display: "flex",
-        flexDirection: "column",
-        gap: 10,
-        padding: 14,
-        border: "1px solid var(--ink-600)",
-        borderRadius: 4,
-        background: "var(--ink-850)",
-      }}
-    >
+    <>
+      {/* Creator's own seat — moved from Step 1 (issue #159). The
+          collision-with-invitee warning lives in the fieldset below
+          and reacts immediately as the user edits either field.
+          Border tinted ``--signal-deep`` (vs the invitee fieldset's
+          ``--ink-600``) so the operator instantly sees this block is
+          about THEM, not the team. */}
+      <fieldset
+        aria-label="Your seat"
+        style={{
+          display: "flex",
+          flexDirection: "column",
+          gap: 10,
+          padding: 14,
+          border: "1px solid var(--signal-deep)",
+          borderRadius: 4,
+          background: "var(--ink-850)",
+        }}
+      >
+        <legend
+          className="mono"
+          style={{
+            padding: "0 6px",
+            fontSize: 10,
+            color: "var(--signal)",
+            letterSpacing: "0.20em",
+            fontWeight: 700,
+          }}
+        >
+          Your seat
+        </legend>
+        <p
+          className="sans"
+          style={{
+            margin: 0,
+            fontSize: 12,
+            color: "var(--ink-300)",
+            lineHeight: 1.45,
+          }}
+        >
+          You play one of the roles too. Pick a label and how you want
+          to appear in the transcript.
+        </p>
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "1fr 1fr",
+            gap: 12,
+          }}
+        >
+          <MonoInput
+            label="CREATOR ROLE"
+            required
+            value={props.creatorLabel}
+            onChange={props.setCreatorLabel}
+            placeholder="Your role label (e.g. CISO)"
+          />
+          <MonoInput
+            label="DISPLAY NAME"
+            required
+            value={props.creatorDisplayName}
+            onChange={props.setCreatorDisplayName}
+            placeholder="Your display name"
+          />
+        </div>
+      </fieldset>
+      <fieldset
+        aria-label="Roles to invite"
+        style={{
+          display: "flex",
+          flexDirection: "column",
+          gap: 10,
+          padding: 14,
+          border: "1px solid var(--ink-600)",
+          borderRadius: 4,
+          background: "var(--ink-850)",
+        }}
+      >
       <legend
         className="mono"
         style={{
@@ -702,6 +797,7 @@ function Step3Body(props: IntroBodyProps) {
         </div>
       ) : null}
     </fieldset>
+    </>
   );
 }
 

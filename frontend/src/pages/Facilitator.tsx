@@ -34,6 +34,8 @@ import { CollapsibleRailPanel } from "../components/brand/CollapsibleRailPanel";
 import { HudGauges } from "../components/brand/HudGauges";
 import { TurnStateRail } from "../components/brand/TurnStateRail";
 import { SetupWizard } from "../components/setup/SetupWizard";
+import { SetupLobbyView } from "../components/setup/SetupLobbyView";
+import { SetupReviewView } from "../components/setup/SetupReviewView";
 import {
   buildImpersonateOptions,
   countUnjoinedImpersonateOptions,
@@ -1143,6 +1145,108 @@ export function Facilitator() {
   const isMyTurn = activeRoleIds.includes(state.creatorRoleId);
   const playerCount = snapshot.roles.filter((r) => r.kind === "player").length;
 
+  // Issue #113: keep the wizard chrome up through setup/ready so the
+  // operator sees rail steps 04-06 instead of being dumped into the
+  // in-session view the moment the session is created. Each post-
+  // creation phase renders its own ``postCreationContent`` slot:
+  //   - setup → existing <SetupView/> (AI dialogue + plan preview)
+  //   - ready, plan unfinished or < 2 players → <SetupLobbyView/>
+  //   - ready, plan finalized + ≥ 2 players → <SetupReviewView/>
+  //     (owns its own START SESSION button — the BottomActionBar
+  //      isn't rendered inside wizard chrome)
+  // The wizard's internal ``current`` memo derives the same step
+  // 5 vs 6 distinction for the rail highlight; we just have to pick
+  // the matching panel content here.
+  if (phase === "setup" || phase === "ready") {
+    const wizardReadyForReview =
+      phase === "ready" && Boolean(snapshot.plan) && playerCount >= 2;
+    let postCreationContent;
+    if (phase === "setup") {
+      postCreationContent = (
+        <SetupView
+          snapshot={snapshot}
+          setupReply={setupReply}
+          setSetupReply={setSetupReply}
+          onSubmit={handleSetupReply}
+          onLooksReady={handleLooksReady}
+          onApprovePlan={handleApprovePlan}
+          onSkipSetup={handleSkipSetup}
+          onPickOption={(opt) =>
+            callSetup(opt, "Sending your selection to the AI…")
+          }
+          busy={busy}
+          busyMessage={busyMessage}
+        />
+      );
+    } else if (wizardReadyForReview && snapshot.plan) {
+      postCreationContent = (
+        <SetupReviewView
+          roles={snapshot.roles}
+          plan={snapshot.plan}
+          playerCount={playerCount}
+          connectedRoleIds={presence}
+          busy={busy}
+          onStart={handleStart}
+        />
+      );
+    } else {
+      postCreationContent = (
+        <SetupLobbyView
+          sessionId={state.sessionId}
+          creatorToken={state.token}
+          roles={snapshot.roles}
+          busy={busy}
+          plan={snapshot.plan}
+          playerCount={playerCount}
+          connectedRoleIds={presence}
+          onRoleAdded={refreshSnapshot}
+          onRoleChanged={refreshSnapshot}
+          onError={setError}
+        />
+      );
+    }
+    return (
+      <>
+        {/* CriticalEventBanner has to render here too — the in-session
+            <main> wrapper isn't reached during the setup/ready early
+            return, so without this, ``critical_event`` WS frames
+            during the lobby (e.g. an inject-as-warning, an admin
+            interject) would set ``criticalBanner`` state and the user
+            would never see it. Same component + dismiss handler as
+            the in-session render below. */}
+        {criticalBanner ? (
+          <CriticalEventBanner
+            {...criticalBanner}
+            onAcknowledge={() => setCriticalBanner(null)}
+          />
+        ) : null}
+        <SetupWizard
+          phase={phase}
+          setupParts={setupParts}
+          setSetupParts={setSetupParts}
+          creatorLabel={creatorLabel}
+          setCreatorLabel={setCreatorLabel}
+          creatorDisplayName={creatorDisplayName}
+          setCreatorDisplayName={setCreatorDisplayName}
+          setupRoles={setupRoles}
+          setSetupRoles={setSetupRoles}
+          setupRoleDraft={setupRoleDraft}
+          setSetupRoleDraft={setSetupRoleDraft}
+          devMode={devMode}
+          setDevMode={onToggleDevMode}
+          busy={busy}
+          busyMessage={busyMessage}
+          error={error}
+          onSubmit={handleCreate}
+          snapshot={snapshot}
+          playerCount={playerCount}
+          postCreationContent={postCreationContent}
+          onAbandonSession={handleNewSession}
+        />
+      </>
+    );
+  }
+
   return (
     <main className="flex min-h-screen flex-col lg:h-screen lg:min-h-0 lg:overflow-hidden">
       {criticalBanner ? (
@@ -1259,23 +1363,9 @@ export function Facilitator() {
             ref={scrollRegionRef}
             className="flex min-w-0 flex-col gap-3 lg:min-h-0 lg:flex-1 lg:overflow-y-auto lg:pr-1"
           >
-          {phase === "setup" ? (
-            <SetupView
-              snapshot={snapshot}
-              setupReply={setupReply}
-              setSetupReply={setSetupReply}
-              onSubmit={handleSetupReply}
-              onLooksReady={handleLooksReady}
-              onApprovePlan={handleApprovePlan}
-              onSkipSetup={handleSkipSetup}
-              onPickOption={(opt) => callSetup(opt, "Sending your selection to the AI…")}
-              busy={busy}
-              busyMessage={busyMessage}
-            />
-          ) : null}
-          {phase === "ready" ? (
-            <ReadyView plan={snapshot.plan} sessionId={state.sessionId} />
-          ) : null}
+          {/* Issue #113: setup + ready phases now render in the
+              wizard chrome (see early-return above), not in this
+              in-session 3-col layout. Only play / ended reach here. */}
           {phase === "ended" ? (
             <EndedView
               sessionId={state.sessionId}
@@ -1995,19 +2085,18 @@ function SetupView({
 
   return (
     <div className="flex flex-col gap-3">
-      <div>
-        <p className="mono text-[10px] font-bold uppercase tracking-[0.22em] text-signal">
-          STEP 02 · SETUP DIALOGUE
-        </p>
-        <h2 className="mt-1 text-lg font-semibold tracking-[-0.01em] text-ink-050">
-          Answer the AI's setup questions
-        </h2>
-        <p className="mt-1 text-xs text-ink-300 leading-relaxed">
-          Answer briefly. When you have shared enough background, click{" "}
-          <em>"Looks ready — propose the plan"</em> to nudge it to draft. Once a plan is on the
-          table, click <em>"Approve plan"</em> to commit it.
-        </p>
-      </div>
+      {/* Issue #113: SetupView is now nested inside the wizard's
+          <PostCreationBody/> which already supplies the eyebrow +
+          title (STEP 04 · INJECTS & SCHEDULE → "AI is drafting the
+          plan"). The pre-PR inner header (STEP 02 · SETUP DIALOGUE)
+          stamped a second, conflicting step number on the same
+          screen — deleted. The helper paragraph stays since it
+          explains the LOOKS READY / APPROVE buttons below. */}
+      <p className="mt-1 text-xs text-ink-300 leading-relaxed">
+        Answer briefly. When you have shared enough background, click{" "}
+        <em>"Looks ready — propose the plan"</em> to nudge it to draft. Once a plan is on the
+        table, click <em>"Approve plan"</em> to commit it.
+      </p>
 
       {notes.length === 0 && !busy ? (
         <div className="flex flex-col items-center gap-3 rounded-r-3 border border-warn bg-warn-bg p-6">
@@ -2533,33 +2622,8 @@ function AARPopup({
 }
 
 
-function ReadyView({
-  plan,
-  sessionId,
-}: {
-  plan: SessionSnapshot["plan"];
-  sessionId?: string;
-}) {
-  return (
-    <div className="flex flex-col gap-3">
-      <p className="mono text-[10px] font-bold uppercase tracking-[0.22em] text-signal">
-        STEP 04 · READY
-      </p>
-      <h2 className="text-lg font-semibold tracking-[-0.01em] text-ink-050">
-        Plan finalized — ready to start
-      </h2>
-      {plan ? (
-        <div className="rounded-r-3 border border-ink-600 bg-ink-850 p-4">
-          <PlanView plan={plan} sessionId={sessionId} />
-        </div>
-      ) : null}
-      <p className="mono text-[11px] uppercase tracking-[0.06em] text-ink-300">
-        Add at least 2 roles, then click{" "}
-        <span className="mono font-bold tracking-[0.16em] text-signal">
-          START SESSION
-        </span>{" "}
-        in the bottom action bar.
-      </p>
-    </div>
-  );
-}
+// Issue #113: ReadyView removed — phase === "ready" now renders
+// inside the wizard chrome (SetupLobbyView / SetupReviewView), so
+// the in-session ReadyView is never reached. SetupReviewView owns
+// the post-finalize "ready to launch" surface, START SESSION CTA
+// included.

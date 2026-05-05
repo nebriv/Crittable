@@ -118,13 +118,14 @@ describe("Facilitator intro — Roles to invite (issue #61)", () => {
 
   it("warns when the creator label collides with an invitee chip", () => {
     render(<Facilitator />);
-    // Creator role lives on step 1; collision warning shows on step 3.
-    // Pre-fill the label, then advance to roles.
+    // Issue #159: creator role + display name live on Step 3 (Roles)
+    // alongside the invitee chips, not on Step 1 (Scenario). Advance
+    // to roles first, then edit the creator label.
+    advanceToRoles();
     const labelInput = screen.getByPlaceholderText(
       /Your role label/i,
     ) as HTMLInputElement;
     fireEvent.change(labelInput, { target: { value: "IR Lead" } });
-    advanceToRoles();
     expect(
       screen.getByText(/won't be auto-added as a separate invitee/i),
     ).toBeInTheDocument();
