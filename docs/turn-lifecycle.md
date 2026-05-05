@@ -36,10 +36,17 @@ contract. Four exist:
 
 | Tier | When | Tools | Validator runs? |
 |---|---|---|---|
-| `setup` | Creator setup loop | `ask_setup_question`, `propose_scenario_plan`, `finalize_setup` | No — own loop. |
-| `play` | Driving the exercise (this doc) | `broadcast`, `address_role`, `share_data`, `pose_choice`, `set_active_roles`, `inject_critical_event`, `end_session`, `request_artifact`, `track/resolve_role_followup`, `lookup_resource`, `use_extension_tool` | **Yes** — the focus of this doc. |
+| `setup` | Creator setup loop | `ask_setup_question`, `propose_scenario_plan`, `finalize_setup` (+ `declare_workstreams` when `WORKSTREAMS_ENABLED=true`) | No — own loop. |
+| `play` | Driving the exercise (this doc) | `broadcast`, `address_role`, `share_data`, `pose_choice`, `set_active_roles`, `inject_critical_event`, `request_artifact`, `track_role_followup` / `resolve_role_followup`, `lookup_resource`, `use_extension_tool` (+ operator extension tools) | **Yes** — the focus of this doc. |
 | `aar` | After-action report generation | `finalize_report` only | No — `tool_choice` pinned. |
-| `guardrail` | Pre-flight off-topic / harmful classifier | classifier tool only | No. |
+| `guardrail` | Pre-flight off-topic / harmful classifier | none — single-word text verdict | No. |
+
+> `end_session` was removed from the play palette in 2026-05-02 (issue
+> #104) — only the creator can end the exercise. `inject_event` and
+> `mark_timeline_point` were removed in the 2026-04-30 redesign. The
+> `Slot` enum still carries `TERMINATE` / `NARRATE` / `PIN` as defensive
+> dead code so a stale prompt cache that emits one of these names still
+> classifies cleanly.
 
 ### Slot
 

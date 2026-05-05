@@ -1,4 +1,32 @@
-# AI Cybersecurity Tabletop Facilitator — Architecture & Implementation Plan
+# Crittable — Original Architecture & Implementation Plan
+
+> ## ⏳ This is the historical blueprint
+>
+> This document captures the **original Phase-1 / Phase-2 design plan**
+> for what shipped as Crittable. It's preserved for context — naming
+> decisions, the "why" behind locked choices, the original phase
+> structure — but it is not the live reference for how the app behaves
+> today.
+>
+> **For current behaviour, prefer:**
+> - [`docs/architecture.md`](architecture.md) — live diagrams,
+>   tool palette, phase-policy contract, slot taxonomy, recovery
+>   cascade. Updated as the engine evolves.
+> - [`docs/configuration.md`](configuration.md) — current env vars
+>   and defaults.
+> - [`docs/turn-lifecycle.md`](turn-lifecycle.md) — load-bearing
+>   reference for the play-turn engine.
+>
+> Where this doc and the live references conflict, the live references
+> win. Concrete drift to be aware of in the body below: the repo was
+> renamed from `ai-tabletop-facilitator` to `Crittable`; the play tool
+> palette was redesigned 2026-04-30 (added `share_data` / `pose_choice`,
+> removed `inject_event` / `mark_timeline_point`); `end_session` was
+> removed from the AI palette in 2026-05-02 (issue #104); per-tier
+> defaults moved (`ANTHROPIC_MODEL_SETUP` shifted from Haiku to Sonnet;
+> `MAX_ROLES_PER_SESSION` default is now 24, not 8); the AAR pipeline
+> grew structured-output validation; multiple Wave-1/2/3 features
+> shipped that aren't reflected below.
 
 > # ⚠️ NO BACKWARDS COMPATIBILITY
 >
@@ -12,7 +40,7 @@
 
 A multi-user, browser-based chat application that runs cybersecurity tabletop exercises facilitated by Claude. A creator opens "New session," provides a scenario prompt, defines participant roles (e.g., CISO, IR Lead, Legal, Comms, Engineering), and shares a unique join link per role. The creator also plays a role. Claude holds the scenario brief and full roster, drives a turn-based loop (narrates events, decides which role(s) act next, ingests responses over WebSocket, advances the exercise), and at the end produces a downloadable markdown after-action report with scores.
 
-The repo (`nebriv/ai-tabletop-facilitator`) is currently empty. Bootstrap from scratch on branch `claude/ai-cybersecurity-chat-app-fEYFi`. Primary development environment is GitHub Codespaces, so devcontainer + CI + Docker image build are first-class Phase-1 deliverables. `ANTHROPIC_API_KEY` is provided via env var.
+The repo (originally `nebriv/ai-tabletop-facilitator`, now `nebriv/Crittable`) was empty at plan time. Bootstrap from scratch on branch `claude/ai-cybersecurity-chat-app-fEYFi`. Primary development environment is GitHub Codespaces, so devcontainer + CI + Docker image build are first-class Phase-1 deliverables. `ANTHROPIC_API_KEY` is provided via env var.
 
 Long-term intent: this may become a subscription SaaS. **Build with the right seams now, not the heavy machinery.** Async-first, per-session (not global) locks, repository/registry interfaces, pluggable AAA, tenancy-shaped data model — but no DB, no auth backends, no horizontal-scale infra in MVP.
 
@@ -49,7 +77,7 @@ Long-term intent: this may become a subscription SaaS. **Build with the right se
 ## Repo Layout
 
 ```
-ai-tabletop-facilitator/
+Crittable/  (originally `ai-tabletop-facilitator`)
 ├── .devcontainer/devcontainer.json
 ├── .github/workflows/{ci.yml, docker.yml}
 ├── backend/
@@ -296,7 +324,7 @@ Client → server events: `submit_response`, `request_force_advance`, `request_e
 
 All via env, documented in `docs/configuration.md`. Names:
 
-`ANTHROPIC_API_KEY`, `ANTHROPIC_MODEL` (default `claude-sonnet-4-6`), `ANTHROPIC_MAX_RETRIES`, `LOG_LEVEL`, `LOG_FORMAT` (`json`|`console`), `SESSION_SECRET` (HMAC key), `MAX_SESSIONS`, `MAX_ROLES_PER_SESSION` (default 8), `MAX_TURNS_PER_SESSION` (default 40), `AI_TURN_SOFT_WARN_PCT` (default 80), `WS_HEARTBEAT_S`, `CORS_ORIGINS`, `EXTENSIONS_*_JSON`, `EXTENSIONS_*_PATH`.
+`ANTHROPIC_API_KEY`, `ANTHROPIC_MODEL` (default `claude-sonnet-4-6`), `ANTHROPIC_MAX_RETRIES`, `LOG_LEVEL`, `LOG_FORMAT` (`json`|`console`), `SESSION_SECRET` (HMAC key), `MAX_SESSIONS`, `MAX_ROLES_PER_SESSION` (default 24 — was 8 in the original plan), `MAX_TURNS_PER_SESSION` (default 40), `AI_TURN_SOFT_WARN_PCT` (default 80), `WS_HEARTBEAT_S`, `CORS_ORIGINS`, `EXTENSIONS_*_JSON`, `EXTENSIONS_*_PATH`. The current full list is in [`docs/configuration.md`](configuration.md).
 
 ### Logging
 
@@ -405,7 +433,7 @@ OAuth/SSO authentication, persistent repository (SQLite then Postgres), tenant/o
 2. **Run / dev commands** — Codespace, local Docker, backend-only, frontend-only.
 3. **Configuration reference** — every env var, default, and effect (linked to `docs/configuration.md`).
 4. **Milestones** — exact MCP commands to list current scope, e.g.
-   `mcp__github__search_issues` with `repo:nebriv/ai-tabletop-facilitator is:issue is:open milestone:"Phase 1"` (and equivalents for `Phase 2` / `Phase 3`). Phase grouping is tracked via GitHub **milestones**, not labels. **Always read this before starting work.**
+   `mcp__github__search_issues` with `repo:nebriv/Crittable is:issue is:open milestone:"Phase 1"` (and equivalents for `Phase 2` / `Phase 3`). Phase grouping is tracked via GitHub **milestones**, not labels. **Always read this before starting work.**
 5. **Sub-agent review protocol** — every major task (= any closed Phase-2 issue, every Phase-3 epic) requires three reviews before merge:
    - **QA Agent** — verifies tests cover golden path + edge cases, regression risk, validates the issue's acceptance criteria.
    - **Security Engineer Agent** — input validation, secret handling, AuthN/AuthZ correctness, WebSocket origin/token checks, rate limits, prompt-injection surface (with extra attention to the extensions pipeline), dependency CVEs.
@@ -475,7 +503,7 @@ OAuth/SSO authentication, persistent repository (SQLite then Postgres), tenant/o
   Free for any non-competing use; converts to Apache-2.0 two years after each
   release. Chosen to preserve the option of running a hosted SaaS without
   closing the source.
-- GHCR image name (`ghcr.io/nebriv/ai-tabletop-facilitator`?).
+- GHCR image name. *Resolved: published as `ghcr.io/nebriv/crittable` after the rename.*
 - Whether to file the Phase 1/2/3 issue stubs immediately on plan approval, or as the first commit on the development branch.
 
 ---

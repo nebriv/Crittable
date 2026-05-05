@@ -56,14 +56,17 @@ load-bearing references; CONTRIBUTING.md is just the index.
 
 | File | Read before… |
 |---|---|
-| [`docs/PLAN.md`](docs/PLAN.md) | Anything architectural. Source of truth for decisions, phase plan, milestones. |
-| [`docs/architecture.md`](docs/architecture.md) | Touching the request/turn flow. Diagrams, retry-feedback loop, phase-policy contract. |
-| [`docs/configuration.md`](docs/configuration.md) | Adding any env var or operator-tunable knob. Hardening checklist for non-toy deploys. |
+| [`docs/architecture.md`](docs/architecture.md) | Touching the request/turn flow. Live diagrams, retry-feedback loop, phase-policy contract, current tool palette, operator runtime controls. |
+| [`docs/configuration.md`](docs/configuration.md) | Adding any env var or operator-tunable knob. Quick-start cheat sheet + hardening checklist. |
 | [`docs/llm_providers.md`](docs/llm_providers.md) | Wiring Bedrock / Vertex / OpenRouter / Ollama via `ANTHROPIC_BASE_URL`. |
 | [`docs/prompts.md`](docs/prompts.md) | Editing system prompts, guardrails, tool-use protocol, AAR rubric. JSON tool-use only — no XML function-call shapes. |
+| [`docs/prompt-writing-rules.md`](docs/prompt-writing-rules.md) | **Style guide for prompt copy.** Shape-not-phrase, deflection patterns, trust-boundary first. Distilled from the 2026-05-04 / 2026-05-05 live-test sweep. |
 | [`docs/tool-design.md`](docs/tool-design.md) | **Adding, renaming, or rewording any play-tier tool.** Five trap patterns documented. |
 | [`docs/turn-lifecycle.md`](docs/turn-lifecycle.md) | **Touching `turn_driver.py`, `turn_validator.py`, `slots.py`, or `dispatch.py`.** Every gate, contract, recovery path, and the 2026-04-30 silent-yield post-mortem. |
 | [`docs/extensions.md`](docs/extensions.md) | Adding a custom tool / resource / prompt. Declarative handlers only (`templated_text`, `static_text`); content flows as `tool_result`, never system content. |
+| [`docs/PLAN.md`](docs/PLAN.md) | Original architecture & implementation plan. Kept as historical reference for the "why"; for current behaviour, prefer `architecture.md` and `configuration.md`. |
+| [`docs/plans/`](docs/plans/) | Cross-cutting design plans (chat-declutter is currently the only one — delivered, kept for rationale). |
+| [`docs/ux-tests/`](docs/ux-tests/) | UX-test protocols (Wave-1 discussion mode is currently the only one). Contributor-facing testing scripts. |
 | [`CLAUDE.md`](CLAUDE.md) | Anything. Coding conventions, logging rules, dependency intake, sub-agent review protocol, model-output trust boundary, communication transport choices, the no-backwards-compat policy. |
 
 Brand work also reads:
