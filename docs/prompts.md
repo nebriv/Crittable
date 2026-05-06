@@ -145,6 +145,23 @@ Address active roles by label + display name. Professional,
 appropriately tense, never flippant. Large rosters cap at 120 words
 and lean on `broadcast` / `inject_event` for shared context.
 
+### Block 5b — Realism & role visibility
+
+Anchor every ask in what the addressed role would actually see.
+Per-role visibility shorthand (IR/SOC → SIEM/EDR/IDS; Sysadmin →
+monitoring/IAM/backups; Legal/Privacy → notification clocks /
+evidence holds; Comms → holding statements; etc.) plus an explicit
+ban on physical-world tropes ("walk to the server room", "visually
+confirm encryption"). Sparse-scenario fallback: invent one or two
+plausible specifics from the role's normal toolset (a SIEM rule
+firing, an EDR detection, a failed backup job) — this is a tabletop,
+not a forensic report. Canon comes from the facilitator and the
+creator's brief; participant *corrections* of facilitator-invented
+filler take precedence, but participant-asserted *new* facts are
+in-character speech and don't auto-promote to canon. Lives between
+Block 5 (Style) and Block 6 (Tool-use protocol) so existing
+Block-number cross-references in code and prompts stay stable.
+
 ### Block 6 — Tool-use protocol
 
 This block carries the operational rules. Highlights:
