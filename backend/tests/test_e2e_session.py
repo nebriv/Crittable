@@ -1959,7 +1959,11 @@ def test_critical_inject_rate_limit_until_visible_to_model() -> None:
     blocks = build_play_system_blocks(
         s, registry=FrozenRegistry(tools={}, resources={}, prompts={})
     )
-    text = blocks[0]["text"]
+    # build_play_system_blocks splits stable + volatile content across
+    # multiple text blocks for prompt-cache placement; Block 12 lives
+    # in the volatile suffix so an active rate limit doesn't invalidate
+    # the cached prefix.
+    text = "\n\n".join(b["text"] for b in blocks)
     assert "Block 12" in text, "rate-limited turn must include Block 12"
     assert "until turn 7" in text
 
@@ -1998,7 +2002,7 @@ def test_critical_inject_block_12_omitted_when_no_rate_limit() -> None:
     blocks = build_play_system_blocks(
         s, registry=FrozenRegistry(tools={}, resources={}, prompts={})
     )
-    text = blocks[0]["text"]
+    text = "\n\n".join(b["text"] for b in blocks)
     assert "Block 12" not in text
 
 
@@ -3241,7 +3245,7 @@ def test_play_block_10_lists_seated_and_unseated_roles() -> None:
         session,
         registry=FrozenRegistry(tools={}, resources={}, prompts={}),
     )
-    text = blocks[0]["text"]
+    text = "\n\n".join(b["text"] for b in blocks)
     # Every seated role.id must appear in the table so the model can pass
     # opaque ids.
     assert "`role-ciso`" in text
@@ -3458,7 +3462,7 @@ def test_play_system_prompt_includes_open_followups() -> None:
     registry = FrozenRegistry(tools={}, resources={}, prompts={})
 
     blocks = build_play_system_blocks(session, registry=registry)
-    text = blocks[0]["text"]
+    text = "\n\n".join(b["text"] for b in blocks)
     assert "Block 11 — Open per-role follow-ups" in text
     assert "(none open)" in text
 
@@ -3467,14 +3471,15 @@ def test_play_system_prompt_includes_open_followups() -> None:
         RoleFollowup(role_id="role-soc", prompt="Confluence findings?")
     )
     blocks2 = build_play_system_blocks(session, registry=registry)
-    text2 = blocks2[0]["text"]
+    text2 = "\n\n".join(b["text"] for b in blocks2)
     assert "Confluence findings?" in text2
     assert "role-soc" in text2
 
     # Resolved items drop out of the block.
     session.role_followups[0].status = "done"
     blocks3 = build_play_system_blocks(session, registry=registry)
-    assert "Confluence findings?" not in blocks3[0]["text"]
+    text3 = "\n\n".join(b["text"] for b in blocks3)
+    assert "Confluence findings?" not in text3
 
 
 def test_ai_auto_interjects_on_facilitator_mention(client: TestClient) -> None:

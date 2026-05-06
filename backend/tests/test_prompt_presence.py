@@ -81,13 +81,17 @@ def _play_text(
     connected: set[str] | None,
     focused: set[str] | None,
 ) -> str:
+    # ``build_play_system_blocks`` now returns multiple blocks (stable
+    # prefix + volatile suffix) so prompt-cache breakpoints can land on
+    # the stable content. Flatten across blocks so the assertions below
+    # check the rendered prompt as the model would see it.
     blocks = build_play_system_blocks(
         _session(),
         registry=_registry(),
         connected_role_ids=connected,
         focused_role_ids=focused,
     )
-    return blocks[0]["text"]
+    return "\n\n".join(b["text"] for b in blocks)
 
 
 # -------------------------------------------------------------- column shape
@@ -268,7 +272,7 @@ def test_play_table_sanitises_label_against_markdown_row_injection() -> None:
         connected_role_ids={"role-attacker"},
         focused_role_ids={"role-attacker"},
     )
-    text = blocks[0]["text"]
+    text = "\n\n".join(b["text"] for b in blocks)
     # The fake role_id must NOT appear in the rendered table as a
     # backticked ID — the newline that would have started a new row
     # must be defused.
@@ -314,6 +318,6 @@ def test_briefing_and_play_share_same_block_10() -> None:
         connected_role_ids={"role-ciso"},
         focused_role_ids={"role-ciso"},
     )
-    text = blocks[0]["text"]
+    text = "\n\n".join(b["text"] for b in blocks)
     assert "| role_id | label | display_name | kind | presence |" in text
     assert "Presence-aware addressing" in text

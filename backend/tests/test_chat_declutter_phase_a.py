@@ -228,7 +228,10 @@ class TestPromptFlagGate:
         blocks = build_play_system_blocks(
             session, registry=registry, workstreams_enabled=False
         )
-        text = blocks[0]["text"].lower()
+        # ``build_play_system_blocks`` returns multiple blocks (stable
+        # prefix + volatile suffix); flatten so a future move of the
+        # workstream copy between blocks doesn't silently mask a leak.
+        text = "\n\n".join(b["text"] for b in blocks).lower()
         assert "workstream" not in text
 
     def test_play_prompt_on_mentions_address_role_field(self) -> None:
@@ -237,7 +240,7 @@ class TestPromptFlagGate:
         blocks = build_play_system_blocks(
             session, registry=registry, workstreams_enabled=True
         )
-        text = blocks[0]["text"]
+        text = "\n\n".join(b["text"] for b in blocks)
         assert "workstream_id" in text
         # Plan §5.2: explicitly NOT a body-text @-syntax directive.
         # Make sure the prompt didn't sprout one.
@@ -954,12 +957,18 @@ class TestPromptToolConsistencyFlagOn:
         registry = freeze_bundle(ExtensionBundle())
         session = _setup_session()
         play_session = _build_play_session()
+        # ``build_play_system_blocks`` returns multiple blocks (stable
+        # prefix + volatile suffix); flatten so the tool-name scan
+        # covers both. ``build_setup_system_blocks`` is still a single
+        # block but ``join`` works for both shapes uniformly.
+        play_blocks = build_play_system_blocks(
+            play_session, registry=registry, workstreams_enabled=True
+        )
+        setup_blocks = build_setup_system_blocks(session, workstreams_enabled=True)
         all_text = "\n".join(
             [
-                build_setup_system_blocks(session, workstreams_enabled=True)[0]["text"],
-                build_play_system_blocks(
-                    play_session, registry=registry, workstreams_enabled=True
-                )[0]["text"],
+                "\n".join(b["text"] for b in setup_blocks),
+                "\n".join(b["text"] for b in play_blocks),
                 # Tool descriptions count too.
                 "\n".join(
                     str(t.get("description", "")) for t in setup_tools_for(workstreams_enabled=True)
