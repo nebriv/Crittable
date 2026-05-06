@@ -30,6 +30,7 @@ import pytest
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
+from app.auth.authz import AuthorizationError
 from app.config import reset_settings_cache
 from app.main import create_app
 from app.sessions.turn_engine import IllegalTransitionError
@@ -795,3 +796,61 @@ def test_removed_token_cannot_post_setup_reply(client: TestClient) -> None:
         json={"content": "ignored"},
     )
     assert resp.status_code == 401, resp.text
+
+
+# ---------------------------------------------------------------------------
+# Lock-time auth re-check on add_role (B2 in PR #192)
+# ---------------------------------------------------------------------------
+#
+# The route does ``require_creator(token)`` BEFORE ``manager.add_role`` takes
+# the per-session lock. Without the in-lock recheck a concurrent revoke
+# landing between bind and lock would let a now-revoked creator land a role.
+# The fix threads ``acting_role_id`` + ``acting_token_version`` into
+# ``add_role`` and re-validates against the live session under the lock.
+
+
+def test_add_role_rejects_stale_acting_token_version(client: TestClient) -> None:
+    """A creator whose token_version was bumped between bind and lock
+    must be rejected at the lock-time recheck inside add_role."""
+
+    seats = _create_and_seat(client, role_count=1)
+    sid = seats["session_id"]
+    creator_role_id = seats["creator_role_id"]
+    manager = client.app.state.manager
+
+    async def _attempt() -> None:
+        with pytest.raises(AuthorizationError):
+            await manager.add_role(
+                session_id=sid,
+                label="Late",
+                kind="player",
+                acting_role_id=creator_role_id,
+                # Live version is 0 (freshly minted creator); 99 simulates a
+                # stale token from before a concurrent revoke landed.
+                acting_token_version=99,
+            )
+
+    asyncio.run(_attempt())
+
+
+def test_add_role_rejects_non_creator_acting_role(client: TestClient) -> None:
+    """A token from a non-creator role with an otherwise-current
+    token_version must still be denied — only the seat marked as the
+    session's creator can add roles."""
+
+    seats = _create_and_seat(client, role_count=2)
+    sid = seats["session_id"]
+    non_creator_role_id = seats["role_ids"][1]
+    manager = client.app.state.manager
+
+    async def _attempt() -> None:
+        with pytest.raises(AuthorizationError):
+            await manager.add_role(
+                session_id=sid,
+                label="ShouldNotLand",
+                kind="player",
+                acting_role_id=non_creator_role_id,
+                acting_token_version=0,
+            )
+
+    asyncio.run(_attempt())
