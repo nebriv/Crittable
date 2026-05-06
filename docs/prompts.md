@@ -3,8 +3,24 @@
 The full system-prompt text lives in
 [`backend/app/llm/prompts.py`](../backend/app/llm/prompts.py); this
 document is the prose reference + design rationale. Each per-tier
-prompt is composed at runtime and a cache breakpoint is placed on the
-last system block so per-session reuse is cheap.
+prompt is composed at runtime.
+
+**Prompt caching.** `build_play_system_blocks` returns the system
+prompt as **two text blocks** — a stable prefix (Blocks 1–9, ~85% of
+play-tier system tokens) and a volatile suffix (Block 10 roster +
+presence column, Block 11 follow-ups, conditional Block 12 rate-limit
+notice). `LLMClient._with_cache` plants an `ephemeral` cache breakpoint
+on the stable prefix so the entire ~5–7k-token preamble (plus the
+deterministic tool list rendered before it) cache-reads at ~10% of
+input price on every subsequent turn within a session. Volatile
+content sits *after* the breakpoint and is reprocessed cheaply per
+turn — a single presence flip never invalidates the prefix.
+
+`LLMClient._with_message_cache` plants a second breakpoint on the
+last message of every call, so multi-turn play also benefits from
+incremental message-history caching. Setup, AAR, and guardrail tiers
+return a single block and behave the same as the pre-split contract:
+the breakpoint sits on the only block.
 
 > **Engine-side guardrails first.** The prompts express the
 > facilitator's intent, but the engine does NOT trust the model to
@@ -90,8 +106,12 @@ parser.
 
 ## Play-tier system blocks
 
-Composed by `build_play_system_blocks(session, registry)` and cached
-on the last block.
+Composed by `build_play_system_blocks(session, registry)` and returned
+as two text blocks: a **stable prefix** (Blocks 1–9) and a **volatile
+suffix** (Blocks 10–12). The cache breakpoint lands on the stable
+prefix; volatile content stays out of the cache key so per-turn flips
+(presence column, follow-up status, rate-limit) never invalidate the
+~85% of system tokens that don't change within a session.
 
 ### Block 1 — Identity
 
@@ -301,8 +321,10 @@ instead. Pre-fix the AI was observed retrying the same
 `inject_critical_event` call on three consecutive turns after the
 first attempt was rate-limited; the strict-retry feedback only
 covered the same turn, so each new turn the AI tried again blind.
-Block is omitted on healthy turns to keep the cached system block
-stable.
+Block is conditional. It also lives in the **volatile suffix** (along
+with Block 10's presence column and Block 11's follow-up list), so
+flipping it on or off — and the per-turn `current_turn.index` it
+references — never invalidates the cached stable prefix.
 
 ---
 

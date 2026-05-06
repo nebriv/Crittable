@@ -657,6 +657,27 @@ def build_play_system_blocks(
 ) -> list[dict[str, Any]]:
     """Compose the play-tier system block list.
 
+    Returns TWO text blocks:
+
+    * **Stable prefix** — Blocks 1-9 only: identity, mission, plan
+      adherence, hard boundaries, style, realism rail, tool-use
+      protocol, the frozen scenario plan JSON, extension prompts, and
+      roster-size strategy. None of these change turn-to-turn within
+      a single session.
+    * **Volatile suffix** — Block 10 (the entire seated roster table
+      *including* the per-row ``presence`` column, the unseated-roles
+      list, and the presence-aware addressing rules), Block 11 (open
+      per-role follow-ups), and conditional Block 12 (critical-event
+      rate-limit notice). Every component here flips turn-by-turn —
+      presence flips when players un/focus tabs, follow-ups mutate as
+      they're tracked / resolved, and Block 12 only appears while a
+      rate limit is active.
+
+    The cache breakpoint placed by ``LLMClient._with_cache`` lands on
+    the stable prefix, so tools + stable system content gets cached
+    across every turn while volatile content is re-processed cheaply
+    per turn. This cuts per-turn input cost by ~85% on cache hits.
+
     ``connected_role_ids`` / ``focused_role_ids`` are the role_ids that
     currently have at least one open WebSocket connection (or focused tab)
     on this session, sourced from
@@ -883,7 +904,13 @@ def build_play_system_blocks(
         _WORKSTREAMS_PLAY_NOTE if workstreams_enabled else ""
     )
 
-    blocks: list[str] = [
+    # STABLE PREFIX (Blocks 1-9): identity, mission, hard boundaries,
+    # style, realism, tool-use protocol, frozen plan, extension prompts,
+    # and roster-size strategy. None of these change turn-to-turn within
+    # a single session — exactly the content we want Anthropic to cache
+    # so each subsequent turn pays cache_read pricing (~10% of input)
+    # rather than full input pricing on the same ~5-7k tokens.
+    stable_blocks: list[str] = [
         "## Block 1 — Identity\n" + _IDENTITY,
         "## Block 2 — Mission\n" + _MISSION,
         "## Block 3 — Plan adherence\n" + _PLAN_ADHERENCE,
@@ -894,6 +921,15 @@ def build_play_system_blocks(
         "## Block 7 — Frozen scenario plan\n```json\n" + plan_json + "\n```",
         "## Block 8 — Active extension prompts\n" + extension_block,
         "## Block 9 — Roster-size strategy\n" + _ROSTER_STRATEGY[session.roster_size],
+    ]
+
+    # VOLATILE SUFFIX (Blocks 10-12): roster with live presence column
+    # (flips when players focus / unfocus / reconnect tabs), open per-
+    # role follow-ups (mutates as the AI tracks/resolves them), and the
+    # conditional critical-event rate-limit notice. Kept out of the
+    # cached prefix so a single presence flip doesn't invalidate the
+    # whole system block.
+    volatile_blocks: list[str] = [
         "## Block 10 — Roster (use these role_ids in tool calls)\n"
         + "### Seated\n"
         + seated_table
@@ -906,13 +942,14 @@ def build_play_system_blocks(
     # model "you're rate-limited until turn N" stops it from retrying
     # the same critical-event call across turns (observed in the
     # 2026-04-29 session: AI tried inject_critical_event on three
-    # consecutive turns after the first was rate-limited). Omitted on
-    # healthy turns so the cached system block stays stable.
+    # consecutive turns after the first was rate-limited). Lives in
+    # the volatile suffix because ``current_turn.index`` changes every
+    # turn anyway.
     if session.critical_inject_rate_limit_until is not None:
         cur = session.current_turn.index if session.current_turn else 0
         until = session.critical_inject_rate_limit_until
         if until > cur:
-            blocks.append(
+            volatile_blocks.append(
                 "## Block 12 — Critical-event budget\n"
                 f"You are RATE-LIMITED from `inject_critical_event` until "
                 f"turn {until} (current turn: {cur}). Your previous attempts "
@@ -926,8 +963,10 @@ def build_play_system_blocks(
                 "your way past."
             )
 
-    text = "\n\n".join(blocks)
-    return [{"type": "text", "text": text}]
+    return [
+        {"type": "text", "text": "\n\n".join(stable_blocks)},
+        {"type": "text", "text": "\n\n".join(volatile_blocks)},
+    ]
 
 
 def _build_followup_block(session: Session) -> str:

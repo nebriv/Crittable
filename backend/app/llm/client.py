@@ -366,7 +366,7 @@ class LLMClient:
         kwargs: dict[str, Any] = {
             "model": model,
             "system": _with_cache(system_blocks),
-            "messages": messages,
+            "messages": _with_message_cache(messages),
             "max_tokens": max_tokens,
         }
         if tools:
@@ -476,7 +476,7 @@ class LLMClient:
         kwargs: dict[str, Any] = {
             "model": model,
             "system": _with_cache(system_blocks),
-            "messages": messages,
+            "messages": _with_message_cache(messages),
             "max_tokens": max_tokens,
         }
         if tools:
@@ -580,17 +580,104 @@ class LLMClient:
 
 
 def _with_cache(blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Place a cache breakpoint on the *last* system block.
+    """Place a cache breakpoint on the *first* system block.
 
-    Anthropic supports up to 4 cache breakpoints; placing one at the end of
-    the system block is the pattern that gives us per-session reuse for the
-    stable identity/mission/plan content.
+    The convention across the prompt builders (`build_play_system_blocks`,
+    `build_setup_system_blocks`, `build_aar_system_blocks`,
+    `build_guardrail_system_blocks`) is **stable content first**: the
+    first block carries identity / mission / hard boundaries / tool
+    protocol / frozen plan — content that does not change turn-to-turn
+    within a session. Subsequent blocks (when present) carry volatile
+    content (presence column, follow-ups, rate-limit notices).
+
+    Putting ``cache_control`` on the first block tells Anthropic to
+    cache the prefix [tools + first_block]. Volatile content in any
+    later block sits *after* the breakpoint, gets re-processed cheaply
+    each turn, and never invalidates the cached prefix. On a typical
+    play turn this turns ~5-7k input tokens into cache_reads at ~10%
+    of normal input price.
+
+    Anthropic supports up to 4 cache breakpoints per request; this
+    function uses 1. The other 3 are available — see ``_with_message_cache``
+    below for the multi-turn message-history breakpoint.
     """
 
     if not blocks:
         return blocks
     out = [dict(b) for b in blocks]
-    out[-1] = {**out[-1], "cache_control": {"type": "ephemeral"}}
+    out[0] = {**out[0], "cache_control": {"type": "ephemeral"}}
+    return out
+
+
+def _with_message_cache(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Place a cache breakpoint on the last message in the conversation.
+
+    For multi-turn play, the messages array grows as the conversation
+    progresses but the *prefix* (everything before the latest content)
+    is identical between turns. Placing a breakpoint on the last
+    message of turn N means turn N+1 reads the entire prior
+    conversation from cache instead of reprocessing it.
+
+    The breakpoint goes on the last message regardless of role — this
+    is the standard multi-turn pattern from Anthropic's docs. When the
+    last message is the per-call ``_TURN_REMINDER``, this turn's cache
+    won't be reused by the next turn (since the reminder lands at a
+    different position next turn), but the breakpoint is harmless and
+    we still benefit from message caching when the structure is stable
+    (briefing turn, recovery passes).
+
+    The content of the last message may already be a list of blocks
+    (recovery path with tool_results). In that case we add
+    ``cache_control`` to the last block. For string-content messages we
+    convert to a single text block carrying the cache marker.
+
+    Always returns a NEW list — never aliases the caller's list.
+    On the empty-input or non-coercible-content paths the returned
+    copy carries no cache marker (logged at WARNING in the latter
+    case), so the caller can mutate the result freely without
+    affecting the input.
+    """
+
+    if not messages:
+        return list(messages)
+    out = [dict(m) for m in messages]
+    last = dict(out[-1])
+    content = last.get("content")
+    if isinstance(content, str):
+        last["content"] = [
+            {
+                "type": "text",
+                "text": content,
+                "cache_control": {"type": "ephemeral"},
+            }
+        ]
+    elif isinstance(content, list) and content:
+        new_content = [dict(b) if isinstance(b, dict) else b for b in content]
+        # Find the last block that's a dict we can attach cache_control to.
+        for i in range(len(new_content) - 1, -1, -1):
+            blk = new_content[i]
+            if isinstance(blk, dict):
+                blk["cache_control"] = {"type": "ephemeral"}
+                break
+        last["content"] = new_content
+    else:
+        # Empty list / None / int / non-coercible content shape — we
+        # fall through with no breakpoint. Log the skip at WARNING
+        # so a future refactor passing an unexpected content shape
+        # doesn't quietly drop our ~10× cache-read win without any
+        # signal in the audit log. Per CLAUDE.md "Logging rules"
+        # silent fallback paths are debugging blockers. We still
+        # return the (un-marked) copy ``out`` so the contract
+        # "always returns a new list" holds — callers don't need a
+        # second branch to handle aliasing.
+        _logger.warning(
+            "message_cache_skipped",
+            reason="non_coercible_content",
+            content_type=type(content).__name__,
+            role=last.get("role"),
+        )
+        return out
+    out[-1] = last
     return out
 
 
