@@ -175,7 +175,7 @@ describe("SetupWizard — rail back-nav (User HIGH#2)", () => {
     expect(screen.getByText(/Set the scene/i)).toBeInTheDocument();
   });
 
-  it("post-creation: rail steps are NOT clickable (no rewind path)", () => {
+  it("setup phase: rail steps are NOT clickable (AI is mid-draft, no rewind path)", () => {
     render(
       <SetupWizard
         phase="setup"
@@ -186,9 +186,98 @@ describe("SetupWizard — rail back-nav (User HIGH#2)", () => {
       />,
     );
     // Step 1 / 2 / 3 are all "done" but rendered as inert <div>s,
-    // not buttons, since there's no backwards transition path.
+    // not buttons, since the AI is drafting in step 4 and there's
+    // no backwards transition path. Form-state steps remain frozen
+    // at session creation.
     expect(
       screen.queryByRole("button", { name: /Step 1: Scenario/i }),
+    ).not.toBeInTheDocument();
+  });
+});
+
+describe("SetupWizard — lobby ↔ review back-nav (presence-aware launch)", () => {
+  it("ready + lobbyOverride=true: pins step 5 even when launch gates are met", () => {
+    // Plan finalized + 3 player roles → step 6 normally. Setting
+    // lobbyOverride=true must drop the user back to step 5 so they
+    // can manage the lobby (e.g. share an invite link with a missing
+    // role) without abandoning the launch screen.
+    render(
+      <SetupWizard
+        phase="ready"
+        {...baseProps()}
+        snapshot={fakeSnapshot({ state: "READY", plan: fakePlan() })}
+        playerCount={3}
+        lobbyOverride={true}
+        setLobbyOverride={vi.fn()}
+        postCreationContent={<div data-testid="lobby-slot">lobby</div>}
+      />,
+    );
+    expect(screen.getByText(/step 05 · invite players/i)).toBeInTheDocument();
+    expect(screen.getByTestId("lobby-slot")).toBeInTheDocument();
+  });
+
+  it("ready: clicking step 5 in the rail sets the lobby override", () => {
+    const setLobbyOverride = vi.fn();
+    render(
+      <SetupWizard
+        phase="ready"
+        {...baseProps()}
+        snapshot={fakeSnapshot({ state: "READY", plan: fakePlan() })}
+        playerCount={2}
+        lobbyOverride={false}
+        setLobbyOverride={setLobbyOverride}
+        postCreationContent={<div data-testid="review-slot">review</div>}
+      />,
+    );
+    // Step 5 is in the "done" set when launch gates are met, so the
+    // rail renders it as a button.
+    const step5 = screen.getByRole("button", {
+      name: /Step 5: Invite players/i,
+    });
+    fireEvent.click(step5);
+    expect(setLobbyOverride).toHaveBeenCalledWith(true);
+  });
+
+  it("ready (override on): clicking step 6 in the rail clears the override", () => {
+    const setLobbyOverride = vi.fn();
+    render(
+      <SetupWizard
+        phase="ready"
+        {...baseProps()}
+        snapshot={fakeSnapshot({ state: "READY", plan: fakePlan() })}
+        playerCount={2}
+        lobbyOverride={true}
+        setLobbyOverride={setLobbyOverride}
+        postCreationContent={<div data-testid="lobby-slot">lobby</div>}
+      />,
+    );
+    const step6 = screen.getByRole("button", {
+      name: /Step 6: Review & launch/i,
+    });
+    fireEvent.click(step6);
+    expect(setLobbyOverride).toHaveBeenCalledWith(false);
+  });
+
+  it("ready (gates not met): step 6 is NOT clickable from the lobby override view", () => {
+    // Even with override on, if the launch gates aren't met (e.g. only
+    // 1 player role), step 6 stays inert — clicking it would land the
+    // user on a half-rendered review screen they can't actually launch
+    // from. Step 5 stays current (and ineligible to click → not a
+    // button), step 6 stays inert (also not a button).
+    const setLobbyOverride = vi.fn();
+    render(
+      <SetupWizard
+        phase="ready"
+        {...baseProps()}
+        snapshot={fakeSnapshot({ state: "READY", plan: fakePlan() })}
+        playerCount={1}
+        lobbyOverride={true}
+        setLobbyOverride={setLobbyOverride}
+        postCreationContent={null}
+      />,
+    );
+    expect(
+      screen.queryByRole("button", { name: /Step 6: Review & launch/i }),
     ).not.toBeInTheDocument();
   });
 });

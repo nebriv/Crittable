@@ -200,6 +200,17 @@ export function Facilitator() {
     SETUP_ROLE_BUILTINS.map((s) => ({ ...s })),
   );
   const [setupRoleDraft, setSetupRoleDraft] = useState("");
+  // Lobby-override toggle for the post-creation wizard. When true,
+  // the wizard pins step 5 (Invite players) even after the launch
+  // gates are met (plan finalized + ≥ 2 player roles). Lets the
+  // creator hop back from the launch screen to share an invite
+  // link without losing the auto-advanced review state. Cleared
+  // automatically when the snapshot leaves READY (because the
+  // override only matters during the lobby — once we're in BRIEFING
+  // / play, the wizard is gone). Lifted out of ``SetupWizard`` so
+  // ``SetupReviewView`` (rendered into the wizard's slot here) can
+  // request the hop without a complex prop chain.
+  const [lobbyOverride, setLobbyOverride] = useState(false);
   // Dev-mode toggle on the intro page: prefills a known scenario + creator
   // identity, and on submit auto-skips the AI setup dialogue so testers
   // bypass the 5–30 s setup loop. Use only for local QA.
@@ -400,6 +411,16 @@ export function Facilitator() {
       });
     }
   }, [phase, snapshot]);
+
+  // Drop the lobby-override flag whenever we leave the "ready"
+  // wizard phase. Without this, a creator who hopped back to the
+  // lobby and then started fresh (abandon → new session) would land
+  // back in the lobby step on the new session even after its launch
+  // gates were met. Cheap reset; runs at most once per phase
+  // transition.
+  useEffect(() => {
+    if (phase !== "ready" && lobbyOverride) setLobbyOverride(false);
+  }, [phase, lobbyOverride]);
 
   useEffect(() => {
     if (error) console.warn("[facilitator] error surfaced", error);
@@ -1219,8 +1240,16 @@ export function Facilitator() {
   // 5 vs 6 distinction for the rail highlight; we just have to pick
   // the matching panel content here.
   if (phase === "setup" || phase === "ready") {
+    // Launch gates are met (plan finalized + ≥ 2 player roles), AND
+    // the creator hasn't pinned themselves back to the lobby via
+    // the "← BACK TO LOBBY" button on the review screen. Both
+    // conditions must hold to render step 6 (Review & launch);
+    // otherwise we drop into step 5 (the lobby).
     const wizardReadyForReview =
-      phase === "ready" && Boolean(snapshot.plan) && playerCount >= 2;
+      phase === "ready" &&
+      Boolean(snapshot.plan) &&
+      playerCount >= 2 &&
+      !lobbyOverride;
     let postCreationContent;
     if (phase === "setup") {
       postCreationContent = (
@@ -1248,9 +1277,17 @@ export function Facilitator() {
           connectedRoleIds={presence}
           busy={busy}
           onStart={handleStart}
+          onBackToLobby={() => setLobbyOverride(true)}
         />
       );
     } else {
+      // Wire the launch handler ONLY when the creator landed back
+      // here via the "← BACK TO LOBBY" affordance (lobbyOverride =
+      // true) — that's the path where they need a one-click way out
+      // of the lobby. On the natural lobby visit (gates not yet met),
+      // the launch CTA inside SetupLobbyView is suppressed (needPlan
+      // / needPlayers branches in the sidecar copy still fire).
+      const lobbyLaunchHandler = lobbyOverride ? handleStart : undefined;
       postCreationContent = (
         <SetupLobbyView
           sessionId={state.sessionId}
@@ -1263,6 +1300,7 @@ export function Facilitator() {
           onRoleAdded={refreshSnapshot}
           onRoleChanged={refreshSnapshot}
           onError={setError}
+          onLaunchSession={lobbyLaunchHandler}
         />
       );
     }
@@ -1303,6 +1341,8 @@ export function Facilitator() {
           playerCount={playerCount}
           postCreationContent={postCreationContent}
           onAbandonSession={handleNewSession}
+          lobbyOverride={lobbyOverride}
+          setLobbyOverride={setLobbyOverride}
         />
       </>
     );

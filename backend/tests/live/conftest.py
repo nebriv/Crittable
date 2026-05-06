@@ -248,8 +248,14 @@ def _ransomware_session(
     *,
     state: SessionState = SessionState.AI_PROCESSING,
     extra_messages: list[Message] | None = None,
+    extra_roles: list[Role] | None = None,
 ) -> Session:
-    """Standard 2-role ransomware scenario shared by most cases."""
+    """Standard 2-role ransomware scenario shared by most cases.
+
+    ``extra_roles`` lets a presence-aware test add additional seats
+    (e.g. an Incident Commander seat that's deliberately ``not_joined``
+    in Block 10) without having to fork the whole fixture builder.
+    """
 
     creator = Role(id="role-ciso", label="CISO", display_name="Dev Tester", is_creator=True)
     soc = Role(id="role-soc", label="SOC Analyst", display_name="Dev Bot")
@@ -272,10 +278,13 @@ def _ransomware_session(
         success_criteria=["containment before beat 3"],
         out_of_scope=["real exploit code"],
     )
+    roles = [creator, soc]
+    if extra_roles:
+        roles.extend(extra_roles)
     s = Session(
         scenario_prompt="Ransomware via vendor portal",
         state=state,
-        roles=[creator, soc],
+        roles=roles,
         creator_role_id=creator.id,
         plan=plan,
     )
@@ -349,6 +358,20 @@ def briefing_session() -> Session:
     """First play turn — no prior messages. Briefing contract."""
 
     return _ransomware_session(state=SessionState.BRIEFING)
+
+
+@pytest.fixture
+def briefing_session_with_unjoined_seat() -> Session:
+    """Three-role briefing where the Incident Commander seat exists but
+    no human has opened the join link yet. Pair with
+    ``connected_role_ids={role-ciso, role-soc}`` (and ``focused_role_ids``
+    matching) when calling ``call_play`` to reproduce the screenshotted
+    user-reported bug: pre-fix the AI freely directed
+    ``address_role`` / ``pose_choice`` at the empty IC seat.
+    """
+
+    ic = Role(id="role-ic", label="Incident Commander", display_name=None)
+    return _ransomware_session(state=SessionState.BRIEFING, extra_roles=[ic])
 
 
 @pytest.fixture
@@ -487,6 +510,8 @@ async def call_play(
     tools: list[dict[str, Any]] | None = None,
     tool_choice: dict[str, Any] | None = None,
     workstreams_enabled: bool = False,
+    connected_role_ids: set[str] | frozenset[str] | None = None,
+    focused_role_ids: set[str] | frozenset[str] | None = None,
 ) -> Any:
     """Call the live API with the production message-build path.
 
@@ -496,10 +521,20 @@ async def call_play(
     ``Settings.workstreams_enabled`` defaults to ``True``); an audit
     of every existing call site is tracked separately so this default
     can be flipped without surprising regressions in tests not
-    designed for the workstream-aware prompt."""
+    designed for the workstream-aware prompt.
+
+    ``connected_role_ids`` / ``focused_role_ids`` are forwarded to
+    ``build_play_system_blocks`` so a test can set Block 10's
+    ``presence`` column. Default ``None`` falls through to the
+    "presence unknown — treat every seat as joined_focused" behaviour,
+    preserving existing live-test routing assertions."""
 
     system_blocks = build_play_system_blocks(
-        session, registry=registry, workstreams_enabled=workstreams_enabled
+        session,
+        registry=registry,
+        workstreams_enabled=workstreams_enabled,
+        connected_role_ids=connected_role_ids,
+        focused_role_ids=focused_role_ids,
     )
     messages = _play_messages(session, strict=False)
     kwargs: dict[str, Any] = {

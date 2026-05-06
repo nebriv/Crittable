@@ -91,6 +91,9 @@ class _RecordingConnections:
     async def connected_role_ids(self, *args: Any, **kwargs: Any) -> Any:
         return await self._real.connected_role_ids(*args, **kwargs)
 
+    async def focused_role_ids(self, *args: Any, **kwargs: Any) -> Any:
+        return await self._real.focused_role_ids(*args, **kwargs)
+
     async def role_has_other_connections(self, *args: Any, **kwargs: Any) -> Any:
         return await self._real.role_has_other_connections(*args, **kwargs)
 

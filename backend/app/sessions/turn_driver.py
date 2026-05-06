@@ -343,6 +343,20 @@ class TurnDriver:
             and m.is_interjection
             and m.turn_id == turn.id
         )
+        # Snapshot live presence ONCE per turn so every attempt + recovery
+        # pass sees a stable seated-roster ``presence`` column. A flap
+        # mid-attempt would otherwise let the model see "joined" on
+        # attempt 1 and "not_joined" on attempt 2, which would produce
+        # contradictory yields. The cost of a brief stale snapshot is
+        # bounded by the turn budget (a few seconds); the cost of a
+        # mid-turn flip is a wedged turn.
+        connections = self._manager.connections()
+        connected_role_ids = frozenset(
+            await connections.connected_role_ids(session.id)
+        )
+        focused_role_ids = frozenset(
+            await connections.focused_role_ids(session.id)
+        )
         _logger.info(
             "play_turn_start",
             session_id=session.id,
@@ -351,6 +365,8 @@ class TurnDriver:
             roster_size=session.roster_size,
             interjections_in_prompt=interjections_in_prompt,
             interjections_this_turn=interjections_this_turn,
+            connected_role_count=len(connected_role_ids),
+            focused_role_count=len(focused_role_ids),
         )
 
         contract = contract_for(
@@ -460,6 +476,8 @@ class TurnDriver:
                     session,
                     registry=registry,
                     workstreams_enabled=self._manager.settings().workstreams_enabled,
+                    connected_role_ids=connected_role_ids,
+                    focused_role_ids=focused_role_ids,
                 )
                 if active_directive is not None:
                     system_blocks.append(
@@ -759,11 +777,24 @@ class TurnDriver:
 
         dispatcher = self._manager.dispatcher()
         registry = self._manager.registry()
+        # Same single-snapshot rule as ``run_play_turn`` — the interject
+        # call also reads Block 10's presence column. Done outside the
+        # try/finally so a snapshot failure surfaces as a 5xx rather than
+        # leaking past the ai_status clear.
+        connections = self._manager.connections()
+        connected_role_ids = frozenset(
+            await connections.connected_role_ids(session.id)
+        )
+        focused_role_ids = frozenset(
+            await connections.focused_role_ids(session.id)
+        )
         _logger.info(
             "interject_start",
             session_id=session.id,
             turn_index=turn.index,
             for_role_id=for_role_id,
+            connected_role_count=len(connected_role_ids),
+            focused_role_count=len(focused_role_ids),
         )
         # Light up the labelled "Replying to {role}" status so the asking
         # participant + everyone else knows the AI received the question
@@ -786,6 +817,8 @@ class TurnDriver:
                 session,
                 registry=registry,
                 workstreams_enabled=self._manager.settings().workstreams_enabled,
+                connected_role_ids=connected_role_ids,
+                focused_role_ids=focused_role_ids,
             )
             system_blocks.append({"type": "text", "text": INTERJECT_NOTE})
             # Surface ``for_role_id`` directly in the system context so
@@ -1385,7 +1418,11 @@ _KICKOFF_USER_MSG = (
     "Do NOT call only bookkeeping tools (`track_role_followup`, "
     "`request_artifact`, etc.) — those produce no chat bubble and leave "
     "players with nothing to respond to. The brief is mandatory on this "
-    "turn."
+    "turn. "
+    "Pick the active roles from `joined_focused` / `joined_away` seats "
+    "only — never include a `not_joined` seat in the briefing yield (the "
+    "brief stalls if it lands on an empty chair). Block 10's presence "
+    "column is the source of truth; re-read it now."
 )
 
 # Per-turn reminder appended after the player batch on EVERY normal play

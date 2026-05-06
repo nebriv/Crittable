@@ -100,6 +100,18 @@ interface Props {
    * (no session to abandon).
    */
   onAbandonSession?: () => void;
+  /**
+   * Lobby-override flag (controlled by ``Facilitator``). When true,
+   * the post-creation step pins to 5 (Invite players) even if the
+   * launch gates are met (plan finalized + ≥ 2 player seats).
+   * Lets the creator manage the lobby after seeing the launch
+   * screen — clicking "← Back to lobby" inside ``SetupReviewView``
+   * sets this; clicking step 6 in the rail clears it.
+   */
+  lobbyOverride?: boolean;
+  /** Setter for ``lobbyOverride`` so the rail click in step 6
+   *  can clear it without round-tripping through the parent. */
+  setLobbyOverride?: (v: boolean) => void;
 }
 
 // Stable React keys for custom-role rows the operator adds. We can't
@@ -117,6 +129,14 @@ export function SetupWizard(props: Props) {
   // and submitting step 3 triggers session creation. Once created
   // (phase != "intro"), the step is derived from backend state.
   const [introStep, setIntroStep] = useState<1 | 2 | 3>(1);
+  // Lobby-override flag is owned by ``Facilitator`` so the
+  // ``SetupReviewView`` (rendered into the ``postCreationContent``
+  // slot below) can request a hop back to step 5 without props
+  // round-tripping through this component. Local fallback to
+  // ``false`` keeps the component usable in isolation (Storybook,
+  // tests).
+  const lobbyOverride = props.lobbyOverride ?? false;
+  const setLobbyOverride = props.setLobbyOverride;
 
   const current: WizardStepId = useMemo<WizardStepId>(() => {
     if (props.phase === "intro") return introStep;
@@ -124,12 +144,16 @@ export function SetupWizard(props: Props) {
     if (props.phase === "ready") {
       // READY with a finalized plan + ≥2 players → review/launch
       // (step 6). Otherwise we're still gathering joiners → step 5.
+      // ``lobbyOverride`` lets the creator pin step 5 to manage the
+      // lobby even after the gates are met — set when they click
+      // "← Back to lobby" from the review screen.
       const ready =
         props.snapshot?.plan != null && (props.playerCount ?? 0) >= 2;
+      if (lobbyOverride) return 5;
       return ready ? 6 : 5;
     }
     return 1;
-  }, [props.phase, introStep, props.snapshot, props.playerCount]);
+  }, [props.phase, introStep, props.snapshot, props.playerCount, lobbyOverride]);
 
   const done = useMemo(() => {
     const s = new Set<WizardStepId>();
@@ -142,22 +166,67 @@ export function SetupWizard(props: Props) {
       s.add(2);
       s.add(3);
       if (props.phase === "ready") s.add(4);
-      // step 5 done when plan is finalized (we're now reviewing in
-      // step 6); step 6 is never "done" until START SESSION runs and
-      // we leave this view entirely.
-      if (current === 6) s.add(5);
+      // step 5 done when plan is finalized + roster gate met (we're
+      // either in step 6, or pinned back on step 5 via lobbyOverride
+      // but the room is launch-ready). The ``done`` set doubles as
+      // the rail's "clickable" set — see WizardRail's ``isClickable``
+      // calculation — so adding step 5 here is what makes the
+      // "← BACK TO LOBBY" rail link work from step 6.
+      const launchReady =
+        props.snapshot?.plan != null && (props.playerCount ?? 0) >= 2;
+      if (current === 6 || launchReady) s.add(5);
+      // Step 6 normally only flips to "done" after START SESSION
+      // runs, but in lobbyOverride mode (user clicked "← Back to
+      // lobby" from step 6) we mark it ``done`` so the rail
+      // exposes it as a forward-jump target — otherwise the user
+      // would have to clear the override by some other means
+      // before they could return to the launch screen. Only
+      // applies when the launch gates are met; without that gate
+      // step 6 would render as a half-broken review screen with
+      // no working START SESSION CTA.
+      if (lobbyOverride && launchReady) s.add(6);
     }
     return s;
-  }, [props.phase, introStep, current]);
+  }, [
+    props.phase,
+    introStep,
+    current,
+    props.snapshot,
+    props.playerCount,
+    lobbyOverride,
+  ]);
 
-  // Intro-phase rail back-nav: clicking a completed step returns to
-  // it without losing form state. Post-creation we leave it disabled
-  // (the step is derived from backend state and there's no
-  // backwards transition path).
+  // Step navigation. Intro phase: user moves backward through
+  // completed form steps (state lives in ``introStep``). Post-
+  // creation: the creator can hop between step 5 (lobby) and
+  // step 6 (review) once both are reachable — useful when the
+  // launch screen prompts them to verify presence and they want
+  // to invite another role before pulling the trigger. Other
+  // post-creation steps remain non-clickable (step 4 is AI work
+  // they can't rewind, and steps 1-3 form state is frozen at
+  // creation time).
   const onJumpToStep = (id: WizardStepId) => {
-    if (props.phase !== "intro") return;
-    if (id !== 1 && id !== 2 && id !== 3) return;
-    setIntroStep(id);
+    if (props.phase === "intro") {
+      if (id !== 1 && id !== 2 && id !== 3) return;
+      setIntroStep(id);
+      return;
+    }
+    if (props.phase === "ready" && setLobbyOverride) {
+      if (id === 5) {
+        setLobbyOverride(true);
+        return;
+      }
+      if (id === 6) {
+        // Only allow forward jump to 6 if the launch gates are met,
+        // otherwise the user would land on a half-rendered review
+        // screen that can't actually launch.
+        const launchReady =
+          props.snapshot?.plan != null && (props.playerCount ?? 0) >= 2;
+        if (launchReady) setLobbyOverride(false);
+        return;
+      }
+      return;
+    }
   };
 
   return (
@@ -172,7 +241,16 @@ export function SetupWizard(props: Props) {
       <WizardRail
         current={current}
         done={done}
-        onJumpToStep={props.phase === "intro" ? onJumpToStep : undefined}
+        // Wired in two distinct phases: intro (back-nav through
+        // the form-state steps 1-3) and ready (hop between
+        // lobby step 5 and review step 6). Setup phase 4 keeps
+        // the rail static — the AI is mid-draft and there's no
+        // backward path from "AI is drafting" anyway.
+        onJumpToStep={
+          props.phase === "intro" || props.phase === "ready"
+            ? onJumpToStep
+            : undefined
+        }
         onAbandonSession={
           props.phase !== "intro" ? props.onAbandonSession : undefined
         }
