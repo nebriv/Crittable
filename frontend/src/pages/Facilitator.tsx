@@ -143,12 +143,17 @@ export function Facilitator() {
   //
   // Slot model (vs the old plain ``string[]``): each builtin slot
   // tracks Active/Off independently from the operator's custom rows
-  // so toggling off "Executive Sponsor" doesn't lose the row from the
-  // UI — it just stops being submitted. Custom rows added via the
-  // form below get the same toggle. The mockup in
+  // so toggling a row off doesn't lose the row from the UI — it just
+  // stops being submitted. Custom rows added via the form below get
+  // the same toggle. The mockup in
   // ``design/handoff/source/app-screens.jsx`` shows COM/EXE as
-  // STANDBY (yellow); we drop the third state per UX direction and
-  // default those two to Off so the operator opts in.
+  // STANDBY (yellow); the user explicitly asked us to drop the
+  // standby state for now. Defaulting those two to OFF (the original
+  // implementation) read as broken to a CISO persona — Comms/Legal
+  // is the *most* important non-technical seat in a real breach.
+  // User-agent review HIGH#1 said: either re-introduce STANDBY or
+  // ship them ACTIVE. We ship them ACTIVE; operators opt out via the
+  // toggle.
   const SETUP_ROLE_BUILTINS: ReadonlyArray<SetupRoleSlot> = [
     {
       key: "IC",
@@ -179,7 +184,7 @@ export function Facilitator() {
       code: "COM",
       label: "Comms / Legal",
       description: "External voice. Press, regulators, customers.",
-      active: false,
+      active: true,
       builtin: true,
     },
     {
@@ -187,7 +192,7 @@ export function Facilitator() {
       code: "EXE",
       label: "Executive Sponsor",
       description: "C-suite. Activate when stakes escalate.",
-      active: false,
+      active: true,
       builtin: true,
     },
   ];
@@ -509,8 +514,32 @@ export function Facilitator() {
         sessionId: created.session_id,
         creatorRoleId: created.creator_role_id,
         inviteeRoleCount: inviteeRoles.length,
+        failedInviteeCount: created.failed_invitees.length,
         devMode,
       });
+      // Surface per-row invitee failures (the previous silent-log
+      // pattern left operators wondering why the lobby roster didn't
+      // match the wizard). Skip purely-duplicate failures — those
+      // are benign (the user picked the same label twice or it
+      // collided with the creator label, which we already warn
+      // about in the form). Anything else is a real failure the
+      // operator needs to retry from the lobby.
+      const realFailures = created.failed_invitees.filter(
+        (f) => f.reason !== "duplicate",
+      );
+      if (realFailures.length > 0) {
+        const summary = realFailures
+          .map((f) => `"${f.label}" (${f.reason})`)
+          .join(", ");
+        console.warn(
+          "[facilitator] invitee role registration partial failure",
+          { failures: realFailures },
+        );
+        setError(
+          `Session created, but these invitee roles failed: ${summary}. ` +
+            "You can add them manually from the Roles panel.",
+        );
+      }
       setState({
         sessionId: created.session_id,
         token: created.creator_token,

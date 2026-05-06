@@ -272,6 +272,19 @@ type IntroBodyProps = Props & {
   onAdvance: (next: 1 | 2 | 3) => void;
 };
 
+/** Compute whether step 3 is submittable (≥1 active invitee role).
+ *  The lobby's ``start_session`` requires ≥2 player seats; the
+ *  creator already counts as one, so we only need to gate on at
+ *  least one active invitee here. Submitting with zero invitees
+ *  used to silently land the operator in a lobby with only
+ *  themselves — the LLM call to draft the plan would still fire,
+ *  burning ~30 s and a setup turn before the lobby surfaces the
+ *  block. UI/UX review flagged it BLOCK#2.
+ */
+function activeInviteeCount(slots: SetupRoleSlot[]): number {
+  return slots.reduce((n, s) => (s.active ? n + 1 : n), 0);
+}
+
 function IntroStepBody(props: IntroBodyProps) {
   const titles: Record<1 | 2 | 3, { eyebrow: string; title: string; sub: string }> = {
     1: {
@@ -355,6 +368,20 @@ function IntroStepBody(props: IntroBodyProps) {
           busy={props.busy}
           busyMessage={props.busyMessage}
           devMode={props.devMode}
+          // Step 3's primary CTA is gated on ≥1 active invitee. The
+          // creator counts as one of the two seats ``start_session``
+          // requires; we just need at least one invitee active so
+          // the lobby's gate clears without a second-trip retry.
+          submitDisabled={
+            props.step === 3 &&
+            activeInviteeCount(props.setupRoleSlots) === 0
+          }
+          submitDisabledReason={
+            props.step === 3 &&
+            activeInviteeCount(props.setupRoleSlots) === 0
+              ? "Activate at least one invitee role before rolling."
+              : undefined
+          }
         />
       </form>
     </>
@@ -368,6 +395,8 @@ function NavRow({
   busy,
   busyMessage,
   devMode,
+  submitDisabled = false,
+  submitDisabledReason,
 }: {
   step: 1 | 2 | 3;
   onBack: () => void;
@@ -375,6 +404,11 @@ function NavRow({
   busy: boolean;
   busyMessage: string | null;
   devMode: boolean;
+  /** Step-3 only: disable the ROLL SESSION button and show the
+   *  reason inline. Used to gate "no active invitees" before the
+   *  setup turn fires. */
+  submitDisabled?: boolean;
+  submitDisabledReason?: string;
 }) {
   // The primary CTA is type="button" on steps 1-2 (it just advances
   // the wizard) and type="submit" on step 3 (where it actually
@@ -423,11 +457,26 @@ function NavRow({
       {busyMessage ? (
         <StatusChip label="WORKING" value={busyMessage} tone="signal" />
       ) : null}
+      {submitDisabledReason ? (
+        <span
+          role="status"
+          className="mono"
+          style={{
+            fontSize: 11,
+            color: "var(--warn)",
+            letterSpacing: "0.04em",
+          }}
+        >
+          {submitDisabledReason}
+        </span>
+      ) : null}
       <div style={{ flex: 1 }} />
       {step === 3 ? (
         <button
           type="submit"
-          disabled={busy}
+          disabled={busy || submitDisabled}
+          aria-disabled={busy || submitDisabled}
+          title={submitDisabledReason}
           className="mono"
           style={{
             background: "var(--signal)",
@@ -816,11 +865,17 @@ function RoleSlotRow({
       style={{
         padding: "12px 14px",
         borderBottom: last ? "none" : "1px solid var(--ink-700)",
+        // Wrap the right-side controls below the label/description on
+        // narrow viewports so the description doesn't hard-clip on
+        // mobile. ``flex-wrap: wrap`` + ``min-width: 200px`` on the
+        // label column is the simplest pattern that keeps the desktop
+        // layout intact.
         display: "flex",
+        flexWrap: "wrap",
         alignItems: "center",
-        gap: 14,
+        gap: 12,
         background: colliding
-          ? "color-mix(in oklch, var(--warn) 6%, transparent)"
+          ? "color-mix(in oklch, var(--warn) 8%, transparent)"
           : "transparent",
       }}
     >
@@ -836,7 +891,7 @@ function RoleSlotRow({
       >
         {code}
       </div>
-      <div style={{ flex: 1, minWidth: 0 }}>
+      <div style={{ flex: 1, minWidth: 200 }}>
         <div
           className="sans"
           style={{
@@ -852,7 +907,10 @@ function RoleSlotRow({
             className="sans"
             style={{
               fontSize: 12,
-              color: "var(--ink-400)",
+              // Description uses the documented secondary-text token
+              // (``--ink-300``); ``--ink-400`` is the placeholder /
+              // disabled token and trips WCAG AA contrast at this size.
+              color: "var(--ink-300)",
               marginTop: 2,
             }}
           >
@@ -860,7 +918,11 @@ function RoleSlotRow({
           </div>
         ) : null}
       </div>
-      <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
+      <div
+        role="radiogroup"
+        aria-label={`${slot.label} state`}
+        style={{ display: "flex", gap: 4, alignItems: "center" }}
+      >
         <RoleStatePill
           active={slot.active}
           onClick={() => {
@@ -881,28 +943,26 @@ function RoleSlotRow({
         >
           OFF
         </RoleStatePill>
-        {slot.builtin ? null : (
-          <button
-            type="button"
-            onClick={onRemove}
-            aria-label={`Remove ${slot.label}`}
-            className="mono"
-            style={{
-              marginLeft: 4,
-              background: "transparent",
-              color: "var(--ink-400)",
-              border: "1px solid var(--ink-600)",
-              padding: "5px 8px",
-              borderRadius: 2,
-              fontSize: 11,
-              fontWeight: 700,
-              cursor: "pointer",
-              lineHeight: 1,
-            }}
-          >
-            ×
-          </button>
-        )}
+        <button
+          type="button"
+          onClick={onRemove}
+          aria-label={`Remove ${slot.label}`}
+          className="mono"
+          style={{
+            marginLeft: 4,
+            background: "transparent",
+            color: "var(--ink-400)",
+            border: "1px solid var(--ink-600)",
+            padding: "5px 8px",
+            borderRadius: 2,
+            fontSize: 11,
+            fontWeight: 700,
+            cursor: "pointer",
+            lineHeight: 1,
+          }}
+        >
+          ×
+        </button>
       </div>
     </div>
   );
@@ -921,11 +981,12 @@ function RoleStatePill({
   tone: "active" | "off";
   ariaLabel: string;
 }) {
-  // ``--signal`` for ACTIVE (mockup uses the same accent), neutral
-  // ``--ink-300`` for the OFF pill when it's the "selected" state —
-  // OFF doesn't get the signal color since that would imply it's the
-  // happy path, which it isn't.
-  const accent = tone === "active" ? "var(--signal)" : "var(--ink-200)";
+  // ACTIVE pill uses ``--signal`` (mockup accent). OFF pill, when
+  // it's the toggle-current state, uses ``--warn`` so it reads as
+  // "selected but cautionary" instead of as disabled. Earlier
+  // iteration used ``--ink-200`` for the active OFF state, which the
+  // UI/UX review flagged as indistinguishable from disabled controls.
+  const accent = tone === "active" ? "var(--signal)" : "var(--warn)";
   return (
     <button
       type="button"
@@ -946,7 +1007,9 @@ function RoleStatePill({
         fontSize: 9,
         fontWeight: 700,
         letterSpacing: "0.16em",
-        cursor: active ? "default" : "pointer",
+        // Always ``pointer`` — ``default`` on the active pill made
+        // operators think the toggle was locked.
+        cursor: "pointer",
       }}
     >
       {children}

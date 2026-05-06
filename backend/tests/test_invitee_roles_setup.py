@@ -151,17 +151,19 @@ def test_setup_system_blocks_include_roster() -> None:
 
     # Roster section header + every label appear in the prompt so the
     # model has the names to use as ``expected_actors`` instead of
-    # re-asking the creator.
+    # re-asking the creator. Labels are wrapped in ``<<<...>>>``
+    # fences (prompt-injection sentinel) so the assertion includes
+    # the fence to lock that hardening in.
     assert "## Seated roster" in text
-    assert "CISO" in text
-    assert "Incident Commander" in text
-    assert "Cybersecurity Engineer" in text
+    assert "<<<CISO>>>" in text
+    assert "<<<Incident Commander>>>" in text
+    assert "<<<Cybersecurity Engineer>>>" in text
     # Display name appears too — it shows up alongside the role label
     # so the model can address the player by name in dialogue.
-    assert "Mira" in text
+    assert "<<<Mira>>>" in text
     # The new directive against re-asking the team-composition question
-    # is verbatim in the prompt copy.
-    assert "Do not re-ask the creator who is at the table" in text
+    # is in the setup-system block (which appears in the same text).
+    assert "Do NOT re-ask which roles exist" in text
 
 
 def test_setup_system_blocks_empty_roster_keeps_fallback() -> None:
@@ -185,3 +187,98 @@ def test_setup_system_blocks_empty_roster_keeps_fallback() -> None:
     text = build_setup_system_blocks(session)[0]["text"]
     assert "## Seated roster" in text
     assert "CISO" in text
+
+
+def test_invitee_roles_max_length_cap(client: TestClient) -> None:
+    # ``InviteeRoleSpec`` list is ``Field(max_length=32)``; 33 entries
+    # should hit Pydantic's validation and 422 the request before any
+    # role is registered. (The per-session cap kicks in below this
+    # but is exercised by the test below.)
+    body: dict[str, Any] = {
+        "scenario_prompt": "seed",
+        "creator_label": "CISO",
+        "creator_display_name": "Alex",
+        "invitee_roles": [{"label": f"Role_{i}"} for i in range(33)],
+    }
+    resp = client.post("/api/sessions", json=body)
+    assert resp.status_code == 422, resp.text
+
+
+def test_invitee_roles_partial_failure_surfaces_in_response(
+    client: TestClient, monkeypatch
+) -> None:
+    # Patch ``manager.add_role`` to raise ``IllegalTransitionError``
+    # for one specific label so we can verify the create call still
+    # 200s, the OK invitees land in the response context, and the
+    # failed one is echoed in ``failed_invitees`` with the
+    # exception text.
+    from app.sessions.manager import SessionManager
+    from app.sessions.turn_engine import IllegalTransitionError
+
+    real_add_role = SessionManager.add_role
+
+    async def patched_add_role(self, *, session_id, label, **kw):  # type: ignore[no-untyped-def]
+        if label == "Doomed Role":
+            raise IllegalTransitionError("simulated cap hit")
+        return await real_add_role(self, session_id=session_id, label=label, **kw)
+
+    monkeypatch.setattr(SessionManager, "add_role", patched_add_role)
+
+    async def fake_run_setup_turn(self, *, session: Session) -> Session:  # type: ignore[no-untyped-def]
+        return session
+
+    with patch(
+        "app.sessions.turn_driver.TurnDriver.run_setup_turn",
+        new=fake_run_setup_turn,
+    ):
+        resp = client.post(
+            "/api/sessions",
+            json={
+                "scenario_prompt": "seed",
+                "creator_label": "CISO",
+                "creator_display_name": "Alex",
+                "invitee_roles": [
+                    {"label": "Incident Commander"},
+                    {"label": "Doomed Role"},
+                ],
+            },
+        )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    failed = body["failed_invitees"]
+    assert len(failed) == 1
+    assert failed[0]["label"] == "Doomed Role"
+    assert "simulated cap hit" in failed[0]["reason"]
+
+
+def test_invitee_role_label_strips_control_chars(client: TestClient) -> None:
+    # A label containing newlines / ANSI escape bytes / DEL must be
+    # sanitised before it lands in the roster (which feeds into the
+    # AI's system prompt verbatim). The structlog log-line-split
+    # vector is the immediate concern; the prompt-injection vector
+    # is a secondary harden.
+    captured: dict[str, Any] = {}
+
+    async def fake_run_setup_turn(self, *, session: Session) -> Session:  # type: ignore[no-untyped-def]
+        captured["labels"] = [r.label for r in session.roles]
+        return session
+
+    with patch(
+        "app.sessions.turn_driver.TurnDriver.run_setup_turn",
+        new=fake_run_setup_turn,
+    ):
+        resp = client.post(
+            "/api/sessions",
+            json={
+                "scenario_prompt": "seed",
+                "creator_label": "CISO",
+                "creator_display_name": "Alex",
+                "invitee_roles": [
+                    # \n + DEL + C1 byte mix — should all strip out.
+                    {"label": "Threat Intel\nFAKE: state\x7fchanged\x9b"},
+                ],
+            },
+        )
+    assert resp.status_code == 200, resp.text
+    # Every control byte stripped; surrounding whitespace .strip()'d.
+    assert captured["labels"] == ["CISO", "Threat IntelFAKE: statechanged"]

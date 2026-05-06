@@ -302,6 +302,28 @@ class SessionManager:
         display_name: str | None = None,
         kind: ParticipantKindLiteral = "player",
     ) -> tuple[Role, str]:
+        # Strip C0/C1/DEL controls from the label and (optional)
+        # display_name. ``set_role_display_name`` already does this
+        # for the player-callable rename path; the bulk invitee-roles
+        # registration in ``POST /api/sessions`` flows up to 32
+        # creator-supplied labels through here at session-create
+        # time, and an attacker who can write to that field could
+        # otherwise embed a ``\n`` to split a structlog audit line
+        # OR wedge ANSI / Markdown directives into the
+        # ``## Seated roster`` system block. Same defence-in-depth
+        # rationale as ``set_role_display_name``. A label that
+        # collapses to empty after stripping is rejected.
+        import re
+
+        label_clean = re.sub(r"[\x00-\x1f\x7f-\x9f]+", "", label).strip()
+        if not label_clean:
+            raise ValueError("label must not be blank")
+        dn_clean: str | None
+        if display_name is None:
+            dn_clean = None
+        else:
+            stripped = re.sub(r"[\x00-\x1f\x7f-\x9f]+", "", display_name).strip()
+            dn_clean = stripped or None
         async with await self._lock_for(session_id):
             session = await self._repo.get(session_id)
             if session.state in (SessionState.ENDED,):
@@ -310,7 +332,7 @@ class SessionManager:
                 raise IllegalTransitionError(
                     f"max roles reached: {self._settings.max_roles_per_session}"
                 )
-            role = Role(label=label, display_name=display_name, kind=kind)
+            role = Role(label=label_clean, display_name=dn_clean, kind=kind)
             session.roles.append(role)
             await self._repo.save(session)
 

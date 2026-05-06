@@ -267,6 +267,11 @@ export const api = {
     creator_role_id: string;
     creator_token: string;
     creator_join_url: string;
+    /** Per-row failures from the bulk invitee-roles registration.
+     *  Empty when every requested role landed; ``reason`` is
+     *  ``"duplicate"`` for de-duped labels and the raw exception
+     *  text for everything else (e.g. the per-session role cap). */
+    failed_invitees: { label: string; reason: string }[];
   }> {
     return request("POST", "/api/sessions", body);
   },

@@ -43,19 +43,86 @@ describe("Facilitator intro — Roles step (issue #61, redesign)", () => {
     expect(within(fs).getByText("Executive Sponsor")).toBeInTheDocument();
   });
 
-  it("first 3 builtin roles default to ACTIVE; COM/EXE default to OFF", () => {
+  it("all 5 builtin roles default to ACTIVE", () => {
     render(<Facilitator />);
     advanceToRoles();
-    // ACTIVE pill on a default-active row is pressed; OFF pill on a
-    // default-off row is pressed. Tests the binary state directly.
-    const icActive = screen.getByRole("button", {
-      name: /Incident Commander active/i,
-    });
-    expect(icActive).toHaveAttribute("aria-pressed", "true");
-    const exeOff = screen.getByRole("button", {
-      name: /Executive Sponsor off/i,
-    });
-    expect(exeOff).toHaveAttribute("aria-pressed", "true");
+    // ACTIVE pill on every default-active row is pressed. After the
+    // user-agent review flagged "OFF default for Comms/Legal /
+    // Executive Sponsor reads as broken without STANDBY context",
+    // the defaults shifted to all-ACTIVE — operators opt out via
+    // the toggle.
+    for (const label of [
+      "Incident Commander",
+      "Cybersecurity Manager",
+      "Cybersecurity Engineer",
+      "Comms / Legal",
+      "Executive Sponsor",
+    ]) {
+      const activeBtn = screen.getByRole("button", {
+        name: new RegExp(`${label.replace(/\//g, ".")} active`, "i"),
+      });
+      expect(activeBtn).toHaveAttribute("aria-pressed", "true");
+    }
+  });
+
+  it("toggling ACTIVE on a default-OFF row flips to active (direct off→active)", () => {
+    render(<Facilitator />);
+    advanceToRoles();
+    // Toggle Executive Sponsor OFF first (since defaults are now all
+    // active), then toggle ACTIVE to verify the off→active direction
+    // works on the same handler.
+    fireEvent.click(
+      screen.getByRole("button", { name: /Executive Sponsor off/i }),
+    );
+    expect(
+      screen.getByRole("button", { name: /Executive Sponsor off/i }),
+    ).toHaveAttribute("aria-pressed", "true");
+    fireEvent.click(
+      screen.getByRole("button", { name: /Executive Sponsor active/i }),
+    );
+    expect(
+      screen.getByRole("button", { name: /Executive Sponsor active/i }),
+    ).toHaveAttribute("aria-pressed", "true");
+    expect(
+      screen.getByRole("button", { name: /Executive Sponsor off/i }),
+    ).toHaveAttribute("aria-pressed", "false");
+  });
+
+  it("disables ROLL SESSION + shows warning when zero invitees are active", () => {
+    render(<Facilitator />);
+    advanceToRoles();
+    // Toggle every builtin OFF.
+    for (const label of [
+      "Incident Commander",
+      "Cybersecurity Manager",
+      "Cybersecurity Engineer",
+      "Comms / Legal",
+      "Executive Sponsor",
+    ]) {
+      fireEvent.click(
+        screen.getByRole("button", {
+          name: new RegExp(`${label.replace(/\//g, ".")} off`, "i"),
+        }),
+      );
+    }
+    // Submit button is disabled and the inline reason is shown.
+    const submit = screen.getByRole("button", { name: /ROLL SESSION/i });
+    expect(submit).toBeDisabled();
+    expect(
+      screen.getByText(/Activate at least one invitee role/i),
+    ).toBeInTheDocument();
+  });
+
+  it("removes a builtin row via the × button (every row is removable)", () => {
+    render(<Facilitator />);
+    advanceToRoles();
+    // Builtin rows now have a remove control too — the previous
+    // "toggle-only" treatment frustrated operators who didn't want
+    // a given builtin in their list at all.
+    fireEvent.click(screen.getByLabelText("Remove Executive Sponsor"));
+    expect(
+      screen.queryByText("Executive Sponsor"),
+    ).not.toBeInTheDocument();
   });
 
   it("toggling OFF on an active builtin row flips the pill state", () => {
@@ -129,7 +196,7 @@ describe("Facilitator intro — Roles step (issue #61, redesign)", () => {
     ).not.toBeInTheDocument();
   });
 
-  it("removes a custom row via the × button (builtin rows have no remove)", () => {
+  it("removes a custom row via the × button", () => {
     render(<Facilitator />);
     advanceToRoles();
     const draft = screen.getByLabelText("New role label") as HTMLInputElement;
@@ -138,10 +205,6 @@ describe("Facilitator intro — Roles step (issue #61, redesign)", () => {
     fireEvent.click(screen.getByLabelText("Remove Threat Intel"));
     expect(
       within(getRolesFieldset()).queryByText("Threat Intel"),
-    ).not.toBeInTheDocument();
-    // Builtin rows are not removable: no Remove control for them.
-    expect(
-      screen.queryByLabelText("Remove Incident Commander"),
     ).not.toBeInTheDocument();
   });
 

@@ -352,15 +352,29 @@ def register_api_routes(app: FastAPI) -> None:
         # step 3 already answered). De-dupe against the creator's own
         # label so an operator who picks "CISO" as their seat AND leaves
         # "CISO" in the invitee list doesn't get a duplicate row.
+        #
+        # Per-role failures are accumulated into ``failed_invitees`` and
+        # echoed in the response so the frontend can surface a per-row
+        # error (rather than the previous silent-log-and-continue
+        # which left the operator wondering why the lobby had fewer
+        # rows than the wizard).
         import structlog
         log = structlog.get_logger("api")
         creator_label_lower = body.creator_label.strip().lower()
         seen_labels: set[str] = {creator_label_lower}
         invitee_role_ids: list[str] = []
+        failed_invitees: list[dict[str, str]] = []
         for spec in body.invitee_roles:
             label_clean = spec.label.strip()
             label_lower = label_clean.lower()
-            if not label_clean or label_lower in seen_labels:
+            if not label_clean:
+                continue
+            if label_lower in seen_labels:
+                # Duplicate is benign — flag it so the UI can collapse
+                # the row but don't fail the request.
+                failed_invitees.append(
+                    {"label": label_clean, "reason": "duplicate"}
+                )
                 continue
             seen_labels.add(label_lower)
             try:
@@ -373,19 +387,29 @@ def register_api_routes(app: FastAPI) -> None:
                 invitee_role_ids.append(role.id)
             except (RuntimeError, ValueError, IllegalTransitionError) as exc:
                 # Don't fail session creation on a single bad role —
-                # surface the failure in logs and let the operator add
-                # missing roles via the lobby.
+                # capture the per-row reason for the response and log
+                # so the operator has a breadcrumb either way.
                 log.warning(
                     "invitee_role_add_failed",
                     session_id=session.id,
                     label=label_clean,
                     error=str(exc),
                 )
+                failed_invitees.append(
+                    {"label": label_clean, "reason": str(exc)}
+                )
         if invitee_role_ids:
             log.info(
                 "invitee_roles_registered",
                 session_id=session.id,
                 count=len(invitee_role_ids),
+            )
+        if failed_invitees:
+            log.warning(
+                "invitee_roles_partial_failure",
+                session_id=session.id,
+                failed_count=len(failed_invitees),
+                ok_count=len(invitee_role_ids),
             )
 
         settings = request.app.state.settings
@@ -423,6 +447,7 @@ def register_api_routes(app: FastAPI) -> None:
             "creator_token": token,
             "creator_join_url": f"/play/{token}",
             "skip_setup": skip_setup,
+            "failed_invitees": failed_invitees,
         }
 
     @router.post("/sessions/{session_id}/roles")
