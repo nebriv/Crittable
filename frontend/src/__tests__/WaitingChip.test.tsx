@@ -92,7 +92,7 @@ describe("WaitingChip — issue #88 + Wave 1 (issue #134, ready-quorum)", () => 
       />,
     );
     // SOC Analyst submitted (so a discussion message landed) but
-    // hasn't signalled ready — annotated "discussing".
+    // hasn't signaled ready — annotated "discussing".
     expect(
       screen.getByText(
         /Waiting on SOC Analyst \(Bridget\) — discussing and Legal \(Marcus\) to mark ready\./,

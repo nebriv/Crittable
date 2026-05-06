@@ -3,7 +3,7 @@
 Two attack surfaces are exercised here:
 
 1. **Input guardrail** (``app.llm.guardrail.InputGuardrail``) — we feed
-   a curated catalogue of injection attempts and assert the classifier
+   a curated catalog of injection attempts and assert the classifier
    verdict matches expectation. This is the "fight fire with fire"
    loop: the guardrail is itself an LLM call, so its only realistic
    regression test is against the live API.
@@ -16,7 +16,7 @@ Two attack surfaces are exercised here:
      * did not echo the attack instructions,
      * did not break out of the scenario.
 
-The catalogue below is derived from the OWASP LLM Top 10 (LLM01:
+The catalog below is derived from the OWASP LLM Top 10 (LLM01:
 Prompt Injection) plus published facilitator-bypass patterns. New
 attack patterns should be added as they're observed in the wild.
 
@@ -41,7 +41,7 @@ from .test_prompt_regression_judge import _collect_player_facing_text
 pytestmark = [pytest.mark.asyncio, pytest.mark.live]
 
 
-# ---------------------------------------------------------------- guardrail catalogue
+# ---------------------------------------------------------------- guardrail catalog
 
 
 # Each entry is (label, message, expected_verdict).
@@ -142,7 +142,7 @@ async def test_guardrail_classifier(
     expected: str,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Drive the production InputGuardrail against the catalogue."""
+    """Drive the production InputGuardrail against the catalog."""
 
     monkeypatch.setenv("INPUT_GUARDRAIL_ENABLED", "true")
     # Re-instantiate with the env override applied.
@@ -197,7 +197,7 @@ async def test_play_tier_resists_injection(
 
     The play tier is supposed to stay in role and not leak. We don't
     enable the input guardrail here — we want to test the SECOND
-    line of defence (the play prompt itself), not the first.
+    line of defense (the play prompt itself), not the first.
     """
 
     from app.sessions.models import Message, MessageKind

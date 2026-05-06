@@ -1173,7 +1173,7 @@ def test_render_markdown_hides_flagged_for_review_section_when_empty() -> None:
     """An exercise where nobody clicked Mark-for-AAR (and the model
     didn't flag anything from the transcript) should not render an
     empty ``### Flagged for review`` heading. Mirrors the existing
-    what-went-well / gaps / recommendations empty-section behaviour."""
+    what-went-well / gaps / recommendations empty-section behavior."""
 
     from app.llm.export import _render_markdown
 

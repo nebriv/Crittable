@@ -22,7 +22,7 @@ function dispatchSelectionInside(el: HTMLElement, text = "hello world"): void {
   range.selectNodeContents(el);
   // jsdom's getBoundingClientRect on a text node returns zeros, which
   // makes the popover render at the viewport-clamped fallback. That's
-  // fine for these tests — we care about presence + behaviour, not
+  // fine for these tests — we care about presence + behavior, not
   // pixel positioning.
   const sel = window.getSelection();
   sel?.removeAllRanges();

@@ -40,7 +40,7 @@ export function GodModePanel({
   const [data, setData] = useState<DebugSnapshot | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [filter, setFilter] = useState("");
-  const cancelled = useRef(false);
+  const canceled = useRef(false);
   const dialogRef = useRef<HTMLDialogElement | null>(null);
 
   // Open as a native <dialog>: focus-trap, Esc-to-close, and background
@@ -60,7 +60,7 @@ export function GodModePanel({
   }, [onClose]);
 
   useEffect(() => {
-    cancelled.current = false;
+    canceled.current = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
 
     async function tick() {
@@ -72,20 +72,20 @@ export function GodModePanel({
       }
       try {
         const body = (await api.getDebug(sessionId, creatorToken)) as DebugSnapshot;
-        if (!cancelled.current) {
+        if (!canceled.current) {
           setData(body);
           setError(null);
         }
       } catch (err) {
-        if (!cancelled.current) {
+        if (!canceled.current) {
           setError(err instanceof Error ? err.message : String(err));
         }
       }
-      if (!cancelled.current) timer = setTimeout(tick, 2500);
+      if (!canceled.current) timer = setTimeout(tick, 2500);
     }
     tick();
     return () => {
-      cancelled.current = true;
+      canceled.current = true;
       if (timer) clearTimeout(timer);
     };
   }, [sessionId, creatorToken]);

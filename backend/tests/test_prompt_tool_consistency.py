@@ -453,7 +453,7 @@ def test_setup_tier_prompts_only_reference_known_setup_tools_or_concepts(
     play_tool_names = {t["name"] for t in PLAY_TOOLS}
     unknown = refs - setup_tool_names - play_tool_names - _NON_TOOL_ALLOWLIST
     assert not unknown, (
-        f"Backticked names in setup-tier prompts unrecognised: "
+        f"Backticked names in setup-tier prompts unrecognized: "
         f"{sorted(unknown)}. Same fix as the play-tier test."
     )
 
@@ -467,7 +467,7 @@ def test_aar_tier_prompts_only_reference_known_aar_tools_or_concepts() -> None:
     play_tool_names = {t["name"] for t in PLAY_TOOLS}  # AAR refers to play history
     unknown = refs - aar_tool_names - play_tool_names - _NON_TOOL_ALLOWLIST
     assert not unknown, (
-        f"Backticked names in AAR-tier prompts unrecognised: "
+        f"Backticked names in AAR-tier prompts unrecognized: "
         f"{sorted(unknown)}. Same fix as the play-tier test."
     )
 

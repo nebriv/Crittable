@@ -49,7 +49,7 @@ export at session end.
 ## Session state machine
 
 ```
-CREATED ──▶ SETUP ◀──┐ creator ↔ AI dialogue
+CREATED ──▶ SETUP ◀──┐ creator ↔ AI dialog
                      │ (ask_setup_question / propose_scenario_plan
                      │  / finalize_setup loop). Setup_skip + dev mode
                      │  short-circuit straight to READY.
@@ -185,7 +185,7 @@ of the roster), not the label." The model self-corrects.
 
 ### Kill-switches
 
-Two operator settings revert the new behaviour for emergency
+Two operator settings revert the new behavior for emergency
 rollouts:
 
 - `LLM_RECOVERY_DRIVE_REQUIRED=False` — drops `DRIVE` from the
@@ -397,4 +397,4 @@ to see the trace.
   - **Validator state surfaced to creator UI** (issue #70, PR #173).
 - **Phase 3** — value-add (persistence, OAuth/SSO, scenario library,
   voice, observability, scale-out, native non-Anthropic LLM
-  adapters). Tracked under epics labelled `phase-3` (#20–#25).
+  adapters). Tracked under epics labeled `phase-3` (#20–#25).

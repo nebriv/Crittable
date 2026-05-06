@@ -386,7 +386,7 @@ Two replay modes:
   `ai_tool_call`, `critical_inject`, `system` message) directly into
   `session.messages` and opens the next turn with the role-set the
   recording captured. The LLM is never called during play. The transcript,
-  highlights, broadcast/share_data icons, role colours, and filtering all
+  highlights, broadcast/share_data icons, role colors, and filtering all
   reproduce byte-for-byte. The recorder defaults to this mode whenever AI
   fallout was captured.
 
@@ -408,7 +408,7 @@ matter" — it almost always matters once a recorded scenario hits it.
 ### Known fragility seams
 
 The runner's contract is durable for most feature shapes (new tools,
-prompt edits, AI-behaviour changes), but three seams require the runner
+prompt edits, AI-behavior changes), but three seams require the runner
 itself to be updated when they move:
 
 1. **Lifecycle order** — `runner.run()` hardcodes

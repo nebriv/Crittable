@@ -756,7 +756,7 @@ def _render_markdown(
 
     # Appendix D — full transcript. Issue #83: the transcript used to live
     # near the top of the report (right after the executive summary), which
-    # buried the analytic content under a wall of dialogue and made the AAR
+    # buried the analytic content under a wall of dialog and made the AAR
     # unreadable on real sessions. Pushed it to the appendix so the
     # narrative / scores / recommendations come first; the rich per-message
     # rendering (timestamp + role header + blockquoted body) preserves any

@@ -19,7 +19,7 @@ interface Props {
 }
 
 export function ChatIndicator({ label, tone = "ai", silent = false }: Props) {
-  const colour =
+  const color =
     tone === "ai"
       ? "border border-signal-deep bg-signal-tint text-signal"
       : "border border-info bg-info-bg text-info";
@@ -33,7 +33,7 @@ export function ChatIndicator({ label, tone = "ai", silent = false }: Props) {
   return (
     <div
       {...ariaProps}
-      className={`mono inline-flex max-w-full items-center gap-2 break-words rounded-r-1 px-3 py-1.5 text-[11px] uppercase tracking-[0.10em] ${colour}`}
+      className={`mono inline-flex max-w-full items-center gap-2 break-words rounded-r-1 px-3 py-1.5 text-[11px] uppercase tracking-[0.10em] ${color}`}
     >
       <span aria-hidden="true" className="inline-flex shrink-0 gap-0.5">
         <span

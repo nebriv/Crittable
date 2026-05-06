@@ -488,7 +488,7 @@ def test_revoke_clears_role_from_active_set_on_remove(
 ) -> None:
     """``remove_role`` must also drop the role from
     ``current_turn.active_role_ids`` so the turn isn't stuck waiting
-    on a player that no longer exists. Pre-existing behaviour; pinned
+    on a player that no longer exists. Pre-existing behavior; pinned
     here in the regression net so a future kick-cleanup refactor
     can't drop it."""
 

@@ -23,6 +23,8 @@ from .logging_setup import get_logger
 
 _logger = get_logger("rate_limit")
 
+_SECONDS_PER_MINUTE = 60.0
+
 
 class _Bucket:
     __slots__ = ("last_refill", "tokens")
@@ -49,7 +51,7 @@ class RateLimitMiddleware:
         self._enabled = settings.rate_limit_enabled
         self._capacity = float(settings.rate_limit_req_per_min)
         # tokens-per-second
-        self._refill = self._capacity / 60.0
+        self._refill = self._capacity / _SECONDS_PER_MINUTE
         self._buckets: dict[str, _Bucket] = defaultdict(self._fresh)
         self._lock = asyncio.Lock()
 

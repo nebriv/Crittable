@@ -19,7 +19,7 @@ interface Props {
   /**
    * Subset of ``connectedRoleIds`` whose tabs are currently focused /
    * visible. Drives the blue (active) vs yellow (joined but tabbed
-   * away) colour of the status dot. A role in ``connectedRoleIds`` but
+   * away) color of the status dot. A role in ``connectedRoleIds`` but
    * not in this set is shown as joined-but-idle.
    */
   focusedRoleIds: ReadonlySet<string>;
@@ -259,8 +259,8 @@ export function RolesPanel({
         </span>
       </div>
       {/* Legend is in the accessibility tree (so a screen-reader user
-          gets the colour↔meaning mapping the sighted user just saw);
-          only the inert colour swatches are ``aria-hidden``. */}
+          gets the color↔meaning mapping the sighted user just saw);
+          only the inert color swatches are ``aria-hidden``. */}
       <p className="mono flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px] uppercase tracking-[0.06em] text-ink-400">
         <span className="inline-flex items-center gap-1">
           <span

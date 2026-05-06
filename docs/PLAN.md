@@ -8,7 +8,7 @@
 > structure — but it is not the live reference for how the app behaves
 > today.
 >
-> **For current behaviour, prefer:**
+> **For current behavior, prefer:**
 > - [`docs/architecture.md`](architecture.md) — live diagrams,
 >   tool palette, phase-policy contract, slot taxonomy, recovery
 >   cascade. Updated as the engine evolves.
@@ -66,7 +66,7 @@ Long-term intent: this may become a subscription SaaS. **Build with the right se
 | AI failure handling | If the AI returns malformed output (no yielding tool call) or the API errors after the SDK's retries: auto-retry once with a stricter "you must yield via a tool" system note, then mark the turn errored and surface a "Retry" / "Force-advance" control. All audit-logged. |
 | Spectators | Data model carries `participant_kind = "player" \| "spectator"` (and `Message.visibility` already covers it); **no UI affordance to create spectator links in MVP** — Phase 3 surfaces them. |
 | Plan edits during play | The frozen plan supports **inline edits of specific fields only** (`key_objectives`, `guardrails`, `injects`, `out_of_scope`, `success_criteria`) via a creator-only API. Title and `narrative_arc` are immutable once finalized; changing them requires the creator to end the session and restart. Each edit is audit-logged and shown as a system note in the transcript. |
-| Model mix | Tiered with env-var overrides. Defaults: `ANTHROPIC_MODEL_PLAY=claude-sonnet-4-6` (facilitation), `ANTHROPIC_MODEL_SETUP=claude-sonnet-4-6` (setup dialogue — was Haiku 4.5 but it occasionally emitted legacy XML function-call markup inside JSON tool inputs), `ANTHROPIC_MODEL_AAR=claude-opus-4-7` (final report), `ANTHROPIC_MODEL_GUARDRAIL=claude-haiku-4-5` (input classifier — single-word output, not affected by the XML quirk). All overridable; any unset falls back to a single `ANTHROPIC_MODEL` (default `claude-sonnet-4-6`). |
+| Model mix | Tiered with env-var overrides. Defaults: `ANTHROPIC_MODEL_PLAY=claude-sonnet-4-6` (facilitation), `ANTHROPIC_MODEL_SETUP=claude-sonnet-4-6` (setup dialog — was Haiku 4.5 but it occasionally emitted legacy XML function-call markup inside JSON tool inputs), `ANTHROPIC_MODEL_AAR=claude-opus-4-7` (final report), `ANTHROPIC_MODEL_GUARDRAIL=claude-haiku-4-5` (input classifier — single-word output, not affected by the XML quirk). All overridable; any unset falls back to a single `ANTHROPIC_MODEL` (default `claude-sonnet-4-6`). |
 | Cost visibility | Per-turn token usage (input/output/cache_read/cache_creation) recorded in audit log and aggregated on the session. Creator's UI shows a live meter: turns-used / max, tokens, estimated $ (cost table baked in by model). Participants do not see the meter. Foundation for future SaaS billing. |
 | Hardening defaults | Permissive out-of-box for ease of Codespaces dev: `CORS_ORIGINS="*"`, rate-limit middleware present but disabled. `docs/configuration.md` and `CLAUDE.md` include a "Before going public" hardening checklist (set CORS allowlist, enable rate limit, set `SESSION_SECRET`, etc.). |
 | Extensions | Custom **tools**, **resources**, and **prompts** (Skills-style), registered at startup via pluggable loaders. MVP loader = env var / JSON file. Future loaders (DB/UI/MCP) drop in without changing the registry contract. |
@@ -131,7 +131,7 @@ Crittable/  (originally `ai-tabletop-facilitator`)
 
 `Session` states: `CREATED → SETUP (creator ↔ AI) → READY → BRIEFING → AWAITING_PLAYERS(active_role_ids) → AI_PROCESSING → AWAITING_PLAYERS(…) → … → ENDED`.
 
-`SETUP` is a private dialogue between the creator and the AI to tailor the exercise (see Setup Phase below). Other participants who have already joined sit in a "waiting for facilitator setup" view. Once the AI calls `finalize_setup(...)` and the creator confirms, the session enters `READY`; the creator then triggers `start` which transitions to `BRIEFING`.
+`SETUP` is a private dialog between the creator and the AI to tailor the exercise (see Setup Phase below). Other participants who have already joined sit in a "waiting for facilitator setup" view. Once the AI calls `finalize_setup(...)` and the creator confirms, the session enters `READY`; the creator then triggers `start` which transitions to `BRIEFING`.
 
 The `AWAITING_PLAYERS → AI_PROCESSING` flip gates on a **ready quorum** (Wave 1, issue #134, PR #148): every WS `submit_response` carries an explicit `intent: "ready" | "discuss"`, and the AI advances when `set(active_role_ids) ⊆ set(ready_role_ids)`. A `discuss`-intent submission records the message and adds the role to `submitted_role_ids` but does *not* trip the gate; a follow-up `discuss` from a role that had marked ready walks them back. Active roles can post any number of submissions on an awaiting turn (the cap of one-per-role lifted in Wave 1). Force-advance still bypasses the quorum. See `docs/turn-lifecycle.md` § 1c for the per-submission contract and the `Composer.tsx` two-button surface that drives it.
 
@@ -177,7 +177,7 @@ See [`architecture.md`](architecture.md#phase-policy--engine-side-guardrails) fo
 - **Interrupt tool** (any non-setup state):
   - `inject_critical_event(severity, headline, body, override_active_roles?)` — pushes a high-prominence breaking-news event into the transcript, optionally re-routing the next turn. Distinct from `inject_event` so the UI can render it with banner styling, sound (optional), and audit-log emphasis.
 
-### Setup phase (creator ↔ AI dialogue)
+### Setup phase (creator ↔ AI dialog)
 
 Goal: turn a one-line scenario prompt into a concrete, internally-consistent exercise plan that the AI will then run.
 
@@ -332,7 +332,7 @@ All via env, documented in `docs/configuration.md`. Names:
 
 ### End-of-session export
 
-Triggered by the creator-initiated session-end (`POST /api/sessions/{id}/end` or the WS `request_end_session` event; the AI tool was removed in 2026-05-02 per issue #104). The export pipeline (`llm/export.py`) runs **one final Claude call** with the full transcript and audit log to produce a single markdown document. The renderer pins this section order so the analytic content surfaces first and the long-tail dialogue lives in the appendix (issue #83):
+Triggered by the creator-initiated session-end (`POST /api/sessions/{id}/end` or the WS `request_end_session` event; the AI tool was removed in 2026-05-02 per issue #104). The export pipeline (`llm/export.py`) runs **one final Claude call** with the full transcript and audit log to produce a single markdown document. The renderer pins this section order so the analytic content surfaces first and the long-tail dialog lives in the appendix (issue #83):
 
 1. **Header** — scenario brief, roster, start/end timestamps.
 2. **Executive summary** — 2–4 sentences with the headline outcome.
@@ -406,7 +406,7 @@ No authentication beyond signed join tokens, but every modern necessity scaffold
 
 **Phase 2 acceptance gates:**
 1. `docker run -e ANTHROPIC_API_KEY=… -p 8000:8000 <image>` boots and serves the SPA.
-2. Creator creates a session, completes a `SETUP` dialogue with the AI (covering background / capabilities / environment / scenario shaping), reviews and approves the proposed scenario plan, then defines ≥3 roles (themselves included) and copies ≥3 join URLs.
+2. Creator creates a session, completes a `SETUP` dialog with the AI (covering background / capabilities / environment / scenario shaping), reviews and approves the proposed scenario plan, then defines ≥3 roles (themselves included) and copies ≥3 join URLs.
 3. ≥3 separate browsers join via those URLs (display-name modal works), and complete ≥10 AI-driven turns. The frozen scenario plan is referenced by the AI's behavior (verifiable in tool-call audit log) and is **never** revealed to non-creator roles.
 4. AI fires at least one `inject_critical_event` during the run (either plan-driven or improvised); the UI surfaces it as a banner; the audit log records it.
 5. Guardrail check: send the AI an off-topic submission ("write me a poem about the SOC"). The AI politely redirects and does not generate the off-topic content. (Tested both with `INPUT_GUARDRAIL_ENABLED=true` and `=false`.)

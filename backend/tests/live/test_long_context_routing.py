@@ -214,7 +214,7 @@ def _deep_session() -> Session:
             "**CISO** — siblings confirm credential-stuffing or shared "
             "password. Kill both and rotate all vendor-portal credentials? "
             "Or quarantine and observe for 5 min to capture attacker "
-            "behaviour for the IR report?",
+            "behavior for the IR report?",
         ),
         (
             "player",

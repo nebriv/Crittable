@@ -417,7 +417,7 @@ export function Transcript({
           // sits OUTSIDE that border on a dedicated rail so the two
           // signals don't collide (UI/UX review specifically asked we
           // avoid recoloring the critical-inject red).
-          // Header chrome — dot + label colour. Critical injects keep
+          // Header chrome — dot + label color. Critical injects keep
           // their crit-red emphasis; highlighted bubbles (your turn or
           // @-mentioned) shift to warn so the dot, label, border, and
           // @YOU badge all read as one amber focus signal.
@@ -434,7 +434,7 @@ export function Transcript({
           // Bubble border. Critical injects keep their crit-red
           // emphasis. Otherwise, when the viewer owes a response on
           // this turn (focus) OR this message @-mentions them, swap
-          // the default ink-600 border for warn — same amber colour
+          // the default ink-600 border for warn — same amber color
           // signal as the @YOU badge.
           const borderClass = isCritical
             ? "border border-crit border-l-2 bg-crit-bg"

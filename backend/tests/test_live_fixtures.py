@@ -13,7 +13,7 @@ What it locks:
 
 1. **No direct ``os.environ`` reads of ``ANTHROPIC_API_KEY`` in
    ``tests/live/``.**  The production code resolves the key via
-   ``Settings.anthropic_api_key`` (pydantic-settings), which honours
+   ``Settings.anthropic_api_key`` (pydantic-settings), which honors
    both shell env vars AND (via the live conftest's
    ``_load_project_root_dotenv``) a project-root ``.env`` file.
    Reading ``os.environ`` directly diverges: a contributor whose key
@@ -112,7 +112,7 @@ def test_no_direct_os_environ_anthropic_api_key_in_tests_live() -> None:
 
     Why this test exists: the production code reads the API key via
     ``Settings.anthropic_api_key`` so a ``.env`` file (loaded by the
-    live conftest's ``_load_project_root_dotenv``) is honoured.
+    live conftest's ``_load_project_root_dotenv``) is honored.
     Test fixtures that read ``os.environ`` directly silently force
     every contributor to export the var into their shell — a
     divergence that produced ``KeyError`` errors on a working setup

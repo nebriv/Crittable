@@ -304,7 +304,7 @@ def test_would_narrow_to_empty_keeps_original() -> None:
 
 def test_address_role_plus_broadcast_combine_addressed() -> None:
     """Realistic shape: ``address_role(eng, ...)`` for a focused ask +
-    ``broadcast`` summarising state to the room. Keep both addressees."""
+    ``broadcast`` summarizing state to the room. Keep both addressees."""
 
     ben = _make_role(id_label="Cybersecurity Manager", display_name="Ben")
     eng = _make_role(id_label="Cybersecurity Engineer")

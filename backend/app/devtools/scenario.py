@@ -37,11 +37,11 @@ class RoleSpec(BaseModel):
 
 
 class SetupReply(BaseModel):
-    """One creator-side reply during the AI setup dialogue.
+    """One creator-side reply during the AI setup dialog.
 
     Each entry is a single ``POST /sessions/{id}/setup/reply`` call. The
     runner sends them in order, waiting for the AI's response after each
-    before sending the next so the dialogue stays coherent.
+    before sending the next so the dialog stays coherent.
 
     ``after_state`` is an optional sanity check — when set, the runner
     asserts the session is in that state before sending the reply. Used
@@ -96,7 +96,7 @@ class RecordedMessage(BaseModel):
     The recorder dumps every non-player ``Message`` here so a replay
     against ``replay_mode="deterministic"`` can reproduce the EXACT
     transcript that drove the original UI — message highlights,
-    role-coded colours, filtering, the broadcast/share_data tool icons,
+    role-coded colors, filtering, the broadcast/share_data tool icons,
     everything that depends on ``Message.kind`` + ``Message.tool_name``
     + ``Message.body``.
 
@@ -287,7 +287,7 @@ class Scenario(BaseModel):
     cost: RecordedCost | None = None
     # ``deterministic`` — replay AI messages from ``play_turns[*].ai_messages``
     # verbatim, never call the LLM during play. Required for UI-fidelity
-    # tests (highlighting, colours, filtering all depend on message kind
+    # tests (highlighting, colors, filtering all depend on message kind
     # / tool_name / body, which only the recorder can guarantee).
     #
     # ``engine`` — call the live LLM for every play turn (or the

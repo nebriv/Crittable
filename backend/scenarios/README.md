@@ -83,7 +83,7 @@ the early submissions and ``intent: "ready"`` on the closing one
 Notes:
 
 - `skip_setup: true` drops a default plan and jumps straight to READY.
-  Use this for scenarios that don't care about the setup dialogue.
+  Use this for scenarios that don't care about the setup dialog.
 - Each `play_turn`'s `submissions` are sent in order. The runner waits
   for each to be acknowledged before sending the next, mirroring the
   real engine's per-turn cadence.
@@ -97,7 +97,7 @@ Notes:
   turns. ~$0.10 per run against real LLM. All submissions default
   `intent="ready"` (legacy "submit-and-advance" flow).
 - **`full_5role_phishing.json`** — full lifecycle including setup
-  dialogue, 5 roles, 6 play turns. ~$0.20 per run; exercises the
+  dialog, 5 roles, 6 play turns. ~$0.20 per run; exercises the
   multi-role active-set narrowing and per-role AAR scoring. All
   submissions default `intent="ready"`.
 - **`discussion_then_ready.json`** — Wave 1 (issue #134) demo of

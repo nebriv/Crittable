@@ -410,7 +410,7 @@ class TestAddressRoleWorkstreamDispatch:
 
     @pytest.mark.asyncio
     async def test_flag_off_silently_drops_workstream_id(self) -> None:
-        # Phase A §6.8 — defence in depth. Even if a stale prompt cache
+        # Phase A §6.8 — defense in depth. Even if a stale prompt cache
         # makes the model emit ``workstream_id`` against a flag-off
         # backend, the call must succeed without strict-validation.
         dispatcher = _make_dispatcher(workstreams_enabled=False)
@@ -746,7 +746,7 @@ class TestStructuredAuditReason:
 
     @pytest.mark.asyncio
     async def test_audit_extras_with_reason_key_does_not_clobber(self) -> None:
-        """Defence-in-depth: even if a future caller misuses
+        """Defense-in-depth: even if a future caller misuses
         ``audit_extras`` and includes a ``reason`` key, the original
         human-readable string survives — the colliding entry is rerouted
         to ``reason_code`` instead. Mirrors the merge logic in

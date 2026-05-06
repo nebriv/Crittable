@@ -228,7 +228,7 @@ class ScenarioPlan(BaseModel):
     # (objectives, narrative_arc, injects) so the play tier has
     # something to drive against. Empty plans were the root cause of
     # the "AI freeforms because the plan is hollow" failure mode
-    # observed in the 2026-04-29 session. Defence in depth: this
+    # observed in the 2026-04-29 session. Defense in depth: this
     # Pydantic invariant + the Anthropic tool ``input_schema``
     # ``minItems=1`` on the ``propose_scenario_plan`` /
     # ``finalize_setup`` tools + the dispatcher's
@@ -269,7 +269,7 @@ class TokenUsage(BaseModel):
 
 
 class SetupNote(BaseModel):
-    """One round of the setup dialogue."""
+    """One utterance in the setup dialog."""
 
     model_config = ConfigDict(extra="forbid")
 

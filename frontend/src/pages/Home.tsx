@@ -11,14 +11,14 @@ export function Home() {
   // Wire history navigation so the CTA hands off without a hard
   // reload — the browser still gets a real URL change so back-button
   // works. Bails out for every case where the browser's default
-  // behaviour is the right answer:
+  // behavior is the right answer:
   //   - modified clicks (cmd/ctrl/shift/alt) → "open in new tab"
   //   - non-primary buttons (middle-click is always button=1) →
   //     "open in new tab" / "paste in browser bar"
   //   - default-prevented events → another handler already claimed it
   //   - non-Element targets (Text node, document) → can't .closest()
   //   - links with target=_blank, download, or non-http(s) hrefs
-  //     (mailto:, tel:, in-page hash anchors) → keep native behaviour
+  //     (mailto:, tel:, in-page hash anchors) → keep native behavior
   useEffect(() => {
     const onClick = (e: MouseEvent) => {
       if (e.defaultPrevented) return;
@@ -27,7 +27,7 @@ export function Home() {
       if (!(e.target instanceof Element)) return;
       const link = e.target.closest("a[data-spa-nav]");
       if (!(link instanceof HTMLAnchorElement)) return;
-      // Native attributes that should keep default behaviour.
+      // Native attributes that should keep default behavior.
       if (link.target && link.target !== "_self") return;
       if (link.hasAttribute("download")) return;
       const href = link.getAttribute("href");

@@ -223,7 +223,7 @@ export function SetupWizard(props: Props) {
       const launchReady =
         props.snapshot?.plan != null && (props.playerCount ?? 0) >= 2;
       if (id === 5) {
-        // Only honour a jump to Step 5 from Step 6 — i.e. when the
+        // Only honor a jump to Step 5 from Step 6 — i.e. when the
         // user is actually using the back-nav. From any other step
         // (e.g. Step 4 while the AI is drafting), Step 5 isn't yet
         // reachable and the override flag would just be misleading.
@@ -513,7 +513,7 @@ function NavRow({
   // The primary CTA is type="button" on steps 1-2 (it just advances
   // the wizard) and type="submit" on step 3 (where it actually
   // creates the session). Splitting submit from advance keeps the
-  // form's onSubmit single-purpose and stops jsdom-flaky behaviour
+  // form's onSubmit single-purpose and stops jsdom-flaky behavior
   // around button-click → form-submit chains in tests.
   const primaryLabel =
     step === 1
@@ -634,7 +634,7 @@ function Step1Body(props: IntroBodyProps) {
       {/* Dev-mode scenarios: when the operator has DEV_TOOLS_ENABLED
           on AND has flipped the dev-mode toggle, show a one-click
           replay picker right here so they don't have to walk through
-          the whole wizard before realising they wanted a preset. */}
+          the whole wizard before realizing they wanted a preset. */}
       {props.devMode ? <WizardScenarioPicker /> : null}
       <BriefField
         label="SCENARIO BRIEF"
@@ -1168,7 +1168,7 @@ function DevModeBand({
           lineHeight: 1.4,
         }}
       >
-        Skip the AI setup dialogue and use a known ransomware brief.
+        Skip the AI setup dialog and use a known ransomware brief.
       </span>
     </label>
   );
@@ -1207,15 +1207,15 @@ function WizardScenarioPicker() {
   const [disabled, setDisabled] = useState(false);
 
   useEffect(() => {
-    let cancelled = false;
+    let canceled = false;
     (async () => {
       try {
         const body = await api.listScenarios();
-        if (cancelled) return;
+        if (canceled) return;
         setScenarios(body.scenarios);
         setDisabled(body.disabled);
       } catch (err) {
-        if (!cancelled) {
+        if (!canceled) {
           const text = err instanceof Error ? err.message : String(err);
           setError(text);
           console.warn("[wizard-scenarios] list failed", text);
@@ -1223,7 +1223,7 @@ function WizardScenarioPicker() {
       }
     })();
     return () => {
-      cancelled = true;
+      canceled = true;
     };
   }, []);
 

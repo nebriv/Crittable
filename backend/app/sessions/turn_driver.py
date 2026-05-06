@@ -127,7 +127,7 @@ class TurnDriver:
         turn_index: int | None = None,
         for_role_id: str | None = None,
     ) -> None:
-        """Broadcast a labelled "what is the AI doing?" breadcrumb.
+        """Broadcast a labeled "what is the AI doing?" breadcrumb.
 
         ``ai_thinking`` (emitted from the LLM-call boundary) answers
         "is anything running"; ``ai_status`` (this method) answers
@@ -222,7 +222,7 @@ class TurnDriver:
             note_count=len(session.setup_notes),
             has_plan=session.plan is not None,
         )
-        # Light up the labelled indicator so the creator sees "AI —
+        # Light up the labeled indicator so the creator sees "AI —
         # Designing the scenario" while the setup tier is at work.
         # The ``finally`` clause clears it on every return path; the
         # ``ai_thinking`` events from the LLM-call boundary handle the
@@ -383,7 +383,7 @@ class TurnDriver:
         budget = 1 + settings.llm_strict_retry_max
         attempt = 0
 
-        # Phase label for the labelled "what is the AI doing?" indicator.
+        # Phase label for the labeled "what is the AI doing?" indicator.
         # When state is BRIEFING we expose ``phase=briefing`` so the UI
         # can render "Briefing the team" instead of a generic play
         # status; otherwise it's a normal play turn. The ``finally``
@@ -413,7 +413,7 @@ class TurnDriver:
             while attempt < budget:
                 attempt += 1
                 recovery = active_directive is not None
-                # Labelled status: surface attempt N/M and the recovery kind
+                # Labeled status: surface attempt N/M and the recovery kind
                 # so the operator can tell "AI is on attempt 2/3 because
                 # the first response missed a yield" from "AI is stuck"
                 # (issue #63 — the strict-retry loop was previously
@@ -796,7 +796,7 @@ class TurnDriver:
             connected_role_count=len(connected_role_ids),
             focused_role_count=len(focused_role_ids),
         )
-        # Light up the labelled "Replying to {role}" status so the asking
+        # Light up the labeled "Replying to {role}" status so the asking
         # participant + everyone else knows the AI received the question
         # and is composing an answer (issue #63 — without this the entire
         # interject path was invisible because it doesn't change
@@ -1109,7 +1109,7 @@ class TurnDriver:
                 turn_id=turn.id,
             )
 
-        # Same @-back behaviour as ``run_interject``: when a player
+        # Same @-back behavior as ``run_interject``: when a player
         # submitted an in-turn ``@facilitator`` ask AND that submission
         # closed the quorum (so we landed in the regular play-turn
         # path instead of the interject side-channel), the AI's reply

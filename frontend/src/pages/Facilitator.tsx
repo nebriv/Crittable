@@ -72,7 +72,7 @@ const TYPING_FADE_HEAD_START_MS = TYPING_VISIBLE_MS - 500;
  *
  * Split into four short sections (scenario / team / environment /
  * constraints) so the AI gets structured context up front and the
- * setup dialogue can move past the boilerplate questions faster.
+ * setup dialog can move past the boilerplate questions faster.
  */
 const DEV_SETUP_PREFILL = {
   scenario:
@@ -212,7 +212,7 @@ export function Facilitator() {
   // request the hop without a complex prop chain.
   const [lobbyOverride, setLobbyOverride] = useState(false);
   // Dev-mode toggle on the intro page: prefills a known scenario + creator
-  // identity, and on submit auto-skips the AI setup dialogue so testers
+  // identity, and on submit auto-skips the AI setup dialog so testers
   // bypass the 5–30 s setup loop. Use only for local QA.
   //
   // Default flips ON when the backend has ``DEV_TOOLS_ENABLED=true``
@@ -223,11 +223,11 @@ export function Facilitator() {
   // for any individual session.
   const [devMode, setDevMode] = useState(false);
   useEffect(() => {
-    let cancelled = false;
+    let canceled = false;
     (async () => {
       try {
         const body = await api.listScenarios();
-        if (!cancelled && !body.disabled) {
+        if (!canceled && !body.disabled) {
           setDevMode(true);
           console.info(
             "[facilitator] DEV_TOOLS_ENABLED detected on backend — defaulting devMode to true",
@@ -247,7 +247,7 @@ export function Facilitator() {
       }
     })();
     return () => {
-      cancelled = true;
+      canceled = true;
     };
   }, []);
   const [setupReply, setSetupReply] = useState("");
@@ -306,7 +306,7 @@ export function Facilitator() {
   const [presence, setPresence] = useState<Set<string>>(() => new Set());
   // Subset of ``presence`` whose tabs are currently *focused* (foreground
   // visible). Drives the tri-state status dot in RolesPanel:
-  //   grey   = not in presence (no tabs open)
+  //   gray   = not in presence (no tabs open)
   //   yellow = in presence but not in focused (joined but tabbed away)
   //   blue   = in both (joined and on the exercise)
   // Server-pushed via the ``focused`` field on ``presence`` /
@@ -320,14 +320,14 @@ export function Facilitator() {
   // banner would briefly fire on initial load / reconnect even when
   // every role is actually connected. Tracked separately from the set
   // itself so other consumers (RolesPanel dot, RoleRoster online dot)
-  // keep their existing presence-aware behaviour. Reset to false on
+  // keep their existing presence-aware behavior. Reset to false on
   // session change and on every WS reconnect so a stale "ready" flag
   // can't outlive a dropped socket.
   const [presenceReady, setPresenceReady] = useState(false);
   // Real-time AI-thinking tracking — same shape as Play.tsx. ``aiCalls``
   // maps in-flight LLM ``call_id`` → tier (``setup`` / ``play`` / ``aar``
   // / ``guardrail`` / ``interject``) from ``ai_thinking`` boundary
-  // events; ``aiStatus`` carries the labelled phase/attempt/recovery
+  // events; ``aiStatus`` carries the labeled phase/attempt/recovery
   // breadcrumb the turn-driver emits at known points. Together they let
   // the operator distinguish "thinking" from "stuck" during the
   // strict-retry loop and see interject / setup / AAR work that doesn't
@@ -526,7 +526,7 @@ export function Facilitator() {
     setBusyMessage(
       devMode
         ? "Dev mode: drafting the plan and starting the exercise…"
-        : "Creating session and starting AI setup dialogue…",
+        : "Creating session and starting AI setup dialog…",
     );
     try {
       // Compute the active invitee labels from the slot UI. The server
@@ -747,7 +747,7 @@ export function Facilitator() {
         setCriticalBanner({ severity: evt.severity, headline: evt.headline, body: evt.body });
         break;
       case "cost_updated":
-        setCost(evt.cost as unknown as CostSnapshot);
+        setCost(evt.cost);
         break;
       case "decision_logged":
         setDecisionLog((prev) => {
@@ -996,7 +996,7 @@ export function Facilitator() {
     if (!state) return;
     if (
       !confirm(
-        "Skip the AI setup dialogue and use a generic default plan? Use this for testing only.",
+        "Skip the AI setup dialog and use a generic default plan? Use this for testing only.",
       )
     ) {
       return;
@@ -1114,7 +1114,7 @@ export function Facilitator() {
   // ``useCallback(fn, [])`` gives ``handleTypingChange`` a stable identity
   // across re-renders (Facilitator re-renders on every WS event). Without it
   // the ``useEffect([onTypingChange])`` cleanup in Composer fires on *every*
-  // re-render, cancelling the pending-start timer and leaving its ref as a
+  // re-render, canceling the pending-start timer and leaving its ref as a
   // stale truthy integer — which permanently blocks new typing sessions for
   // the rest of the session (issue #77 regression).
   const handleTypingChange = useCallback((typing: boolean) => {
@@ -1202,7 +1202,7 @@ export function Facilitator() {
 
   // ----------------------------------------------------- render
   // Wrap setDevMode so toggling on prefills any blank scenario sections —
-  // preserves the pre-redesign behaviour (Issue #?? originally added the
+  // preserves the pre-redesign behavior (Issue #?? originally added the
   // partial-prefill so testers could tweak one section and let the rest
   // of the boilerplate fill).
   const onToggleDevMode = (next: boolean) => {
@@ -1254,7 +1254,7 @@ export function Facilitator() {
   // operator sees rail steps 04-06 instead of being dumped into the
   // in-session view the moment the session is created. Each post-
   // creation phase renders its own ``postCreationContent`` slot:
-  //   - setup → existing <SetupView/> (AI dialogue + plan preview)
+  //   - setup → existing <SetupView/> (AI dialog + plan preview)
   //   - ready, plan unfinished or < 2 players → <SetupLobbyView/>
   //   - ready, plan finalized + ≥ 2 players → <SetupReviewView/>
   //     (owns its own START SESSION button — the BottomActionBar
@@ -1606,7 +1606,7 @@ export function Facilitator() {
               pattern (Slack / Discord) so an unpinned operator knows
               there's content below without being yanked off whatever
               they were reading. See the Play.tsx counterpart for the
-              colour-choice rationale: solid sky to stay distinct from
+              color-choice rationale: solid sky to stay distinct from
               the amber awaiting-response banner that often sits
               directly below. */}
           {phase === "play" && hasUnreadBelow ? (
@@ -2149,7 +2149,7 @@ export function WaitingChip({
   /** Roles who have spoken at all on this turn (any number of messages). */
   submittedRoleIds: string[];
   /**
-   * Wave 1 (issue #134): roles who have signalled ``intent="ready"``
+   * Wave 1 (issue #134): roles who have signaled ``intent="ready"``
    * on their most recent submission. The AI advances when this set
    * covers ``activeRoleIds``. ``undefined`` for legacy snapshots
    * (treated as empty — i.e. nobody is ready yet).
@@ -2161,7 +2161,7 @@ export function WaitingChip({
   const ready = new Set(readyRoleIds ?? []);
   // "Pending" = not yet ready (the gate that flips the AI). A role
   // who submitted a discussion message is still pending — they've
-  // spoken but haven't signalled the team is ready to advance.
+  // spoken but haven't signaled the team is ready to advance.
   const pending = activeRoleIds.filter((id) => !ready.has(id));
   if (pending.length === 0) return null;
   const labels = pending.map((id) => {
@@ -2368,7 +2368,7 @@ export function SetupView({
           onClick={onSkipSetup}
           disabled={busy}
           className="mono ml-auto rounded-r-1 border border-dashed border-ink-500 px-3 py-1 text-[10px] uppercase tracking-[0.16em] text-ink-500 opacity-70 hover:opacity-100 hover:bg-ink-800 disabled:opacity-50"
-          title="Dev/testing only: skip the AI setup dialogue and use a generic default plan."
+          title="Dev/testing only: skip the AI setup dialog and use a generic default plan."
         >
           SKIP SETUP (DEV)
         </button>
@@ -2381,7 +2381,7 @@ export function SetupView({
       {/* Issue #113: SetupView is now nested inside the wizard's
           <PostCreationBody/> which already supplies the eyebrow +
           title (STEP 04 · INJECTS & SCHEDULE → "AI is drafting the
-          plan"). The pre-PR inner header (STEP 02 · SETUP DIALOGUE)
+          plan"). The pre-PR inner header (STEP 02 · SETUP DIALOG)
           stamped a second, conflicting step number on the same
           screen — deleted. The helper paragraph stays since it
           explains the LOOKS READY / APPROVE buttons below.
@@ -2728,7 +2728,7 @@ function EndedView({ sessionId, token }: { sessionId: string; token: string }) {
   // polling. If 200, mark ready (the popup will fetch the body on open).
   // If 410, mark expired (retention window elapsed). If 5xx, mark failed.
   useEffect(() => {
-    let cancelled = false;
+    let canceled = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
 
     async function tick() {
@@ -2736,7 +2736,7 @@ function EndedView({ sessionId, token }: { sessionId: string; token: string }) {
         const res = await fetch(
           `/api/sessions/${sessionId}/export.md?token=${encodeURIComponent(token)}`,
         );
-        if (cancelled) return;
+        if (canceled) return;
         if (res.status === 200) {
           setAarState("ready");
           return;
@@ -2758,7 +2758,7 @@ function EndedView({ sessionId, token }: { sessionId: string; token: string }) {
           setErrMsg(`HTTP ${res.status}`);
         }
       } catch (err) {
-        if (cancelled) return;
+        if (canceled) return;
         setErrMsg(err instanceof Error ? err.message : String(err));
         timer = setTimeout(tick, 5000);
       }
@@ -2770,7 +2770,7 @@ function EndedView({ sessionId, token }: { sessionId: string; token: string }) {
       tick();
     }
     return () => {
-      cancelled = true;
+      canceled = true;
       if (timer) clearTimeout(timer);
     };
   }, [sessionId, token, aarState]);

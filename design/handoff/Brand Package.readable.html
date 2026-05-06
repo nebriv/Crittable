@@ -1415,17 +1415,17 @@ function useRoll({ enabled = true, period = 6000, isPlaybook = true, playCount =
   });
   React.useEffect(() => {
     if (!enabled) return;
-    let cancelled = false;
+    let canceled = false;
     let i = 0;          // current play index
     let phase = 'play'; // 'play' = showing play N, 'face' = showing die face N+1
     const sequence = async () => {
-      while (!cancelled) {
+      while (!canceled) {
         await wait(period);
-        if (cancelled) return;
+        if (canceled) return;
         if (isPlaybook) {
           // tumble.up — current state dims out
           setState(s => ({ ...s, angle: -10, scale: 0.94, dim: true }));
-          await wait(180); if (cancelled) return;
+          await wait(180); if (canceled) return;
           // tumble.swap — pick the new state behind the dim curtain
           if (phase === 'play') {
             // we were showing play N, now show numbered die face N+1
@@ -1437,10 +1437,10 @@ function useRoll({ enabled = true, period = 6000, isPlaybook = true, playCount =
             setState(s => ({ ...s, angle: 8, scale: 0.96, dim: true, showFace: false, playIndex: i, face: 'prompt' }));
             phase = 'play';
           }
-          await wait(160); if (cancelled) return;
+          await wait(160); if (canceled) return;
           // tumble.land — the new state reveals as die settles
           setState(s => ({ ...s, angle: 0, scale: 1.02, dim: false }));
-          await wait(140); if (cancelled) return;
+          await wait(140); if (canceled) return;
           setState(s => ({ ...s, angle: 0, scale: 1 }));
         } else {
           // Legacy fidget for non-playbook brands
@@ -1448,7 +1448,7 @@ function useRoll({ enabled = true, period = 6000, isPlaybook = true, playCount =
           const angles = [-3, 4, -2, 3, 0];
           const scales = [0.96, 1.02, 0.98, 1.01, 1];
           for (let j = 0; j < order.length; j++) {
-            if (cancelled) return;
+            if (canceled) return;
             setState({ face: order[j], angle: angles[j], scale: scales[j], playIndex: 0, dim: false, showFace: false });
             await wait(140);
           }
@@ -1456,7 +1456,7 @@ function useRoll({ enabled = true, period = 6000, isPlaybook = true, playCount =
       }
     };
     sequence();
-    return () => { cancelled = true; };
+    return () => { canceled = true; };
   }, [enabled, period, isPlaybook, playCount]);
   return state;
 }
@@ -2485,7 +2485,7 @@ function BrandExploration() {
       brand: 'table-boardroom',
       name: 'BOARDROOM',
       tagline: '4 + 4 facing',
-      body: 'Long table, no head. Two equal sides. Reads as "two camps in dialogue" — Red vs. Blue, IT vs. business.',
+      body: 'Long table, no head. Two equal sides. Reads as "two camps in dialog" — Red vs. Blue, IT vs. business.',
     },
     {
       brand: 'table-sparse',

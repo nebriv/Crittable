@@ -67,7 +67,7 @@ beforeEach(() => {
       return readGeometry(this).scrollTop;
     },
     set(this: HTMLElement, value: number) {
-      // Mirror the browser's behaviour: scrollTop is clamped to
+      // Mirror the browser's behavior: scrollTop is clamped to
       // ``max(0, min(value, scrollHeight - clientHeight))``. Without
       // this clamp the post-hoc-distance bug we just fixed wouldn't
       // be reproducible in tests.

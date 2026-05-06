@@ -2,6 +2,8 @@
  * Streaming-aware WebSocket client with exponential-backoff reconnect.
  */
 
+import type { CostSnapshot } from "../api/client";
+
 export type ServerEvent =
   | {
       type: "state_changed";
@@ -67,7 +69,7 @@ export type ServerEvent =
   // sees the latest name without an explicit refetch.
   | { type: "participant_renamed"; role_id: string; display_name: string }
   | { type: "critical_event"; severity: string; headline: string; body: string }
-  | { type: "cost_updated"; cost: Record<string, number>; max_turns: number }
+  | { type: "cost_updated"; cost: CostSnapshot; max_turns: number }
   | { type: "guardrail_blocked"; verdict: string; message: string }
   | { type: "submission_truncated"; scope: string; cap: number; original_len: number; message: string }
   | { type: "plan_proposed"; plan: Record<string, unknown> }
@@ -98,7 +100,7 @@ export type ServerEvent =
       call_id: string;
       started_at_ms?: number;
     }
-  // Labelled "what is the AI doing right now?" status, emitted by the
+  // Labeled "what is the AI doing right now?" status, emitted by the
   // turn-driver at known points (play attempt N/M, recovery directive
   // active, interject for role X, briefing, AAR). ``ai_thinking`` answers
   // "is anything running"; ``ai_status`` answers "what should the human
@@ -121,7 +123,7 @@ export type ServerEvent =
        *  tab. Drives the tri-state dot in the creator's RolesPanel:
        *  active=true & focused=true → blue (engaged), active=true &
        *  focused=false → yellow (joined but tabbed away),
-       *  active=false → grey (not joined). */
+       *  active=false → gray (not joined). */
       focused: boolean;
       /** Total open WS tabs on this session, used for the top-bar
        *  "Tabs: N" chip. */
