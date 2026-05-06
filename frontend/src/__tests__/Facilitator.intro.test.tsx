@@ -16,12 +16,11 @@ function advanceToRoles() {
   fireEvent.click(screen.getByRole("button", { name: /NEXT · ROLES/i }));
 }
 
-function getChipList(): HTMLElement {
-  const fieldset = screen.getByRole("group", { name: /Roles to invite/i });
-  return within(fieldset).getByRole("list");
+function getRolesFieldset(): HTMLElement {
+  return screen.getByRole("group", { name: /Roles to invite/i });
 }
 
-describe("Facilitator intro — Roles to invite (issue #61)", () => {
+describe("Facilitator intro — Roles step (issue #61, redesign)", () => {
   beforeEach(() => {
     Object.assign(navigator, {
       clipboard: { writeText: vi.fn().mockResolvedValue(undefined) },
@@ -32,103 +31,213 @@ describe("Facilitator intro — Roles to invite (issue #61)", () => {
     vi.restoreAllMocks();
   });
 
-  it("seeds three default invitee chips", () => {
+  it("seeds the 5 mockup-defined builtin role slots", () => {
     render(<Facilitator />);
     advanceToRoles();
-    const list = getChipList();
-    expect(within(list).getByText("IR Lead")).toBeInTheDocument();
-    expect(within(list).getByText("Legal")).toBeInTheDocument();
-    expect(within(list).getByText("Comms")).toBeInTheDocument();
+    const fs = getRolesFieldset();
+    // All 5 builtin labels must render as rows regardless of toggle state.
+    expect(within(fs).getByText("Incident Commander")).toBeInTheDocument();
+    expect(within(fs).getByText("Cybersecurity Manager")).toBeInTheDocument();
+    expect(within(fs).getByText("Cybersecurity Engineer")).toBeInTheDocument();
+    expect(within(fs).getByText("Comms / Legal")).toBeInTheDocument();
+    expect(within(fs).getByText("Executive Sponsor")).toBeInTheDocument();
   });
 
-  it("adds a new role via the Add role button", () => {
+  it("all 5 builtin roles default to ACTIVE", () => {
+    render(<Facilitator />);
+    advanceToRoles();
+    // ACTIVE pill on every default-active row is pressed. After the
+    // user-agent review flagged "OFF default for Comms/Legal /
+    // Executive Sponsor reads as broken without STANDBY context",
+    // the defaults shifted to all-ACTIVE — operators opt out via
+    // the toggle.
+    for (const label of [
+      "Incident Commander",
+      "Cybersecurity Manager",
+      "Cybersecurity Engineer",
+      "Comms / Legal",
+      "Executive Sponsor",
+    ]) {
+      const activeBtn = screen.getByRole("button", {
+        name: new RegExp(`${label.replace(/\//g, ".")} active`, "i"),
+      });
+      expect(activeBtn).toHaveAttribute("aria-pressed", "true");
+    }
+  });
+
+  it("toggling ACTIVE on a default-OFF row flips to active (direct off→active)", () => {
+    render(<Facilitator />);
+    advanceToRoles();
+    // Toggle Executive Sponsor OFF first (since defaults are now all
+    // active), then toggle ACTIVE to verify the off→active direction
+    // works on the same handler.
+    fireEvent.click(
+      screen.getByRole("button", { name: /Executive Sponsor off/i }),
+    );
+    expect(
+      screen.getByRole("button", { name: /Executive Sponsor off/i }),
+    ).toHaveAttribute("aria-pressed", "true");
+    fireEvent.click(
+      screen.getByRole("button", { name: /Executive Sponsor active/i }),
+    );
+    expect(
+      screen.getByRole("button", { name: /Executive Sponsor active/i }),
+    ).toHaveAttribute("aria-pressed", "true");
+    expect(
+      screen.getByRole("button", { name: /Executive Sponsor off/i }),
+    ).toHaveAttribute("aria-pressed", "false");
+  });
+
+  it("disables ROLL SESSION + shows warning when zero invitees are active", () => {
+    render(<Facilitator />);
+    advanceToRoles();
+    // Toggle every builtin OFF.
+    for (const label of [
+      "Incident Commander",
+      "Cybersecurity Manager",
+      "Cybersecurity Engineer",
+      "Comms / Legal",
+      "Executive Sponsor",
+    ]) {
+      fireEvent.click(
+        screen.getByRole("button", {
+          name: new RegExp(`${label.replace(/\//g, ".")} off`, "i"),
+        }),
+      );
+    }
+    // Submit button is disabled and the inline reason is shown.
+    const submit = screen.getByRole("button", { name: /ROLL SESSION/i });
+    expect(submit).toBeDisabled();
+    expect(
+      screen.getByText(/Activate at least one invitee role/i),
+    ).toBeInTheDocument();
+  });
+
+  it("removes a builtin row via the × button (every row is removable)", () => {
+    render(<Facilitator />);
+    advanceToRoles();
+    // Builtin rows now have a remove control too — the previous
+    // "toggle-only" treatment frustrated operators who didn't want
+    // a given builtin in their list at all.
+    fireEvent.click(screen.getByLabelText("Remove Executive Sponsor"));
+    expect(
+      screen.queryByText("Executive Sponsor"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("toggling OFF on an active builtin row flips the pill state", () => {
+    render(<Facilitator />);
+    advanceToRoles();
+    const offBtn = screen.getByRole("button", {
+      name: /Incident Commander off/i,
+    });
+    fireEvent.click(offBtn);
+    expect(offBtn).toHaveAttribute("aria-pressed", "true");
+    expect(
+      screen.getByRole("button", { name: /Incident Commander active/i }),
+    ).toHaveAttribute("aria-pressed", "false");
+  });
+
+  it("adds a custom role row via the Add role button", () => {
     render(<Facilitator />);
     advanceToRoles();
     const draft = screen.getByLabelText("New role label") as HTMLInputElement;
-    fireEvent.change(draft, { target: { value: "SOC Analyst" } });
+    fireEvent.change(draft, { target: { value: "Threat Intel" } });
     fireEvent.click(screen.getByRole("button", { name: "Add role" }));
-    expect(within(getChipList()).getByText("SOC Analyst")).toBeInTheDocument();
+    expect(
+      within(getRolesFieldset()).getByText("Threat Intel"),
+    ).toBeInTheDocument();
     expect(draft.value).toBe("");
   });
 
-  it("adds a new role via the Enter key without submitting the form", () => {
+  it("adds via Enter without submitting the form", () => {
     const createSpy = vi.spyOn(api, "createSession");
     render(<Facilitator />);
     advanceToRoles();
     const draft = screen.getByLabelText("New role label") as HTMLInputElement;
     fireEvent.change(draft, { target: { value: "Threat Intel" } });
     fireEvent.keyDown(draft, { key: "Enter" });
-    expect(within(getChipList()).getByText("Threat Intel")).toBeInTheDocument();
+    expect(
+      within(getRolesFieldset()).getByText("Threat Intel"),
+    ).toBeInTheDocument();
     expect(createSpy).not.toHaveBeenCalled();
   });
 
-  it("rejects duplicates case-insensitively without altering the chip list", () => {
+  it("typing an existing label re-activates the existing slot instead of duplicating", () => {
     render(<Facilitator />);
     advanceToRoles();
+    // Toggle OFF, then add the same label via the form — should flip
+    // back to ACTIVE on the same row, no duplicate row.
+    fireEvent.click(
+      screen.getByRole("button", { name: /Incident Commander off/i }),
+    );
     const draft = screen.getByLabelText("New role label") as HTMLInputElement;
-    fireEvent.change(draft, { target: { value: "legal" } });
+    fireEvent.change(draft, { target: { value: "incident commander" } });
     fireEvent.click(screen.getByRole("button", { name: "Add role" }));
-    expect(within(getChipList()).getAllByText(/legal/i)).toHaveLength(1);
-    expect(draft.value).toBe("");
+    expect(
+      within(getRolesFieldset()).getAllByText(/Incident Commander/i),
+    ).toHaveLength(1);
+    expect(
+      screen.getByRole("button", { name: /Incident Commander active/i }),
+    ).toHaveAttribute("aria-pressed", "true");
   });
 
   it("ignores blank / whitespace-only role labels", () => {
     render(<Facilitator />);
     advanceToRoles();
-    const before = getChipList().children.length;
     const draft = screen.getByLabelText("New role label") as HTMLInputElement;
     const addButton = screen.getByRole("button", { name: "Add role" });
     expect(addButton).toBeDisabled();
     fireEvent.change(draft, { target: { value: "   " } });
-    fireEvent.click(addButton);
     fireEvent.keyDown(draft, { key: "Enter" });
-    expect(getChipList().children.length).toBe(before);
-  });
-
-  it("removes a chip when the X button is clicked", () => {
-    render(<Facilitator />);
-    advanceToRoles();
-    fireEvent.click(screen.getByLabelText("Remove Legal"));
-    const list = getChipList();
-    expect(within(list).queryByText("Legal")).not.toBeInTheDocument();
-    expect(within(list).getByText("IR Lead")).toBeInTheDocument();
-  });
-
-  it("Clear all empties the chip list and shows the empty state", () => {
-    render(<Facilitator />);
-    advanceToRoles();
-    fireEvent.click(screen.getByRole("button", { name: "Clear all" }));
-    const fieldset = screen.getByRole("group", { name: /Roles to invite/i });
-    expect(within(fieldset).queryByRole("list")).not.toBeInTheDocument();
+    // Still only the 5 builtin rows.
     expect(
-      within(fieldset).getByText(/No invitee roles yet/i),
-    ).toBeInTheDocument();
+      within(getRolesFieldset()).queryByText(/^\s+$/),
+    ).not.toBeInTheDocument();
   });
 
-  it("Reset to defaults restores IR Lead/Legal/Comms after clearing", () => {
+  it("removes a custom row via the × button", () => {
     render(<Facilitator />);
     advanceToRoles();
-    fireEvent.click(screen.getByRole("button", { name: "Clear all" }));
-    fireEvent.click(screen.getByRole("button", { name: "Reset to defaults" }));
-    const list = getChipList();
-    expect(within(list).getByText("IR Lead")).toBeInTheDocument();
-    expect(within(list).getByText("Legal")).toBeInTheDocument();
-    expect(within(list).getByText("Comms")).toBeInTheDocument();
+    const draft = screen.getByLabelText("New role label") as HTMLInputElement;
+    fireEvent.change(draft, { target: { value: "Threat Intel" } });
+    fireEvent.click(screen.getByRole("button", { name: "Add role" }));
+    fireEvent.click(screen.getByLabelText("Remove Threat Intel"));
+    expect(
+      within(getRolesFieldset()).queryByText("Threat Intel"),
+    ).not.toBeInTheDocument();
   });
 
-  it("warns when the creator label collides with an invitee chip", () => {
+  it("warns when the creator label collides with an active invitee row", () => {
     render(<Facilitator />);
-    // Issue #159: creator role + display name live on Step 3 (Roles)
-    // alongside the invitee chips, not on Step 1 (Scenario). Advance
-    // to roles first, then edit the creator label.
     advanceToRoles();
     const labelInput = screen.getByPlaceholderText(
       /Your role label/i,
     ) as HTMLInputElement;
-    fireEvent.change(labelInput, { target: { value: "IR Lead" } });
+    // Incident Commander is ACTIVE by default — collide with it.
+    fireEvent.change(labelInput, { target: { value: "Incident Commander" } });
     expect(
       screen.getByText(/won't be auto-added as a separate invitee/i),
     ).toBeInTheDocument();
+  });
+
+  it("collision warning clears when the colliding row is toggled OFF", () => {
+    render(<Facilitator />);
+    advanceToRoles();
+    const labelInput = screen.getByPlaceholderText(
+      /Your role label/i,
+    ) as HTMLInputElement;
+    fireEvent.change(labelInput, { target: { value: "Incident Commander" } });
+    expect(
+      screen.getByText(/won't be auto-added as a separate invitee/i),
+    ).toBeInTheDocument();
+    // Toggle the row OFF — the collision check only flags ACTIVE rows.
+    fireEvent.click(
+      screen.getByRole("button", { name: /Incident Commander off/i }),
+    );
+    expect(
+      screen.queryByText(/won't be auto-added as a separate invitee/i),
+    ).not.toBeInTheDocument();
   });
 });
 

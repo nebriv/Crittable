@@ -18,7 +18,8 @@ from ..auth.authz import (
     require_seated,
 )
 from ..extensions.registry import FrozenRegistry
-from ..sessions.manager import SessionManager
+from ..logging_setup import get_logger
+from ..sessions.manager import SessionManager, sanitize_role_text
 from ..sessions.models import ParticipantKind, ScenarioPlan, SessionState
 from ..sessions.progress import compute_progress_pct
 from ..sessions.repository import SessionNotFoundError
@@ -45,6 +46,20 @@ def _ascii_filename_slug(title: str | None, *, max_len: int = 40) -> str:
     return slug[:max_len].strip("-") or "exercise"
 
 
+class InviteeRoleSpec(BaseModel):
+    """Pre-declared invitee role from the wizard's step 3.
+
+    Roles are registered server-side immediately after session
+    creation and *before* the setup turn fires, so the AI sees the
+    full roster on its very first turn instead of having to
+    re-interrogate the operator about who's at the table.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+    label: str = Field(min_length=1, max_length=64)
+    display_name: str | None = Field(default=None, max_length=64)
+
+
 class CreateSessionBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
     # Bumped from 4000 to 8000: the multi-prompt intro composes four
@@ -54,6 +69,12 @@ class CreateSessionBody(BaseModel):
     scenario_prompt: str = Field(min_length=1, max_length=8000)
     creator_label: str = Field(min_length=1, max_length=64)
     creator_display_name: str = Field(min_length=1, max_length=64)
+    # Pre-declared invitee roles from the wizard's step 3. We add
+    # these server-side before kicking off the setup turn so the AI
+    # has the full roster on its first turn (no "who's seated?" loop).
+    # Capped at 32 to stop a malicious creator from spawning unbounded
+    # role rows on session creation.
+    invitee_roles: list[InviteeRoleSpec] = Field(default_factory=list, max_length=32)
     # When true, skip the AI auto-greet during session creation, drop
     # the default ransomware plan, and transition straight to READY.
     # Same end-state as ``POST /api/sessions/{id}/setup/skip`` but
@@ -326,6 +347,78 @@ def register_api_routes(app: FastAPI) -> None:
         except (RuntimeError, ValueError) as exc:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
 
+        # Register pre-declared invitee roles BEFORE the setup turn
+        # fires so the AI sees the full roster on its first turn (the
+        # alternative was "AI re-asks who's seated", which the wizard's
+        # step 3 already answered). De-dupe against the creator's own
+        # label so an operator who picks "CISO" as their seat AND leaves
+        # "CISO" in the invitee list doesn't get a duplicate row.
+        #
+        # Both the de-dup key AND the value we log/echo back run through
+        # the same ``sanitize_role_text`` the manager applies before
+        # persisting, so two byte-variants of the same label can't slip
+        # past the de-dup set and collapse to one row server-side, and
+        # control characters in a label can't inject newlines into the
+        # structlog warning line either. ``failed_invitees`` echoes the
+        # sanitised text back to the frontend.
+        log = get_logger("api")
+        creator_label_clean = sanitize_role_text(body.creator_label) or ""
+        creator_label_lower = creator_label_clean.lower()
+        seen_labels: set[str] = {creator_label_lower}
+        invitee_role_ids: list[str] = []
+        failed_invitees: list[dict[str, str]] = []
+        for spec in body.invitee_roles:
+            label_clean = sanitize_role_text(spec.label)
+            if label_clean is None:
+                # Empty / whitespace-only / all-control label — skip
+                # silently; nothing useful to surface to the operator.
+                continue
+            label_lower = label_clean.lower()
+            if label_lower in seen_labels:
+                # Duplicate is benign — flag it so the UI can collapse
+                # the row but don't fail the request.
+                failed_invitees.append(
+                    {"label": label_clean, "reason": "duplicate"}
+                )
+                continue
+            seen_labels.add(label_lower)
+            try:
+                role, _ = await manager.add_role(
+                    session_id=session.id,
+                    label=label_clean,
+                    display_name=spec.display_name,
+                    kind="player",
+                )
+                invitee_role_ids.append(role.id)
+            except (RuntimeError, ValueError, IllegalTransitionError) as exc:
+                # Don't fail session creation on a single bad role —
+                # capture the per-row reason for the response and log
+                # so the operator has a breadcrumb either way. Label
+                # is already sanitised above; the exception text is
+                # generated by our own code, so it's safe to log raw.
+                log.warning(
+                    "invitee_role_add_failed",
+                    session_id=session.id,
+                    label=label_clean,
+                    error=str(exc),
+                )
+                failed_invitees.append(
+                    {"label": label_clean, "reason": str(exc)}
+                )
+        if invitee_role_ids:
+            log.info(
+                "invitee_roles_registered",
+                session_id=session.id,
+                count=len(invitee_role_ids),
+            )
+        if failed_invitees:
+            log.warning(
+                "invitee_roles_partial_failure",
+                session_id=session.id,
+                failed_count=len(failed_invitees),
+                ok_count=len(invitee_role_ids),
+            )
+
         settings = request.app.state.settings
         # Either env (``DEV_FAST_SETUP``) or per-request (``skip_setup``)
         # triggers the no-auto-greet path. Per-request wins: an operator
@@ -361,6 +454,7 @@ def register_api_routes(app: FastAPI) -> None:
             "creator_token": token,
             "creator_join_url": f"/play/{token}",
             "skip_setup": skip_setup,
+            "failed_invitees": failed_invitees,
         }
 
     @router.post("/sessions/{session_id}/roles")

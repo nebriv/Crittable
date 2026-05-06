@@ -33,7 +33,7 @@ import { DieLoader } from "../components/brand/DieLoader";
 import { CollapsibleRailPanel } from "../components/brand/CollapsibleRailPanel";
 import { HudGauges } from "../components/brand/HudGauges";
 import { TurnStateRail } from "../components/brand/TurnStateRail";
-import { SetupWizard } from "../components/setup/SetupWizard";
+import { SetupWizard, type SetupRoleSlot } from "../components/setup/SetupWizard";
 import { SetupLobbyView } from "../components/setup/SetupLobbyView";
 import { SetupReviewView } from "../components/setup/SetupReviewView";
 import {
@@ -132,15 +132,73 @@ export function Facilitator() {
   });
   const [creatorLabel, setCreatorLabel] = useState("CISO");
   const [creatorDisplayName, setCreatorDisplayName] = useState("");
-  // Issue #61: roles to invite, declared *before* the session is created
-  // so the operator doesn't have to add seats one-by-one in the lobby.
-  // These are auto-created via ``api.addRole`` immediately after the
-  // session is created. Operators can still add/remove roles dynamically
-  // from the Roles panel during setup or play.
-  const SETUP_ROLE_DEFAULTS = ["IR Lead", "Legal", "Comms"] as const;
-  const [setupRoles, setSetupRoles] = useState<string[]>([
-    ...SETUP_ROLE_DEFAULTS,
-  ]);
+  // Issue #61 + roles-page redesign: roles to invite, declared
+  // *before* the session is created so the operator doesn't add seats
+  // one-by-one in the lobby AND the AI sees the full roster on its
+  // very first setup turn. These ship with the ``createSession`` body
+  // as ``invitee_roles`` and are registered server-side before the
+  // setup turn fires (see ``backend/app/api/routes.py``). Operators
+  // can still add/remove roles dynamically from the Roles panel
+  // during setup or play.
+  //
+  // Slot model (vs the old plain ``string[]``): each builtin slot
+  // tracks Active/Off independently from the operator's custom rows
+  // so toggling a row off doesn't lose the row from the UI — it just
+  // stops being submitted. Custom rows added via the form below get
+  // the same toggle. The mockup in
+  // ``design/handoff/source/app-screens.jsx`` shows COM/EXE as
+  // STANDBY (yellow); the user explicitly asked us to drop the
+  // standby state for now. Defaulting those two to OFF (the original
+  // implementation) read as broken to a CISO persona — Comms/Legal
+  // is the *most* important non-technical seat in a real breach.
+  // User-agent review HIGH#1 said: either re-introduce STANDBY or
+  // ship them ACTIVE. We ship them ACTIVE; operators opt out via the
+  // toggle.
+  const SETUP_ROLE_BUILTINS: ReadonlyArray<SetupRoleSlot> = [
+    {
+      key: "IC",
+      code: "IC",
+      label: "Incident Commander",
+      description: "Owns the response. Final call on tradeoffs.",
+      active: true,
+      builtin: true,
+    },
+    {
+      key: "CSM",
+      code: "CSM",
+      label: "Cybersecurity Manager",
+      description: "Coordinates engineering effort. Reports up.",
+      active: true,
+      builtin: true,
+    },
+    {
+      key: "CSE",
+      code: "CSE",
+      label: "Cybersecurity Engineer",
+      description: "Hands-on triage and containment.",
+      active: true,
+      builtin: true,
+    },
+    {
+      key: "COM",
+      code: "COM",
+      label: "Comms / Legal",
+      description: "External voice. Press, regulators, customers.",
+      active: true,
+      builtin: true,
+    },
+    {
+      key: "EXE",
+      code: "EXE",
+      label: "Executive Sponsor",
+      description: "C-suite. Activate when stakes escalate.",
+      active: true,
+      builtin: true,
+    },
+  ];
+  const [setupRoleSlots, setSetupRoleSlots] = useState<SetupRoleSlot[]>(() =>
+    SETUP_ROLE_BUILTINS.map((s) => ({ ...s })),
+  );
   const [setupRoleDraft, setSetupRoleDraft] = useState("");
   // Dev-mode toggle on the intro page: prefills a known scenario + creator
   // identity, and on submit auto-skips the AI setup dialogue so testers
@@ -433,10 +491,17 @@ export function Facilitator() {
         : "Creating session and starting AI setup dialogue…",
     );
     try {
+      // Compute the active invitee labels from the slot UI. The server
+      // de-dupes vs the creator label, so we ship the active set as-is.
+      const inviteeRoles = setupRoleSlots
+        .filter((s) => s.active)
+        .map((s) => ({ label: s.label.trim() }))
+        .filter((r) => r.label.length > 0);
       const created = await api.createSession({
         scenario_prompt: _composeScenarioPrompt(setupParts),
         creator_label: creatorLabel,
         creator_display_name: creatorDisplayName,
+        invitee_roles: inviteeRoles,
         // Dev mode skips the AI auto-greet AND installs the default
         // plan in the SAME request. Saves an LLM call and avoids the
         // bare-text-leak failure mode that pollutes the play
@@ -448,65 +513,53 @@ export function Facilitator() {
       console.info("[facilitator] session created", {
         sessionId: created.session_id,
         creatorRoleId: created.creator_role_id,
+        inviteeRoleCount: inviteeRoles.length,
+        failedInviteeCount: created.failed_invitees.length,
         devMode,
       });
+      // Surface per-row invitee failures (the previous silent-log
+      // pattern left operators wondering why the lobby roster didn't
+      // match the wizard). Skip purely-duplicate failures — those
+      // are benign (the user picked the same label twice or it
+      // collided with the creator label, which we already warn
+      // about in the form). Anything else is a real failure the
+      // operator needs to retry from the lobby.
+      const realFailures = created.failed_invitees.filter(
+        (f) => f.reason !== "duplicate",
+      );
+      if (realFailures.length > 0) {
+        const summary = realFailures
+          .map((f) => `"${f.label}" (${f.reason})`)
+          .join(", ");
+        console.warn(
+          "[facilitator] invitee role registration partial failure",
+          { failures: realFailures },
+        );
+        setError(
+          `Session created, but these invitee roles failed: ${summary}. ` +
+            "You can add them manually from the Roles panel.",
+        );
+      }
       setState({
         sessionId: created.session_id,
         token: created.creator_token,
         creatorRoleId: created.creator_role_id,
         joinUrl: created.creator_join_url,
       });
-      // Issue #61: auto-create any pre-declared invitee roles before the
-      // operator lands on the lobby. De-duped against the creator's own
-      // label so an operator who left the suggestions list intact and
-      // *also* picked one of those labels for themselves doesn't get a
-      // duplicate seat. Dev mode skips this — it has its own SOC Analyst
-      // helper seat below.
-      if (!devMode) {
-        const creatorLabelTrim = creatorLabel.trim().toLowerCase();
-        const seen = new Set<string>([creatorLabelTrim]);
-        const labelsToAdd = setupRoles
-          .map((s) => s.trim())
-          .filter((s) => s.length > 0)
-          .filter((label) => {
-            const k = label.toLowerCase();
-            if (seen.has(k)) return false;
-            seen.add(k);
-            return true;
-          });
-        for (const label of labelsToAdd) {
-          setBusyMessage(`Adding role "${label}"…`);
-          try {
-            await api.addRole(created.session_id, created.creator_token, {
-              label,
-              kind: "player",
-            });
-          } catch (roleErr) {
-            console.warn("[facilitator] failed to add role", label, roleErr);
-            setError(
-              `Created the session but failed to add role "${label}": ` +
-                (roleErr instanceof Error ? roleErr.message : String(roleErr)) +
-                ". You can add it manually from the Roles panel.",
-            );
-          }
-        }
-        if (labelsToAdd.length > 0) {
-          console.info("[facilitator] pre-created roles", {
-            count: labelsToAdd.length,
-          });
-        }
-      }
       if (devMode) {
-        // ``start_session`` requires ≥ 2 player roles. Dev mode auto-
-        // adds a SOC Analyst seat so the operator can solo-test via the
-        // ``Respond as`` dropdown. The role is a normal player — the
-        // operator can kick + reissue / remove it like any other.
-        setBusyMessage("Dev mode: adding SOC Analyst seat…");
-        await api.addRole(created.session_id, created.creator_token, {
-          label: "SOC Analyst",
-          display_name: "Dev Bot",
-          kind: "player",
-        });
+        // ``start_session`` requires ≥ 2 player roles. Dev mode adds a
+        // SOC Analyst backstop ONLY when the operator didn't pre-declare
+        // any invitee seats — otherwise the wizard's choices already
+        // cover the minimum. The seat is a normal player: the operator
+        // can kick + reissue / remove it like any other.
+        if (inviteeRoles.length === 0) {
+          setBusyMessage("Dev mode: adding SOC Analyst seat…");
+          await api.addRole(created.session_id, created.creator_token, {
+            label: "SOC Analyst",
+            display_name: "Dev Bot",
+            kind: "player",
+          });
+        }
         // Auto-start the exercise: by the time the user lands on the
         // play screen the AI's first beat is already in the transcript
         // (``/start`` runs the play turn synchronously). Restores the
@@ -1125,8 +1178,8 @@ export function Facilitator() {
         setCreatorLabel={setCreatorLabel}
         creatorDisplayName={creatorDisplayName}
         setCreatorDisplayName={setCreatorDisplayName}
-        setupRoles={setupRoles}
-        setSetupRoles={setSetupRoles}
+        setupRoleSlots={setupRoleSlots}
+        setSetupRoleSlots={setSetupRoleSlots}
         setupRoleDraft={setupRoleDraft}
         setSetupRoleDraft={setSetupRoleDraft}
         devMode={devMode}
@@ -1228,8 +1281,8 @@ export function Facilitator() {
           setCreatorLabel={setCreatorLabel}
           creatorDisplayName={creatorDisplayName}
           setCreatorDisplayName={setCreatorDisplayName}
-          setupRoles={setupRoles}
-          setSetupRoles={setSetupRoles}
+          setupRoleSlots={setupRoleSlots}
+          setSetupRoleSlots={setSetupRoleSlots}
           setupRoleDraft={setupRoleDraft}
           setSetupRoleDraft={setSetupRoleDraft}
           devMode={devMode}
