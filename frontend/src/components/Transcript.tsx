@@ -350,13 +350,17 @@ export function Transcript({
         const isInterjection = isPlayer && m.is_interjection;
         const isSelf =
           isPlayer && selfRoleId != null && m.role_id === selfRoleId;
-        // ``ring-warn`` highlight on the latest AI bubble when the viewer
-        // is the active responder. Critical injects already carry their
-        // own crit emphasis, so skip the ring there.
-        const focusRing =
-          highlightLastAi && idx === lastAiIndex && m.kind === "ai_text"
-            ? "ring-2 ring-warn ring-offset-1 ring-offset-ink-900 shadow-[0_0_0_2px_color-mix(in_oklch,var(--warn)_15%,transparent)]"
-            : "";
+        // Amber-border highlight on the latest AI bubble when the
+        // viewer is the active responder. Critical injects already
+        // carry their own crit emphasis, so skip the highlight there.
+        // The highlight rides on the bubble body's border (swapping
+        // ``border-ink-600`` for ``border-warn``) rather than a ring
+        // stack on the outer row — a ring around the article wraps
+        // the avatar + stripe + bubble together and reads as broken
+        // chrome instead of a focus signal. 1px border matches the
+        // brand pattern in ``app-screens.jsx``.
+        const isFocusHit =
+          !!highlightLastAi && idx === lastAiIndex && m.kind === "ai_text";
         const ts = new Date(m.ts).toLocaleTimeString();
         // Phase B chat-declutter — track-bar stripe + structural
         // @-highlight. The stripe is 3 px on the left edge of the
@@ -368,9 +372,7 @@ export function Transcript({
         const stripeColor = colorForWorkstream(m.workstream_id, declaredOrder);
         const isMentioned =
           selfRoleId != null && (m.mentions ?? []).includes(selfRoleId);
-        const mentionRing = isMentioned && !isCritical
-          ? "ring-2 ring-warn ring-offset-1 ring-offset-ink-900"
-          : "";
+        const isHighlighted = (isFocusHit || isMentioned) && !isCritical;
         const landmarks = landmarksByMessageId.get(m.id) ?? [];
 
         if (isSystem) {
@@ -415,17 +417,30 @@ export function Transcript({
           // sits OUTSIDE that border on a dedicated rail so the two
           // signals don't collide (UI/UX review specifically asked we
           // avoid recoloring the critical-inject red).
-          const dotColor = isCritical ? "bg-crit" : "bg-signal";
-          const labelColor = isCritical ? "text-crit" : "text-signal";
+          // Header chrome — dot + label colour. Critical injects keep
+          // their crit-red emphasis; highlighted bubbles (your turn or
+          // @-mentioned) shift to warn so the dot, label, border, and
+          // @YOU badge all read as one amber focus signal.
+          const dotColor = isCritical
+            ? "bg-crit"
+            : isHighlighted
+              ? "bg-warn"
+              : "bg-signal";
+          const labelColor = isCritical
+            ? "text-crit"
+            : isHighlighted
+              ? "text-warn"
+              : "text-signal";
+          // Bubble border. Critical injects keep their crit-red
+          // emphasis. Otherwise, when the viewer owes a response on
+          // this turn (focus) OR this message @-mentions them, swap
+          // the default ink-600 border for warn — same amber colour
+          // signal as the @YOU badge.
           const borderClass = isCritical
             ? "border border-crit border-l-2 bg-crit-bg"
-            : "border border-ink-600 bg-ink-800";
-          // Outer ring stacks: focus-ring (active turn) + mention-ring
-          // (you got @-tagged). Both fade gracefully via Tailwind's
-          // ring composition; we never apply both simultaneously
-          // because the active-turn role is also the most likely
-          // mention target — collapsing to one amber ring is cleaner.
-          const outerRing = focusRing || mentionRing;
+            : isHighlighted
+              ? "border border-warn bg-ink-800"
+              : "border border-ink-600 bg-ink-800";
           return (
             <Landmarks
               key={`grp-${m.id}`}
@@ -440,7 +455,7 @@ export function Transcript({
                 data-message-id={m.id}
                 data-workstream-id={m.workstream_id ?? ""}
                 onContextMenu={(e) => handleContextMenu(e, m)}
-                className={`scroll-mt-24 flex min-w-0 gap-3 ${outerRing}`}
+                className="scroll-mt-24 flex min-w-0 gap-3"
               >
                 <div
                   aria-hidden="true"
@@ -526,10 +541,15 @@ export function Transcript({
         const roleLabel = role?.label ?? "—";
         const code = roleCode(roleLabel);
         const displayName = role?.display_name ?? "";
+        // Player bubble border. Mention-of-self swaps to warn (same
+        // signal as AI bubbles); self-bubbles keep their signal-tinted
+        // background since the viewer rarely needs to be reminded
+        // they mentioned themselves.
         const bubbleColour = isSelf
           ? "border border-signal-deep bg-signal-tint"
-          : "border border-ink-600 bg-ink-800";
-        const playerOuterRing = mentionRing; // focus-ring is AI-only
+          : isHighlighted
+            ? "border border-warn bg-ink-800"
+            : "border border-ink-600 bg-ink-800";
         return (
           <Landmarks
             key={`grp-${m.id}`}
@@ -544,7 +564,7 @@ export function Transcript({
               data-message-id={m.id}
               data-workstream-id={m.workstream_id ?? ""}
               onContextMenu={(e) => handleContextMenu(e, m)}
-              className={`scroll-mt-24 flex min-w-0 gap-3 pl-6 ${playerOuterRing}`}
+              className="scroll-mt-24 flex min-w-0 gap-3 pl-6"
             >
               <div className="flex min-w-0 flex-1 flex-col items-end gap-1.5">
                 <header className="mono flex flex-wrap items-baseline justify-end gap-2 text-[10px] font-bold uppercase tracking-[0.14em]">
