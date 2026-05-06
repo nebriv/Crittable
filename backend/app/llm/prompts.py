@@ -101,7 +101,7 @@ _REALISM = (
     "When the scenario brief is thin (creator answered \"testing\" or "
     "left details blank), invent plausible specifics from the role's "
     "normal toolset — a SIEM correlation rule firing, an EDR "
-    "behavioural detection, a failed backup job, a suspicious OAuth "
+    "behavioral detection, a failed backup job, a suspicious OAuth "
     "grant, a DLP alert — rather than physical-world tropes. **Cap "
     "fabrication at one or two specifics per beat** (an alert source, "
     "a host name) — this is a tabletop, not a forensic report; the "
