@@ -1,5 +1,13 @@
 <p align="center">
-  <img src="./assets/brand/mark-animated-dark.gif" alt="Crittable mark — die rolling through six encounter states" width="180" />
+  <!-- Transparent GIF variants so the mark adapts to GitHub's dark/light
+       README themes. Same <picture> + prefers-color-scheme pattern as the
+       lockup below. The previous opaque GIF baked in a #0A0D13 plate that
+       read as a dark panel on the light theme. -->
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="./assets/brand/mark-animated-dark-transparent.gif" />
+    <source media="(prefers-color-scheme: light)" srcset="./assets/brand/mark-animated-light-transparent.gif" />
+    <img src="./assets/brand/mark-animated-dark-transparent.gif" alt="Crittable mark — die rolling through six encounter states" width="180" />
+  </picture>
 </p>
 <p align="center">
   <!-- Transparent SVG variants so the lockup looks correct on both

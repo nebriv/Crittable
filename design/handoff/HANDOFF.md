@@ -22,7 +22,8 @@
 | `tokens.css` | All design tokens. Import once at the top of your global stylesheet. |
 | `logo/svg/mark-encounter-01-dark.svg` | Primary static mark, dark UI |
 | `logo/svg/mark-encounter-01-light.svg` | Primary static mark, light UI |
-| `logo/svg/mark-animated-dark.svg` | Animated mark — use in marketing hero |
+| `logo/svg/mark-animated-{dark,light}.svg` | 12-frame source strip (groups at `opacity="0"`, no SMIL — *not directly animated*). Renders the raster variants below; don't reference it from product surfaces. |
+| `logo/{gif,apng,webp}/mark-animated-{128,256,512}-{dark,light}-transparent.{gif,png,webp}` | Animated mark, transparent BG. `dark` = light strokes (use on dark BG); `light` = dark strokes (use on light BG). APNG/WebP carry full alpha; GIF is 1-bit. |
 | `logo/svg/lockup-crittable-dark.svg` | Header lockup |
 | `logo/favicon/HEAD-SNIPPET.html` | Paste into `<head>` verbatim |
 | `BRAND.md` | Brand system reference |
@@ -76,14 +77,28 @@ The lockup SVG is sized at viewBox 100h. Set `height: 36px` for a standard nav, 
 
 ### 5. Hero (marketing only)
 
-Use `logo/svg/mark-animated-dark.svg` as a centered hero element. It loops indefinitely (~14s cycle); SMIL animations work in all modern browsers without JS. Wrap it in `prefers-reduced-motion` if you want a static fallback:
+For an animated hero, use one of the GIF / APNG / animated WebP raster variants under `logo/{gif,apng,webp}/mark-animated-{128,256,512}-{dark,light}[-transparent].{ext}` — twelve frames at 1000 ms each (~12 s loop). Pick the format your platform handles best: APNG and WebP carry full alpha; GIF is 1-bit but ubiquitous. Wrap in `prefers-reduced-motion` if you want a static fallback:
 
 ```html
 <picture>
   <source media="(prefers-reduced-motion: reduce)" srcset="/logo/svg/mark-encounter-01-dark.svg">
-  <img src="/logo/svg/mark-animated-dark.svg" alt="" class="hero-mark">
+  <img src="/logo/gif/mark-animated-512-dark.gif" alt="" class="hero-mark">
 </picture>
 ```
+
+> Don't reference `mark-animated-{dark,light}.svg` directly — that file is the canonical 12-frame **source strip** used to render the raster variants (every group sits at `opacity="0"`, no SMIL or CSS animation). It will render as a blank tile in any browser.
+
+For surfaces that need to adapt to the user's OS color scheme (e.g. a GitHub README, a docs page that supports both themes), use the transparent GIF/APNG variants — they carry no plate fill, only the rounded-square stroke + the inner ink:
+
+```html
+<picture>
+  <source media="(prefers-color-scheme: dark)"  srcset="/logo/gif/mark-animated-256-dark-transparent.gif">
+  <source media="(prefers-color-scheme: light)" srcset="/logo/gif/mark-animated-256-light-transparent.gif">
+  <img src="/logo/gif/mark-animated-256-dark-transparent.gif" alt="" class="hero-mark">
+</picture>
+```
+
+Substitute the `apng/` or `webp/` sibling for full alpha (no fringing on light backgrounds).
 
 ---
 
@@ -209,13 +224,18 @@ handoff/
     ├── svg/
     │   ├── mark-encounter-01..06-{dark,light}.svg    ← static marks (each encounter state)
     │   ├── mark-face-1..6-{dark,light}.svg           ← static die faces (small-size fallback)
-    │   ├── mark-animated-{dark,light}.svg            ← animated SMIL
+    │   ├── mark-animated-{dark,light}.svg            ← 12-frame source strip (renders the raster animations below; not animated on its own)
     │   └── lockup-crittable-{dark,light}[-transparent].svg
     ├── png/
     │   ├── mark-{16..1024}-{dark,light}.png          ← raster mark
     │   └── lockup-{400,800,1600}-{dark,light}.png    ← raster lockup
     ├── gif/
-    │   └── mark-animated-dark.gif                    ← for README/Slack (37 KB)
+    │   ├── mark-animated-{128,256,512}-dark.gif                       ← opaque #0A0D13 plate
+    │   └── mark-animated-{128,256,512}-{dark,light}-transparent.gif   ← 1-bit alpha, adaptive via <picture>
+    ├── apng/
+    │   └── mark-animated-{128,256,512}-{dark,light}-transparent.png   ← full alpha (animated PNG)
+    ├── webp/
+    │   └── mark-animated-{128,256,512}-{dark,light}-transparent.webp  ← full alpha, smallest
     └── favicon/
         ├── favicon.ico
         ├── favicon.svg

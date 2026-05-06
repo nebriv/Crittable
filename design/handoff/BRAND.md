@@ -31,8 +31,9 @@ A tabletop‑exercise platform for security teams. The product is **Crittable** 
 |---|---|
 | Primary mark, dark UI | `logo/svg/mark-encounter-01-dark.svg` |
 | Primary mark, light UI | `logo/svg/mark-encounter-01-light.svg` |
-| Animated (cover, marketing site) | `logo/svg/mark-animated-dark.svg` |
-| Animated (README, Slack) | `logo/gif/mark-animated-dark.gif` (256×256, 37 KB) |
+| Animation source strip (12 frames, not directly animated) | `logo/svg/mark-animated-{dark,light}.svg` |
+| Animated (README, Slack) | `logo/gif/mark-animated-dark.gif` (256×256, 37 KB) — opaque #0A0D13 plate |
+| Animated, transparent BG | `logo/{gif,apng,webp}/mark-animated-{128,256,512}-{dark,light}-transparent.{gif,png,webp}` — `dark` = light-stroked (use on dark BG), `light` = dark-stroked (use on light BG); APNG/WebP have full alpha, GIF has 1-bit |
 | All 6 encounter states | `logo/svg/mark-encounter-{01–06}-{dark,light}.svg` |
 | All 6 die faces | `logo/svg/mark-face-{1–6}-{dark,light}.svg` |
 | Favicon set | `logo/favicon/` |
