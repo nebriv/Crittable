@@ -126,10 +126,15 @@ describe("Transcript", () => {
     const m3 = container.querySelector("#msg-m3");
     expect(m1).not.toBeNull();
     expect(m3).not.toBeNull();
-    // Tailwind ring class names — m3 has them, m1 doesn't. Post-redesign
-    // the ring color is `--warn` (was amber) — same semantic ("you owe a
-    // response"), brand-aligned token.
-    expect(m1?.className).not.toContain("ring-warn");
-    expect(m3?.className).toContain("ring-warn");
+    // The highlight rides on the bubble body's border — swapping the
+    // default ``border-ink-600`` for ``border-warn`` — instead of a
+    // ring stack on the article. m3 (latest AI bubble) shows the
+    // warn border; m1 (earlier AI bubble) keeps the default ink-600.
+    const m1Bubble = m1?.querySelector('[data-message-kind="ai"]');
+    const m3Bubble = m3?.querySelector('[data-message-kind="ai"]');
+    expect(m1Bubble?.className).not.toContain("border-warn");
+    expect(m1Bubble?.className).toContain("border-ink-600");
+    expect(m3Bubble?.className).toContain("border-warn");
+    expect(m3Bubble?.className).not.toContain("border-ink-600");
   });
 });
