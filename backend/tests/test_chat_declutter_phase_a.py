@@ -1029,6 +1029,12 @@ class TestPromptToolConsistencyFlagOn:
             "display_name",
             "beat",
             "options",
+            # Block 10 presence-column enum + the column name itself.
+            # See ``_presence_label`` in app/llm/prompts.py.
+            "presence",
+            "joined_focused",
+            "joined_away",
+            "not_joined",
         }
         # The intersect with `known_tools` should equal the model's
         # actual tool palette (positive evidence). The diff is the

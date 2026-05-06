@@ -37,6 +37,18 @@ interface Props {
   onRoleAdded: () => void;
   onRoleChanged: () => void;
   onError: (msg: string) => void;
+  /**
+   * When the launch gates are met (plan finalized + ≥ 2 player
+   * roles), the wizard normally auto-advances to step 6 and renders
+   * ``SetupReviewView`` instead of this lobby. The creator can hop
+   * back here via the "← Back to lobby" button on the review screen
+   * — and once they're back, they need a one-click way to launch
+   * without rail-clicking step 6 (which is a wizard-internals
+   * affordance most users won't notice). When supplied, this prop
+   * triggers a launch directly; the lobby renders a primary CTA in
+   * the sidecar when both gates are met.
+   */
+  onLaunchSession?: () => void;
 }
 
 export function SetupLobbyView(props: Props) {
@@ -307,8 +319,40 @@ export function SetupLobbyView(props: Props) {
             ? "Plan not finalized yet — finish setup in step 04."
             : needPlayers
               ? `Need at least 2 player roles before launch (currently ${props.playerCount}).`
-              : "Ready — advance to step 06 to review and launch."}
+              : props.onLaunchSession
+                ? "Ready — launch now or share remaining join links first."
+                : "Ready — advance to step 06 to review and launch."}
         </div>
+        {/* Primary launch CTA inside the lobby sidecar. Renders only
+            when (a) launch gates are met AND (b) the parent wired
+            the handler — covers the path where the creator hopped
+            back here from the review screen and now wants to launch
+            without round-tripping through the rail (User Agent
+            HIGH#2). The button matches the SetupReviewView CTA so
+            the action feels identical from either entry point. */}
+        {!needPlan && !needPlayers && props.onLaunchSession ? (
+          <button
+            type="button"
+            onClick={props.onLaunchSession}
+            disabled={props.busy}
+            className="mono"
+            style={{
+              background: "var(--signal)",
+              color: "var(--ink-900)",
+              border: "none",
+              padding: "12px",
+              borderRadius: 2,
+              fontWeight: 700,
+              fontSize: 12,
+              letterSpacing: "0.20em",
+              cursor: props.busy ? "not-allowed" : "pointer",
+              opacity: props.busy ? 0.6 : 1,
+              marginTop: 4,
+            }}
+          >
+            {props.busy ? "STARTING…" : "START SESSION →"}
+          </button>
+        ) : null}
       </aside>
     </div>
   );

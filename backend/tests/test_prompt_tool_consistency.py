@@ -245,6 +245,15 @@ _NON_TOOL_ALLOWLIST = frozenset(
         "per_role",
         "highlights",
         "lowlights",
+        # Block 10 presence-column enum values + the column name itself.
+        # Backticked in the presence-aware-addressing rules so the model
+        # can pattern-match the column it just read. See
+        # ``_presence_label`` in prompts.py — the three values are the
+        # ONLY ones that column ever takes.
+        "presence",
+        "joined_focused",
+        "joined_away",
+        "not_joined",
     }
 )
 

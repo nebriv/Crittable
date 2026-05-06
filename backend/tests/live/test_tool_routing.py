@@ -136,6 +136,122 @@ async def test_briefing_turn_routes_to_broadcast(
     )
 
 
+async def test_briefing_does_not_address_or_yield_to_unjoined_seats(
+    anthropic_client: Any,
+    play_model: str,
+    briefing_session_with_unjoined_seat: Any,
+    empty_registry: Any,
+) -> None:
+    """The headline regression for the user-reported screenshot
+    ("Incident Commander — what is your immediate first action?" with
+    no IC in the lobby).
+
+    Pre-fix Block 10 had no presence column, so the model freely
+    picked any seated role for ``address_role`` / ``pose_choice`` /
+    ``set_active_roles``. With CISO + SOC marked ``joined_focused``
+    and IC marked ``not_joined``, the prompt's presence-aware-
+    addressing rules MUST steer the model away from the empty seat:
+      * ``address_role`` to ``role-ic`` is the headline failure
+        ("AI is talking to a chair") — hard-fail.
+      * ``pose_choice`` to ``role-ic`` is the same shape via a
+        different tool — hard-fail.
+      * ``set_active_roles`` including ``role-ic`` is the more
+        subtle wedge ("turn never advances because the empty seat
+        never submits") — hard-fail.
+    The model is allowed to NAME the IC narratively (e.g. "the
+    IC seat is empty — CISO, you're running point until they
+    join") so we don't grep transcripts for the label.
+    """
+
+    resp = await call_play(
+        anthropic_client,
+        model=play_model,
+        session=briefing_session_with_unjoined_seat,
+        registry=empty_registry,
+        # CISO + SOC are at the keyboard; IC has not joined.
+        connected_role_ids={"role-ciso", "role-soc"},
+        focused_role_ids={"role-ciso", "role-soc"},
+    )
+    uses = tool_uses(resp)
+    assert uses, (
+        f"no tool calls on briefing; stop_reason={resp.stop_reason}"
+    )
+
+    # Hard-fail: any tool input that ROUTES at the empty seat.
+    addressed_unjoined = [
+        u for u in uses
+        if u.name in {"address_role", "pose_choice", "request_artifact"}
+        and u.input.get("role_id") == "role-ic"
+    ]
+    assert not addressed_unjoined, (
+        "model directly addressed the unjoined Incident Commander seat "
+        "via address_role / pose_choice / request_artifact; the "
+        "presence-aware rules in Block 10 should steer it to the "
+        "joined seats. Offending tool calls: "
+        f"{[(u.name, u.input) for u in addressed_unjoined]}"
+    )
+
+    # Hard-fail: yield includes the empty seat (turn would wedge —
+    # the empty seat never submits).
+    yielded_unjoined = [
+        u for u in uses
+        if u.name == "set_active_roles"
+        and "role-ic" in (u.input.get("role_ids") or [])
+    ]
+    assert not yielded_unjoined, (
+        "model yielded the turn to the unjoined Incident Commander "
+        "seat — the engine would wait forever for them to submit. "
+        f"Offending yields: {[(u.name, u.input) for u in yielded_unjoined]}"
+    )
+
+    # Positive assertion (QA review HIGH#1): if the model emitted a
+    # ``set_active_roles`` (the engine's recovery path will add one
+    # if missing — we don't fail the test for a missing-yield first
+    # attempt since the validator handles it), its role_ids MUST be
+    # a subset of the joined seats. Without this the test could
+    # pass when the model addresses only CISO/SOC by coincidence
+    # rather than because of the new rule.
+    yields = [u for u in uses if u.name == "set_active_roles"]
+    joined_seats = {"role-ciso", "role-soc"}
+    for y in yields:
+        ids = set(y.input.get("role_ids") or [])
+        assert ids <= joined_seats, (
+            "set_active_roles yielded to a role outside the joined set "
+            "(should only yield to role-ciso / role-soc since IC is "
+            f"not_joined). Got: {sorted(ids)}; expected subset of "
+            f"{sorted(joined_seats)}"
+        )
+
+    # Soft positive coverage: if there's a player-facing message
+    # (broadcast / address_role / pose_choice), it should NOT contain
+    # a clause-start address to the unjoined IC seat ("Incident
+    # Commander —" / "Incident Commander," / "Incident Commander:").
+    # This is the prompt-expert C1 finding: the new rule extends to
+    # broadcast prose, not just tool args.
+    role_message_uses = [
+        u for u in uses
+        if u.name in {"broadcast", "address_role", "pose_choice"}
+    ]
+    address_patterns = (
+        "Incident Commander —",
+        "Incident Commander,",
+        "Incident Commander:",
+    )
+    for u in role_message_uses:
+        body = " ".join(
+            str(u.input.get(k, "") or "")
+            for k in ("message", "label", "data")
+        )
+        for pat in address_patterns:
+            assert pat not in body, (
+                "model embedded a clause-start address to the unjoined "
+                f"Incident Commander seat in a {u.name} body — same "
+                "wedge as a tool-level address. Block 10's broadcast-"
+                "prose rule should prevent this. "
+                f"Pattern: {pat!r}; body: {body[:200]!r}"
+            )
+
+
 async def test_player_decision_routes_to_broadcast(
     anthropic_client: Any,
     play_model: str,
