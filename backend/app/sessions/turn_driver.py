@@ -851,6 +851,30 @@ class TurnDriver:
                     max_per_5_turns=self._manager.settings().max_critical_injects_per_5_turns,
                 ),
             )
+            # When a player @s the AI, the AI should @ them back. The
+            # frontend's @-highlight reads ``Message.mentions`` (never
+            # regex-scans the body), so prose like "CISO — got it" arrives
+            # without a structural mention and the asker sees no @YOU
+            # badge. ``address_role`` / ``pose_choice`` already auto-tag,
+            # but ``broadcast`` / ``share_data`` (the common interject
+            # replies) don't — auto-append the asker here so every
+            # interject reply highlights for the player who triggered it.
+            if for_role_id and session.role_by_id(for_role_id) is not None:
+                tagged = 0
+                for msg in outcome.appended_messages:
+                    if msg.kind != MessageKind.AI_TEXT:
+                        continue
+                    if for_role_id not in msg.mentions:
+                        msg.mentions.append(for_role_id)
+                        tagged += 1
+                if tagged:
+                    _logger.info(
+                        "interject_reply_tagged",
+                        session_id=session.id,
+                        turn_index=turn.index,
+                        for_role_id=for_role_id,
+                        tagged_count=tagged,
+                    )
             # Persist appended messages but do NOT touch turn state — the
             # interject is purely additive content.
             for msg in outcome.appended_messages:
@@ -1047,6 +1071,51 @@ class TurnDriver:
                     turn_id=turn.id,
                 )
             )
+
+        # Same @-back behaviour as ``run_interject``: when a player
+        # submitted an in-turn ``@facilitator`` ask AND that submission
+        # closed the quorum (so we landed in the regular play-turn
+        # path instead of the interject side-channel), the AI's reply
+        # should @ the asker so the frontend's @YOU badge fires. The
+        # interject path already handles the side-channel case
+        # (run_interject auto-tags); this block covers the
+        # quorum-closes-immediately branch the WS handler routes via
+        # ``run_play_turn``. Skipping ``is_interjection=True`` messages
+        # avoids re-tagging an asker who already received an interject
+        # reply earlier in the turn.
+        from .submission_pipeline import FACILITATOR_MENTION_TOKEN
+
+        in_turn_facilitator_askers: list[str] = []
+        seen: set[str] = set()
+        for prior in session.messages:
+            if prior.turn_id != turn.id:
+                continue
+            if prior.kind != MessageKind.PLAYER:
+                continue
+            if prior.is_interjection:
+                continue
+            if FACILITATOR_MENTION_TOKEN not in prior.mentions:
+                continue
+            if prior.role_id and prior.role_id not in seen:
+                in_turn_facilitator_askers.append(prior.role_id)
+                seen.add(prior.role_id)
+        if in_turn_facilitator_askers:
+            tagged = 0
+            for msg in outcome.appended_messages:
+                if msg.kind != MessageKind.AI_TEXT:
+                    continue
+                for asker_id in in_turn_facilitator_askers:
+                    if asker_id not in msg.mentions:
+                        msg.mentions.append(asker_id)
+                        tagged += 1
+            if tagged:
+                _logger.info(
+                    "play_turn_reply_tagged",
+                    session_id=session.id,
+                    turn_index=turn.index,
+                    askers=list(in_turn_facilitator_askers),
+                    tagged_count=tagged,
+                )
 
         for msg in outcome.appended_messages:
             session.messages.append(msg)

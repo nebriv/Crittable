@@ -730,6 +730,510 @@ def test_ws_routing_combined_role_and_facilitator_fires_interject(
 
 
 # -----------------------------------------------------------------------
+# Interject reply auto-tagging: when a player @s the AI, the AI's
+# reply should @ them back so the @YOU badge fires on the asker's
+# bubble. ``address_role`` / ``pose_choice`` already auto-tag mentions
+# from their ``role_id`` arg; ``broadcast`` / ``share_data`` (the
+# common interject reply tools) used to land with empty mentions, so
+# the asker saw a fresh AI message with no signal it was for them.
+# -----------------------------------------------------------------------
+
+
+def test_interject_broadcast_reply_tags_asker_mention(
+    client: TestClient, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """When a player @s the facilitator and the AI replies via
+    ``broadcast``, the resulting AI message's ``mentions`` must
+    include the asker's role_id so the frontend lights the @YOU
+    badge on the asker's bubble. Also asserts the
+    ``interject_reply_tagged`` audit line — without it an operator
+    can't tell from logs whether the auto-tag ran on a stuck
+    session."""
+
+    from tests.mock_anthropic import MockAnthropic, _ContentBlock, _Response
+
+    seats = asyncio.run(_seat_two_role_session(client))
+    capsys.readouterr()  # discard setup-time logs
+    interject = _Response(
+        content=[
+            _ContentBlock(
+                type="tool_use",
+                name="broadcast",
+                input={"message": "CISO — pulling Defender now."},
+                id="tu_b",
+            ),
+        ],
+        stop_reason="tool_use",
+    )
+    mock = MockAnthropic({"play": [interject]})
+    client.app.state.llm.set_transport(mock.messages)
+
+    creator_token = client.app.state.authn.mint(
+        session_id=seats["session_id"],
+        role_id=seats["creator_id"],
+        kind="creator",
+        version=0,
+    )
+    with client.websocket_connect(
+        f"/ws/sessions/{seats['session_id']}?token={creator_token}"
+    ) as ws:
+        ws.send_json(
+            {
+                "type": "submit_response",
+                "content": "@facilitator any new IOCs?",
+                "intent": "discuss",
+                "mentions": [FACILITATOR_MENTION_TOKEN],
+            }
+        )
+        for _ in range(8):
+            try:
+                ws.receive_json(mode="text", timeout=2.0)
+            except Exception:
+                break
+
+    lines = _structlog_lines(capsys)
+    session = asyncio.run(
+        client.app.state.manager.get_session(seats["session_id"])
+    )
+    ai_msg = next(
+        m
+        for m in reversed(session.messages)
+        if m.kind.value == "ai_text" and m.tool_name == "broadcast"
+    )
+    assert ai_msg.mentions == [seats["creator_id"]], (
+        "broadcast interject reply must tag the asker's role_id in "
+        f"mentions; got {ai_msg.mentions!r}"
+    )
+    tag_lines = [
+        line for line in lines if line.get("event") == "interject_reply_tagged"
+    ]
+    assert tag_lines, (
+        "interject_reply_tagged audit line missing — operators rely on "
+        "it to debug @-back regressions; got events: "
+        f"{[line.get('event') for line in lines]}"
+    )
+    tag = tag_lines[-1]
+    assert tag["for_role_id"] == seats["creator_id"]
+    assert tag["tagged_count"] == 1
+
+
+def test_interject_share_data_reply_tags_asker_mention(
+    client: TestClient,
+) -> None:
+    """``share_data`` is the interject reply for "show me the logs /
+    IOCs / telemetry" asks (the screenshot bug). It currently lands
+    without structural mentions, so the asker sees a Defender table
+    drop in with no @YOU signal. Auto-tagging fixes that."""
+
+    from tests.mock_anthropic import MockAnthropic, _ContentBlock, _Response
+
+    seats = asyncio.run(_seat_two_role_session(client))
+    interject = _Response(
+        content=[
+            _ContentBlock(
+                type="tool_use",
+                name="share_data",
+                input={
+                    "label": "Defender Telemetry — FS-01",
+                    "data": "07:14 AM — Unusual auth event\n07:17 AM — chkdst.exe written",
+                },
+                id="tu_sd",
+            ),
+        ],
+        stop_reason="tool_use",
+    )
+    mock = MockAnthropic({"play": [interject]})
+    client.app.state.llm.set_transport(mock.messages)
+
+    creator_token = client.app.state.authn.mint(
+        session_id=seats["session_id"],
+        role_id=seats["creator_id"],
+        kind="creator",
+        version=0,
+    )
+    with client.websocket_connect(
+        f"/ws/sessions/{seats['session_id']}?token={creator_token}"
+    ) as ws:
+        ws.send_json(
+            {
+                "type": "submit_response",
+                "content": "@facilitator show me the IOCs for FS-01",
+                "intent": "discuss",
+                "mentions": [FACILITATOR_MENTION_TOKEN],
+            }
+        )
+        for _ in range(8):
+            try:
+                ws.receive_json(mode="text", timeout=2.0)
+            except Exception:
+                break
+
+    session = asyncio.run(
+        client.app.state.manager.get_session(seats["session_id"])
+    )
+    ai_msg = next(
+        m
+        for m in reversed(session.messages)
+        if m.kind.value == "ai_text" and m.tool_name == "share_data"
+    )
+    assert ai_msg.mentions == [seats["creator_id"]], (
+        "share_data interject reply must tag the asker's role_id in "
+        f"mentions; got {ai_msg.mentions!r}"
+    )
+
+
+def test_interject_address_role_reply_does_not_duplicate_asker_mention(
+    client: TestClient,
+) -> None:
+    """When the AI replies to the asker via ``address_role`` with the
+    asker's role_id, the dispatcher already sets
+    ``mentions=[asker_id]``. The interject auto-tag must NOT append a
+    duplicate entry — exactly one occurrence."""
+
+    from tests.mock_anthropic import MockAnthropic, _ContentBlock, _Response
+
+    seats = asyncio.run(_seat_two_role_session(client))
+    interject = _Response(
+        content=[
+            _ContentBlock(
+                type="tool_use",
+                name="address_role",
+                input={
+                    "role_id": seats["creator_id"],
+                    "message": "no new IOCs since 07:42.",
+                },
+                id="tu_ar",
+            ),
+        ],
+        stop_reason="tool_use",
+    )
+    mock = MockAnthropic({"play": [interject]})
+    client.app.state.llm.set_transport(mock.messages)
+
+    creator_token = client.app.state.authn.mint(
+        session_id=seats["session_id"],
+        role_id=seats["creator_id"],
+        kind="creator",
+        version=0,
+    )
+    with client.websocket_connect(
+        f"/ws/sessions/{seats['session_id']}?token={creator_token}"
+    ) as ws:
+        ws.send_json(
+            {
+                "type": "submit_response",
+                "content": "@facilitator status?",
+                "intent": "discuss",
+                "mentions": [FACILITATOR_MENTION_TOKEN],
+            }
+        )
+        for _ in range(8):
+            try:
+                ws.receive_json(mode="text", timeout=2.0)
+            except Exception:
+                break
+
+    session = asyncio.run(
+        client.app.state.manager.get_session(seats["session_id"])
+    )
+    ai_msg = next(
+        m
+        for m in reversed(session.messages)
+        if m.kind.value == "ai_text" and m.tool_name == "address_role"
+    )
+    assert ai_msg.mentions == [seats["creator_id"]], (
+        "address_role to the asker must not produce a duplicate "
+        f"mention entry; got {ai_msg.mentions!r}"
+    )
+
+
+def test_interject_address_role_to_other_role_appends_asker_mention(
+    client: TestClient,
+) -> None:
+    """When the AI uses ``address_role`` to redirect the asker's
+    question to a different role (e.g. CISO @s `@facilitator`, AI
+    routes the operational ask to SOC), both the redirect target AND
+    the asker should appear in ``mentions[]`` so:
+      - SOC sees @YOU on their bubble (existing dispatch behavior)
+      - CISO sees @YOU on their bubble (new auto-tag behavior)
+    Order: dispatcher's `[target_id]` first, then the asker appended."""
+
+    from tests.mock_anthropic import MockAnthropic, _ContentBlock, _Response
+
+    seats = asyncio.run(_seat_two_role_session(client))
+    interject = _Response(
+        content=[
+            _ContentBlock(
+                type="tool_use",
+                name="address_role",
+                input={
+                    "role_id": seats["soc_id"],
+                    "message": "Bo — pull the egress trace and report.",
+                },
+                id="tu_ar_soc",
+            ),
+        ],
+        stop_reason="tool_use",
+    )
+    mock = MockAnthropic({"play": [interject]})
+    client.app.state.llm.set_transport(mock.messages)
+
+    creator_token = client.app.state.authn.mint(
+        session_id=seats["session_id"],
+        role_id=seats["creator_id"],
+        kind="creator",
+        version=0,
+    )
+    with client.websocket_connect(
+        f"/ws/sessions/{seats['session_id']}?token={creator_token}"
+    ) as ws:
+        ws.send_json(
+            {
+                "type": "submit_response",
+                "content": "@facilitator who handles egress?",
+                "intent": "discuss",
+                "mentions": [FACILITATOR_MENTION_TOKEN],
+            }
+        )
+        for _ in range(8):
+            try:
+                ws.receive_json(mode="text", timeout=2.0)
+            except Exception:
+                break
+
+    session = asyncio.run(
+        client.app.state.manager.get_session(seats["session_id"])
+    )
+    ai_msg = next(
+        m
+        for m in reversed(session.messages)
+        if m.kind.value == "ai_text" and m.tool_name == "address_role"
+    )
+    assert ai_msg.mentions == [seats["soc_id"], seats["creator_id"]], (
+        "address_role to a non-asker target must include both target "
+        f"and asker in mentions; got {ai_msg.mentions!r}"
+    )
+
+
+def test_interject_pose_choice_reply_tags_asker_mention(
+    client: TestClient,
+) -> None:
+    """``pose_choice`` is one of the four interject reply tools
+    (turn_driver.py:828). When the AI poses a structured 2-choice
+    fork to the asker, the dispatcher already tags the target;
+    when it poses to a non-asker, the auto-tag must append the
+    asker so they still see @YOU."""
+
+    from tests.mock_anthropic import MockAnthropic, _ContentBlock, _Response
+
+    seats = asyncio.run(_seat_two_role_session(client))
+    interject = _Response(
+        content=[
+            _ContentBlock(
+                type="tool_use",
+                name="pose_choice",
+                input={
+                    "role_id": seats["soc_id"],
+                    "question": "How aggressive should we go on egress block?",
+                    "options": ["Block all outbound", "Block to known C2 only"],
+                },
+                id="tu_pc",
+            ),
+        ],
+        stop_reason="tool_use",
+    )
+    mock = MockAnthropic({"play": [interject]})
+    client.app.state.llm.set_transport(mock.messages)
+
+    creator_token = client.app.state.authn.mint(
+        session_id=seats["session_id"],
+        role_id=seats["creator_id"],
+        kind="creator",
+        version=0,
+    )
+    with client.websocket_connect(
+        f"/ws/sessions/{seats['session_id']}?token={creator_token}"
+    ) as ws:
+        ws.send_json(
+            {
+                "type": "submit_response",
+                "content": "@facilitator should we block egress?",
+                "intent": "discuss",
+                "mentions": [FACILITATOR_MENTION_TOKEN],
+            }
+        )
+        for _ in range(8):
+            try:
+                ws.receive_json(mode="text", timeout=2.0)
+            except Exception:
+                break
+
+    session = asyncio.run(
+        client.app.state.manager.get_session(seats["session_id"])
+    )
+    ai_msg = next(
+        m
+        for m in reversed(session.messages)
+        if m.kind.value == "ai_text" and m.tool_name == "pose_choice"
+    )
+    assert ai_msg.mentions == [seats["soc_id"], seats["creator_id"]], (
+        "pose_choice interject reply to a non-asker must include both "
+        f"target and asker in mentions; got {ai_msg.mentions!r}"
+    )
+
+
+def test_interject_with_no_asker_does_not_tag_mentions(
+    client: TestClient,
+) -> None:
+    """Defensive: ``run_interject`` accepts ``for_role_id: str | None``
+    (turn_driver.py:719). The auto-tag is gated on a truthy
+    ``for_role_id`` AND a real role lookup. Direct-call this path
+    with ``for_role_id=None`` and assert the AI's broadcast reply
+    has empty ``mentions`` (no spurious tagging when no asker)."""
+
+    from app.sessions.turn_driver import TurnDriver
+    from tests.mock_anthropic import MockAnthropic, _ContentBlock, _Response
+
+    seats = asyncio.run(_seat_two_role_session(client))
+    interject = _Response(
+        content=[
+            _ContentBlock(
+                type="tool_use",
+                name="broadcast",
+                input={"message": "ack."},
+                id="tu_b_noasker",
+            ),
+        ],
+        stop_reason="tool_use",
+    )
+    mock = MockAnthropic({"play": [interject]})
+    client.app.state.llm.set_transport(mock.messages)
+
+    async def _run() -> Any:
+        manager = client.app.state.manager
+        session = await manager.get_session(seats["session_id"])
+        turn = session.current_turn
+        assert turn is not None
+        await TurnDriver(manager=manager).run_interject(
+            session=session, turn=turn, for_role_id=None
+        )
+        return await manager.get_session(seats["session_id"])
+
+    session = asyncio.run(_run())
+    ai_msg = next(
+        m
+        for m in reversed(session.messages)
+        if m.kind.value == "ai_text" and m.tool_name == "broadcast"
+    )
+    assert ai_msg.mentions == [], (
+        "run_interject with for_role_id=None must not auto-tag the "
+        f"reply; got {ai_msg.mentions!r}"
+    )
+
+
+def test_play_turn_reply_tags_facilitator_asker_when_quorum_closes(
+    client: TestClient,
+) -> None:
+    """When a player @s the facilitator AND their submission closes
+    the quorum, the WS handler routes to ``run_play_turn`` (not
+    ``run_interject``) because ``outcome.advanced`` takes precedence
+    (ws/routes.py:722-728). The play-turn path's auto-tag in
+    ``_apply_play_outcome`` must still @-back the asker so they see
+    @YOU on the AI's response."""
+
+    from tests.mock_anthropic import MockAnthropic, _ContentBlock, _Response
+
+    # 1-active-role variant: only the creator is active, so their
+    # ``intent="ready"`` submission closes quorum immediately and
+    # the regular play turn fires.
+    resp = client.post(
+        "/api/sessions",
+        json={
+            "scenario_prompt": "Mentions routing test",
+            "creator_label": "CISO",
+            "creator_display_name": "Alex",
+            "skip_setup": True,
+        },
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    sid = body["session_id"]
+    creator_id = body["creator_role_id"]
+
+    async def _seat() -> None:
+        manager = client.app.state.manager
+        session = await manager.get_session(sid)
+        turn = Turn(
+            index=0,
+            active_role_ids=[creator_id],
+            status="awaiting",
+        )
+        session.turns.append(turn)
+        session.state = SessionState.AWAITING_PLAYERS
+        await manager._repo.save(session)
+
+    asyncio.run(_seat())
+
+    # Two play responses: the first satisfies DRIVE+YIELD with a
+    # broadcast + set_active_roles. The asker's @-back must land on
+    # the broadcast.
+    play_response = _Response(
+        content=[
+            _ContentBlock(
+                type="tool_use",
+                name="broadcast",
+                input={"message": "Pulling Defender now."},
+                id="tu_b_playturn",
+            ),
+            _ContentBlock(
+                type="tool_use",
+                name="set_active_roles",
+                input={"role_ids": [creator_id]},
+                id="tu_sar",
+            ),
+        ],
+        stop_reason="tool_use",
+    )
+    mock = MockAnthropic({"play": [play_response]})
+    client.app.state.llm.set_transport(mock.messages)
+
+    auth_token = client.app.state.authn.mint(
+        session_id=sid,
+        role_id=creator_id,
+        kind="creator",
+        version=0,
+    )
+    with client.websocket_connect(
+        f"/ws/sessions/{sid}?token={auth_token}"
+    ) as ws:
+        ws.send_json(
+            {
+                "type": "submit_response",
+                "content": "@facilitator IOCs?",
+                "intent": "ready",
+                "mentions": [FACILITATOR_MENTION_TOKEN],
+            }
+        )
+        for _ in range(12):
+            try:
+                ws.receive_json(mode="text", timeout=2.0)
+            except Exception:
+                break
+
+    session = asyncio.run(client.app.state.manager.get_session(sid))
+    ai_msg = next(
+        m
+        for m in reversed(session.messages)
+        if m.kind.value == "ai_text" and m.tool_name == "broadcast"
+    )
+    assert creator_id in ai_msg.mentions, (
+        "play-turn broadcast in response to a quorum-closing "
+        "@facilitator submission must tag the asker; got "
+        f"mentions={ai_msg.mentions!r}"
+    )
+
+
+# -----------------------------------------------------------------------
 # Deletion regression — ensure the legacy heuristic is gone.
 # -----------------------------------------------------------------------
 
