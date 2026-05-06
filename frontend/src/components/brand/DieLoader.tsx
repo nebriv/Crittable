@@ -8,13 +8,32 @@ import type { CSSProperties } from "react";
  * generation. Don't sprinkle this everywhere — the brand mark is the
  * one hero asset and it loses meaning if it competes with itself.
  *
- * For small in-flow indicators (e.g. "AI is typing…"), keep using the
- * <ChatIndicator> bouncing-dots pattern. This component is for whole-
- * screen / whole-region wait states only.
+ * Two acceptable usage patterns:
+ *
+ *   1. **Whole-screen / whole-region wait** — initial page load,
+ *      JoinIntro waiting room, AAR generation popup. ``size`` 96+,
+ *      centered.
+ *
+ *   2. **Named in-chat wait state** — a labelled banner inside an
+ *      otherwise interactive surface (chat group, sidebar) that
+ *      claims attention for a specific, ephemeral wait. ``size`` 64,
+ *      bordered + tinted background. The banner replaces (rather
+ *      than augments) the smaller "AI is typing…" bouncing-dots
+ *      indicator for the duration of that named wait.
+ *      Examples: ``SetupView`` "Waiting for the AI's first
+ *      question" empty state, ``SetupView`` "Drafting scenario
+ *      plan" wait banner.
+ *
+ * For ambient "AI is typing…" indicators outside of a named wait
+ * (e.g. mid-Q&A in setup, mid-turn in play), keep using the
+ * ``<ChatIndicator>`` bouncing-dots pattern — the DieLoader would
+ * over-claim attention there.
  *
  * ``size`` defaults to 96 (works well centered on a viewport-filling
  * surface). ``label`` is the mono caption beneath; pass ``null`` to
- * suppress.
+ * suppress. The component supplies its own ``role="status"`` +
+ * ``aria-live="polite"``; do NOT wrap the consumer in a second
+ * status region (nested live regions confuse screen readers).
  */
 interface Props {
   size?: number;

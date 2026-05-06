@@ -66,6 +66,7 @@ function baseProps() {
     onPickOption: vi.fn(),
     busy: false,
     busyMessage: null,
+    draftingPlan: false,
   };
 }
 
@@ -179,5 +180,87 @@ describe("SetupView — with-plan branch", () => {
       name: /APPROVE & START LOBBY/i,
     });
     expect(approve).toBeDisabled();
+  });
+});
+
+/**
+ * The plan-drafting wait is 5–30 s of non-streaming LLM work; pre-fix,
+ * the operator only saw the small typing dots inside the chat
+ * transcript and the LOOKS READY button reading as "stuck." The
+ * ``draftingPlan`` prop renders a prominent in-chat banner with the
+ * brand DieLoader so the wait reads as an explicit, named step.
+ *
+ * The banner intentionally relies on ``<DieLoader>``'s own
+ * ``role="status" aria-live="polite"`` rather than wrapping in a
+ * second status region (nested live regions are flaky across screen
+ * readers). The label inside DieLoader carries the timing
+ * expectation so a single announcement covers both pieces.
+ */
+describe("SetupView — draftingPlan banner", () => {
+  it("does NOT render the banner when draftingPlan is false", () => {
+    render(<SetupView snapshot={fakeSnapshot(null)} {...baseProps()} />);
+    expect(screen.queryByTestId("drafting-plan-banner")).not.toBeInTheDocument();
+  });
+
+  it("renders the prominent banner when draftingPlan is true and no plan yet", () => {
+    render(
+      <SetupView
+        snapshot={fakeSnapshot(null)}
+        {...baseProps()}
+        busy
+        busyMessage="Drafting the scenario plan…"
+        draftingPlan
+      />,
+    );
+    const banner = screen.getByTestId("drafting-plan-banner");
+    expect(banner).toBeInTheDocument();
+    // The DieLoader label is the load-bearing copy — names the step
+    // ("Drafting scenario plan") and sets a timing expectation
+    // ("typically 10–30 sec"). The operator's complaint was "feels
+    // stuck"; the timing window is what turns "stuck" into "patient."
+    expect(
+      within(banner).getByText(/Drafting scenario plan/i),
+    ).toBeInTheDocument();
+    expect(within(banner).getByText(/10–30 sec/i)).toBeInTheDocument();
+  });
+
+  it("hides the banner once a plan exists, even if draftingPlan is still true", () => {
+    // Race-guard regression test: the Facilitator clears
+    // ``draftingPlan`` as soon as the plan lands, but a render-cycle
+    // race could leave both true for a frame. The ``!hasPlan`` guard
+    // in the JSX must hide the banner when a plan is present so the
+    // operator never sees a "drafting" caption flashing over a new
+    // plan card. Passing ``draftingPlan={true}`` AND a plan
+    // exercises the guard directly (vs. the prior tautological
+    // ``draftingPlan={false}`` test the QA agent flagged).
+    render(
+      <SetupView
+        snapshot={fakeSnapshot(fakePlan())}
+        {...baseProps()}
+        draftingPlan
+      />,
+    );
+    expect(screen.queryByTestId("drafting-plan-banner")).not.toBeInTheDocument();
+  });
+
+  it("suppresses the small BusyChip while the prominent banner is showing", () => {
+    // UI/UX + user-persona reviews flagged BusyChip + banner +
+    // chat-typing-dots as redundant indicators. While
+    // ``draftingPlan=true``, only the banner should be visible. The
+    // BusyChip resumes for the post-plan finalize step.
+    render(
+      <SetupView
+        snapshot={fakeSnapshot(null)}
+        {...baseProps()}
+        busy
+        busyMessage="Drafting the scenario plan…"
+        draftingPlan
+      />,
+    );
+    // Banner is present, chip text is NOT.
+    expect(screen.getByTestId("drafting-plan-banner")).toBeInTheDocument();
+    expect(
+      screen.queryByText(/Drafting the scenario plan…/),
+    ).not.toBeInTheDocument();
   });
 });
