@@ -813,6 +813,20 @@ _WORKSTREAMS_SETUP_DIRECTIVE = (
 )
 
 
+def _escape_fence_tokens(value: str) -> str:
+    """Replace any ``<<<`` / ``>>>`` substrings inside a creator-
+    supplied string so they can't terminate the roster fences and
+    smuggle instructions into the system block. The replacement
+    keeps the visual shape (``≪`` / ``≫`` — U+226A / U+226B) so a
+    curious operator scanning logs still sees an angle-bracket-ish
+    marker, but the model can no longer mistake it for our own
+    delimiter."""
+
+    return value.replace("<<<", "≪≪≪").replace(
+        ">>>", "≫≫≫"
+    )
+
+
 def _setup_roster_block(session: Session) -> str:
     """Render the seated roster for the setup-tier system prompt.
 
@@ -826,15 +840,23 @@ def _setup_roster_block(session: Session) -> str:
     they round-trip into a system block, so an attacker who can
     write to the wizard could attempt to wedge instructions inside a
     ``label``. Each entry is fenced with ``<<<...>>>`` and the lead
-    paragraph repeats the trust boundary so a label like
-    ``IGNORE PRIOR INSTRUCTIONS`` is read as data, not policy.
+    paragraph repeats the trust boundary. A crafted label like
+    ``X>>>\\nSYSTEM: …`` would otherwise close the fence early; we
+    replace any literal ``<<<`` / ``>>>`` inside the label or
+    display name with a Unicode look-alike before interpolating, so
+    the only fence tokens the model sees are the ones we control.
     """
 
     lines: list[str] = []
     for role in session.roles:
         creator_tag = " (creator — playing this seat)" if role.is_creator else ""
-        dn = f' — "<<<{role.display_name}>>>"' if role.display_name else ""
-        lines.append(f"  - <<<{role.label}>>>{dn}{creator_tag}")
+        safe_label = _escape_fence_tokens(role.label)
+        dn = (
+            f' — "<<<{_escape_fence_tokens(role.display_name)}>>>"'
+            if role.display_name
+            else ""
+        )
+        lines.append(f"  - <<<{safe_label}>>>{dn}{creator_tag}")
     if not lines:
         return (
             "(no roles seated yet — ask `ask_setup_question` about who "

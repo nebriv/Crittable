@@ -9,6 +9,7 @@ transport layer (REST / WS), the LLM layer, and the audit log.
 from __future__ import annotations
 
 import asyncio
+import re
 from collections.abc import Iterable
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Literal
@@ -100,6 +101,28 @@ def _inherit_workstream_id(session: Session, *, role_id: str) -> str | None:
         if role_id in msg.mentions:
             return msg.workstream_id
     return None
+
+
+_CONTROL_CHARS_RE = re.compile(r"[\x00-\x1f\x7f-\x9f]+")
+
+
+def sanitize_role_text(value: str | None) -> str | None:
+    """Strip C0 / C1 / DEL controls + leading/trailing whitespace.
+
+    Used by ``add_role`` (label and display_name) and by callers that
+    need to reproduce the same de-dup key the manager will persist.
+    Exposing this as a module-level helper means the bulk-create path
+    in ``POST /api/sessions`` can de-dupe on the *post-sanitisation*
+    label — otherwise two byte-variants of the same label slip past
+    the de-dup set and collapse to identical persisted rows. Returns
+    ``None`` for ``None`` input or strings that collapse to empty
+    after stripping.
+    """
+
+    if value is None:
+        return None
+    cleaned = _CONTROL_CHARS_RE.sub("", value).strip()
+    return cleaned or None
 
 
 class SessionManager:
@@ -303,27 +326,19 @@ class SessionManager:
         kind: ParticipantKindLiteral = "player",
     ) -> tuple[Role, str]:
         # Strip C0/C1/DEL controls from the label and (optional)
-        # display_name. ``set_role_display_name`` already does this
-        # for the player-callable rename path; the bulk invitee-roles
-        # registration in ``POST /api/sessions`` flows up to 32
-        # creator-supplied labels through here at session-create
-        # time, and an attacker who can write to that field could
-        # otherwise embed a ``\n`` to split a structlog audit line
-        # OR wedge ANSI / Markdown directives into the
-        # ``## Seated roster`` system block. Same defence-in-depth
-        # rationale as ``set_role_display_name``. A label that
-        # collapses to empty after stripping is rejected.
-        import re
-
-        label_clean = re.sub(r"[\x00-\x1f\x7f-\x9f]+", "", label).strip()
-        if not label_clean:
-            raise ValueError("label must not be blank")
-        dn_clean: str | None
-        if display_name is None:
-            dn_clean = None
-        else:
-            stripped = re.sub(r"[\x00-\x1f\x7f-\x9f]+", "", display_name).strip()
-            dn_clean = stripped or None
+        # display_name via ``sanitize_role_text``. Both the bulk
+        # invitee-roles registration in ``POST /api/sessions`` and
+        # the per-role POST endpoint flow creator-supplied strings
+        # through here, and an attacker who can write to that field
+        # could otherwise embed a ``\n`` to split a structlog audit
+        # line OR wedge ANSI / Markdown directives into the
+        # ``## Seated roster`` system block. ``IllegalTransitionError``
+        # (matching ``set_role_display_name``) lets the per-role
+        # route surface this as 409 instead of 500.
+        label_clean = sanitize_role_text(label)
+        if label_clean is None:
+            raise IllegalTransitionError("label must not be blank")
+        dn_clean = sanitize_role_text(display_name)
         async with await self._lock_for(session_id):
             session = await self._repo.get(session_id)
             if session.state in (SessionState.ENDED,):

@@ -19,14 +19,17 @@ export interface SetupParts {
 
 /**
  * One row in the step-3 roles list. ``builtin`` rows are the
- * canonical mockup-defined seats (IC / CSM / CSE / COM / EXE) and
- * are toggleable but non-removable; custom rows the operator adds
- * via the form get ``builtin: false`` and a remove button. ``active``
- * drives whether the role gets submitted as part of ``invitee_roles``
- * on session creation. ``key`` is a stable React list key — the
- * builtin rows share their ``code`` for the key, custom rows mint a
- * timestamp+random fragment so duplicate-add edge cases don't
- * collide React's reconciliation.
+ * canonical mockup-defined seats (IC / CSM / CSE / COM / EXE)
+ * pre-seeded for the operator. Both builtin and custom rows are
+ * toggleable AND removable — the user-agent review of the previous
+ * iteration flagged "toggle-only" as paternal ("operators don't
+ * want a permanent EXE row they never use"), so the only difference
+ * between builtin and custom rows now is what's pre-populated on
+ * mount. ``active`` drives whether the role gets submitted as part
+ * of ``invitee_roles`` on session creation. ``key`` is a stable
+ * React list key — builtin rows share their ``code`` for the key;
+ * custom rows mint a timestamp+random fragment so duplicate-add
+ * edge cases don't collide React's reconciliation.
  */
 export interface SetupRoleSlot {
   key: string;
@@ -919,8 +922,12 @@ function RoleSlotRow({
         ) : null}
       </div>
       <div
-        role="radiogroup"
-        aria-label={`${slot.label} state`}
+        // The pills are a pair of independently-toggleable buttons
+        // with ``aria-pressed``, not a true radio group (which would
+        // require ``role="radio"`` children + roving tabindex +
+        // arrow-key navigation). Drop the wrapper role rather than
+        // half-implement radio semantics; the aria-label on each pill
+        // identifies the row context for screen readers.
         style={{ display: "flex", gap: 4, alignItems: "center" }}
       >
         <RoleStatePill
