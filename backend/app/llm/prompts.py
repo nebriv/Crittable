@@ -12,7 +12,7 @@ import json
 from typing import Any
 
 from ..extensions.registry import FrozenRegistry
-from ..sessions.models import RosterSize, Session, SessionState
+from ..sessions.models import RosterSize, Session, SessionFeatures, SessionState
 
 _IDENTITY = (
     "You are an AI cybersecurity tabletop facilitator running an interactive "
@@ -1146,10 +1146,21 @@ _FEATURE_FIELDS: tuple[str, ...] = (
 # of bug where someone adds a new toggle to ``SessionFeatures`` but
 # forgets to add a ``_FEATURE_GUIDANCE`` entry — without this, the
 # next session that lands a play turn raises mid-prompt-build instead
-# of at boot.
-assert set(_FEATURE_GUIDANCE) == set(_FEATURE_FIELDS), (
-    "_FEATURE_GUIDANCE keys diverged from _FEATURE_FIELDS; update both "
-    "(and SessionFeatures) together."
+# of at boot. The assert pairs **both** local constants against
+# ``SessionFeatures.model_fields`` (the actual source of truth)
+# rather than just against each other — Copilot review on PR #189
+# correctly flagged that an X-vs-Y assert can't catch "X and Y
+# stayed consistent but Z (the model) changed underneath them".
+_SESSION_FEATURE_FIELDS = set(SessionFeatures.model_fields)
+assert set(_FEATURE_GUIDANCE) == _SESSION_FEATURE_FIELDS, (
+    "_FEATURE_GUIDANCE keys diverged from SessionFeatures fields; "
+    f"add/remove guidance for: "
+    f"{set(_FEATURE_GUIDANCE) ^ _SESSION_FEATURE_FIELDS}"
+)
+assert set(_FEATURE_FIELDS) == _SESSION_FEATURE_FIELDS, (
+    "_FEATURE_FIELDS diverged from SessionFeatures fields; "
+    f"add/remove rendering for: "
+    f"{set(_FEATURE_FIELDS) ^ _SESSION_FEATURE_FIELDS}"
 )
 
 

@@ -34,6 +34,7 @@ from app.llm.prompts import (
 )
 from app.main import create_app
 from app.sessions.models import (
+    Difficulty,
     Role,
     ScenarioBeat,
     ScenarioInject,
@@ -74,15 +75,24 @@ def test_session_settings_defaults_are_balanced_standard_tabletop() -> None:
 
 
 @pytest.mark.parametrize("level", ["easy", "standard", "hard"])
-def test_session_settings_accepts_each_documented_difficulty(level: str) -> None:
-    s = SessionSettings(difficulty=level)  # type: ignore[arg-type]
+def test_session_settings_accepts_each_documented_difficulty(
+    level: Difficulty,
+) -> None:
+    # Annotating the parametrize value as ``Difficulty`` keeps mypy
+    # happy on the constructor call without a ``type: ignore`` (the
+    # parametrize values are all valid members of the literal).
+    s = SessionSettings(difficulty=level)
     assert s.difficulty == level
 
 
 @pytest.mark.parametrize("bad", ["medium", "insane", "EASY", "", "1"])
 def test_session_settings_rejects_unknown_difficulty(bad: str) -> None:
+    # Use ``model_validate`` so the deliberately-bad string flows
+    # through the validator without the constructor's typed kwarg
+    # tripping mypy. This is the documented Pydantic v2 path for
+    # "I want to assert this payload is rejected".
     with pytest.raises(ValidationError):
-        SessionSettings(difficulty=bad)  # type: ignore[arg-type]
+        SessionSettings.model_validate({"difficulty": bad})
 
 
 @pytest.mark.parametrize("ok", [15, 30, 60, 90, 120, 180])
@@ -97,13 +107,17 @@ def test_session_settings_rejects_out_of_range_durations(bad: int) -> None:
 
 
 def test_session_features_extra_forbid() -> None:
+    # ``model_validate`` lets us pass an off-schema payload without
+    # the constructor's typed kwargs tripping mypy — same shape as
+    # ``test_session_settings_rejects_unknown_difficulty``. The whole
+    # point of the test is asserting Pydantic rejects unknown fields.
     with pytest.raises(ValidationError):
-        SessionFeatures(secret_toggle=True)  # type: ignore[call-arg]
+        SessionFeatures.model_validate({"secret_toggle": True})
 
 
 def test_session_settings_extra_forbid() -> None:
     with pytest.raises(ValidationError):
-        SessionSettings(scenario_prompt="x")  # type: ignore[call-arg]
+        SessionSettings.model_validate({"scenario_prompt": "x"})
 
 
 def test_feature_guidance_matches_session_features_fields() -> None:
@@ -140,9 +154,9 @@ def _session_with(settings: SessionSettings) -> Session:
 
 
 @pytest.mark.parametrize("level", ["easy", "standard", "hard"])
-def test_settings_block_includes_difficulty_guidance(level: str) -> None:
+def test_settings_block_includes_difficulty_guidance(level: Difficulty) -> None:
     block = _build_session_settings_block(
-        _session_with(SessionSettings(difficulty=level))  # type: ignore[arg-type]
+        _session_with(SessionSettings(difficulty=level))
     )
     assert f"**Difficulty: {level}**" in block
     # The first ~40 chars of the guidance literal must round-trip,
@@ -154,10 +168,11 @@ def test_settings_block_smoke_all_combinations_render() -> None:
     """3 difficulties × 16 feature combos = 48 combos. Each must
     build without raising and contain a feature line per toggle."""
 
-    for diff in ("easy", "standard", "hard"):
+    difficulties: tuple[Difficulty, ...] = ("easy", "standard", "hard")
+    for diff in difficulties:
         for combo in itertools.product([True, False], repeat=4):
             settings = SessionSettings(
-                difficulty=diff,  # type: ignore[arg-type]
+                difficulty=diff,
                 features=SessionFeatures(
                     active_adversary=combo[0],
                     time_pressure=combo[1],

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { CostSnapshot } from "../../api/client";
+import { CostSnapshot, type Difficulty } from "../../api/client";
 
 /**
  * Brand-mock <ActionBar> + the right-side WS / build telemetry strip.
@@ -52,11 +52,14 @@ interface Props {
    *  cluster so every participant can see what difficulty / target
    *  duration the AI is calibrated against. ``null`` while the
    *  snapshot hasn't loaded; once present, ``difficulty`` is the
-   *  literal and ``durationMinutes`` is the integer the wizard
-   *  picked. ``features`` is intentionally creator-only on the
-   *  snapshot and is NOT surfaced here (it would spoil the inject
-   *  palette for players). */
-  difficulty: "easy" | "standard" | "hard" | null;
+   *  shared ``Difficulty`` literal (single source of truth in
+   *  ``api/client.ts``; reused here to prevent type drift between
+   *  the HUD and the API contract per Copilot review on PR #189)
+   *  and ``durationMinutes`` is the integer the wizard picked.
+   *  ``features`` is intentionally creator-only on the snapshot and
+   *  is NOT surfaced here (it would spoil the inject palette for
+   *  players). */
+  difficulty: Difficulty | null;
   durationMinutes: number | null;
   /** Issue #70: AI paused via the Pause-AI toggle. Surfaces as
    *  "LLM: idle (paused)" so the operator can tell the engine apart
