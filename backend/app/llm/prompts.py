@@ -657,15 +657,26 @@ def build_play_system_blocks(
 ) -> list[dict[str, Any]]:
     """Compose the play-tier system block list.
 
-    Returns TWO text blocks: a **stable prefix** (Blocks 1-9 + the seated
-    roster identity table + plan + extension prompts — content that does
-    not change between turns within a session) followed by a **volatile
-    suffix** (presence column, follow-ups, rate-limit, presence-aware
-    addressing rules — content that flips turn-by-turn). The cache
-    breakpoint placed by ``LLMClient._with_cache`` lands on the stable
-    prefix, so tools + stable system content gets cached across every
-    turn while volatile content is re-processed cheaply per turn. This
-    cuts per-turn input cost by ~85-90% on cache hits.
+    Returns TWO text blocks:
+
+    * **Stable prefix** — Blocks 1-9 only: identity, mission, plan
+      adherence, hard boundaries, style, realism rail, tool-use
+      protocol, the frozen scenario plan JSON, extension prompts, and
+      roster-size strategy. None of these change turn-to-turn within
+      a single session.
+    * **Volatile suffix** — Block 10 (the entire seated roster table
+      *including* the per-row ``presence`` column, the unseated-roles
+      list, and the presence-aware addressing rules), Block 11 (open
+      per-role follow-ups), and conditional Block 12 (critical-event
+      rate-limit notice). Every component here flips turn-by-turn —
+      presence flips when players un/focus tabs, follow-ups mutate as
+      they're tracked / resolved, and Block 12 only appears while a
+      rate limit is active.
+
+    The cache breakpoint placed by ``LLMClient._with_cache`` lands on
+    the stable prefix, so tools + stable system content gets cached
+    across every turn while volatile content is re-processed cheaply
+    per turn. This cuts per-turn input cost by ~85% on cache hits.
 
     ``connected_role_ids`` / ``focused_role_ids`` are the role_ids that
     currently have at least one open WebSocket connection (or focused tab)

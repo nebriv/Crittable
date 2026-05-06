@@ -631,12 +631,15 @@ def _with_message_cache(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     ``cache_control`` to the last block. For string-content messages we
     convert to a single text block carrying the cache marker.
 
-    Returns a NEW list with the cache marker applied; does not mutate
-    the caller's list.
+    Always returns a NEW list — never aliases the caller's list.
+    On the empty-input or non-coercible-content paths the returned
+    copy carries no cache marker (logged at WARNING in the latter
+    case), so the caller can mutate the result freely without
+    affecting the input.
     """
 
     if not messages:
-        return messages
+        return list(messages)
     out = [dict(m) for m in messages]
     last = dict(out[-1])
     content = last.get("content")
@@ -659,18 +662,21 @@ def _with_message_cache(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         last["content"] = new_content
     else:
         # Empty list / None / int / non-coercible content shape — we
-        # silently fall through with no breakpoint. Log the skip at
-        # WARNING so a future refactor passing an unexpected content
-        # shape doesn't quietly drop our ~10× cache-read win without
-        # any signal in the audit log. Per CLAUDE.md "Logging rules"
-        # silent fallback paths are debugging blockers.
+        # fall through with no breakpoint. Log the skip at WARNING
+        # so a future refactor passing an unexpected content shape
+        # doesn't quietly drop our ~10× cache-read win without any
+        # signal in the audit log. Per CLAUDE.md "Logging rules"
+        # silent fallback paths are debugging blockers. We still
+        # return the (un-marked) copy ``out`` so the contract
+        # "always returns a new list" holds — callers don't need a
+        # second branch to handle aliasing.
         _logger.warning(
             "message_cache_skipped",
             reason="non_coercible_content",
             content_type=type(content).__name__,
             role=last.get("role"),
         )
-        return messages
+        return out
     out[-1] = last
     return out
 

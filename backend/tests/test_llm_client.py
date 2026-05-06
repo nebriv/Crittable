@@ -390,7 +390,15 @@ def test_with_message_cache_logs_skip_on_non_coercible_content(
     # None content triggers the else branch.
     msgs = [{"role": "user", "content": None}]
     out = _with_message_cache(msgs)
-    assert out is msgs  # unchanged
+    # Contract: always returns a NEW list. The skip path returns the
+    # copy (no cache_control on it) so callers can mutate the result
+    # without affecting the input.
+    assert out is not msgs
+    assert out[0]["content"] is None
+    # No cache_control was added — empty/None content can't carry one.
+    assert "cache_control" not in out[0]
+    # Original list must not be mutated.
+    assert msgs[0]["content"] is None
     assert any(c["event"] == "message_cache_skipped" for c in captured)
     skip = next(c for c in captured if c["event"] == "message_cache_skipped")
     assert skip["reason"] == "non_coercible_content"
