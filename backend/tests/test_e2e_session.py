@@ -1923,7 +1923,7 @@ def test_scenario_plan_model_rejects_empty_arrays() -> None:
 
 def test_critical_inject_rate_limit_until_visible_to_model() -> None:
     """When the rate-limit window is at cap, the play system prompt
-    must surface a ``Block 12 — Critical-event budget`` mini-block so
+    must surface a ``Block 13 — Critical-event budget`` mini-block so
     the AI knows not to retry. Pre-fix the AI was observed retrying
     ``inject_critical_event`` on three consecutive turns after the
     first attempt was rate-limited; the strict-retry feedback only
@@ -1960,13 +1960,17 @@ def test_critical_inject_rate_limit_until_visible_to_model() -> None:
         s, registry=FrozenRegistry(tools={}, resources={}, prompts={})
     )
     text = blocks[0]["text"]
-    assert "Block 12" in text, "rate-limited turn must include Block 12"
+    assert (
+        "Block 13 — Critical-event budget" in text
+    ), "rate-limited turn must include the conditional Block 13"
     assert "until turn 7" in text
 
 
-def test_critical_inject_block_12_omitted_when_no_rate_limit() -> None:
-    """Healthy turns must NOT include Block 12 — the cached system
-    block stays stable when there's no rate limit active."""
+def test_critical_inject_block_13_omitted_when_no_rate_limit() -> None:
+    """Healthy turns must NOT include the conditional Block 13 — the
+    cached system block stays stable when there's no rate limit
+    active. (Block 12 is the unconditional ``Session settings``
+    block; it ships on every turn.)"""
 
     from app.extensions.registry import FrozenRegistry
     from app.llm.prompts import build_play_system_blocks
@@ -1999,7 +2003,7 @@ def test_critical_inject_block_12_omitted_when_no_rate_limit() -> None:
         s, registry=FrozenRegistry(tools={}, resources={}, prompts={})
     )
     text = blocks[0]["text"]
-    assert "Block 12" not in text
+    assert "Block 13 — Critical-event budget" not in text
 
 
 def test_tool_choice_does_not_leak_to_setup_or_aar(client: TestClient) -> None:

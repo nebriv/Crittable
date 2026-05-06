@@ -1,7 +1,11 @@
 import { fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { SetupWizard, type SetupParts } from "../components/setup/SetupWizard";
-import type { ScenarioPlan, SessionSnapshot } from "../api/client";
+import {
+  DEFAULT_SESSION_FEATURES,
+  type ScenarioPlan,
+  type SessionSnapshot,
+} from "../api/client";
 
 /**
  * Unit-level coverage for the wizard's phase routing — fixes the
@@ -31,6 +35,11 @@ function fakeSnapshot(overrides: {
     state: overrides.state,
     created_at: "2026-05-05T00:00:00Z",
     scenario_prompt: "test scenario",
+    settings: {
+      difficulty: "standard",
+      duration_minutes: 60,
+      features: { ...DEFAULT_SESSION_FEATURES },
+    },
     plan: overrides.plan ?? null,
     roles: [],
     current_turn: null,
@@ -81,6 +90,12 @@ function baseProps() {
     busyMessage: null,
     error: null,
     onSubmit: vi.fn((e) => e.preventDefault()),
+    difficulty: "standard" as const,
+    setDifficulty: vi.fn(),
+    durationMinutes: 60,
+    setDurationMinutes: vi.fn(),
+    features: { ...DEFAULT_SESSION_FEATURES },
+    setFeatures: vi.fn(),
   };
 }
 

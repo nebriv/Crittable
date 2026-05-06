@@ -20,7 +20,12 @@ from ..auth.authz import (
 from ..extensions.registry import FrozenRegistry
 from ..logging_setup import get_logger
 from ..sessions.manager import SessionManager, sanitize_role_text
-from ..sessions.models import ParticipantKind, ScenarioPlan, SessionState
+from ..sessions.models import (
+    ParticipantKind,
+    ScenarioPlan,
+    SessionSettings,
+    SessionState,
+)
 from ..sessions.progress import compute_progress_pct
 from ..sessions.repository import SessionNotFoundError
 from ..sessions.turn_driver import TurnDriver
@@ -81,6 +86,12 @@ class CreateSessionBody(BaseModel):
     # avoids the wasted auto-greet LLM call (and the bare-text leak
     # bug it can produce). Used by the frontend's "Dev mode" toggle.
     skip_setup: bool = False
+    # Creator-selected scenario tuning (difficulty, target duration,
+    # feature toggles) chosen on the new-session wizard's "shaping"
+    # step. Frozen at creation; surfaced into setup + play system
+    # prompts so the AI tunes facilitation without re-asking. Defaults
+    # to a balanced standard tabletop (see ``SessionSettings``).
+    settings: SessionSettings = Field(default_factory=SessionSettings)
 
 
 class AddRoleBody(BaseModel):
@@ -343,6 +354,7 @@ def register_api_routes(app: FastAPI) -> None:
                 scenario_prompt=body.scenario_prompt,
                 creator_label=body.creator_label,
                 creator_display_name=body.creator_display_name,
+                settings=body.settings,
             )
         except (RuntimeError, ValueError) as exc:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
@@ -500,6 +512,21 @@ def register_api_routes(app: FastAPI) -> None:
             "id": session.id,
             "state": session.state.value,
             "scenario_prompt": session.scenario_prompt,
+            # Creator-selected scenario tuning. ``difficulty`` and
+            # ``duration_minutes`` are benign — every participant sees a
+            # difficulty pill / target-duration HUD. ``features`` is
+            # creator-only because the toggles hint at upcoming
+            # pressure types and would spoil the inject palette for
+            # players.
+            "settings": {
+                "difficulty": session.settings.difficulty,
+                "duration_minutes": session.settings.duration_minutes,
+                "features": (
+                    session.settings.features.model_dump()
+                    if is_creator
+                    else None
+                ),
+            },
             # Session-start timestamp surfaced so the frontend can render
             # ``T+MM:SS`` relative timestamps in the shared notepad
             # (issue #98). ISO 8601 string; UTC.
@@ -2081,6 +2108,7 @@ def register_api_routes(app: FastAPI) -> None:
                 "id": session.id,
                 "state": session.state.value,
                 "scenario_prompt": session.scenario_prompt,
+                "settings": session.settings.model_dump(),
                 "plan": session.plan.model_dump() if session.plan else None,
                 "active_extension_prompts": session.active_extension_prompts,
                 "cost": session.cost.model_dump(),

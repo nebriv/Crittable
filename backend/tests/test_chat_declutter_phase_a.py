@@ -1035,6 +1035,12 @@ class TestPromptToolConsistencyFlagOn:
             "joined_focused",
             "joined_away",
             "not_joined",
+            # Block 12 ``Session settings`` feature-toggle keys —
+            # field names listed in backticks, not tool names.
+            "active_adversary",
+            "time_pressure",
+            "executive_escalation",
+            "media_pressure",
         }
         # The intersect with `known_tools` should equal the model's
         # actual tool palette (positive evidence). The diff is the

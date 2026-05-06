@@ -48,6 +48,16 @@ interface Props {
   cost: CostSnapshot | null;
   messageCount: number;
   activeTiers: string[];
+  /** Creator-frozen scenario tuning — surfaced here as a small chip
+   *  cluster so every participant can see what difficulty / target
+   *  duration the AI is calibrated against. ``null`` while the
+   *  snapshot hasn't loaded; once present, ``difficulty`` is the
+   *  literal and ``durationMinutes`` is the integer the wizard
+   *  picked. ``features`` is intentionally creator-only on the
+   *  snapshot and is NOT surfaced here (it would spoil the inject
+   *  palette for players). */
+  difficulty: "easy" | "standard" | "hard" | null;
+  durationMinutes: number | null;
   /** Issue #70: AI paused via the Pause-AI toggle. Surfaces as
    *  "LLM: idle (paused)" so the operator can tell the engine apart
    *  from "the AI is just waiting on players". */
@@ -209,6 +219,19 @@ export function BottomActionBar(props: Props) {
       <span className="mono rounded-r-1 bg-ink-800 px-2 py-0.5 text-[10px] uppercase tracking-[0.04em] text-ink-300">
         state: {props.backendState}
       </span>
+
+      {/* Creator-selected tuning — frozen at session creation, shown
+          to every participant so the room knows what calibration the
+          AI is running against. Only renders once the snapshot has
+          loaded (the intro phase has no settings yet). */}
+      {props.difficulty != null && props.durationMinutes != null ? (
+        <span
+          className="mono rounded-r-1 bg-ink-800 px-2 py-0.5 text-[10px] uppercase tracking-[0.04em] text-ink-300"
+          title={`Frozen at session creation: difficulty=${props.difficulty}, target=${props.durationMinutes} min`}
+        >
+          tune: {props.difficulty} · {props.durationMinutes}m
+        </span>
+      ) : null}
 
       {/* Build SHA + admin meta cluster — keep grouped with the
           telemetry above instead of pushing it to the far right.

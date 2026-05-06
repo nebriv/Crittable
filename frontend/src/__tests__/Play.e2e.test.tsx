@@ -22,7 +22,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 
 import { Play } from "../pages/Play";
-import { api, type SessionSnapshot } from "../api/client";
+import {
+  api,
+  DEFAULT_SESSION_FEATURES,
+  type SessionSnapshot,
+} from "../api/client";
 
 // ---------------------------------------------------------------- ws mock
 
@@ -66,6 +70,11 @@ function _baseSnapshot(): SessionSnapshot {
     state: "AWAITING_PLAYERS",
     created_at: "2026-05-03T00:00:00Z",
     scenario_prompt: "Ransomware via vendor portal",
+    settings: {
+      difficulty: "standard",
+      duration_minutes: 60,
+      features: { ...DEFAULT_SESSION_FEATURES },
+    },
     plan: {
       title: "Ransomware",
       executive_summary: "Detection at 03:14 on three finance laptops.",

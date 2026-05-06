@@ -26,6 +26,7 @@ from .models import (
     Role,
     ScenarioPlan,
     Session,
+    SessionSettings,
     SessionState,
     SetupNote,
     Turn,
@@ -288,6 +289,7 @@ class SessionManager:
         scenario_prompt: str,
         creator_label: str,
         creator_display_name: str,
+        settings: SessionSettings,
     ) -> tuple[Session, str]:
         if not scenario_prompt.strip():
             raise ValueError("scenario_prompt must be non-empty")
@@ -299,6 +301,7 @@ class SessionManager:
         )
         session = Session(
             scenario_prompt=scenario_prompt.strip(),
+            settings=settings,
             roles=[creator_role],
             creator_role_id=creator_role.id,
         )
@@ -314,7 +317,14 @@ class SessionManager:
             kind="creator",
             version=creator_role.token_version,
         )
-        self._emit("session_created", session, scenario_prompt=session.scenario_prompt)
+        self._emit(
+            "session_created",
+            session,
+            scenario_prompt=session.scenario_prompt,
+            difficulty=session.settings.difficulty,
+            duration_minutes=session.settings.duration_minutes,
+            features=session.settings.features.model_dump(),
+        )
         return session, token
 
     async def add_role(

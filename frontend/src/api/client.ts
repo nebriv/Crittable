@@ -9,6 +9,11 @@ export interface SessionSnapshot {
   /** Session-start timestamp (ISO 8601, UTC) — used for ``T+MM:SS`` relative timestamps in the shared notepad. */
   created_at: string;
   scenario_prompt: string;
+  /** Creator-selected scenario tuning (frozen at creation). The HUD
+   *  renders a difficulty pill + target-duration off this; the
+   *  ``features`` subfield is creator-only and arrives ``null`` on
+   *  player snapshots. */
+  settings: SessionSettings;
   plan: ScenarioPlan | null;
   roles: RoleView[];
   current_turn: TurnView | null;
@@ -249,6 +254,35 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
   return out;
 }
 
+export type Difficulty = "easy" | "standard" | "hard";
+
+/** Creator-selected feature toggles. Defaults set on the new-session
+ *  wizard match the backend defaults (``SessionFeatures``); kept in
+ *  sync because the wizard echoes them back as the request body. */
+export interface SessionFeatures {
+  active_adversary: boolean;
+  time_pressure: boolean;
+  executive_escalation: boolean;
+  media_pressure: boolean;
+}
+
+/** Frozen scenario tuning chosen on the new-session wizard. Surfaced
+ *  on the session snapshot (``SessionSnapshot.settings``) so the HUD
+ *  can render a difficulty pill + target-duration timer; ``features``
+ *  is creator-only on the snapshot (``null`` for player roles). */
+export interface SessionSettings {
+  difficulty: Difficulty;
+  duration_minutes: number;
+  features: SessionFeatures | null;
+}
+
+export const DEFAULT_SESSION_FEATURES: SessionFeatures = {
+  active_adversary: true,
+  time_pressure: true,
+  executive_escalation: true,
+  media_pressure: false,
+};
+
 export const api = {
   async createSession(body: {
     scenario_prompt: string;
@@ -262,6 +296,14 @@ export const api = {
      *  Mirrors ``POST /api/sessions/{id}/setup/skip`` but avoids the
      *  wasted auto-greet LLM call. Used by the frontend's Dev mode. */
     skip_setup?: boolean;
+    /** Creator-selected scenario tuning (difficulty / duration /
+     *  features). Frozen at creation. Omitting any subfield falls
+     *  back to the backend default in ``SessionSettings``. */
+    settings?: {
+      difficulty?: Difficulty;
+      duration_minutes?: number;
+      features?: SessionFeatures;
+    };
   }): Promise<{
     session_id: string;
     creator_role_id: string;
