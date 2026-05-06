@@ -111,7 +111,7 @@ export function Home() {
             srcSet="/logo/svg/mark-encounter-01-dark.svg"
           />
           <img
-            src="/logo/gif/mark-animated-512-dark.gif"
+            src="/logo/gif/mark-animated-512-dark-transparent.gif"
             alt=""
             width={260}
             height={260}

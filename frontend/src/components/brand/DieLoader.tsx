@@ -49,10 +49,10 @@ export function DieLoader({ size = 96, label = "Loading…", className, style }:
         <img
           src={
             size <= 96
-              ? "/logo/gif/mark-animated-128-dark.gif"
+              ? "/logo/gif/mark-animated-128-dark-transparent.gif"
               : size <= 192
-                ? "/logo/gif/mark-animated-256-dark.gif"
-                : "/logo/gif/mark-animated-512-dark.gif"
+                ? "/logo/gif/mark-animated-256-dark-transparent.gif"
+                : "/logo/gif/mark-animated-512-dark-transparent.gif"
           }
           alt=""
           width={size}

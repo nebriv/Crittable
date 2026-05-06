@@ -23,6 +23,7 @@
 | `logo/svg/mark-encounter-01-dark.svg` | Primary static mark, dark UI |
 | `logo/svg/mark-encounter-01-light.svg` | Primary static mark, light UI |
 | `logo/svg/mark-animated-dark.svg` | Animated mark — use in marketing hero |
+| `logo/{gif,apng,webp}/mark-animated-{128,256,512}-{dark,light}-transparent.{gif,png,webp}` | Animated mark, transparent BG. `dark` = light strokes (use on dark BG); `light` = dark strokes (use on light BG). APNG/WebP carry full alpha; GIF is 1-bit. |
 | `logo/svg/lockup-crittable-dark.svg` | Header lockup |
 | `logo/favicon/HEAD-SNIPPET.html` | Paste into `<head>` verbatim |
 | `BRAND.md` | Brand system reference |
@@ -84,6 +85,18 @@ Use `logo/svg/mark-animated-dark.svg` as a centered hero element. It loops indef
   <img src="/logo/svg/mark-animated-dark.svg" alt="" class="hero-mark">
 </picture>
 ```
+
+For surfaces that need to adapt to the user's OS color scheme (e.g. a GitHub README, a docs page that supports both themes), use the transparent GIF/APNG variants — they carry no plate fill, only the rounded-square stroke + the inner ink:
+
+```html
+<picture>
+  <source media="(prefers-color-scheme: dark)"  srcset="/logo/gif/mark-animated-256-dark-transparent.gif">
+  <source media="(prefers-color-scheme: light)" srcset="/logo/gif/mark-animated-256-light-transparent.gif">
+  <img src="/logo/gif/mark-animated-256-dark-transparent.gif" alt="" class="hero-mark">
+</picture>
+```
+
+Substitute the `apng/` or `webp/` sibling for full alpha (no fringing on light backgrounds).
 
 ---
 
@@ -215,7 +228,12 @@ handoff/
     │   ├── mark-{16..1024}-{dark,light}.png          ← raster mark
     │   └── lockup-{400,800,1600}-{dark,light}.png    ← raster lockup
     ├── gif/
-    │   └── mark-animated-dark.gif                    ← for README/Slack (37 KB)
+    │   ├── mark-animated-{128,256,512}-dark.gif                       ← opaque #0A0D13 plate
+    │   └── mark-animated-{128,256,512}-{dark,light}-transparent.gif   ← 1-bit alpha, adaptive via <picture>
+    ├── apng/
+    │   └── mark-animated-{128,256,512}-{dark,light}-transparent.png   ← full alpha (animated PNG)
+    ├── webp/
+    │   └── mark-animated-{128,256,512}-{dark,light}-transparent.webp  ← full alpha, smallest
     └── favicon/
         ├── favicon.ico
         ├── favicon.svg
