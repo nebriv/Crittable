@@ -792,6 +792,38 @@ Interject uses its own contract (`PLAY_CONTRACT_INTERJECT`): forbids YIELD + TER
 requires DRIVE, and never has the soft carve-out enabled. The 2026-04-30 bug never
 affected this path.
 
+**@-back contract.** When a player @s the AI (`@facilitator …`), the AI's
+reply must @-mention the asker back so the frontend's `@YOU` badge fires on
+the asker's bubble. This is enforced **server-side, post-dispatch** — not
+via prompt instruction:
+
+- `run_interject` appends `for_role_id` (the asking role_id) to every
+  `MessageKind.AI_TEXT` message in `outcome.appended_messages` before the
+  WS broadcast (`turn_driver.py` `run_interject`, `interject_reply_tagged`
+  audit line).
+- `_apply_play_outcome` does the same for the regular play-turn path —
+  needed because when a player's `@facilitator` submission **also closes
+  the quorum**, the WS handler routes to `run_play_turn` (not the
+  interject side channel) since `outcome.advanced` takes precedence
+  (`ws/routes.py:722–728`). The play-turn auto-tag scans the current
+  turn's PLAYER messages with `is_interjection=False` AND
+  `FACILITATOR_MENTION_TOKEN in mentions`, and tags every `AI_TEXT` reply
+  with each asker's role_id (`turn_driver.py` `_apply_play_outcome`,
+  `play_turn_reply_tagged` audit line). Skipping `is_interjection=True`
+  avoids double-tagging an out-of-turn interject asker who already got
+  their `@`-back via `run_interject` earlier in the turn.
+- `address_role` and `pose_choice` already auto-tag their target via the
+  dispatcher (`dispatch.py` `address_role`, `pose_choice`); the
+  `run_interject` / `_apply_play_outcome` blocks are idempotent
+  (`if asker_id not in msg.mentions`) so addressing the asker directly
+  doesn't double-stamp.
+- The model sees nothing about this in the prompt — the structural
+  `mentions[]` rewrite is server-side. The prose-level "address the
+  asker by their label" guidance in `_STYLE_BASE` and `INTERJECT_NOTE`
+  (prompts.py) is unchanged; it covers the natural-language side, while
+  the auto-tag covers the structural `mentions[]` side that drives the
+  `@YOU` highlight in `Transcript.tsx`.
+
 ### 8f. Recovery itself produces nothing
 
 If the model returns no tool calls on attempt 2 (broadcast pinned), DRIVE still
