@@ -806,10 +806,12 @@ def build_play_system_blocks(
         "role the beat originally targeted. Call out the missing seat "
         "so the creator can decide whether to invite someone or proxy.\n"
         "Mid-session presence flips both ways: a `not_joined` seat may "
-        "join (or a `joined_*` seat may drop) between turns AND between "
-        "strict-retry attempts within one turn. Treat every turn's "
-        "Block 10 as the truth — re-read the column rather than caching "
-        "what was true earlier.\n"
+        "join (or a `joined_*` seat may drop) between turns. The driver "
+        "snapshots presence ONCE per turn, so every strict-retry attempt "
+        "within the same turn sees identical values — but the next turn's "
+        "Block 10 may differ. Treat every turn's Block 10 as the truth and "
+        "re-read the column rather than caching what was true on a prior "
+        "turn.\n"
         f"{presence_summary}"
     )
 

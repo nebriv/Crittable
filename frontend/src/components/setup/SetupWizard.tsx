@@ -212,16 +212,28 @@ export function SetupWizard(props: Props) {
       return;
     }
     if (props.phase === "ready" && setLobbyOverride) {
+      // Ignore clicks on the step that's already current — re-firing
+      // the same handler is at best a no-op and at worst a footgun
+      // (clicking the *current* Step 5 when launch gates aren't yet
+      // met would still flip ``lobbyOverride`` to true, pinning the
+      // wizard to the lobby once gates DO get met and silently
+      // suppressing the auto-advance to Step 6 — Copilot review on
+      // PR #187).
+      if (id === current) return;
+      const launchReady =
+        props.snapshot?.plan != null && (props.playerCount ?? 0) >= 2;
       if (id === 5) {
-        setLobbyOverride(true);
+        // Only honour a jump to Step 5 from Step 6 — i.e. when the
+        // user is actually using the back-nav. From any other step
+        // (e.g. Step 4 while the AI is drafting), Step 5 isn't yet
+        // reachable and the override flag would just be misleading.
+        if (current === 6 && launchReady) setLobbyOverride(true);
         return;
       }
       if (id === 6) {
         // Only allow forward jump to 6 if the launch gates are met,
         // otherwise the user would land on a half-rendered review
         // screen that can't actually launch.
-        const launchReady =
-          props.snapshot?.plan != null && (props.playerCount ?? 0) >= 2;
         if (launchReady) setLobbyOverride(false);
         return;
       }
@@ -245,11 +257,18 @@ export function SetupWizard(props: Props) {
         // the form-state steps 1-3) and ready (hop between
         // lobby step 5 and review step 6). Setup phase 4 keeps
         // the rail static — the AI is mid-draft and there's no
-        // backward path from "AI is drafting" anyway.
+        // backward path from "AI is drafting" anyway. The ready-
+        // phase wiring also requires the parent to have plumbed
+        // ``setLobbyOverride`` through; without it the rail handler
+        // returns early on every click, so leaving steps clickable
+        // would just produce dead-affordance clicks (Copilot review
+        // on PR #187).
         onJumpToStep={
-          props.phase === "intro" || props.phase === "ready"
+          props.phase === "intro"
             ? onJumpToStep
-            : undefined
+            : props.phase === "ready" && setLobbyOverride
+              ? onJumpToStep
+              : undefined
         }
         onAbandonSession={
           props.phase !== "intro" ? props.onAbandonSession : undefined

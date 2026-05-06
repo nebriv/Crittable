@@ -207,10 +207,14 @@ def test_presence_directive_forbids_yielding_to_unjoined_seats() -> None:
     # that flipped it to "address ALL seats."
     assert "not_joined" in text
     # Mid-session flip caveat — without this the model could cache
-    # "IC is empty" on turn 0 and never re-check, AND it would skip
-    # the recovery-attempt re-read covered by the prompt-expert review
-    # H3 fix.
+    # "IC is empty" on turn 0 and never re-check across turns. The
+    # copy must also accurately describe the snapshot semantics: the
+    # driver snapshots ONCE per turn, so retries within a turn see
+    # identical values (Copilot review on PR #187 caught a prior
+    # version of the prompt that incorrectly suggested presence
+    # flipped between retry attempts).
     assert "every turn's Block 10 as the truth" in text
+    assert "snapshots presence ONCE per turn" in text
     # Broadcast-prose shape rule (prompt-expert C1): without this
     # the model can comply with the address_role/pose_choice ban but
     # smuggle the address into a broadcast body.

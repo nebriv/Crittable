@@ -258,6 +258,61 @@ describe("SetupWizard — lobby ↔ review back-nav (presence-aware launch)", ()
     expect(setLobbyOverride).toHaveBeenCalledWith(false);
   });
 
+  it("ready (override off, current=5, gates not met): clicking step 5 is a no-op", () => {
+    // Copilot review on PR #187: clicking the *current* step rail
+    // item used to fire ``setLobbyOverride(true)`` even when launch
+    // gates weren't met yet. That accidentally pinned the wizard to
+    // the lobby once gates DID get met and silently suppressed the
+    // auto-advance to step 6. The handler now ignores clicks where
+    // ``id === current``.
+    const setLobbyOverride = vi.fn();
+    render(
+      <SetupWizard
+        phase="ready"
+        {...baseProps()}
+        snapshot={fakeSnapshot({ state: "READY", plan: null })}
+        playerCount={1}
+        lobbyOverride={false}
+        setLobbyOverride={setLobbyOverride}
+        postCreationContent={<div data-testid="lobby-slot">lobby</div>}
+      />,
+    );
+    // Step 5 is current here — it renders as a button (because
+    // ``isCurrent`` makes it clickable per WizardRail), but the
+    // click handler must short-circuit.
+    const step5 = screen.getByRole("button", {
+      name: /Step 5: Invite players/i,
+    });
+    fireEvent.click(step5);
+    expect(setLobbyOverride).not.toHaveBeenCalled();
+  });
+
+  it("ready (no setLobbyOverride wired): rail steps are NOT clickable", () => {
+    // Copilot review on PR #187: when the parent forgets to plumb
+    // ``setLobbyOverride``, the rail used to render steps as
+    // clickable buttons whose handlers were silent no-ops. Now we
+    // skip wiring ``onJumpToStep`` in that case so the rail
+    // renders the inert <div> branch — no dead-affordance clicks
+    // in Storybook / isolated tests.
+    render(
+      <SetupWizard
+        phase="ready"
+        {...baseProps()}
+        snapshot={fakeSnapshot({ state: "READY", plan: fakePlan() })}
+        playerCount={2}
+        lobbyOverride={false}
+        // setLobbyOverride intentionally omitted
+        postCreationContent={<div data-testid="review-slot">review</div>}
+      />,
+    );
+    expect(
+      screen.queryByRole("button", { name: /Step 5: Invite players/i }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /Step 6: Review & launch/i }),
+    ).not.toBeInTheDocument();
+  });
+
   it("ready (gates not met): step 6 is NOT clickable from the lobby override view", () => {
     // Even with override on, if the launch gates aren't met (e.g. only
     // 1 player role), step 6 stays inert — clicking it would land the
