@@ -263,4 +263,41 @@ describe("SetupView — draftingPlan banner", () => {
       screen.queryByText(/Drafting the scenario plan…/),
     ).not.toBeInTheDocument();
   });
+
+  it("keeps option chips disabled while drafting (concurrency regression guard)", () => {
+    // PR #186 review BLOCK from Copilot: the original
+    // ``busy={busy && !draftingPlan}`` pass-through to <SetupChat>
+    // collapsed the chip-disable flag and the typing-indicator
+    // visibility into one prop, which re-enabled the latest AI
+    // question's option chips during the in-flight LOOKS READY
+    // request. A click on a chip would dispatch a second
+    // overlapping ``api.setupReply()`` (``callSetup`` has no
+    // already-busy gate). Fix: split into ``busy`` (chip disable)
+    // and ``aiTyping`` (indicator visibility); pass full ``busy``
+    // for the disable. This test pins that invariant: with
+    // ``draftingPlan=true`` AND a chip-bearing AI question as the
+    // last note, every chip must be ``disabled``.
+    const snapshotWithOptions: SessionSnapshot = {
+      ...fakeSnapshot(null),
+      setup_notes: [
+        {
+          ts: "2026-05-05T00:00:01Z",
+          speaker: "ai",
+          content: "Pick one:",
+          topic: "preference",
+          options: ["Option A", "Option B"],
+        },
+      ],
+    };
+    render(
+      <SetupView
+        snapshot={snapshotWithOptions}
+        {...baseProps()}
+        busy
+        draftingPlan
+      />,
+    );
+    expect(screen.getByRole("button", { name: "Option A" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Option B" })).toBeDisabled();
+  });
 });

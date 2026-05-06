@@ -2231,14 +2231,20 @@ export function SetupView({
         </div>
       ) : null}
 
-      {/* Mask the in-chat typing dots while the prominent
-          drafting-plan banner is the dominant indicator (UI/UX +
-          user-persona reviews flagged the parallel indicators as
-          duplicate UI). The dots resume for every other AI-busy
-          state (regular Q&A reply, finalize, dev-skip). */}
+      {/* ``busy`` is the full in-flight flag — keeps the option
+          chips on the latest AI question disabled so the operator
+          can't dispatch a second ``api.setupReply()`` while a
+          LOOKS-READY draft is mid-air (PR #186 review block).
+          ``aiTyping`` is the indicator-only flag: suppress the
+          small bouncing dots while the prominent drafting-plan
+          banner below is the dominant signal, otherwise mirror
+          ``busy``. The two flags are deliberately split — combining
+          them would silently re-enable chip clicks during the
+          draft. */}
       <SetupChat
         notes={notes}
-        busy={busy && !draftingPlan}
+        busy={busy}
+        aiTyping={busy && !draftingPlan}
         onPickOption={onPickOption}
       />
 
