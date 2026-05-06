@@ -3,7 +3,19 @@ import { ChatIndicator } from "./ChatIndicator";
 
 interface Props {
   notes: SetupNoteView[];
+  /** Operation in flight — disables the quick-pick option chips on
+   *  the latest AI question so the operator can't dispatch a second
+   *  ``api.setupReply()`` while one is already running. Decoupled
+   *  from the typing-indicator visibility (see ``aiTyping``) so a
+   *  consumer can show its own prominent wait state without also
+   *  re-enabling chip clicks (PR #186 review: that combination was a
+   *  concurrency bug). */
   busy?: boolean;
+  /** Show the small "AI Facilitator is typing…" bouncing dots inside
+   *  the chat region. Distinct from ``busy``: the consumer may want
+   *  to suppress the dots while a more prominent banner is the
+   *  dominant indicator (e.g. SetupView's drafting-plan banner). */
+  aiTyping?: boolean;
   onPickOption?: (option: string) => void;
 }
 
@@ -14,7 +26,7 @@ interface Props {
  * supplied option chips, the latest message renders them as quick-pick
  * buttons that send the option text as the next reply.
  */
-export function SetupChat({ notes, busy, onPickOption }: Props) {
+export function SetupChat({ notes, busy, aiTyping, onPickOption }: Props) {
   if (notes.length === 0) {
     return (
       <div className="mono rounded-r-3 border border-ink-600 bg-ink-850 p-3 text-[11px] uppercase tracking-[0.06em] text-ink-400">
@@ -70,7 +82,7 @@ export function SetupChat({ notes, busy, onPickOption }: Props) {
           </div>
         );
       })}
-      {busy && lastAiNote ? (
+      {aiTyping && lastAiNote ? (
         <div className="flex justify-start">
           <ChatIndicator label="AI Facilitator is typing…" tone="ai" />
         </div>

@@ -254,6 +254,23 @@ export function Facilitator() {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [busyMessage, setBusyMessage] = useState<string | null>(null);
+  // Prominent in-chat indicator for the LOOKS-READY → propose-plan path.
+  // Distinct from ``busy`` because the chat-region DieLoader needs to
+  // be visible *only* during the plan-drafting wait — not during the
+  // dozen other things that flip ``busy`` (regular Q&A reply,
+  // finalize, skip-setup-dev, etc.). The setup tier is non-streaming
+  // so we can't detect mid-call whether the model chose
+  // ``ask_setup_question`` vs ``propose_scenario_plan``; the explicit
+  // button click is the one moment we *know* what's coming, so we
+  // light the banner client-side there.
+  //
+  // Implicit-nudge gap (tracked follow-up): when the AI decides to
+  // propose during a regular reply turn (not LOOKS READY), the
+  // operator still sees only the small typing dots until the plan
+  // lands. Closing that gap requires either streaming the setup tier
+  // (so the model's tool choice is observable mid-call) or a
+  // mid-call "now drafting" WS event. Out of scope for this PR.
+  const [draftingPlan, setDraftingPlan] = useState(false);
   const [wsStatus, setWsStatus] = useState<"connecting" | "open" | "closed" | "error" | "kicked" | "rejected" | "session-gone">("connecting");
 
   // Live AI text streaming was producing visible mid-flight rewrites:
@@ -910,12 +927,17 @@ export function Facilitator() {
       return;
     }
     setBusy(true);
-    setBusyMessage("Asking the AI to draft the plan…");
+    setDraftingPlan(true);
+    setBusyMessage("Drafting the scenario plan… typically 10–30 seconds.");
     try {
       const reply = await api.setupReply(state.sessionId, state.token, NUDGE_PROPOSE);
       const snap = await api.getSession(state.sessionId, state.token);
       setSnapshot(snap);
       if (snap.plan) {
+        // Plan landed — drop the prominent drafting banner so the
+        // operator's eye moves to the plan card; the smaller BusyChip
+        // continues to communicate the fast finalize step.
+        setDraftingPlan(false);
         setBusyMessage("Plan drafted — finalizing…");
         await api.setupFinalize(state.sessionId, state.token);
         const after = await api.getSession(state.sessionId, state.token);
@@ -947,6 +969,7 @@ export function Facilitator() {
     } finally {
       setBusy(false);
       setBusyMessage(null);
+      setDraftingPlan(false);
     }
   }
 
@@ -1266,6 +1289,7 @@ export function Facilitator() {
           }
           busy={busy}
           busyMessage={busyMessage}
+          draftingPlan={draftingPlan}
         />
       );
     } else if (wizardReadyForReview && snapshot.plan) {
@@ -2192,6 +2216,7 @@ export function SetupView({
   onPickOption,
   busy,
   busyMessage,
+  draftingPlan,
 }: {
   snapshot: SessionSnapshot;
   setupReply: string;
@@ -2203,6 +2228,14 @@ export function SetupView({
   onPickOption: (option: string) => void;
   busy: boolean;
   busyMessage: string | null;
+  /** True from the moment the operator clicks LOOKS READY → PROPOSE THE
+   *  PLAN until either the plan arrives or an error surfaces. Drives a
+   *  prominent in-chat banner so the operator has unambiguous feedback
+   *  during the 5–30 s plan-drafting wait (otherwise the small typing
+   *  dots in the chat read as "stuck"). Required, not optional —
+   *  every call site already passes it explicitly and a default would
+   *  silently hide the indicator if a future site forgets. */
+  draftingPlan: boolean;
 }) {
   const hasPlan = Boolean(snapshot.plan);
   const notes = snapshot.setup_notes ?? [];
@@ -2238,9 +2271,56 @@ export function SetupView({
         </div>
       ) : null}
 
-      <SetupChat notes={notes} busy={busy} onPickOption={onPickOption} />
+      {/* ``busy`` is the full in-flight flag — keeps the option
+          chips on the latest AI question disabled so the operator
+          can't dispatch a second ``api.setupReply()`` while a
+          LOOKS-READY draft is mid-air (PR #186 review block).
+          ``aiTyping`` is the indicator-only flag: suppress the
+          small bouncing dots while the prominent drafting-plan
+          banner below is the dominant signal, otherwise mirror
+          ``busy``. The two flags are deliberately split — combining
+          them would silently re-enable chip clicks during the
+          draft. */}
+      <SetupChat
+        notes={notes}
+        busy={busy}
+        aiTyping={busy && !draftingPlan}
+        onPickOption={onPickOption}
+      />
 
-      <BusyChip busy={busy} message={busyMessage} />
+      {/* Brand DieLoader as a named in-chat wait state. The DieLoader
+          itself supplies ``role="status"`` + ``aria-live="polite"``;
+          this wrapper deliberately does NOT add another live region
+          (UI/UX review: nested aria-live blocks let screen readers
+          drop the inner caption). The label carries the timing
+          expectation inline so screen readers announce the full
+          message in one pass.
+
+          ``!hasPlan`` race guard: the Facilitator clears
+          ``draftingPlan`` as soon as the plan lands, but a
+          render-cycle race could leave both true for a frame. Hiding
+          the banner once a plan exists makes that race a no-op
+          rather than a "drafting" caption flashing over the new plan
+          card. */}
+      {draftingPlan && !hasPlan ? (
+        <div
+          data-testid="drafting-plan-banner"
+          className="flex flex-col items-center gap-3 rounded-r-3 border border-signal-deep bg-signal-tint p-6"
+        >
+          <DieLoader
+            label="Drafting scenario plan · typically 10–30 sec"
+            size={64}
+          />
+        </div>
+      ) : null}
+
+      {/* Suppress the small chip while the prominent banner above is
+          claiming the operator's attention (UI/UX review: three
+          parallel indicators read as duplicate UI). The chip continues
+          to communicate the fast post-plan finalize step
+          (``busyMessage = "Plan drafted — finalizing…"``) and every
+          other ``busy`` state. */}
+      <BusyChip busy={busy && !draftingPlan} message={busyMessage} />
     </div>
   );
 
