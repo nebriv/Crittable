@@ -269,7 +269,7 @@ class TokenUsage(BaseModel):
 
 
 class SetupNote(BaseModel):
-    """One utterance in the setup dialog."""
+    """One utterance in the setup dialogue."""
 
     model_config = ConfigDict(extra="forbid")
 

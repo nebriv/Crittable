@@ -49,7 +49,7 @@ export at session end.
 ## Session state machine
 
 ```
-CREATED ──▶ SETUP ◀──┐ creator ↔ AI dialog
+CREATED ──▶ SETUP ◀──┐ creator ↔ AI dialogue
                      │ (ask_setup_question / propose_scenario_plan
                      │  / finalize_setup loop). Setup_skip + dev mode
                      │  short-circuit straight to READY.

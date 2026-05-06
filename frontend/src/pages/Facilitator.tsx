@@ -72,7 +72,7 @@ const TYPING_FADE_HEAD_START_MS = TYPING_VISIBLE_MS - 500;
  *
  * Split into four short sections (scenario / team / environment /
  * constraints) so the AI gets structured context up front and the
- * setup dialog can move past the boilerplate questions faster.
+ * setup dialogue can move past the boilerplate questions faster.
  */
 const DEV_SETUP_PREFILL = {
   scenario:
@@ -212,7 +212,7 @@ export function Facilitator() {
   // request the hop without a complex prop chain.
   const [lobbyOverride, setLobbyOverride] = useState(false);
   // Dev-mode toggle on the intro page: prefills a known scenario + creator
-  // identity, and on submit auto-skips the AI setup dialog so testers
+  // identity, and on submit auto-skips the AI setup dialogue so testers
   // bypass the 5–30 s setup loop. Use only for local QA.
   //
   // Default flips ON when the backend has ``DEV_TOOLS_ENABLED=true``
@@ -526,7 +526,7 @@ export function Facilitator() {
     setBusyMessage(
       devMode
         ? "Dev mode: drafting the plan and starting the exercise…"
-        : "Creating session and starting AI setup dialog…",
+        : "Creating session and starting AI setup dialogue…",
     );
     try {
       // Compute the active invitee labels from the slot UI. The server
@@ -996,7 +996,7 @@ export function Facilitator() {
     if (!state) return;
     if (
       !confirm(
-        "Skip the AI setup dialog and use a generic default plan? Use this for testing only.",
+        "Skip the AI setup dialogue and use a generic default plan? Use this for testing only.",
       )
     ) {
       return;
@@ -1254,7 +1254,7 @@ export function Facilitator() {
   // operator sees rail steps 04-06 instead of being dumped into the
   // in-session view the moment the session is created. Each post-
   // creation phase renders its own ``postCreationContent`` slot:
-  //   - setup → existing <SetupView/> (AI dialog + plan preview)
+  //   - setup → existing <SetupView/> (AI dialogue + plan preview)
   //   - ready, plan unfinished or < 2 players → <SetupLobbyView/>
   //   - ready, plan finalized + ≥ 2 players → <SetupReviewView/>
   //     (owns its own START SESSION button — the BottomActionBar
@@ -2368,7 +2368,7 @@ export function SetupView({
           onClick={onSkipSetup}
           disabled={busy}
           className="mono ml-auto rounded-r-1 border border-dashed border-ink-500 px-3 py-1 text-[10px] uppercase tracking-[0.16em] text-ink-500 opacity-70 hover:opacity-100 hover:bg-ink-800 disabled:opacity-50"
-          title="Dev/testing only: skip the AI setup dialog and use a generic default plan."
+          title="Dev/testing only: skip the AI setup dialogue and use a generic default plan."
         >
           SKIP SETUP (DEV)
         </button>

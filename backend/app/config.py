@@ -26,7 +26,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 ModelTier = Literal["play", "setup", "aar", "guardrail"]
 
 # Per-tier default models. The setup tier was on Haiku 4.5 originally
-# (it's a one-time-per-session dialog and Haiku is dollar-cheap), but
+# (it's a one-time-per-session dialogue and Haiku is dollar-cheap), but
 # Haiku 4.5 occasionally falls back to legacy XML function-call markup
 # (``<parameter name="X">…</parameter>`` / ``<item>`` / CDATA) inside
 # JSON tool inputs — observed in the 2026-04-29 follow-up session where
@@ -300,7 +300,7 @@ class Settings(BaseSettings):
     audit_ring_size: int = Field(default=2000, alias="AUDIT_RING_SIZE", ge=10)
 
     # ---- Developer ergonomics -----------------------------------------
-    # When true, ``POST /api/sessions`` skips the AI setup dialog, populates a
+    # When true, ``POST /api/sessions`` skips the AI setup dialogue, populates a
     # minimal default scenario plan, and lands the session straight in READY so
     # the operator can iterate on the play / lobby UI without burning model
     # tokens or waiting for setup turns. **Never set this in production.**

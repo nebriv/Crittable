@@ -346,7 +346,7 @@ the model MUST emit a setup tool call.
 The new multi-section intro (`SCENARIO BRIEF` / `TEAM` /
 `ENVIRONMENT` / `CONSTRAINTS / AVOID`) is bundled into a single
 `scenario_prompt` payload by the frontend; the setup model sees it as
-the seed user message. Rich seeds shorten the dialog (sometimes to
+the seed user message. Rich seeds shorten the dialogue (sometimes to
 zero questions if the operator pre-fills everything).
 
 ---

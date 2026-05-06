@@ -9,7 +9,7 @@ takes minutes of manual seat-juggling per test run.
 A ``Scenario`` is a declarative JSON file describing:
   * session creation params (scenario_prompt, creator label/name)
   * the roster (one per role)
-  * setup-phase replies (creator's side of the AI setup dialog)
+  * setup-phase replies (creator's side of the AI setup dialogue)
   * play-phase replies (per-turn, per-role player submissions)
   * optional ``mock_llm`` script — when provided the scenario plays
     against the deterministic ``MockAnthropic`` transport instead of

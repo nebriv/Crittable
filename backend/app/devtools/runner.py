@@ -204,7 +204,7 @@ class ScenarioRunner:
         return session.id
 
     async def setup_phase(self) -> None:
-        """Drive the AI setup dialog with the scripted creator replies."""
+        """Drive the AI setup dialogue with the scripted creator replies."""
 
         self.progress.current_phase = "setup"
         sid = self._must_session_id()

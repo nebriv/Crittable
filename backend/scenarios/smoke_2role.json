@@ -1,7 +1,7 @@
 {
   "meta": {
     "name": "Smoke test — 2 role ransomware",
-    "description": "Minimal CISO + SOC analyst exercise. Skips the AI setup dialog (drops the default plan) and runs three player turns before ending. Useful for verifying the full session lifecycle without burning model tokens on setup.",
+    "description": "Minimal CISO + SOC analyst exercise. Skips the AI setup dialogue (drops the default plan) and runs three player turns before ending. Useful for verifying the full session lifecycle without burning model tokens on setup.",
     "tags": ["smoke", "2role", "fast"]
   },
   "scenario_prompt": "Ransomware via vendor portal — finance laptops impacted at 03:14 Wed.",

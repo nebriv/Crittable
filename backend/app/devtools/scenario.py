@@ -37,11 +37,11 @@ class RoleSpec(BaseModel):
 
 
 class SetupReply(BaseModel):
-    """One creator-side reply during the AI setup dialog.
+    """One creator-side reply during the AI setup dialogue.
 
     Each entry is a single ``POST /sessions/{id}/setup/reply`` call. The
     runner sends them in order, waiting for the AI's response after each
-    before sending the next so the dialog stays coherent.
+    before sending the next so the dialogue stays coherent.
 
     ``after_state`` is an optional sanity check — when set, the runner
     asserts the session is in that state before sending the reply. Used

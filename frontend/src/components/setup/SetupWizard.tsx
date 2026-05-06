@@ -1168,7 +1168,7 @@ function DevModeBand({
           lineHeight: 1.4,
         }}
       >
-        Skip the AI setup dialog and use a known ransomware brief.
+        Skip the AI setup dialogue and use a known ransomware brief.
       </span>
     </label>
   );

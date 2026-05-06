@@ -377,7 +377,7 @@ def briefing_session_with_unjoined_seat() -> Session:
 @pytest.fixture
 def aar_session() -> Session:
     """A short but complete tabletop transcript with two roles, three
-    beats of dialog and one critical inject. Used by both
+    beats of dialogue and one critical inject. Used by both
     ``test_aar_generation`` (routing-level smoke) and
     ``test_aar_quality_judge`` (semantic-rubric judge)."""
 

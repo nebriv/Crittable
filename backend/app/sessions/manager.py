@@ -2006,13 +2006,6 @@ class SessionManager:
     async def with_lock(self, session_id: str) -> asyncio.Lock:
         return await self._lock_for(session_id)
 
-    async def append_setup_dialogue(
-        self, *, session_id: str, speaker: str, content: str
-    ) -> None:
-        await self.append_setup_message(
-            session_id=session_id, speaker=speaker, content=content
-        )
-
     async def emit(self, kind: str, session: Session, **payload: Any) -> None:
         self._emit(kind, session, **payload)
 

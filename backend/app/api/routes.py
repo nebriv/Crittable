@@ -441,7 +441,7 @@ def register_api_routes(app: FastAPI) -> None:
         skip_setup = body.skip_setup or bool(settings.dev_fast_setup)
 
         if skip_setup:
-            # Dev convenience: skip the AI setup dialog, drop a minimal plan,
+            # Dev convenience: skip the AI setup dialogue, drop a minimal plan,
             # and transition straight to READY. Avoids the auto-greet LLM
             # call AND the bare-text-leak failure mode that can pollute
             # the play transcript with setup-style assistant prose.
@@ -451,7 +451,7 @@ def register_api_routes(app: FastAPI) -> None:
             )
         else:
             # Kick off the AI's first setup turn so the creator lands in an
-            # active dialog, not a blank screen. Matches docs/PLAN.md § Setup
+            # active dialogue, not a blank screen. Matches docs/PLAN.md § Setup
             # phase ("the AI opens with a structured intake").
             try:
                 driver = TurnDriver(manager=manager)
@@ -744,7 +744,7 @@ def register_api_routes(app: FastAPI) -> None:
         """Dev shortcut: drop a default plan and jump to READY.
 
         Available regardless of ``DEV_FAST_SETUP`` so a creator can choose to
-        skip the AI dialog mid-flow if their key is rate-limited or they just
+        skip the AI dialogue mid-flow if their key is rate-limited or they just
         want to test the play loop. Audit-logged like any other transition.
         """
 

@@ -159,7 +159,7 @@ def test_setup_system_blocks_include_roster() -> None:
     assert "<<<Incident Commander>>>" in text
     assert "<<<Cybersecurity Engineer>>>" in text
     # Display name appears too — it shows up alongside the role label
-    # so the model can address the player by name in dialog.
+    # so the model can address the player by name in dialogue.
     assert "<<<Mira>>>" in text
     # The new directive against re-asking the team-composition question
     # is in the setup-system block (which appears in the same text).

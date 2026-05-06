@@ -1,7 +1,7 @@
 {
   "meta": {
     "name": "Full lifecycle — 5 roles, phishing-to-ransomware",
-    "description": "Five roles (CISO, IR Lead, SOC, Legal, Comms), full setup dialog, six play turns. Exercises the multi-role active-set narrowing, role-handoff broadcasting, and AAR per-role scoring. Runs a real LLM end-to-end — costs ~$0.20.",
+    "description": "Five roles (CISO, IR Lead, SOC, Legal, Comms), full setup dialogue, six play turns. Exercises the multi-role active-set narrowing, role-handoff broadcasting, and AAR per-role scoring. Runs a real LLM end-to-end — costs ~$0.20.",
     "tags": ["full", "5role", "phishing", "expensive"]
   },
   "scenario_prompt": "Phishing email to executive assistant escalates to credential theft and ransomware deployment overnight.",

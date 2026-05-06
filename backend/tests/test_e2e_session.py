@@ -131,7 +131,7 @@ def _drive(
     role_tokens: dict[str, str],
     role_ids: list[str],
 ) -> None:
-    # ------ setup: drive the AI dialog
+    # ------ setup: drive the AI dialogue
     # Step 1: creator answers the AI's first question — triggers proposal
     r = client.post(
         f"/api/sessions/{session_id}/setup/reply?token={creator_token}",
