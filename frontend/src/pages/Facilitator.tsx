@@ -865,7 +865,15 @@ export function Facilitator() {
     if (!setupReply.trim()) return;
     const content = setupReply.trim();
     setSetupReply("");
-    await callSetup(content, "AI is thinking — drafting the next setup question…");
+    // Once a plan exists, the AI is revising it (re-calling
+    // ``propose_scenario_plan`` per ``backend/app/llm/prompts.py``'s
+    // "Iterate freely" directive), not drafting a new question. The
+    // pre-plan message would mislead the operator into thinking the
+    // revision request was ignored.
+    const busyText = snapshot?.plan
+      ? "AI is thinking — revising the plan…"
+      : "AI is thinking — drafting the next setup question…";
+    await callSetup(content, busyText);
   }
 
   /**
@@ -2133,7 +2141,7 @@ export function WaitingChip({
  * viewport the Start button was below the fold, requiring a scroll past
  * the entire role roster + activity panel to reach it.
  */
-function SetupView({
+export function SetupView({
   snapshot,
   setupReply,
   setSetupReply,
@@ -2159,21 +2167,24 @@ function SetupView({
   const hasPlan = Boolean(snapshot.plan);
   const notes = snapshot.setup_notes ?? [];
 
-  return (
-    <div className="flex flex-col gap-3">
-      {/* Issue #113: SetupView is now nested inside the wizard's
-          <PostCreationBody/> which already supplies the eyebrow +
-          title (STEP 04 · INJECTS & SCHEDULE → "AI is drafting the
-          plan"). The pre-PR inner header (STEP 02 · SETUP DIALOGUE)
-          stamped a second, conflicting step number on the same
-          screen — deleted. The helper paragraph stays since it
-          explains the LOOKS READY / APPROVE buttons below. */}
-      <p className="mt-1 text-xs text-ink-300 leading-relaxed">
-        Answer briefly. When you have shared enough background, click{" "}
-        <em>"Looks ready — propose the plan"</em> to nudge it to draft. Once a plan is on the
-        table, click <em>"Approve plan"</em> to commit it.
-      </p>
-
+  // Layout intent (across both branches):
+  //   - No plan: single column — chat → reply form, top to bottom.
+  //   - With plan, xl+: 2-column grid. Left column = chat (row 1) +
+  //     reply form (row 2); right column = sticky plan panel spanning
+  //     both rows. APPROVE lives in the panel (on the artifact it
+  //     commits), not in the reply-form button row.
+  //   - With plan, sub-xl: single column with the panel inserted
+  //     BETWEEN chat and reply form. This is the load-bearing detail
+  //     vs the original layout — without the row reorder the panel
+  //     would still render below the form on small screens (which is
+  //     exactly the original "scroll past everything to see the plan"
+  //     bug that this PR is meant to fix).
+  //
+  // ``chatGroup`` and ``replyForm`` are the per-branch building
+  // blocks; the JSX below assembles them in the right order for each
+  // layout.
+  const chatGroup = (
+    <div className="flex min-w-0 flex-col gap-3">
       {notes.length === 0 && !busy ? (
         <div className="flex flex-col items-center gap-3 rounded-r-3 border border-warn bg-warn-bg p-6">
           <DieLoader label="Waiting for the AI's first question" size={64} />
@@ -2190,81 +2201,201 @@ function SetupView({
       <SetupChat notes={notes} busy={busy} onPickOption={onPickOption} />
 
       <BusyChip busy={busy} message={busyMessage} />
+    </div>
+  );
 
-      <form
-        onSubmit={onSubmit}
-        className="flex flex-col gap-2 rounded-r-3 border border-ink-600 bg-ink-850 p-3"
-      >
-        <span className="mono text-[10px] font-bold uppercase tracking-[0.20em] text-signal">
-          REPLY TO THE AI
-        </span>
-        <textarea
-          value={setupReply}
-          onChange={(e) => setSetupReply(e.target.value)}
-          rows={3}
-          placeholder="Type your reply to the AI…"
-          disabled={busy}
-          className="rounded-r-1 border border-ink-600 bg-ink-900 p-3 text-sm text-ink-100 sans focus-visible:outline focus-visible:outline-2 focus-visible:outline-signal-deep focus:border-signal-deep disabled:opacity-50"
-        />
-        <div className="flex flex-wrap gap-2">
-          <button
-            type="submit"
-            disabled={busy || !setupReply.trim()}
-            className="mono rounded-r-1 bg-signal px-3 py-1.5 text-[11px] font-bold uppercase tracking-[0.16em] text-ink-900 hover:bg-signal-bright disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            SEND REPLY →
-          </button>
-          {hasPlan ? (
-            <button
-              type="button"
-              onClick={onApprovePlan}
-              disabled={busy}
-              className="mono rounded-r-1 border border-signal-deep bg-signal-tint px-3 py-1.5 text-[11px] font-bold uppercase tracking-[0.16em] text-signal hover:border-signal hover:bg-signal/20 focus-visible:outline focus-visible:outline-2 focus-visible:outline-signal disabled:opacity-50"
-              title="Commits the existing draft plan immediately (no AI call)."
-            >
-              APPROVE &amp; START LOBBY →
-            </button>
-          ) : (
-            <button
-              type="button"
-              onClick={onLooksReady}
-              disabled={busy}
-              className="mono rounded-r-1 border border-signal-deep px-3 py-1.5 text-[11px] font-semibold uppercase tracking-[0.16em] text-signal hover:bg-signal-tint focus-visible:outline focus-visible:outline-2 focus-visible:outline-signal disabled:opacity-50"
-              title="Asks the AI to draft a plan; auto-finalizes it if one comes back."
-            >
-              LOOKS READY — PROPOSE THE PLAN
-            </button>
-          )}
+  const replyForm = (
+    <form
+      onSubmit={onSubmit}
+      className="flex min-w-0 flex-col gap-2 rounded-r-3 border border-ink-600 bg-ink-850 p-3"
+    >
+      <span className="mono text-[10px] font-bold uppercase tracking-[0.20em] text-signal">
+        REPLY TO THE AI
+      </span>
+      <textarea
+        value={setupReply}
+        onChange={(e) => setSetupReply(e.target.value)}
+        rows={3}
+        placeholder={
+          hasPlan
+            ? "Want changes? Tell the AI what to revise…"
+            : "Type your reply to the AI…"
+        }
+        disabled={busy}
+        className="rounded-r-1 border border-ink-600 bg-ink-900 p-3 text-sm text-ink-100 sans focus-visible:outline focus-visible:outline-2 focus-visible:outline-signal-deep focus:border-signal-deep disabled:opacity-50"
+      />
+      <div className="flex flex-wrap gap-2">
+        <button
+          type="submit"
+          disabled={busy || !setupReply.trim()}
+          className="mono rounded-r-1 bg-signal px-3 py-1.5 text-[11px] font-bold uppercase tracking-[0.16em] text-ink-900 hover:bg-signal-bright disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          SEND REPLY →
+        </button>
+        {!hasPlan ? (
           <button
             type="button"
-            onClick={onSkipSetup}
+            onClick={onLooksReady}
             disabled={busy}
-            className="mono ml-auto rounded-r-1 border border-dashed border-ink-500 px-3 py-1 text-[10px] uppercase tracking-[0.16em] text-ink-500 opacity-70 hover:opacity-100 hover:bg-ink-800 disabled:opacity-50"
-            title="Dev/testing only: skip the AI setup dialogue and use a generic default plan."
+            className="mono rounded-r-1 border border-signal-deep px-3 py-1.5 text-[11px] font-semibold uppercase tracking-[0.16em] text-signal hover:bg-signal-tint focus-visible:outline focus-visible:outline-2 focus-visible:outline-signal disabled:opacity-50"
+            title="Asks the AI to draft a plan; auto-finalizes it if one comes back."
           >
-            SKIP SETUP (DEV)
+            LOOKS READY — PROPOSE THE PLAN
           </button>
-        </div>
-      </form>
+        ) : null}
+        <button
+          type="button"
+          onClick={onSkipSetup}
+          disabled={busy}
+          className="mono ml-auto rounded-r-1 border border-dashed border-ink-500 px-3 py-1 text-[10px] uppercase tracking-[0.16em] text-ink-500 opacity-70 hover:opacity-100 hover:bg-ink-800 disabled:opacity-50"
+          title="Dev/testing only: skip the AI setup dialogue and use a generic default plan."
+        >
+          SKIP SETUP (DEV)
+        </button>
+      </div>
+    </form>
+  );
 
-      {hasPlan ? <PlanPreview plan={snapshot.plan!} sessionId={snapshot.id} /> : null}
+  return (
+    <div className="flex flex-col gap-3">
+      {/* Issue #113: SetupView is now nested inside the wizard's
+          <PostCreationBody/> which already supplies the eyebrow +
+          title (STEP 04 · INJECTS & SCHEDULE → "AI is drafting the
+          plan"). The pre-PR inner header (STEP 02 · SETUP DIALOGUE)
+          stamped a second, conflicting step number on the same
+          screen — deleted. The helper paragraph stays since it
+          explains the LOOKS READY / APPROVE buttons below.
+
+          Copy is conditional on hasPlan because the position reference
+          ("on the panel") and the button name ("Approve & start lobby")
+          would mislead before the plan exists (no panel yet) and the
+          old wording ("Approve plan") didn't match the actual button
+          label after the plan arrived. */}
+      <p className="mt-1 text-xs text-ink-300 leading-relaxed">
+        {hasPlan ? (
+          <>
+            Plan&apos;s on the table. Read it through, then click{" "}
+            <em>&quot;Approve &amp; start lobby&quot;</em> on the proposed-plan
+            panel to commit. Want changes? Reply below to revise.
+          </>
+        ) : (
+          <>
+            Answer briefly. When you have shared enough background, click{" "}
+            <em>&quot;Looks ready — propose the plan&quot;</em> to nudge it
+            to draft.
+          </>
+        )}
+      </p>
+
+      {hasPlan ? (
+        // 2-row × 2-col grid (collapses to a single column at sub-xl).
+        // Row positioning matters:
+        //   xl+: chat=(col1,row1), aside=(col2,rows1-2 sticky panel),
+        //        form=(col1,row2). Panel pins on the right, conversation
+        //        flows on the left.
+        //   sub-xl: items render in DOM order (chat → aside → form),
+        //        which puts the panel between the AI's last message
+        //        and the reply form — the original "scroll past
+        //        everything to see the plan" bug is fixed on small
+        //        screens, not just at xl.
+        // ``self-start`` on the aside is load-bearing for sticky:
+        // without it the grid stretches the aside to the row height
+        // (= conversation column) and sticky has no room to scroll
+        // past — the panel would just sit there inert. ``max-h`` on
+        // the inner section (in PlanPanel, NOT here) caps the panel's
+        // own height so the APPROVE footer stays on screen even with
+        // a tall plan.
+        <div className="grid grid-cols-1 gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(360px,460px)] xl:items-start">
+          {chatGroup}
+          <aside
+            aria-label="Proposed plan"
+            className="min-w-0 xl:col-start-2 xl:row-start-1 xl:row-span-2 xl:sticky xl:top-2 xl:self-start"
+          >
+            <PlanPanel
+              plan={snapshot.plan!}
+              sessionId={snapshot.id}
+              onApprove={onApprovePlan}
+              busy={busy}
+            />
+          </aside>
+          <div className="min-w-0 xl:col-start-1 xl:row-start-2">
+            {replyForm}
+          </div>
+        </div>
+      ) : (
+        <>
+          {chatGroup}
+          {replyForm}
+        </>
+      )}
     </div>
   );
 }
 
-function PlanPreview({ plan, sessionId }: { plan: ScenarioPlan; sessionId?: string }) {
+/**
+ * Side-panel rendering of the proposed plan with an APPROVE button at
+ * the bottom of the panel — the action lives ON the artifact it
+ * commits, not buried in the reply-form button row beneath the chat.
+ *
+ * Sizing strategy:
+ *   - Below xl: this section renders at its intrinsic height; the
+ *     wizard's ``overflow-auto`` ``<section>`` (see SetupWizard.tsx)
+ *     handles outer page scroll. No internal scroll, no max-h.
+ *   - At xl+: ``xl:max-h-[calc(100vh-11rem)]`` caps the panel below
+ *     the wizard chrome (Eyebrow + h1 "AI is drafting the plan" +
+ *     helper paragraph + ``lg:p-8`` outer padding ≈ 160px / 10rem).
+ *     The extra ~16px buffer keeps the Approve footer comfortably
+ *     above the fold on first render even before the operator
+ *     scrolls the chrome out of view. After scrolling, the sticky
+ *     aside (``xl:top-2``) keeps the panel pinned with whitespace
+ *     below — visible-Approve > tightly-fitting-panel.
+ *     ``xl:overflow-hidden`` contains the children; ``xl:flex-1
+ *     xl:min-h-0 xl:overflow-auto`` on the body lets PlanView scroll
+ *     internally while the header + Approve footer stay pinned.
+ *     ``xl:min-h-0`` is load-bearing — without it the flex-child
+ *     body refuses to shrink below its content size and the scroll
+ *     never engages.
+ *
+ * Header includes the plan title so the operator keeps that context
+ * even after scrolling the body — the original ``<details>`` summary
+ * showed it for the same reason.
+ */
+function PlanPanel({
+  plan,
+  sessionId,
+  onApprove,
+  busy,
+}: {
+  plan: ScenarioPlan;
+  sessionId?: string;
+  onApprove: () => void;
+  busy: boolean;
+}) {
   return (
-    <details
-      className="rounded-r-3 border border-signal-deep bg-signal-tint p-3 text-xs"
-      open
-    >
-      <summary className="mono cursor-pointer text-[11px] font-bold uppercase tracking-[0.16em] text-signal">
-        ● PROPOSED PLAN — {plan.title}
-      </summary>
-      <div className="mt-2">
+    <section className="flex flex-col rounded-r-3 border border-signal-deep bg-signal-tint xl:max-h-[calc(100vh-11rem)] xl:overflow-hidden">
+      <header className="shrink-0 border-b border-signal-deep/50 px-3 py-2.5">
+        <p
+          className="mono truncate text-[10px] font-bold uppercase tracking-[0.20em] text-signal"
+          title={plan.title}
+        >
+          ● PROPOSED PLAN — {plan.title}
+        </p>
+      </header>
+      <div className="px-4 py-3 xl:flex-1 xl:min-h-0 xl:overflow-auto">
         <PlanView plan={plan} sessionId={sessionId} />
       </div>
-    </details>
+      <div className="shrink-0 border-t border-signal-deep/50 px-3 py-2.5">
+        <button
+          type="button"
+          onClick={onApprove}
+          disabled={busy}
+          className="mono w-full rounded-r-1 bg-signal px-3 py-2 text-[11px] font-bold uppercase tracking-[0.16em] text-ink-900 hover:bg-signal-bright focus-visible:outline focus-visible:outline-2 focus-visible:outline-signal-bright disabled:cursor-not-allowed disabled:opacity-50"
+          title="Commits the existing draft plan immediately (no AI call)."
+        >
+          APPROVE &amp; START LOBBY →
+        </button>
+      </div>
+    </section>
   );
 }
 
