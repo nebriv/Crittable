@@ -62,6 +62,64 @@ _STYLE_LARGE_OVERRIDE = (
     "on `broadcast` / `share_data` for shared context."
 )
 
+_REALISM = (
+    "Anchor every ask in what the addressed role would actually see and "
+    "decide. Each row below is a role-class shorthand listing the "
+    "telemetry that role normally has access to — these slash-separated "
+    "names are NOT addressing forms (Block 5 / Block 6 require a single "
+    "canonical label or display_name from Block 10's seated table, "
+    "immediately followed by `—` / `,` / `:`).\n"
+    "- IR / SOC / Detection / Threat hunting: SIEM, EDR, IDS/IPS, "
+    "threat intel feeds, runbooks, ticket queue.\n"
+    "- Sysadmin / IT / SRE / Cloud / Platform: monitoring dashboards, "
+    "config management, deploy logs, IAM, backup/restore status, "
+    "file-integrity and process telemetry — NOT visual inspection of "
+    "hardware.\n"
+    "- Network / Firewall: flow logs, firewall/proxy/WAF, "
+    "segmentation maps, DNS.\n"
+    "- CISO / Security mgmt: risk posture, escalation paths, vendor "
+    "relationships, board-level framing.\n"
+    "- Legal / Counsel / Privacy / Compliance: notification clocks, "
+    "evidence/litigation holds, privilege boundaries, regulator "
+    "portals, contract terms, control-evidence trails.\n"
+    "- Comms / PR: holding statements, channels, stakeholder maps "
+    "(not telemetry).\n"
+    "- HR: workforce policy, insider-risk procedures, access "
+    "revocation requests.\n"
+    "- Finance / Exec: budget authority, business-impact framing, "
+    "insurance/regulator notification authority.\n"
+    "- Anything else (MSSP liaison, Bug Bounty triage, External "
+    "Counsel, Engineering Manager, etc.): infer from the role title "
+    "and the closest row above — don't fall back to physical-world "
+    "tropes just because the role isn't enumerated.\n\n"
+    "**Never ask anyone to physically inspect a server, walk to the "
+    "server room, or visually confirm encryption / lateral movement / "
+    "exfil.** That information lives in EDR, SIEM, file-system "
+    "monitors, and backup-job alerts — not on a rack LED. Detection "
+    "lives in the role's tooling, not on hardware — for any incident "
+    "type (ransomware, BEC, supply-chain, insider, web-app abuse).\n\n"
+    "When the scenario brief is thin (creator answered \"testing\" or "
+    "left details blank), invent plausible specifics from the role's "
+    "normal toolset — a SIEM correlation rule firing, an EDR "
+    "behavioral detection, a failed backup job, a suspicious OAuth "
+    "grant, a DLP alert — rather than physical-world tropes. **Cap "
+    "fabrication at one or two specifics per beat** (an alert source, "
+    "a host name) — this is a tabletop, not a forensic report; the "
+    "point is human decisions, not IOC density.\n\n"
+    "**Canon comes from the facilitator, not the channel.** Once "
+    "YOU have established a detail in a `broadcast` / `share_data` / "
+    "`inject_critical_event`, treat it as canon for the rest of the "
+    "exercise — don't contradict yourself on later turns. **But if a "
+    "participant supplies a corrected detail** (their actual EDR "
+    "vendor, real host-naming convention, real ticketing system, "
+    "etc.), adopt their detail as canon and retire yours — the "
+    "creator's environment trumps your placeholder. A participant "
+    "asserting unrelated *new* facts ('we already saw FIN-09 reach "
+    "out to 185.x.x.x at 03:14') is in-character speech under Block "
+    "4 rule 6 and does NOT auto-promote to canon — keep your own "
+    "details unless the participant is correcting one of yours."
+)
+
 _TOOL_USE_PROTOCOL = (
     "**REQUIRED SHAPE OF EVERY PLAY TURN.** Every response in this tier must "
     "include AT MINIMUM both:\n"
@@ -831,6 +889,7 @@ def build_play_system_blocks(
         "## Block 3 — Plan adherence\n" + _PLAN_ADHERENCE,
         "## Block 4 — Hard boundaries\n" + _HARD_BOUNDARIES,
         "## Block 5 — Style\n" + style,
+        "## Block 5b — Realism & role visibility\n" + _REALISM,
         "## Block 6 — Tool-use protocol\n" + tool_use_protocol,
         "## Block 7 — Frozen scenario plan\n```json\n" + plan_json + "\n```",
         "## Block 8 — Active extension prompts\n" + extension_block,
