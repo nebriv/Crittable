@@ -1060,16 +1060,20 @@ class TurnDriver:
         *,
         result_text: str,
     ) -> None:
+        # Capture freeform AI text (no tool wrapped it). Built here
+        # but appended below so the @-back auto-tag can reach it
+        # alongside the dispatcher's tool-emitted AI_TEXT messages.
+        # Without this ordering, freeform AI text would land
+        # untagged even when it answers an in-turn ``@facilitator``
+        # asker — caught in PR #184 review (Copilot).
+        freeform_ai_text: Message | None = None
         if result_text and not any(
             m.kind == MessageKind.AI_TEXT and m.tool_name is None for m in outcome.appended_messages
         ):
-            # Capture freeform AI text if no tool already captured it
-            session.messages.append(
-                Message(
-                    kind=MessageKind.AI_TEXT,
-                    body=result_text,
-                    turn_id=turn.id,
-                )
+            freeform_ai_text = Message(
+                kind=MessageKind.AI_TEXT,
+                body=result_text,
+                turn_id=turn.id,
             )
 
         # Same @-back behaviour as ``run_interject``: when a player
@@ -1101,9 +1105,13 @@ class TurnDriver:
                 seen.add(prior.role_id)
         if in_turn_facilitator_askers:
             tagged = 0
-            for msg in outcome.appended_messages:
-                if msg.kind != MessageKind.AI_TEXT:
-                    continue
+            ai_text_messages: list[Message] = [
+                m for m in outcome.appended_messages
+                if m.kind == MessageKind.AI_TEXT
+            ]
+            if freeform_ai_text is not None:
+                ai_text_messages.append(freeform_ai_text)
+            for msg in ai_text_messages:
                 for asker_id in in_turn_facilitator_askers:
                     if asker_id not in msg.mentions:
                         msg.mentions.append(asker_id)
@@ -1116,6 +1124,12 @@ class TurnDriver:
                     askers=list(in_turn_facilitator_askers),
                     tagged_count=tagged,
                 )
+
+        # Persist the freeform AI_TEXT (if any) before the
+        # tool-emitted messages so the transcript order remains
+        # ``freeform → tools``, matching the original implementation.
+        if freeform_ai_text is not None:
+            session.messages.append(freeform_ai_text)
 
         for msg in outcome.appended_messages:
             session.messages.append(msg)

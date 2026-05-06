@@ -1233,6 +1233,218 @@ def test_play_turn_reply_tags_facilitator_asker_when_quorum_closes(
     )
 
 
+def test_play_turn_freeform_ai_text_also_gets_asker_mention(
+    client: TestClient,
+) -> None:
+    """PR #184 Copilot review caught: ``_apply_play_outcome``
+    captures the model's leading text content as a freeform
+    ``Message(kind=AI_TEXT, tool_name=None)`` separate from the
+    dispatcher's tool-emitted messages. The auto-tag must reach
+    that freeform too — without it, the asker would see @YOU on
+    the broadcast bubble but NOT on the leading prose, leaving
+    them confused about whether the prose is for them."""
+
+    from app.sessions.submission_pipeline import (
+        prepare_and_submit_player_response,
+    )
+    from app.sessions.turn_driver import TurnDriver
+    from tests.mock_anthropic import (
+        MockAnthropic,
+        _ContentBlock,
+        _Response,
+    )
+
+    # 1-active-role variant so a single ready submission closes
+    # the quorum and the regular play turn fires.
+    resp = client.post(
+        "/api/sessions",
+        json={
+            "scenario_prompt": "Mentions routing test",
+            "creator_label": "CISO",
+            "creator_display_name": "Alex",
+            "skip_setup": True,
+        },
+    )
+    body = resp.json()
+    sid = body["session_id"]
+    creator_id = body["creator_role_id"]
+
+    async def _seat() -> None:
+        manager = client.app.state.manager
+        session = await manager.get_session(sid)
+        session.turns.append(
+            Turn(index=0, active_role_ids=[creator_id], status="awaiting")
+        )
+        session.state = SessionState.AWAITING_PLAYERS
+        await manager._repo.save(session)
+
+    asyncio.run(_seat())
+
+    # Leading text block before the tool calls — this is what
+    # produces the freeform AI_TEXT message.
+    play_response = _Response(
+        content=[
+            _ContentBlock(
+                type="text",
+                text="On it — pulling Defender now.",
+            ),
+            _ContentBlock(
+                type="tool_use",
+                name="broadcast",
+                input={"message": "Detection at 03:14."},
+                id="tu_b_freeform",
+            ),
+            _ContentBlock(
+                type="tool_use",
+                name="set_active_roles",
+                input={"role_ids": [creator_id]},
+                id="tu_sar_freeform",
+            ),
+        ],
+        stop_reason="tool_use",
+    )
+    mock = MockAnthropic({"play": [play_response]})
+    client.app.state.llm.set_transport(mock.messages)
+
+    async def _drive() -> None:
+        manager = client.app.state.manager
+        outcome = await prepare_and_submit_player_response(
+            manager=manager,
+            session_id=sid,
+            role_id=creator_id,
+            content="@facilitator IOCs?",
+            intent="ready",
+            mentions=[FACILITATOR_MENTION_TOKEN],
+        )
+        assert outcome.advanced
+        session = await manager.get_session(sid)
+        turn = session.current_turn
+        assert turn is not None
+        await TurnDriver(manager=manager).run_play_turn(
+            session=session, turn=turn
+        )
+
+    asyncio.run(_drive())
+
+    session = asyncio.run(client.app.state.manager.get_session(sid))
+    # The freeform message has tool_name=None; the broadcast has
+    # tool_name="broadcast". Both should carry the asker.
+    freeform = next(
+        m
+        for m in reversed(session.messages)
+        if m.kind.value == "ai_text" and m.tool_name is None
+    )
+    assert creator_id in freeform.mentions, (
+        "freeform AI_TEXT (leading prose) must be tagged with the "
+        f"asker; got mentions={freeform.mentions!r}"
+    )
+    broadcast = next(
+        m
+        for m in reversed(session.messages)
+        if m.kind.value == "ai_text" and m.tool_name == "broadcast"
+    )
+    assert creator_id in broadcast.mentions, (
+        "tool-emitted broadcast must also be tagged; got "
+        f"mentions={broadcast.mentions!r}"
+    )
+
+
+def test_play_turn_reply_tags_multiple_facilitator_askers_in_same_turn(
+    client: TestClient,
+) -> None:
+    """When multiple in-turn players each @-mention the facilitator
+    and their combined submissions close the quorum, every asker's
+    role_id must appear in the AI's reply ``mentions[]``. Without
+    this, the auto-tag would only honor the first asker and the
+    second player would silently lose their @YOU badge."""
+
+    from tests.mock_anthropic import MockAnthropic, _ContentBlock, _Response
+
+    seats = asyncio.run(_seat_two_role_session(client))
+    play_response = _Response(
+        content=[
+            _ContentBlock(
+                type="tool_use",
+                name="broadcast",
+                input={"message": "Both questions answered."},
+                id="tu_b_multi",
+            ),
+            _ContentBlock(
+                type="tool_use",
+                name="set_active_roles",
+                input={"role_ids": [seats["creator_id"]]},
+                id="tu_sar_multi",
+            ),
+        ],
+        stop_reason="tool_use",
+    )
+    mock = MockAnthropic({"play": [play_response]})
+    client.app.state.llm.set_transport(mock.messages)
+
+    # Submit both players via the load-bearing submission pipeline
+    # (the same path the WS handler uses), then directly drive the
+    # play turn. We bypass the WS routing branch that would fire
+    # ``run_interject`` after CISO's submission — the unit under
+    # test here is the play-turn auto-tag's ability to find ALL
+    # in-turn @facilitator askers, not the WS routing logic. The
+    # routing logic is covered by the dedicated routing tests
+    # earlier in this file.
+    from app.sessions.submission_pipeline import (
+        prepare_and_submit_player_response,
+    )
+    from app.sessions.turn_driver import TurnDriver
+
+    async def _submit_and_drive() -> None:
+        manager = client.app.state.manager
+        outcome_ciso = await prepare_and_submit_player_response(
+            manager=manager,
+            session_id=seats["session_id"],
+            role_id=seats["creator_id"],
+            content="@facilitator IOC list?",
+            intent="ready",
+            mentions=[FACILITATOR_MENTION_TOKEN],
+        )
+        assert not outcome_ciso.advanced, (
+            "CISO alone shouldn't close quorum"
+        )
+        outcome_soc = await prepare_and_submit_player_response(
+            manager=manager,
+            session_id=seats["session_id"],
+            role_id=seats["soc_id"],
+            content="@facilitator timeline?",
+            intent="ready",
+            mentions=[FACILITATOR_MENTION_TOKEN],
+        )
+        assert outcome_soc.advanced, (
+            "SOC submission should close quorum"
+        )
+        session = await manager.get_session(seats["session_id"])
+        turn = session.current_turn
+        assert turn is not None
+        await TurnDriver(manager=manager).run_play_turn(
+            session=session, turn=turn
+        )
+
+    asyncio.run(_submit_and_drive())
+
+    session = asyncio.run(
+        client.app.state.manager.get_session(seats["session_id"])
+    )
+    ai_msg = next(
+        m
+        for m in reversed(session.messages)
+        if m.kind.value == "ai_text" and m.tool_name == "broadcast"
+    )
+    assert seats["creator_id"] in ai_msg.mentions, (
+        "play-turn @-back must tag CISO; got "
+        f"mentions={ai_msg.mentions!r}"
+    )
+    assert seats["soc_id"] in ai_msg.mentions, (
+        "play-turn @-back must also tag SOC (second asker); got "
+        f"mentions={ai_msg.mentions!r}"
+    )
+
+
 # -----------------------------------------------------------------------
 # Deletion regression — ensure the legacy heuristic is gone.
 # -----------------------------------------------------------------------
