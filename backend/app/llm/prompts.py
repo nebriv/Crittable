@@ -318,12 +318,16 @@ _ROSTER_STRATEGY: dict[RosterSize, str] = {
 }
 
 _SETUP_SYSTEM = (
-    "You are setting up a cybersecurity tabletop exercise with the creator. Use "
-    "`ask_setup_question` to gather: org background (industry, size, regulatory "
-    "regime), team composition (which roles are seated, seniority, on-call "
-    "posture), capabilities (SIEM, EDR, IdP, IR runbook maturity), environment "
-    "(cloud vs on-prem, key software stack, crown jewels), and scenario shaping "
-    "(target difficulty, learning objectives, hard constraints, things to avoid). "
+    "You are setting up a cybersecurity tabletop exercise with the creator. "
+    "**The roster is already known** — see the ``Seated roster`` block below. "
+    "Do NOT ask 'who's at the table' or 'which roles are seated'; that was "
+    "answered in the wizard before you opened your mouth. Use "
+    "`ask_setup_question` to gather what you still need: org background "
+    "(industry, size, regulatory regime), team experience (seniority, on-call "
+    "posture, prior IR exposure — but the *seats* are fixed), capabilities "
+    "(SIEM, EDR, IdP, IR runbook maturity), environment (cloud vs on-prem, "
+    "key software stack, crown jewels), and scenario shaping (target "
+    "difficulty, learning objectives, hard constraints, things to avoid). "
     "Cap setup at ~6 questions total — fewer if the creator's seed prompt "
     "already covers the basics. Ask one question per turn. After the creator "
     "answers your last needed question (or proactively says \"that's enough, "
@@ -332,9 +336,11 @@ _SETUP_SYSTEM = (
     "for 2-person rosters skip those.\n\nWhen you have enough to draft, call "
     "`propose_scenario_plan` with a structured plan (title, executive_summary, "
     "key_objectives, narrative_arc, injects, guardrails, success_criteria, "
-    "out_of_scope). Iterate freely with the creator. When they approve, call "
-    "`finalize_setup` with the final plan. After `finalize_setup`, end your turn "
-    "— the play phase begins.\n\n"
+    "out_of_scope). Use the seated-roster labels in `narrative_arc[].expected_actors` "
+    "— picking labels that aren't on the roster makes the plan unrunnable. "
+    "Iterate freely with the creator. When they approve, call `finalize_setup` "
+    "with the final plan. After `finalize_setup`, end your turn — the play "
+    "phase begins.\n\n"
     "**Plan completeness — non-negotiable.** Your `propose_scenario_plan` "
     "and `finalize_setup` calls MUST include:\n"
     "  * `narrative_arc`: at least 3 beats. Each beat needs `beat` "
@@ -806,6 +812,37 @@ _WORKSTREAMS_SETUP_DIRECTIVE = (
 )
 
 
+def _setup_roster_block(session: Session) -> str:
+    """Render the seated roster for the setup-tier system prompt.
+
+    The wizard's step 3 declares roles up front; the API handler
+    registers them before this function runs. Surfacing the roster
+    here lets the AI skip the "who's at the table" intake — which
+    used to be the first setup-turn question even though the data
+    was already in hand.
+    """
+
+    lines: list[str] = []
+    for role in session.roles:
+        kind = getattr(role.kind, "value", str(role.kind))
+        creator_tag = " (creator — playing this seat)" if role.is_creator else ""
+        dn = f' — "{role.display_name}"' if role.display_name else ""
+        lines.append(
+            f"  - label={role.label}{dn} · kind={kind}{creator_tag}"
+        )
+    if not lines:
+        return (
+            "(no roles seated yet — ask `ask_setup_question` about who "
+            "should be at the table)"
+        )
+    return (
+        "These roles are already seated. **Do not re-ask the creator who "
+        "is at the table** — use these labels in your `expected_actors` "
+        "lists and tailor questions to *experience / capabilities*, not "
+        "*who's playing*:\n" + "\n".join(lines)
+    )
+
+
 def build_setup_system_blocks(
     session: Session,
     *,
@@ -824,6 +861,7 @@ def build_setup_system_blocks(
             "## Block 1 — Identity\n" + _IDENTITY,
             "## Block 4 — Hard boundaries\n" + _HARD_BOUNDARIES,
             "## Setup-phase instructions\n" + setup_block,
+            "## Seated roster\n" + _setup_roster_block(session),
             "## Scenario seed prompt from creator\n" + session.scenario_prompt,
         ]
     )

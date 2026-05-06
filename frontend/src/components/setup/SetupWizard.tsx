@@ -18,6 +18,26 @@ export interface SetupParts {
 }
 
 /**
+ * One row in the step-3 roles list. ``builtin`` rows are the
+ * canonical mockup-defined seats (IC / CSM / CSE / COM / EXE) and
+ * are toggleable but non-removable; custom rows the operator adds
+ * via the form get ``builtin: false`` and a remove button. ``active``
+ * drives whether the role gets submitted as part of ``invitee_roles``
+ * on session creation. ``key`` is a stable React list key — the
+ * builtin rows share their ``code`` for the key, custom rows mint a
+ * timestamp+random fragment so duplicate-add edge cases don't
+ * collide React's reconciliation.
+ */
+export interface SetupRoleSlot {
+  key: string;
+  code?: string;
+  label: string;
+  description?: string;
+  active: boolean;
+  builtin: boolean;
+}
+
+/**
  * Brand-mock setup wizard — wraps both the pre-creation form (steps
  * 1-3) and the post-creation flow (steps 4-6, where the backend has
  * already created the session and we're rendering existing in-app
@@ -48,8 +68,10 @@ interface Props {
   setCreatorLabel: (v: string) => void;
   creatorDisplayName: string;
   setCreatorDisplayName: (v: string) => void;
-  setupRoles: string[];
-  setSetupRoles: (v: string[] | ((prev: string[]) => string[])) => void;
+  setupRoleSlots: SetupRoleSlot[];
+  setSetupRoleSlots: (
+    v: SetupRoleSlot[] | ((prev: SetupRoleSlot[]) => SetupRoleSlot[]),
+  ) => void;
   setupRoleDraft: string;
   setSetupRoleDraft: (v: string) => void;
   devMode: boolean;
@@ -77,7 +99,15 @@ interface Props {
   onAbandonSession?: () => void;
 }
 
-const ROLE_DEFAULTS = ["IR Lead", "Legal", "Comms"] as const;
+// Stable React keys for custom-role rows the operator adds. We can't
+// just use the label as the key because two adds of the same label
+// would collide (the de-dup check runs against active labels, but the
+// row tracker still needs a unique identifier per slot).
+function newCustomKey(): string {
+  return `custom-${Date.now().toString(36)}-${Math.random()
+    .toString(36)
+    .slice(2, 8)}`;
+}
 
 export function SetupWizard(props: Props) {
   // Pre-creation step navigation. The user moves through 1 → 2 → 3,
@@ -500,26 +530,47 @@ function Step2Body(props: IntroBodyProps) {
 }
 
 function Step3Body(props: IntroBodyProps) {
-  function addRole(label: string) {
+  function toggleSlot(key: string) {
+    props.setSetupRoleSlots((prev) =>
+      prev.map((s) => (s.key === key ? { ...s, active: !s.active } : s)),
+    );
+  }
+  function removeCustom(key: string) {
+    props.setSetupRoleSlots((prev) => prev.filter((s) => s.key !== key));
+  }
+  function addCustom(label: string) {
     const trimmed = label.trim();
     if (!trimmed) return;
-    props.setSetupRoles((prev) =>
-      prev.some((r) => r.toLowerCase() === trimmed.toLowerCase())
-        ? prev
-        : [...prev, trimmed],
-    );
+    const lower = trimmed.toLowerCase();
+    props.setSetupRoleSlots((prev) => {
+      // Case-insensitive dup check across BOTH builtin and custom
+      // rows. If the label collides with an existing slot, just turn
+      // that slot back on instead of creating a duplicate row — the
+      // operator's intent is clearly "I want this role at the table".
+      const existing = prev.find((s) => s.label.toLowerCase() === lower);
+      if (existing) {
+        return prev.map((s) =>
+          s.key === existing.key ? { ...s, active: true } : s,
+        );
+      }
+      return [
+        ...prev,
+        {
+          key: newCustomKey(),
+          label: trimmed,
+          active: true,
+          builtin: false,
+        },
+      ];
+    });
     props.setSetupRoleDraft("");
   }
-  function removeRole(label: string) {
-    props.setSetupRoles((prev) => prev.filter((r) => r !== label));
-  }
   const creatorLabelLower = props.creatorLabel.trim().toLowerCase();
-  const dedupeWithCreator = creatorLabelLower
-    ? props.setupRoles.find((r) => r.toLowerCase() === creatorLabelLower)
+  const collidingActive = creatorLabelLower
+    ? props.setupRoleSlots.find(
+        (s) => s.active && s.label.toLowerCase() === creatorLabelLower,
+      )
     : undefined;
-  const defaultsMatch =
-    props.setupRoles.length === ROLE_DEFAULTS.length &&
-    ROLE_DEFAULTS.every((d, i) => props.setupRoles[i] === d);
   return (
     <>
       {/* Creator's own seat — moved from Step 1 (issue #159). The
@@ -592,213 +643,314 @@ function Step3Body(props: IntroBodyProps) {
         style={{
           display: "flex",
           flexDirection: "column",
-          gap: 10,
+          gap: 12,
           padding: 14,
           border: "1px solid var(--ink-600)",
           borderRadius: 4,
           background: "var(--ink-850)",
         }}
       >
-      <legend
+        <legend
+          className="mono"
+          style={{
+            padding: "0 6px",
+            fontSize: 10,
+            color: "var(--signal)",
+            letterSpacing: "0.20em",
+            fontWeight: 700,
+          }}
+        >
+          Who's in the room?
+        </legend>
+        <p
+          className="sans"
+          style={{
+            margin: 0,
+            fontSize: 12,
+            color: "var(--ink-300)",
+            lineHeight: 1.45,
+          }}
+        >
+          Each role is a seat at the table. Toggle Active to put them in
+          play; the AI routes turns to active roles only. You can add or
+          remove roles mid-session too.
+        </p>
+        <RoleSlotList
+          slots={props.setupRoleSlots}
+          collidingKey={collidingActive?.key}
+          onToggle={toggleSlot}
+          onRemove={removeCustom}
+        />
+        {collidingActive ? (
+          <p
+            role="status"
+            className="mono"
+            style={{
+              margin: 0,
+              fontSize: 11,
+              color: "var(--warn)",
+              letterSpacing: "0.04em",
+            }}
+          >
+            You're playing "{collidingActive.label}", so it won't be
+            auto-added as a separate invitee.
+          </p>
+        ) : null}
+        <div
+          style={{
+            display: "flex",
+            gap: 8,
+            alignItems: "stretch",
+            paddingTop: 4,
+            borderTop: "1px solid var(--ink-700)",
+            marginTop: 4,
+          }}
+        >
+          <input
+            type="text"
+            aria-label="New role label"
+            value={props.setupRoleDraft}
+            onChange={(e) => props.setSetupRoleDraft(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                addCustom(props.setupRoleDraft);
+              }
+            }}
+            placeholder="Add custom role (e.g. Threat Intel)"
+            style={{
+              flex: 1,
+              background: "var(--ink-900)",
+              border: "1px solid var(--ink-600)",
+              borderRadius: 2,
+              padding: "8px 10px",
+              color: "var(--ink-100)",
+              fontFamily: "var(--font-sans)",
+              fontSize: 13,
+              outline: "none",
+            }}
+          />
+          <button
+            type="button"
+            onClick={() => addCustom(props.setupRoleDraft)}
+            disabled={!props.setupRoleDraft.trim()}
+            className="mono"
+            style={{
+              background: "transparent",
+              color: "var(--ink-200)",
+              border: "1px solid var(--ink-500)",
+              padding: "0 14px",
+              borderRadius: 2,
+              fontSize: 11,
+              fontWeight: 600,
+              letterSpacing: "0.16em",
+              cursor: props.setupRoleDraft.trim() ? "pointer" : "not-allowed",
+              opacity: props.setupRoleDraft.trim() ? 1 : 0.5,
+            }}
+          >
+            Add role
+          </button>
+        </div>
+      </fieldset>
+    </>
+  );
+}
+
+/**
+ * Mockup-faithful row list — see ``design/handoff/source/app-screens.jsx``
+ * §02 ``AppCreatorSetup`` (lines 643-656). Each row: code badge, label
+ * + description, Active/Off pills (we drop STANDBY per UX direction),
+ * and a remove ``×`` for custom rows only. The collision warning row
+ * (creator label === slot label) gets a tinted border so the operator
+ * sees the conflict on the row itself, not just the inline message.
+ */
+function RoleSlotList({
+  slots,
+  collidingKey,
+  onToggle,
+  onRemove,
+}: {
+  slots: SetupRoleSlot[];
+  collidingKey?: string;
+  onToggle: (key: string) => void;
+  onRemove: (key: string) => void;
+}) {
+  return (
+    <div
+      style={{
+        border: "1px solid var(--ink-600)",
+        borderRadius: 4,
+        background: "var(--ink-900)",
+      }}
+    >
+      {slots.map((slot, i) => (
+        <RoleSlotRow
+          key={slot.key}
+          slot={slot}
+          last={i === slots.length - 1}
+          colliding={slot.key === collidingKey}
+          onToggle={() => onToggle(slot.key)}
+          onRemove={() => onRemove(slot.key)}
+        />
+      ))}
+    </div>
+  );
+}
+
+function RoleSlotRow({
+  slot,
+  last,
+  colliding,
+  onToggle,
+  onRemove,
+}: {
+  slot: SetupRoleSlot;
+  last: boolean;
+  colliding: boolean;
+  onToggle: () => void;
+  onRemove: () => void;
+}) {
+  const code = slot.code ?? slot.label.slice(0, 3).toUpperCase();
+  return (
+    <div
+      style={{
+        padding: "12px 14px",
+        borderBottom: last ? "none" : "1px solid var(--ink-700)",
+        display: "flex",
+        alignItems: "center",
+        gap: 14,
+        background: colliding
+          ? "color-mix(in oklch, var(--warn) 6%, transparent)"
+          : "transparent",
+      }}
+    >
+      <div
         className="mono"
         style={{
-          padding: "0 6px",
-          fontSize: 10,
-          color: "var(--signal)",
-          letterSpacing: "0.20em",
+          width: 48,
+          fontSize: 11,
           fontWeight: 700,
+          color: slot.active ? "var(--ink-100)" : "var(--ink-400)",
+          letterSpacing: "0.10em",
         }}
       >
-        Roles to invite
-      </legend>
-      <p
-        className="sans"
-        style={{
-          margin: 0,
-          fontSize: 12,
-          color: "var(--ink-300)",
-          lineHeight: 1.45,
-        }}
-      >
-        Pre-create seats so you can copy join links right after submit.
-        You can add or remove roles mid-session too.
-      </p>
-      {props.setupRoles.length > 0 ? (
-        <ul
-          style={{
-            listStyle: "none",
-            margin: 0,
-            padding: 0,
-            display: "flex",
-            flexWrap: "wrap",
-            gap: 6,
-          }}
-        >
-          {props.setupRoles.map((label) => (
-            <li key={label} style={{ display: "inline-flex" }}>
-              <span
-                className="mono"
-                style={{
-                  display: "inline-flex",
-                  alignItems: "center",
-                  gap: 6,
-                  padding: "4px 4px 4px 10px",
-                  background: "var(--ink-800)",
-                  border: "1px solid var(--ink-500)",
-                  borderRadius: 2,
-                  fontSize: 11,
-                  color: "var(--ink-100)",
-                  letterSpacing: "0.06em",
-                }}
-              >
-                {label}
-                <button
-                  type="button"
-                  onClick={() => removeRole(label)}
-                  aria-label={`Remove ${label}`}
-                  style={{
-                    background: "transparent",
-                    color: "var(--ink-300)",
-                    border: "none",
-                    padding: "0 6px",
-                    cursor: "pointer",
-                    fontSize: 12,
-                    lineHeight: 1,
-                  }}
-                >
-                  ×
-                </button>
-              </span>
-            </li>
-          ))}
-        </ul>
-      ) : (
-        <p
-          className="mono"
-          style={{
-            margin: 0,
-            fontSize: 11,
-            color: "var(--ink-400)",
-            letterSpacing: "0.04em",
-          }}
-        >
-          No invitee roles yet — you can still invite people after the
-          session is created.
-        </p>
-      )}
-      {dedupeWithCreator ? (
-        <p
-          role="status"
-          className="mono"
-          style={{
-            margin: 0,
-            fontSize: 11,
-            color: "var(--warn)",
-            letterSpacing: "0.04em",
-          }}
-        >
-          You're playing "{dedupeWithCreator}", so it won't be auto-added
-          as a separate invitee.
-        </p>
-      ) : null}
-      <div style={{ display: "flex", gap: 8, alignItems: "stretch" }}>
-        <input
-          type="text"
-          aria-label="New role label"
-          value={props.setupRoleDraft}
-          onChange={(e) => props.setSetupRoleDraft(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") {
-              e.preventDefault();
-              addRole(props.setupRoleDraft);
-            }
-          }}
-          placeholder="e.g. Threat Intel"
-          style={{
-            flex: 1,
-            background: "var(--ink-900)",
-            border: "1px solid var(--ink-600)",
-            borderRadius: 2,
-            padding: "8px 10px",
-            color: "var(--ink-100)",
-            fontFamily: "var(--font-sans)",
-            fontSize: 13,
-            outline: "none",
-          }}
-        />
-        <button
-          type="button"
-          onClick={() => addRole(props.setupRoleDraft)}
-          disabled={!props.setupRoleDraft.trim()}
-          className="mono"
-          style={{
-            background: "transparent",
-            color: "var(--ink-200)",
-            border: "1px solid var(--ink-500)",
-            padding: "0 14px",
-            borderRadius: 2,
-            fontSize: 11,
-            fontWeight: 600,
-            letterSpacing: "0.16em",
-            cursor: props.setupRoleDraft.trim() ? "pointer" : "not-allowed",
-            opacity: props.setupRoleDraft.trim() ? 1 : 0.5,
-          }}
-        >
-          Add role
-        </button>
+        {code}
       </div>
-      {(props.setupRoles.length > 0 || !defaultsMatch) ? (
+      <div style={{ flex: 1, minWidth: 0 }}>
         <div
-          className="mono"
+          className="sans"
           style={{
-            display: "flex",
-            flexWrap: "wrap",
-            gap: 12,
-            fontSize: 11,
-            color: "var(--ink-400)",
-            letterSpacing: "0.04em",
+            fontSize: 13,
+            color: slot.active ? "var(--ink-100)" : "var(--ink-300)",
+            fontWeight: 600,
           }}
         >
-          {props.setupRoles.length > 0 ? (
-            <button
-              type="button"
-              onClick={() => props.setSetupRoles([])}
-              style={{
-                background: "transparent",
-                color: "var(--ink-400)",
-                border: "none",
-                padding: 0,
-                fontSize: 11,
-                textDecoration: "underline",
-                cursor: "pointer",
-                fontFamily: "inherit",
-              }}
-            >
-              Clear all
-            </button>
-          ) : null}
-          {!defaultsMatch ? (
-            <button
-              type="button"
-              onClick={() => props.setSetupRoles([...ROLE_DEFAULTS])}
-              style={{
-                background: "transparent",
-                color: "var(--ink-400)",
-                border: "none",
-                padding: 0,
-                fontSize: 11,
-                textDecoration: "underline",
-                cursor: "pointer",
-                fontFamily: "inherit",
-              }}
-            >
-              Reset to defaults
-            </button>
-          ) : null}
+          {slot.label}
         </div>
-      ) : null}
-    </fieldset>
-    </>
+        {slot.description ? (
+          <div
+            className="sans"
+            style={{
+              fontSize: 12,
+              color: "var(--ink-400)",
+              marginTop: 2,
+            }}
+          >
+            {slot.description}
+          </div>
+        ) : null}
+      </div>
+      <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
+        <RoleStatePill
+          active={slot.active}
+          onClick={() => {
+            if (!slot.active) onToggle();
+          }}
+          tone="active"
+          ariaLabel={`${slot.label} active`}
+        >
+          ACTIVE
+        </RoleStatePill>
+        <RoleStatePill
+          active={!slot.active}
+          onClick={() => {
+            if (slot.active) onToggle();
+          }}
+          tone="off"
+          ariaLabel={`${slot.label} off`}
+        >
+          OFF
+        </RoleStatePill>
+        {slot.builtin ? null : (
+          <button
+            type="button"
+            onClick={onRemove}
+            aria-label={`Remove ${slot.label}`}
+            className="mono"
+            style={{
+              marginLeft: 4,
+              background: "transparent",
+              color: "var(--ink-400)",
+              border: "1px solid var(--ink-600)",
+              padding: "5px 8px",
+              borderRadius: 2,
+              fontSize: 11,
+              fontWeight: 700,
+              cursor: "pointer",
+              lineHeight: 1,
+            }}
+          >
+            ×
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function RoleStatePill({
+  children,
+  active,
+  onClick,
+  tone,
+  ariaLabel,
+}: {
+  children: ReactNode;
+  active: boolean;
+  onClick: () => void;
+  tone: "active" | "off";
+  ariaLabel: string;
+}) {
+  // ``--signal`` for ACTIVE (mockup uses the same accent), neutral
+  // ``--ink-300`` for the OFF pill when it's the "selected" state —
+  // OFF doesn't get the signal color since that would imply it's the
+  // happy path, which it isn't.
+  const accent = tone === "active" ? "var(--signal)" : "var(--ink-200)";
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-pressed={active}
+      aria-label={ariaLabel}
+      className="mono"
+      style={{
+        background: active
+          ? `color-mix(in oklch, ${accent} 16%, transparent)`
+          : "transparent",
+        color: active ? accent : "var(--ink-400)",
+        border: active
+          ? `1px solid ${accent}`
+          : "1px solid var(--ink-600)",
+        padding: "5px 12px",
+        borderRadius: 2,
+        fontSize: 9,
+        fontWeight: 700,
+        letterSpacing: "0.16em",
+        cursor: active ? "default" : "pointer",
+      }}
+    >
+      {children}
+    </button>
   );
 }
 

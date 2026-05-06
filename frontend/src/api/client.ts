@@ -254,6 +254,10 @@ export const api = {
     scenario_prompt: string;
     creator_label: string;
     creator_display_name: string;
+    /** Pre-declared invitee roles from the wizard's step 3. Server
+     *  registers them BEFORE the setup turn fires so the AI sees the
+     *  full roster on its very first turn. */
+    invitee_roles?: { label: string; display_name?: string | null }[];
     /** Skip the AI auto-greet + drop the default plan in one shot.
      *  Mirrors ``POST /api/sessions/{id}/setup/skip`` but avoids the
      *  wasted auto-greet LLM call. Used by the frontend's Dev mode. */
