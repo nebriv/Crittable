@@ -92,14 +92,25 @@ export interface RoleView {
 
 export interface TurnView {
   index: number;
+  /**
+   * Issue #168 — role-groups model. Each group is one ASK; the gate
+   * advances the turn when every group has at least one role in
+   * ``ready_role_ids``. Single-role group = "must respond"; multi-
+   * role group = "any-of". The flat ``active_role_ids`` view (below)
+   * is the legacy de-duped union, kept for "is this role on the
+   * active set?" checks.
+   */
+  active_role_groups: string[][];
+  /** Flat de-duped union over ``active_role_groups``. */
   active_role_ids: string[];
   /** Role-ids that have already submitted on this turn. */
   submitted_role_ids?: string[];
   /**
-   * Wave 1 (issue #134): role-ids that have signaled
-   * ``intent="ready"`` on their most recent submission this turn. The
-   * AI advances when ``set(active_role_ids) ⊆ set(ready_role_ids)``
-   * (or the creator force-advances). A role can walk back ready by
+   * Wave 1 (issue #134; reshaped by issue #168): role-ids that have
+   * signaled ``intent="ready"`` on their most recent submission this
+   * turn. The AI advances when every group in
+   * ``active_role_groups`` has at least one member in this list (or
+   * the creator force-advances). A role can walk back ready by
    * sending another submission with ``intent="discuss"``, which
    * removes them from this list.
    */

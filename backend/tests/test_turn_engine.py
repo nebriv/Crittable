@@ -41,7 +41,10 @@ def test_illegal_transitions() -> None:
 
 
 def test_can_submit_and_all_submitted() -> None:
-    turn = Turn(index=0, active_role_ids=["r1", "r2"])
+    # Issue #168: ``active_role_ids`` is a derived flat union over
+    # ``active_role_groups`` — each role gets its own group for the
+    # legacy "all must respond" behavior.
+    turn = Turn(index=0, active_role_groups=[["r1"], ["r2"]])
     assert can_submit(turn, "r1") is True
     assert can_submit(turn, "rX") is False
     turn.submitted_role_ids = ["r1"]
@@ -65,12 +68,12 @@ def test_plan_edit_allow_list() -> None:
 
 def test_critical_inject_rate_limit() -> None:
     s = _session()
-    s.turns.append(Turn(index=0, active_role_ids=[]))
+    s.turns.append(Turn(index=0, active_role_groups=[]))
     assert critical_inject_allowed(s, max_per_5_turns=1) is True
     record_critical_inject(s)
     assert critical_inject_allowed(s, max_per_5_turns=1) is False
     # Advance the turn index by 6 — window slides
-    s.turns.append(Turn(index=6, active_role_ids=[]))
+    s.turns.append(Turn(index=6, active_role_groups=[]))
     assert critical_inject_allowed(s, max_per_5_turns=1) is True
 
 

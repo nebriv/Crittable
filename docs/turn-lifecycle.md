@@ -245,10 +245,15 @@ default — see CLAUDE.md "no backwards compat").
 | `"ready"` | Role added (if not already) | Role added (if not already) |
 | `"discuss"` | Role removed (if present) — walks back ready | Role added (if not already) |
 
-The state-flip predicate moves from `all_submitted(turn)` to
-`all_ready(turn)` — i.e. `set(active_role_ids) ⊆ set(ready_role_ids)`.
-Force-advance still bypasses this check (operator escape hatch
-preserved).
+The state-flip predicate is `groups_quorum_met(turn)` (issue #168) —
+i.e. *every* group in `Turn.active_role_groups` has at least one role
+in `ready_role_ids`. A single-role group (`[[ben]]`) reduces to "Ben
+must ready"; a multi-role group (`[[paul, lawrence]]`) closes on the
+first ready vote from EITHER member — the "any-of" semantic the
+screenshot from #168 reported as the missing primitive. Mixed-shape
+yields like `[[ben], [paul, lawrence]]` are the canonical "Ben + (Paul
+or Lawrence)" expression. Force-advance still bypasses this check
+(operator escape hatch preserved).
 
 **`can_submit` widened.** Active roles can now post **any number of
 submissions on an awaiting turn** before signaling ready. Pre-Wave-1

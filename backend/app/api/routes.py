@@ -722,7 +722,9 @@ def register_api_routes(app: FastAPI) -> None:
             # active role; the AI's first call should be set_active_roles.
             from ..sessions.models import Turn
 
-            session.turns.append(Turn(index=0, active_role_ids=[], status="processing"))
+            session.turns.append(
+                Turn(index=0, active_role_groups=[], status="processing")
+            )
         turn = session.current_turn
         assert turn is not None
         await driver.run_play_turn(session=session, turn=turn)

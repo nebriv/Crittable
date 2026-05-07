@@ -992,6 +992,7 @@ class TestPromptToolConsistencyFlagOn:
         non_tool_allowlist = {
             "role_id",
             "role_ids",
+            "role_groups",
             "workstream_id",
             "workstreams",
             "containment",

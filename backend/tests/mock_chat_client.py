@@ -213,7 +213,7 @@ def setup_then_play_script(
         llm_result(
             text_block("Initial detection — alarms on the vendor portal."),
             tool_block("broadcast", {"message": "Detection at 03:14"}),
-            tool_block("set_active_roles", {"role_ids": [role_ids[0]]}),
+            tool_block("set_active_roles", {"role_groups": [[r] for r in [role_ids[0]]]}),
             stop_reason="tool_use",
         )
     )
@@ -229,7 +229,7 @@ def setup_then_play_script(
                             "args": {"ioc": "1.2.3.4"},
                         },
                     ),
-                    tool_block("set_active_roles", {"role_ids": active}),
+                    tool_block("set_active_roles", {"role_groups": [[r] for r in active]}),
                     stop_reason="tool_use",
                 )
             )
@@ -245,7 +245,7 @@ def setup_then_play_script(
                             "body": "External breach of customer data confirmed.",
                         },
                     ),
-                    tool_block("set_active_roles", {"role_ids": active}),
+                    tool_block("set_active_roles", {"role_groups": [[r] for r in active]}),
                     stop_reason="tool_use",
                 )
             )
@@ -253,7 +253,7 @@ def setup_then_play_script(
         play.append(
             llm_result(
                 text_block(f"Turn {i + 2}: continue exercise."),
-                tool_block("set_active_roles", {"role_ids": active}),
+                tool_block("set_active_roles", {"role_groups": [[r] for r in active]}),
                 stop_reason="tool_use",
             )
         )

@@ -53,6 +53,18 @@ def assert_transition(current: SessionState, target: SessionState) -> None:
         raise IllegalTransitionError(f"illegal transition {current} -> {target}")
 
 
+def groups_from_flat(role_ids: list[str]) -> list[list[str]]:
+    """Convert a flat list of role ids to one-role-per-group form.
+
+    The legacy "every role must respond" semantic. Used by call sites
+    that don't know the AI's grouping intent (force-advance recovery,
+    replay-mode runner, briefing turn opener) and want the safest
+    default — every named role becomes its own required group.
+    """
+
+    return [[rid] for rid in role_ids]
+
+
 def can_submit(turn: Turn, role_id: str) -> bool:
     """A role may submit only if it's named active on an awaiting turn.
 
@@ -63,6 +75,10 @@ def can_submit(turn: Turn, role_id: str) -> bool:
     turn submissions (each updates ``ready_role_ids`` based on the
     submission's intent). Non-active roles (or active roles on a
     non-awaiting turn) still land as out-of-turn interjections.
+
+    Issue #168 (role-groups): "named active" means "appears in any of
+    the turn's ``active_role_groups``" — equivalent to membership in
+    the flat ``active_role_ids`` derived view.
     """
 
     if turn.status != "awaiting":
@@ -71,28 +87,55 @@ def can_submit(turn: Turn, role_id: str) -> bool:
 
 
 def all_submitted(turn: Turn) -> bool:
-    """Have *all* active roles submitted (or equivalent forced-advance state)?"""
+    """Have *all* active roles submitted (or equivalent forced-advance state)?
+
+    Kept as a diagnostic helper (used by the ``response_submitted`` audit
+    line and by the activity panel's "every voice spoke" indicator). The
+    advance gate is ``groups_quorum_met`` — roles are not all required
+    to submit for the turn to advance under the role-groups model.
+    """
 
     return turn.status == "awaiting" and set(turn.submitted_role_ids) >= set(
         turn.active_role_ids
     )
 
 
-def all_ready(turn: Turn) -> bool:
-    """Have *all* active roles signaled ``intent="ready"`` on their most
-    recent submission this turn?
+def groups_quorum_met(turn: Turn) -> bool:
+    """Has every active group received at least one ``intent="ready"``
+    submission?
 
-    This is the Wave-1 (issue #134) replacement for ``all_submitted`` as
-    the gate that flips ``AWAITING_PLAYERS → AI_PROCESSING``.
+    The role-groups model (issue #168) replaces the all-roles-must-ready
+    gate with a per-group quorum. Each group in ``active_role_groups``
+    closes when ANY of its members signals ready; the turn advances
+    when *every* group is closed. A single-role group reduces to "that
+    role must ready" (the previous default for a single-id yield); a
+    multi-role group is the "either of you can answer" case.
+
+    Examples:
+
+    * ``groups=[[ben]]`` and ``ready=[]`` → ``False`` (Ben hasn't readied)
+    * ``groups=[[ben]]`` and ``ready=[ben]`` → ``True``
+    * ``groups=[[paul, lawrence]]`` and ``ready=[paul]`` → ``True``
+      (the screenshot case from #168)
+    * ``groups=[[ben], [paul, lawrence]]`` and ``ready=[paul]`` →
+      ``False`` (Ben's group still open)
+    * ``groups=[[ben], [paul, lawrence]]`` and ``ready=[ben, paul]`` →
+      ``True``
+
+    Edge: an empty ``active_role_groups`` returns ``False``. A turn
+    that opens with no groups is malformed; the gate doesn't fire.
     Force-advance still bypasses this check via the existing
-    ``force_advance`` path. Discussion-only submissions accumulate in
-    ``submitted_role_ids`` (so the AI sees them on its next turn and the
-    UI shows "X spoke") without triggering an advance.
+    ``force_advance`` path.
     """
 
-    return turn.status == "awaiting" and set(turn.ready_role_ids) >= set(
-        turn.active_role_ids
-    )
+    if turn.status != "awaiting":
+        return False
+    if not turn.active_role_groups:
+        return False
+    ready = set(turn.ready_role_ids)
+    return all(any(rid in ready for rid in group) for group in turn.active_role_groups)
+
+
 
 
 def assert_plan_edit_field(field: str) -> None:

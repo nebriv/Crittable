@@ -871,25 +871,28 @@ async def test_set_active_roles_resolves_label_fallback() -> None:
     outcome = await _dispatch(
         dispatcher,
         session,
-        _tu("set_active_roles", {"role_ids": ["SOC Analyst"]}),
+        _tu("set_active_roles", {"role_groups": [["SOC Analyst"]]}),
     )
-    assert outcome.set_active_role_ids == ["role-soc"]
+    assert outcome.set_active_role_groups == [["role-soc"]]
     assert outcome.had_yielding_call
 
 
 @pytest.mark.asyncio
 async def test_set_active_roles_soft_passes_with_unresolved() -> None:
     """One real id + one bogus = soft success: yields to the resolved
-    set, surfaces a warning to the model in the tool_result content."""
+    groups, surfaces a warning to the model in the tool_result content."""
 
     dispatcher = _make_dispatcher()
     session = _build_session()
     outcome = await _dispatch(
         dispatcher,
         session,
-        _tu("set_active_roles", {"role_ids": ["role-soc", "Marketing"]}),
+        _tu(
+            "set_active_roles",
+            {"role_groups": [["role-soc", "Marketing"]]},
+        ),
     )
-    assert outcome.set_active_role_ids == ["role-soc"]
+    assert outcome.set_active_role_groups == [["role-soc"]]
     # Soft-success returns 1 tool_result (not is_error) with both pieces of info.
     assert len(outcome.tool_results) == 1
     assert not outcome.tool_results[0].get("is_error")
@@ -903,9 +906,9 @@ async def test_set_active_roles_hard_fails_when_all_unresolved() -> None:
     outcome = await _dispatch(
         dispatcher,
         session,
-        _tu("set_active_roles", {"role_ids": ["Marketing", "Audit"]}),
+        _tu("set_active_roles", {"role_groups": [["Marketing"], ["Audit"]]}),
     )
-    assert outcome.set_active_role_ids is None
+    assert outcome.set_active_role_groups is None
     assert any(r.get("is_error") for r in outcome.tool_results)
 
 

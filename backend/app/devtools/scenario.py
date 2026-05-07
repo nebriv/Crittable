@@ -183,6 +183,14 @@ class PlayTurn(BaseModel):
     # Optional: how long to wait for the AI turn to settle before the
     # runner moves on. Defaults to the runner's own timeout.
     ai_timeout_s: float | None = Field(default=None, gt=0.0, le=600.0)
+    # Issue #168 (role-groups): the runner opens the next turn with
+    # exactly these groups when present (each entry is a list of
+    # role *labels* — the recorder resolves ids to labels for
+    # session-portability the same way ``submissions`` does, then the
+    # runner looks them back up at replay time). Empty / missing falls
+    # back to the legacy "infer from submissions, one role per group"
+    # behavior, which preserves every pre-#168 scenario verbatim.
+    active_role_label_groups: list[list[str]] = Field(default_factory=list)
 
 
 class ScenarioMeta(BaseModel):
