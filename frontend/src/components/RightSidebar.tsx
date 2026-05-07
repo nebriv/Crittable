@@ -153,11 +153,24 @@ export function RightSidebar({
       */}
       <aside className="hidden flex-col gap-4 lg:flex lg:min-h-0 lg:flex-1 lg:pr-1">
         <section className="flex min-h-0 flex-1 flex-col rounded-r-3 border border-ink-600 bg-ink-850">
+          {/*
+            ``sticky top-0`` keeps the tablist visible when the
+            page-level <aside> scrolls (a tall HUD + expanded notepad
+            can push the section's top above the visible viewport).
+            Pre-fix, participants reported being "stuck on Action
+            items" because the tabs scrolled out of view with the
+            outer aside and they couldn't reach Artifacts / Timeline.
+            Safe to combine with the tabpanel's internal
+            ``overflow-y-auto`` below — the H2 regression that caused
+            this to be reverted (PR #158 follow-up) only happened when
+            the tabpanel had no internal scroll, which let a tall
+            body push the notepad off screen.
+          */}
           <div
             role="tablist"
             aria-label="Right sidebar"
             onKeyDown={(e) => onTablistKey(e, "rail")}
-            className="flex rounded-t-3 border-b border-ink-600 bg-ink-850 text-[11px]"
+            className="sticky top-0 z-10 flex rounded-t-3 border-b border-ink-600 bg-ink-850 text-[11px]"
           >
             {TABS.map((tab) => (
               <RailTabButton

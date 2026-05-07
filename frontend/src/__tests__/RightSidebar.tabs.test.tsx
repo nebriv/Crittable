@@ -97,6 +97,23 @@ describe("RightSidebar — 3-tab system (chat-declutter polish)", () => {
     expect(matches.length).toBeGreaterThanOrEqual(1);
   });
 
+  it("desktop tablist is sticky-pinned to the top of the page-level scroll", () => {
+    // Regression test for the participant "stuck on Action items"
+    // bug — the page-level <aside> on Play.tsx / Facilitator.tsx
+    // is ``lg:overflow-y-auto``; without ``sticky top-0`` on the
+    // tablist a tall HUD + expanded notepad scrolls the tabs off
+    // the top of the viewport and the user can't reach the other
+    // tabs. The mobile (``mrail``) tablist lives inside a
+    // <details> block and doesn't need this — collapsing the
+    // <details> hides the entire surface.
+    render(<RightSidebar messages={[]} roles={ROLES} workstreams={WORKSTREAMS} />);
+    const desktopTablist = document.querySelector(
+      "[role='tablist'][aria-label='Right sidebar']",
+    );
+    expect(desktopTablist?.className).toContain("sticky");
+    expect(desktopTablist?.className).toContain("top-0");
+  });
+
   it("Action items tab surfaces address_role asks with status", () => {
     const messages: MessageView[] = [
       msg({
