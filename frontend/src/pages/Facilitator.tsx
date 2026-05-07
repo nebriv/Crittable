@@ -2390,10 +2390,17 @@ export function SetupView({
 
   // The prominent banner is shown when EITHER explicit signal
   // (``draftingPlan``) or the debounced implicit signal is true and
-  // no plan exists yet.
+  // no plan exists yet. The implicit branch is also gated on
+  // ``busy`` directly (not just on the latched
+  // ``showImplicitThinkingBanner`` state) so a render commit where
+  // ``busy`` has just flipped false but the effect cleanup hasn't
+  // run yet doesn't paint a stale banner for one frame (Copilot
+  // PR #201 review). The state still drives the *delay* (banner only
+  // appears after the 1500 ms timer); the ``busy`` gate just makes
+  // the unmount synchronous with the request finishing.
   const showLooksReadyBanner = draftingPlan && !hasPlan;
   const showThinkingBanner =
-    showImplicitThinkingBanner && !hasPlan && !draftingPlan;
+    showImplicitThinkingBanner && busy && !hasPlan && !draftingPlan;
   const bannerVisible = showLooksReadyBanner || showThinkingBanner;
 
   // Layout intent (across both branches):

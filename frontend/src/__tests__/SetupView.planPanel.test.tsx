@@ -404,7 +404,15 @@ describe("SetupView — implicit-thinking banner (debounced)", () => {
     ).not.toBeInTheDocument();
   });
 
-  it("clears immediately when busy goes false (request finished)", () => {
+  it("clears in the same render commit when busy goes false (no flicker)", () => {
+    // Copilot PR #201 review flagged a one-frame flicker risk: the
+    // latched ``showImplicitThinkingBanner`` state would still be
+    // true on the render where ``busy`` flipped false, until the
+    // ``useEffect`` cleanup committed the reset. The fix is to gate
+    // ``showThinkingBanner`` on ``busy`` directly. This test pins
+    // that — the banner must be absent on the very first render
+    // after ``busy=false`` is passed in, BEFORE any subsequent
+    // effect tick.
     const { rerender } = render(
       <SetupView
         snapshot={fakeSnapshot(null)}
@@ -417,6 +425,9 @@ describe("SetupView — implicit-thinking banner (debounced)", () => {
       vi.advanceTimersByTime(1500);
     });
     expect(screen.getByTestId("drafting-plan-banner")).toBeInTheDocument();
+    // Re-render with busy=false but DON'T wrap in act — we want to
+    // observe the synchronous render commit. (act wraps state +
+    // effect flushes; the gate must work without that.)
     rerender(
       <SetupView
         snapshot={fakeSnapshot(null)}
