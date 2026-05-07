@@ -64,15 +64,6 @@ function fakeSnapshotWithoutPlan(): SessionSnapshot {
       features: { ...DEFAULT_SESSION_FEATURES },
     },
     plan: null,
-    // ``plan_title`` / ``plan_summary`` were added as required
-    // ``string | null`` fields by PR #206 (plan-summary-display).
-    // PR #204 (the PR that introduced this fixture) was rebased
-    // off an older main and shipped without them — main has been
-    // failing typecheck since the merge race. Setting both to null
-    // here matches the no-plan-yet semantic this fixture
-    // represents.
-    plan_title: null,
-    plan_summary: null,
     roles: [],
     current_turn: null,
     messages: [],
