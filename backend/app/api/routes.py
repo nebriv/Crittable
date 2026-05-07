@@ -530,6 +530,15 @@ def register_api_routes(app: FastAPI) -> None:
             "id": session.id,
             "state": session.state.value,
             "scenario_prompt": session.scenario_prompt,
+            # Player-safe headline + 1-liner pulled off the AI-generated
+            # plan. The full ``plan`` (injects, narrative_arc, success
+            # criteria) stays creator-only — those would spoil the
+            # exercise. ``title`` and ``executive_summary`` are by
+            # design high-level descriptors of *what the scenario is
+            # about*, not what's going to happen, so they're safe to
+            # ship to every participant.
+            "plan_title": session.plan.title if session.plan else None,
+            "plan_summary": session.plan.executive_summary if session.plan else None,
             # Creator-selected scenario tuning. ``difficulty`` and
             # ``duration_minutes`` are benign — every participant sees a
             # difficulty pill / target-duration HUD. ``features`` is

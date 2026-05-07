@@ -70,6 +70,8 @@ function _baseSnapshot(): SessionSnapshot {
     state: "AWAITING_PLAYERS",
     created_at: "2026-05-03T00:00:00Z",
     scenario_prompt: "Ransomware via vendor portal",
+    plan_title: "Ransomware",
+    plan_summary: "Detection at 03:14 on three finance laptops.",
     settings: {
       difficulty: "standard",
       duration_minutes: 60,

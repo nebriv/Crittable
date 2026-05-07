@@ -35,6 +35,8 @@ function fakeSnapshot(overrides: {
     state: overrides.state,
     created_at: "2026-05-05T00:00:00Z",
     scenario_prompt: "test scenario",
+    plan_title: overrides.plan?.title ?? null,
+    plan_summary: overrides.plan?.executive_summary ?? null,
     settings: {
       difficulty: "standard",
       duration_minutes: 60,

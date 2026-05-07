@@ -9,6 +9,13 @@ export interface SessionSnapshot {
   /** Session-start timestamp (ISO 8601, UTC) — used for ``T+MM:SS`` relative timestamps in the shared notepad. */
   created_at: string;
   scenario_prompt: string;
+  /** Player-safe AI-generated headline + 1-liner pulled off
+   *  ``plan.title`` and ``plan.executive_summary``. Visible to every
+   *  participant — high-level descriptors that don't spoil injects,
+   *  unlike the full ``plan`` which stays creator-only. ``null`` until
+   *  the plan exists (early CONFIGURING states). */
+  plan_title: string | null;
+  plan_summary: string | null;
   /** Creator-selected scenario tuning (frozen at creation). The HUD
    *  renders a difficulty pill + target-duration off this; the
    *  ``features`` subfield is creator-only and arrives ``null`` on

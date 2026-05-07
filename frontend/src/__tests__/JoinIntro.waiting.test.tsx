@@ -13,6 +13,8 @@ const COMMON_PROPS = {
   roleLabel: "SOC Analyst",
   roleKind: "player" as const,
   roleExistingDisplayName: null,
+  planTitle: null,
+  planSummary: null,
   snapshotLoaded: true,
   snapshotError: null,
   onRetry: () => undefined,
