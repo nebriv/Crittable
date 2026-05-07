@@ -147,12 +147,20 @@ describe("Transcript", () => {
     expect(m1?.className).not.toMatch(/\bring-/);
   });
 
-  it("an @-mentioned AI bubble swaps to border-warn; critical inject keeps border-crit", () => {
-    // Two newly-coupled paths land in the same `borderClass` ladder:
-    // mention → warn, critical inject → crit. The crit branch is
-    // first in the ladder so a critical inject that ALSO mentions
-    // the viewer must keep its red border (the security-relevant
-    // signal wins over the focus signal).
+  it("an @-mentioned AI bubble gets a bright signal border (identity, not alarm); critical inject keeps border-crit", () => {
+    // Four priority levels in the AI bubble's `borderClass` ladder:
+    //   1. critical inject → crit (red), always wins.
+    //   2. your-turn (``isFocusHit`` via highlightLastAi) → warn.
+    //      Reserved for "you owe a turn answer". Wins over mention.
+    //   3. @-mention only → signal (bright blue identity tone).
+    //      Earlier passes used signal-deep, which was too close to
+    //      ink-600 to scan peripherally; signal pops without
+    //      colliding with the warn-amber call-to-action.
+    //   4. default → ink-600.
+    // The user-reported "too many yellow things" regression came
+    // from collapsing 2+3 onto warn — mention-only bubbles now read
+    // as identity (blue family, same hue as the ``· YOU`` self
+    // suffix) so amber stays reserved for "you owe a turn answer".
     const messages = [
       {
         id: "ai-mention",
@@ -186,18 +194,99 @@ describe("Transcript", () => {
     const critBubble = container
       .querySelector("#msg-crit-mention")
       ?.querySelector('[data-message-kind="ai"]');
-    expect(aiBubble?.className).toContain("border-warn");
+    // Mention-only AI bubble: bright signal border (not signal-deep,
+    // which is too close to ink-600), NOT yellow. The regex with a
+    // word boundary keeps "border-signal" from accidentally matching
+    // "border-signal-deep" (toContain would pass on either).
+    expect(aiBubble?.className).toMatch(/\bborder-signal\b/);
+    expect(aiBubble?.className).not.toContain("border-signal-deep");
+    expect(aiBubble?.className).not.toContain("border-warn");
     expect(aiBubble?.className).not.toContain("border-crit");
+    // Critical inject keeps its red emphasis even when @-mentioning
+    // the viewer — the security-relevant signal wins.
     expect(critBubble?.className).toContain("border-crit");
     expect(critBubble?.className).not.toContain("border-warn");
+    expect(critBubble?.className).not.toContain("border-signal-deep");
   });
 
-  it("an @-mentioned player bubble swaps to border-warn; self bubbles keep signal-tint", () => {
-    // The player ladder is: self → signal-tint, mention → warn,
-    // default → ink-600. A self-authored bubble that ALSO mentions
-    // the viewer (rare but legal — a player tagging themselves)
-    // keeps the signal-tinted self treatment because the signal
-    // "this is yours" outranks "you got mentioned" for self-posts.
+  it("focus-and-mention bubble keeps border-warn (your-turn wins over mention)", () => {
+    // QA review HIGH on the color-cleanup PR: the priority ladder
+    // (crit > focus > mention > default) had no test pinning the
+    // focus-vs-mention tie-break. A future refactor reordering to
+    // ``isMentioned ? signal : isFocusHit ? warn : default`` would
+    // silently drop the user-facing "your turn" amber for a player
+    // who gets @-mentioned on the same message they're about to
+    // answer — which is the most common case in practice (the AI
+    // typically tags the role it's asking). This test pins the
+    // ladder so the regression can't sneak through.
+    const messages = [
+      {
+        id: "ai-old",
+        ts: new Date().toISOString(),
+        role_id: null,
+        kind: "ai_text",
+        body: "Earlier AI bubble — neither focus nor mention.",
+        tool_name: "broadcast",
+        tool_args: null,
+        workstream_id: null,
+        mentions: [],
+      },
+      {
+        id: "ai-latest",
+        ts: new Date().toISOString(),
+        role_id: null,
+        kind: "ai_text",
+        body: "Latest AI bubble — focus AND mention.",
+        tool_name: "broadcast",
+        tool_args: null,
+        workstream_id: null,
+        mentions: ["r1"],
+      },
+    ];
+    const { container } = render(
+      <Transcript
+        messages={messages}
+        roles={ROLES}
+        selfRoleId="r1"
+        highlightLastAi
+      />,
+    );
+    const latestBubble = container
+      .querySelector("#msg-ai-latest")
+      ?.querySelector('[data-message-kind="ai"]');
+    // Focus wins: amber border, NOT signal blue.
+    expect(latestBubble?.className).toContain("border-warn");
+    expect(latestBubble?.className).not.toMatch(/\bborder-signal\b/);
+    expect(latestBubble?.className).not.toContain("border-signal-deep");
+    // The @YOU badge still renders alongside the warn border —
+    // identity is independent of severity.
+    const badge = container
+      .querySelector("#msg-ai-latest")
+      ?.querySelector('[title="This message mentions you"]');
+    expect(badge).not.toBeNull();
+    // Badge identity is blue (signal border + signal text) on a
+    // contrast-safe ink-900 background. Verifying both halves
+    // catches a regression where a future styling pass tints the
+    // badge background back to signal-tint (which vanishes against
+    // a self-bubble's signal-tint background per UI/UX review).
+    expect(badge?.className).toContain("border-signal");
+    expect(badge?.className).toContain("text-signal");
+    expect(badge?.className).toContain("bg-ink-900");
+    expect(badge?.className).not.toContain("bg-signal-tint");
+    expect(badge?.className).not.toContain("border-warn");
+  });
+
+  it("an @-mentioned player bubble gets a bright signal identity border; self bubbles keep signal-tint", () => {
+    // The player ladder is: self → signal-deep border + signal-tint
+    // background, mention → bright signal border on ink-800, default
+    // → ink-600. Both self and mention sit in the blue family — "this
+    // is about me" reads as one consistent identity color, distinct
+    // from the amber "you owe a response" chip near the composer.
+    // The mention case uses bright signal (not signal-deep, which is
+    // barely distinguishable from ink-600 at peripheral-vision
+    // distance per UI/UX review). Self + mention is rare and the
+    // signal-tint self treatment wins (the viewer rarely needs to be
+    // reminded they mentioned themselves).
     const messages = [
       {
         id: "p-mention",
@@ -246,8 +335,15 @@ describe("Transcript", () => {
     const selfBubble = container
       .querySelector("#msg-p-self")
       ?.querySelector('[data-message-kind="chat"]');
-    expect(mentionedBubble?.className).toContain("border-warn");
+    // Mention-only player bubble: bright signal border on standard
+    // ink-800 background. NOT yellow, NOT the dim signal-deep variant.
+    // Word-boundary regex keeps the assertion from accidentally
+    // matching "border-signal-deep".
+    expect(mentionedBubble?.className).toMatch(/\bborder-signal\b/);
     expect(mentionedBubble?.className).not.toContain("border-signal-deep");
+    expect(mentionedBubble?.className).not.toContain("border-warn");
+    expect(mentionedBubble?.className).not.toContain("bg-signal-tint");
+    // Self bubble: signal-deep border + signal-tint background.
     expect(selfBubble?.className).toContain("border-signal-deep");
     expect(selfBubble?.className).toContain("bg-signal-tint");
     expect(selfBubble?.className).not.toContain("border-warn");

@@ -23,21 +23,25 @@ interface PillProps {
   label: string;
   count: number;
   active: boolean;
-  tone: "default" | "warn" | "crit";
+  tone: "default" | "crit";
   onClick: () => void;
   ariaLabel?: string;
 }
 
 function FilterPill({ label, count, active, tone, onClick, ariaLabel }: PillProps) {
+  // Two tones: ``default`` (signal-tinted active state) covers
+  // identity-style filters like ``@Me`` and the catch-all ``All``;
+  // ``crit`` is reserved for the Critical filter where the red
+  // matches the inject border color so the visual scan stays
+  // consistent. Yellow used to be a third tone for ``@Me`` but was
+  // moved onto ``default`` to align with the signal-blue ``@YOU``
+  // identity treatment in the transcript — yellow is now reserved
+  // for "you owe a turn answer".
   const toneClasses: Record<typeof tone, { active: string; idle: string }> = {
     default: {
       active:
         "border-signal-deep bg-signal-tint text-signal-bright",
       idle: "border-ink-500 bg-ink-700 text-ink-200 hover:border-ink-400 hover:text-ink-100",
-    },
-    warn: {
-      active: "border-warn bg-warn-bg text-warn",
-      idle: "border-ink-500 bg-ink-700 text-ink-200 hover:border-warn hover:text-warn",
     },
     crit: {
       active: "border-crit bg-crit-bg text-crit",
@@ -170,7 +174,7 @@ export function TranscriptFilters({
           label="@Me"
           count={counts.me}
           active={state.quality === "me"}
-          tone="warn"
+          tone="default"
           onClick={() => setQuality("me")}
           ariaLabel={`Mentions of you (${counts.me})`}
         />

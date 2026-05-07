@@ -1418,20 +1418,38 @@ export function Play({ sessionId, token }: Props) {
                 can't tell from their composer placeholder alone that
                 they're being waited on too. This chip + the latest-AI
                 message highlight (above) make the wait state hard to
-                miss without scrolling back to the top banner. */}
+                miss without scrolling back to the top banner.
+
+                The chip is now the only amber thing on the play
+                surface (yellow used to live in @YOU badges, mention
+                borders, action items, decision pins, idle-tab dots,
+                creator stars, etc. — all moved off warn so this chip
+                stops competing). ``border-2`` weight + the
+                ``warn-chip-pulse`` outward ring make it the
+                unmistakable "your turn" cue in peripheral vision.
+                Typography mirrors the top banner (mono uppercase
+                tracking) so the two cues read as one signal. The
+                pulse animation respects ``prefers-reduced-motion``
+                via the media query in ``index.css``. */}
             {snapshot.state !== "ENDED" && isMyTurn ? (
+              // No ``role="status"`` / ``aria-live`` here — the top
+              // ``● YOUR TURN`` banner is already an assertive live
+              // region (``aria-live="assertive"`` at the page-top
+              // banner around line 1259) and per WAI-ARIA an
+              // assertive + polite region pair fires both
+              // announcements when both update simultaneously. The
+              // chip is purely visual reinforcement at the composer
+              // edge of the viewport for users who scrolled past the
+              // top banner; sighted users see it, screen-reader
+              // users got the assertive announce from the top
+              // banner — adding a second live region just doubles
+              // the announcement and trains AT users to ignore both
+              // (UI/UX review MEDIUM finding on this PR).
               <div
-                role="status"
-                // Polite (not assertive) because the top "Your turn"
-                // banner already does an assertive announcement when
-                // ``isMyTurn`` flips on. Two assertive regions firing
-                // simultaneously trains screen-reader users to ignore
-                // both. The chip is visual reinforcement; the polite
-                // region is a quieter follow-up.
-                aria-live="polite"
-                className="rounded border border-warn bg-warn-bg px-3 py-1.5 text-center text-xs font-semibold leading-tight text-warn break-words"
+                aria-hidden="true"
+                className="mono rounded-r-1 border-2 border-warn bg-warn-bg px-3 py-2 text-center text-xs font-bold uppercase tracking-[0.14em] leading-tight text-warn break-words animate-warn-chip-pulse motion-reduce:animate-none"
               >
-                ⚠ Awaiting your response — {myRole?.label ?? "you"}
+                ● YOUR TURN — {myRole?.label ?? "you"}
               </div>
             ) : null}
             {/* Wave 1 (issue #134): readiness chip for players. Renders
@@ -1484,8 +1502,6 @@ export function Play({ sessionId, token }: Props) {
         <aside className="flex flex-col gap-3 lg:min-h-0 lg:overflow-y-auto lg:pr-1">
           <CollapsibleRailPanel
             title="HUD"
-            subtitle="placeholder"
-            subtitleTone="warn"
             persistKey="crittable.rail.hud.collapsed"
             defaultCollapsed
           >
@@ -1919,12 +1935,13 @@ export function JoinIntro({
               </li>
               <li>
                 <span className="font-semibold text-ink-100">When it's your turn,</span>{" "}
-                the input box at the bottom unlocks and a{" "}
-                <span className="mono rounded-r-1 border border-warn bg-warn-bg px-1.5 py-0.5 text-[10px] font-bold uppercase text-warn">
-                  ⚠ AWAITING YOUR RESPONSE
+                the input box at the bottom unlocks and a pulsing{" "}
+                <span className="mono rounded-r-1 border-2 border-warn bg-warn-bg px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-[0.14em] text-warn">
+                  ● YOUR TURN
                 </span>{" "}
-                chip appears. The most recent AI message is also
-                outlined so you can spot what to react to.
+                chip appears above the composer. The most recent AI
+                message is also outlined in amber so you can spot
+                what to react to.
               </li>
               <li>
                 <span className="font-semibold text-ink-100">Submit, discuss, or pass.</span>{" "}

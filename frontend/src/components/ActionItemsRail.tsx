@@ -38,10 +38,14 @@ interface ActionEntry {
  *   - ``pose_choice`` calls — same lifecycle as address_role; the
  *     question is the action.
  *
- * Status badge tones mirror the iter-4 mockup (open=slate,
- * in_progress=amber, done=emerald). Click jumps the transcript to the
- * AI ask; ``onScrollMissed`` lets the parent clear an active filter
- * and retry.
+ * Status badge tones: open=slate (neutral, "nothing-happened-yet"),
+ * in_progress=info-cyan (a status, not a warning), done=signal-blue
+ * (consistent with the signal-tinted self/identity treatment).
+ * In-progress used to be amber but was demoted to info — yellow is
+ * reserved for "you owe a turn answer", and "the AI asked another
+ * role for a reply" isn't that. Click jumps the transcript to the AI
+ * ask; ``onScrollMissed`` lets the parent clear an active filter and
+ * retry.
  */
 export function ActionItemsRail({
   messages,
@@ -137,7 +141,7 @@ function ActionCard({
 }) {
   const tone =
     item.status === "in_progress"
-      ? "border-warn bg-warn-bg text-warn"
+      ? "border-info bg-info-bg text-info"
       : item.status === "done"
         ? "border-signal bg-signal-tint text-signal"
         : "border-ink-500 bg-ink-700 text-ink-200";

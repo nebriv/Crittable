@@ -71,7 +71,9 @@ interface Props {
    * need to respond to without scrolling. Pairs with the
    * "Awaiting your response" chip near the composer; the two cues
    * together mean a non-addressed-but-still-active role can't miss
-   * that they're being waited on.
+   * that they're being waited on. Yellow is reserved for THIS signal —
+   * "you owe a turn answer" — so it stays distinct from the
+   * signal-blue self/@-mention identity treatment.
    */
   highlightLastAi?: boolean;
   /**
@@ -366,13 +368,22 @@ export function Transcript({
         // @-highlight. The stripe is 3 px on the left edge of the
         // bubble; ``colorForWorkstream`` falls back to slate gray
         // for ``#main`` / unknown ids. The mention-flag drives the
-        // amber outline + ``(@you)`` badge ONLY from the structural
+        // signal-blue ``@YOU`` badge ONLY from the structural
         // ``mentions[]`` list — we never regex the body, per plan
         // §5.1.
+        //
+        // Two distinct semantic states, two distinct colors:
+        //   - ``isFocusHit`` = your-turn-now → amber (warn). The
+        //     loudest "you owe a response" signal; matches the
+        //     awaiting-response chip above the composer.
+        //   - ``isMentioned`` = you-are-tagged → signal blue. Same
+        //     hue family as the ``· YOU`` self suffix on player
+        //     bubbles, so identity reads as one consistent color.
+        // Yellow used to do both jobs, which was the user-reported
+        // "too many yellow things vying for attention" problem.
         const stripeColor = colorForWorkstream(m.workstream_id, declaredOrder);
         const isMentioned =
           selfRoleId != null && (m.mentions ?? []).includes(selfRoleId);
-        const isHighlighted = (isFocusHit || isMentioned) && !isCritical;
         const landmarks = landmarksByMessageId.get(m.id) ?? [];
 
         if (isSystem) {
@@ -417,30 +428,41 @@ export function Transcript({
           // sits OUTSIDE that border on a dedicated rail so the two
           // signals don't collide (UI/UX review specifically asked we
           // avoid recoloring the critical-inject red).
-          // Header chrome — dot + label color. Critical injects keep
-          // their crit-red emphasis; highlighted bubbles (your turn or
-          // @-mentioned) shift to warn so the dot, label, border, and
-          // @YOU badge all read as one amber focus signal.
+          // Header chrome — dot + label color. Three priority levels:
+          //   1. Critical inject → crit (red), always wins.
+          //   2. Your-turn focus (``isFocusHit``) → warn (amber).
+          //      Reserved for "you owe a response on this turn".
+          //   3. @-mention only → signal (blue). Identity, not alarm.
+          //   4. Default → signal (blue). The standard AI bubble.
+          // Yellow being two-job (turn + mention) was the
+          // user-reported "yellow noise" problem; mention drops to
+          // blue to align with the ``· YOU`` self suffix on player
+          // bubbles.
           const dotColor = isCritical
             ? "bg-crit"
-            : isHighlighted
+            : isFocusHit && !isCritical
               ? "bg-warn"
               : "bg-signal";
           const labelColor = isCritical
             ? "text-crit"
-            : isHighlighted
+            : isFocusHit && !isCritical
               ? "text-warn"
               : "text-signal";
-          // Bubble border. Critical injects keep their crit-red
-          // emphasis. Otherwise, when the viewer owes a response on
-          // this turn (focus) OR this message @-mentions them, swap
-          // the default ink-600 border for warn — same amber color
-          // signal as the @YOU badge.
+          // Bubble border priority mirrors the dot/label rules above.
+          // Your-turn bubbles get the amber border; mention-only
+          // bubbles get a brighter signal border (not signal-deep,
+          // which is barely distinguishable from the default ink-600
+          // chrome at peripheral-vision distance — UI/UX review HIGH).
+          // The brighter signal stays clearly distinct from the warn
+          // amber so "you owe a response" and "you're tagged" remain
+          // separate visual signals.
           const borderClass = isCritical
             ? "border border-crit border-l-2 bg-crit-bg"
-            : isHighlighted
+            : isFocusHit
               ? "border border-warn bg-ink-800"
-              : "border border-ink-600 bg-ink-800";
+              : isMentioned
+                ? "border border-signal bg-ink-800"
+                : "border border-ink-600 bg-ink-800";
           return (
             <Landmarks
               key={`grp-${m.id}`}
@@ -491,7 +513,7 @@ export function Transcript({
                     </span>
                     {isMentioned ? (
                       <span
-                        className="rounded-r-1 border border-warn bg-warn-bg px-1.5 py-0.5 text-[9px] font-bold uppercase leading-none tracking-[0.10em] text-warn"
+                        className="rounded-r-1 border border-signal bg-ink-900 px-1.5 py-0.5 text-[9px] font-bold uppercase leading-none tracking-[0.10em] text-signal"
                         title="This message mentions you"
                       >
                         @YOU
@@ -541,14 +563,19 @@ export function Transcript({
         const roleLabel = role?.label ?? "—";
         const code = roleCode(roleLabel);
         const displayName = role?.display_name ?? "";
-        // Player bubble border. Mention-of-self swaps to warn (same
-        // signal as AI bubbles); self-bubbles keep their signal-tinted
-        // background since the viewer rarely needs to be reminded
-        // they mentioned themselves.
+        // Player bubble border. Self-bubbles keep their signal-tinted
+        // background with a signal-deep edge; @-mentions of the
+        // viewer get a brighter signal border on the standard
+        // ink-800 (same brightness rule as the AI bubble path —
+        // signal-deep was too close to ink-600 to scan
+        // peripherally). Self + @-mention is rare and the self-tint
+        // already wins; we don't escalate that case to amber since
+        // amber is reserved for "you owe a turn answer" (the
+        // awaiting-response chip + your-turn AI bubble).
         const bubbleColour = isSelf
           ? "border border-signal-deep bg-signal-tint"
-          : isHighlighted
-            ? "border border-warn bg-ink-800"
+          : isMentioned
+            ? "border border-signal bg-ink-800"
             : "border border-ink-600 bg-ink-800";
         return (
           <Landmarks
@@ -589,7 +616,7 @@ export function Transcript({
                   ) : null}
                   {isMentioned ? (
                     <span
-                      className="rounded-r-1 border border-warn bg-warn-bg px-1.5 py-0.5 text-[9px] font-bold uppercase leading-none tracking-[0.10em] text-warn"
+                      className="rounded-r-1 border border-signal-deep bg-signal-tint px-1.5 py-0.5 text-[9px] font-bold uppercase leading-none tracking-[0.10em] text-signal"
                       title="This message mentions you"
                     >
                       @YOU

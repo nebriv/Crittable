@@ -42,7 +42,7 @@ describe("Timeline", () => {
     expect(screen.getByText("Critical")).toBeInTheDocument();
   });
 
-  it("pins pose_choice as a Decision with the role label + question", () => {
+  it("pins pose_choice as a Decision with the role label + question, in info tone (not warn)", () => {
     const messages = [
       msg({
         kind: "ai_text",
@@ -51,9 +51,20 @@ describe("Timeline", () => {
         tool_args: { role_id: "r1", question: "Isolate or monitor?", options: ["Isolate now", "Monitor 15 min"] },
       }),
     ];
-    render(<Timeline messages={messages} roles={ROLES} />);
+    const { container } = render(<Timeline messages={messages} roles={ROLES} />);
     expect(screen.getByText(/CISO — Isolate or monitor\?/i)).toBeInTheDocument();
     expect(screen.getByText("Decision")).toBeInTheDocument();
+    // Color-cleanup PR (QA review HIGH): the Decision pin's <li>
+    // wrapper used to wear ``border-warn bg-warn-bg`` (yellow). With
+    // the awaiting-response chip claiming yellow as the unique
+    // "you owe a turn answer" signal, decisions moved to the info
+    // (cyan) tone — they're informational pins, not warnings. This
+    // assertion pins the new tone so a future revert can't slip back.
+    const li = container.querySelector("ol li");
+    expect(li?.className).toContain("border-info");
+    expect(li?.className).toContain("bg-info-bg");
+    expect(li?.className).not.toContain("border-warn");
+    expect(li?.className).not.toContain("bg-warn-bg");
   });
 
   it("pins substantial share_data dumps as Data brief", () => {

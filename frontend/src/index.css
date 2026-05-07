@@ -186,6 +186,7 @@ html, body {
 @media (prefers-reduced-motion: reduce) {
   .blink,
   .animate-chip-pulse,
+  .animate-warn-chip-pulse,
   .animate-tt-blink,
   .animate-tt-pulse,
   .animate-tt-sweep,

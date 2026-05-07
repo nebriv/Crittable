@@ -111,7 +111,10 @@ export function Timeline({
     if (m.tool_name === "pose_choice") {
       // Decision points — the AI surfaced a multi-choice fork. Always
       // pin: a tactical decision is exactly the kind of moment players
-      // will want to scroll back to during the AAR.
+      // will want to scroll back to during the AAR. Tone is info
+      // (cyan) — a decision is informational, not a warning. Yellow
+      // used to live here but was reclaimed for the awaiting-response
+      // chip so "your turn" stays the only amber thing on screen.
       const question = (m.tool_args?.question as string | undefined)?.trim();
       const role = _roles.find((r) => r.id === (m.tool_args?.role_id as string | undefined));
       const roleLabel = role ? `${role.label} — ` : "";
@@ -121,7 +124,7 @@ export function Timeline({
         tag: "Decision",
         title: roleLabel + (question || "Decision point"),
         body: m.body,
-        tone: "border-warn bg-warn-bg",
+        tone: "border-info bg-info-bg",
       });
       continue;
     }
