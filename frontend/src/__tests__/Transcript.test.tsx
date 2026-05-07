@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import { RoleView } from "../api/client";
 import { Transcript } from "../components/Transcript";
@@ -347,5 +347,113 @@ describe("Transcript", () => {
     expect(selfBubble?.className).toContain("border-signal-deep");
     expect(selfBubble?.className).toContain("bg-signal-tint");
     expect(selfBubble?.className).not.toContain("border-warn");
+  });
+
+  it("substantial share_data renders collapsed with a 'View details' affordance", () => {
+    // User feedback on the chat-firehose problem: "the transcript
+    // moves very quickly when the AI dumps big chunks." Substantial
+    // share_data calls (>= 300 chars, matching the Timeline rail-pin
+    // threshold) collapse to a one-line summary by default. The
+    // viewer expands inline via "View details"; the same content is
+    // also pinned in Timeline for re-find. This test pins the
+    // collapse default so a future revert of the threshold or the
+    // collapse logic can't silently re-flood the chat.
+    const longBody =
+      "**Defender telemetry — 03:14 UTC**\n\n" + "alert line foo bar baz\n".repeat(40);
+    const messages = [
+      {
+        id: "share-big",
+        ts: new Date().toISOString(),
+        role_id: null,
+        kind: "ai_text",
+        body: longBody,
+        tool_name: "share_data",
+        tool_args: { label: "Defender telemetry — 03:14 UTC", data: "..." },
+        workstream_id: null,
+        mentions: [],
+      },
+    ];
+    render(<Transcript messages={messages} roles={ROLES} />);
+    // Collapsed: the brief label + a "View details" button render,
+    // but the bulk of the body (the repeated alert lines) does NOT.
+    expect(screen.getByText("▤ DATA BRIEF")).toBeInTheDocument();
+    expect(
+      screen.getByText("Defender telemetry — 03:14 UTC"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /view details/i }),
+    ).toBeInTheDocument();
+    // The repeated body content should not be in the DOM yet.
+    // Match a phrase that only appears inside the collapsed payload —
+    // not the label or preview header.
+    expect(screen.queryAllByText(/alert line foo bar baz/i)).toHaveLength(0);
+  });
+
+  it("'View details' click expands the share_data card; clicking again collapses it", () => {
+    // Round-trips the toggle so we know the state machine doesn't
+    // get stuck open or stuck closed. The button label flips
+    // between "View details" and "Hide details" so the assertion
+    // is the visible affordance, not an internal flag.
+    const longBody =
+      "**IOC dump**\n\n" +
+      Array.from({ length: 30 }, (_, i) => `203.0.113.${i} blocked`).join("\n");
+    const messages = [
+      {
+        id: "share-toggle",
+        ts: new Date().toISOString(),
+        role_id: null,
+        kind: "ai_text",
+        body: longBody,
+        tool_name: "share_data",
+        tool_args: { label: "IOC dump", data: "..." },
+        workstream_id: null,
+        mentions: [],
+      },
+    ];
+    render(<Transcript messages={messages} roles={ROLES} />);
+    // Collapsed initially.
+    const expandButton = screen.getByRole("button", { name: /view details/i });
+    expect(screen.queryByText(/203\.0\.113\.5 blocked/)).not.toBeInTheDocument();
+    fireEvent.click(expandButton);
+    // Expanded: full body in the DOM, button label flipped.
+    expect(screen.getByText(/203\.0\.113\.5 blocked/)).toBeInTheDocument();
+    const collapseButton = screen.getByRole("button", { name: /hide details/i });
+    expect(collapseButton).toBeInTheDocument();
+    // Round-trip: collapse again.
+    fireEvent.click(collapseButton);
+    expect(screen.queryByText(/203\.0\.113\.5 blocked/)).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /view details/i })).toBeInTheDocument();
+  });
+
+  it("a small share_data dump (under the threshold) renders inline without the collapse card", () => {
+    // The threshold (300 chars) matches Timeline's rail-pin
+    // threshold — a small ``share_data`` (a single telemetry line,
+    // a tiny config snippet) doesn't earn a rail pin AND doesn't
+    // earn the chat-collapse. Collapsing those would add friction
+    // without saving real-estate.
+    const smallBody = "**alerts**\n\nfoo bar";
+    const messages = [
+      {
+        id: "share-small",
+        ts: new Date().toISOString(),
+        role_id: null,
+        kind: "ai_text",
+        body: smallBody,
+        tool_name: "share_data",
+        tool_args: { label: "alerts", data: "..." },
+        workstream_id: null,
+        mentions: [],
+      },
+    ];
+    render(<Transcript messages={messages} roles={ROLES} />);
+    // No "Data brief" collapse chrome and no "View details"
+    // button — the body just renders inline like any other AI
+    // message.
+    expect(screen.queryByText("▤ DATA BRIEF")).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /view details/i }),
+    ).not.toBeInTheDocument();
+    // Body content visible without expanding.
+    expect(screen.getByText(/foo bar/)).toBeInTheDocument();
   });
 });
