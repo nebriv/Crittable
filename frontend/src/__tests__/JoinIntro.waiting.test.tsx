@@ -13,6 +13,8 @@ const COMMON_PROPS = {
   roleLabel: "SOC Analyst",
   roleKind: "player" as const,
   roleExistingDisplayName: null,
+  planTitle: null,
+  planSummary: null,
   snapshotLoaded: true,
   snapshotError: null,
   onRetry: () => undefined,
@@ -276,5 +278,115 @@ describe("JoinIntro — issue #76 (joined, waiting for session start)", () => {
     const tipPanel = screen.getByTestId("join-intro-tip");
     // Initial tip is index 0 → "1 / N"
     expect(tipPanel.textContent).toMatch(/1\s*\/\s*\d+/);
+  });
+});
+
+describe("JoinIntro — SCENARIO BRIEF panel (plan_title / plan_summary)", () => {
+  it("plan present → renders title + summary, no preparing placeholder", () => {
+    render(
+      <JoinIntro
+        {...COMMON_PROPS}
+        sessionState="READY"
+        planTitle="Ransomware response under regulator scrutiny"
+        planSummary="Multi-team incident with legal, comms, and technical decisions under time pressure."
+      />,
+    );
+    expect(
+      screen.getByRole("heading", { name: /SCENARIO BRIEF/i, level: 2 }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("Ransomware response under regulator scrutiny"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/Multi-team incident/i),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText(/still preparing the scenario brief/i),
+    ).toBeNull();
+  });
+
+  it("plan absent + pre-play → renders 'preparing' placeholder under SCENARIO BRIEF", () => {
+    render(
+      <JoinIntro
+        {...COMMON_PROPS}
+        sessionState="SETUP"
+        planTitle={null}
+        planSummary={null}
+      />,
+    );
+    expect(
+      screen.getByRole("heading", { name: /SCENARIO BRIEF/i, level: 2 }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/still preparing the scenario brief/i),
+    ).toBeInTheDocument();
+  });
+
+  it("plan absent + ENDED → no SCENARIO BRIEF panel at all", () => {
+    render(
+      <JoinIntro
+        {...COMMON_PROPS}
+        sessionState="ENDED"
+        planTitle={null}
+        planSummary={null}
+      />,
+    );
+    expect(
+      screen.queryByRole("heading", { name: /SCENARIO BRIEF/i, level: 2 }),
+    ).toBeNull();
+  });
+
+  it("empty-string title/summary collapse the panel cleanly (truthy gating)", () => {
+    // ``ScenarioPlan.executive_summary`` defaults to ``""`` per Pydantic
+    // and the model can emit ``""``; the panel must not render an empty
+    // chrome with no content underneath.
+    render(
+      <JoinIntro
+        {...COMMON_PROPS}
+        sessionState="READY"
+        planTitle=""
+        planSummary=""
+      />,
+    );
+    // Both empty → falls through to the pending placeholder (state is
+    // not ENDED), which is fine — gives the user *something*.
+    expect(
+      screen.getByText(/still preparing the scenario brief/i),
+    ).toBeInTheDocument();
+  });
+
+  it("only planTitle set → renders title without an empty summary p", () => {
+    render(
+      <JoinIntro
+        {...COMMON_PROPS}
+        sessionState="READY"
+        planTitle="Office CPU spike investigation"
+        planSummary={null}
+      />,
+    );
+    expect(
+      screen.getByText("Office CPU spike investigation"),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText(/still preparing the scenario brief/i),
+    ).toBeNull();
+  });
+
+  it("spectator role still sees the brief", () => {
+    render(
+      <JoinIntro
+        {...COMMON_PROPS}
+        roleKind="spectator"
+        sessionState="READY"
+        planTitle="Office CPU spike investigation"
+        planSummary="Investigation under time pressure."
+      />,
+    );
+    expect(
+      screen.getByText("Office CPU spike investigation"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("Investigation under time pressure."),
+    ).toBeInTheDocument();
   });
 });

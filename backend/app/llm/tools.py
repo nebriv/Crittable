@@ -558,7 +558,10 @@ SETUP_TOOLS: list[dict[str, Any]] = [
             "facilitate against. Iterate via repeated calls until "
             "approved, then call finalize_setup. Emit ``input`` as a "
             "JSON object matching this input_schema; legacy XML "
-            "function-call markup is not accepted."
+            "function-call markup is not accepted. **`title` and "
+            "`executive_summary` are shown to every participant on the "
+            "join page — keep them spoiler-free (scenario type/stakes, "
+            "not antagonist/root-cause/twist).**"
         ),
         "input_schema": {
             "type": "object",
@@ -599,7 +602,10 @@ SETUP_TOOLS: list[dict[str, Any]] = [
             "Transitions session to READY. Same array invariants as "
             "propose_scenario_plan: narrative_arc / key_objectives / "
             "injects MUST each contain at least one entry. Emit ``input`` "
-            "as a JSON object matching this input_schema."
+            "as a JSON object matching this input_schema. **`title` and "
+            "`executive_summary` are shown to every participant on the "
+            "join page — keep them spoiler-free (scenario type/stakes, "
+            "not antagonist/root-cause/twist).**"
         ),
         "input_schema": {
             "type": "object",

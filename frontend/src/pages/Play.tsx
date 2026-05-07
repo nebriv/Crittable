@@ -938,7 +938,8 @@ export function Play({ sessionId, token }: Props) {
         roleLabel={myRoleFromSnapshot?.label}
         roleKind={myRoleFromSnapshot?.kind}
         roleExistingDisplayName={serverDisplayName}
-        scenarioPrompt={snapshot?.scenario_prompt}
+        planTitle={snapshot?.plan_title ?? null}
+        planSummary={snapshot?.plan_summary ?? null}
         sessionState={snapshot?.state}
         snapshotLoaded={snapshot !== null}
         snapshotError={snapshot === null ? error : null}
@@ -1586,7 +1587,12 @@ interface JoinIntroProps {
    *  participation-style interaction and confused them. */
   roleKind?: "player" | "spectator";
   roleExistingDisplayName: string | null;
-  scenarioPrompt?: string;
+  /** AI-generated scenario name (``plan.title``) — short headline like
+   *  "Phishing-led ransomware". ``null`` before the plan exists. */
+  planTitle: string | null;
+  /** AI-generated 1-2 sentence executive summary. ``null`` before the
+   *  plan exists. */
+  planSummary: string | null;
   sessionState?: string;
   /** ``true`` once the snapshot fetch has resolved. Pre-fix the page
    *  rendered a generic header until the fetch completed, which let
@@ -1657,7 +1663,8 @@ export function JoinIntro({
   roleLabel,
   roleKind,
   roleExistingDisplayName,
-  scenarioPrompt,
+  planTitle,
+  planSummary,
   sessionState,
   snapshotLoaded,
   snapshotError,
@@ -1767,15 +1774,22 @@ export function JoinIntro({
     }
   }
 
-  // The scenario prompt is creator-authored seed text that's part of
-  // the public session — it's not the AI-generated plan (that stays
-  // hidden from non-creators). A short trimmed preview is fine for
-  // setting the room expectation without spoiling injects.
-  const scenarioPreview = scenarioPrompt
-    ? scenarioPrompt.slice(0, 240).trim() + (scenarioPrompt.length > 240 ? "…" : "")
-    : null;
-
+  // Render strategy for the SCENARIO BRIEF panel:
+  //   * brief data present → show title + summary
+  //   * brief absent + still pre-play → show "being prepared" placeholder
+  //     so the join-page doesn't read as "did I get the wrong link?"
+  //   * brief absent + ENDED → hide
+  // Truthy check (not ``!== null``) so empty strings — which Pydantic
+  // defaults ``executive_summary`` to and the model can emit — collapse
+  // the panel cleanly instead of rendering an empty SCENARIO BRIEF
+  // chrome. ``plan.title`` and ``plan.executive_summary`` are the only
+  // plan fields safe to show every participant; the rest stays
+  // creator-only.
+  const briefHasContent = Boolean(planTitle) || Boolean(planSummary);
   const sessionEnded = sessionState === "ENDED";
+  const briefPending = !briefHasContent && !sessionEnded;
+  const briefVisible = briefHasContent || briefPending;
+
   const isSpectator = roleKind === "spectator";
 
   // Snapshot-error branch: the snapshot fetch failed (network blip,
@@ -1874,13 +1888,37 @@ export function JoinIntro({
                 : `You're invited as ${roleLabel}`
               : "Join the tabletop exercise"}
           </h1>
-          {scenarioPreview ? (
-            <p className="mt-2 rounded-r-2 border-l-2 border-signal bg-ink-800 p-3 text-sm leading-relaxed text-ink-100">
-              <span className="block mono text-[10px] font-bold uppercase tracking-[0.20em] text-signal mb-1">
+          {briefVisible ? (
+            <section
+              aria-labelledby="brief-heading"
+              className="mt-2 rounded-r-2 border-l-2 border-signal bg-ink-800 p-3 leading-relaxed"
+            >
+              <h2
+                id="brief-heading"
+                className="mono text-[10px] font-bold uppercase tracking-[0.20em] text-signal mb-1"
+              >
                 SCENARIO BRIEF
-              </span>
-              {scenarioPreview}
-            </p>
+              </h2>
+              {briefPending ? (
+                <p className="text-[13px] italic text-ink-300">
+                  The facilitator is still preparing the scenario brief.
+                </p>
+              ) : null}
+              {planTitle ? (
+                <p className="text-base font-semibold text-ink-050">{planTitle}</p>
+              ) : null}
+              {planSummary ? (
+                <p
+                  className={
+                    planTitle
+                      ? "mt-1 text-[13px] text-ink-200"
+                      : "text-[13px] text-ink-200"
+                  }
+                >
+                  {planSummary}
+                </p>
+              ) : null}
+            </section>
           ) : null}
         </header>
 

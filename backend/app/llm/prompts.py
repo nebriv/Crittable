@@ -547,6 +547,15 @@ _SETUP_SYSTEM = (
     "Iterate freely with the creator. When they approve, call `finalize_setup` "
     "with the final plan. After `finalize_setup`, end your turn — the play "
     "phase begins.\n\n"
+    "**`title` and `executive_summary` are shown to every participant on "
+    "the join page — keep them spoiler-free.** State the scenario *type "
+    "and stakes* (e.g. 'Ransomware response under regulator scrutiny'), "
+    "not the *plot*: do not name the antagonist, attribute the root "
+    "cause, reveal which inject fires when, or pre-state the twist. "
+    "Inject details, antagonist identity, and beat-specific surprises "
+    "belong in `injects[]` and `narrative_arc[]`, which stay creator-only. "
+    "The rest of the plan is creator-only and the disclosure rules in "
+    "Block 4 still apply to it.\n\n"
     "**Plan completeness — non-negotiable.** Your `propose_scenario_plan` "
     "and `finalize_setup` calls MUST include:\n"
     "  * `narrative_arc`: at least 3 beats. Each beat needs `beat` "
@@ -573,8 +582,9 @@ _SETUP_SYSTEM = (
     "the same content as JSON, do not retry the XML form.\n"
     "<example>\n"
     "{\n"
-    '  "title": "Phishing-led ransomware",\n'
-    '  "executive_summary": "Finance team breach via vendor token.",\n'
+    '  "title": "Ransomware response under regulator scrutiny",\n'
+    '  "executive_summary": "Multi-team incident with legal, comms, '
+    'and technical decisions under time pressure.",\n'
     '  "key_objectives": [\n'
     '    "Containment decision documented before beat 3",\n'
     '    "Comms drafted and reviewed by Legal",\n'

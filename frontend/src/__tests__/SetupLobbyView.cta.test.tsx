@@ -235,4 +235,51 @@ describe("SetupLobbyView — CTAs (lobby-as-launch-surface)", () => {
       screen.getByText(/share invite links and launch/i),
     ).toBeInTheDocument();
   });
+
+  // Per docs/PLAN.md line 215 ("the finalized plan is … surfaced to
+  // the creator … as a collapsible reference panel"): once the plan
+  // is finalized, the lobby has to expose the full content (not just
+  // the SidecarStat counts), otherwise an operator who needs to re-
+  // read an objective or inject during invite-link sharing has no
+  // way back. The wizard rail explicitly blocks step-5 → step-4
+  // back-nav (SetupWizard.tsx:259-262, "step 4 is AI work they can't
+  // rewind"), so the lobby is the reachable surface for re-read.
+  // Implemented as a <details> disclosure so it doesn't dominate the
+  // role-list view.
+  it("renders a collapsible plan recap on the role-list column when plan exists", () => {
+    const ciso = role({ id: "r-ciso", label: "CISO", is_creator: true });
+    const ic = role({ id: "r-ic", label: "IC" });
+    render(
+      <SetupLobbyView
+        {...COMMON_PROPS}
+        roles={[ciso, ic]}
+        plan={fakePlan()}
+        playerCount={2}
+        onLaunchSession={vi.fn()}
+      />,
+    );
+    const recap = screen.getByTestId("lobby-plan-recap");
+    expect(recap).toBeInTheDocument();
+    // Plan title shows in the summary so the operator can identify
+    // the right section without expanding it.
+    expect(recap.textContent).toMatch(/Test plan/i);
+    // Default-collapsed: PlanView's body content (e.g. "Key
+    // objectives" header) is in the DOM under the <details> but
+    // hidden until expanded. We assert it exists, which is what
+    // the operator needs (one click to reveal).
+    expect(recap.querySelector("h4")).toBeTruthy();
+  });
+
+  it("does NOT render the plan recap when plan is null", () => {
+    const ciso = role({ id: "r-ciso", label: "CISO", is_creator: true });
+    render(
+      <SetupLobbyView
+        {...COMMON_PROPS}
+        roles={[ciso]}
+        plan={null}
+        playerCount={1}
+      />,
+    );
+    expect(screen.queryByTestId("lobby-plan-recap")).toBeNull();
+  });
 });
