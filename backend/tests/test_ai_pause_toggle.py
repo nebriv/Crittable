@@ -26,6 +26,7 @@ from app.config import reset_settings_cache
 from app.main import create_app
 from app.sessions.models import SessionState, Turn
 from app.sessions.submission_pipeline import FACILITATOR_MENTION_TOKEN
+from tests.conftest import default_settings_body
 
 
 @pytest.fixture(autouse=True)
@@ -63,6 +64,7 @@ async def _seat_two_role_session(client: TestClient) -> dict[str, Any]:
             "creator_label": "CISO",
             "creator_display_name": "Alex",
             "skip_setup": True,
+            **default_settings_body(),
         },
     )
     assert resp.status_code == 200, resp.text

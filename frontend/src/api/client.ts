@@ -297,12 +297,14 @@ export const api = {
      *  wasted auto-greet LLM call. Used by the frontend's Dev mode. */
     skip_setup?: boolean;
     /** Creator-selected scenario tuning (difficulty / duration /
-     *  features). Frozen at creation. Omitting any subfield falls
-     *  back to the backend default in ``SessionSettings``. */
-    settings?: {
-      difficulty?: Difficulty;
-      duration_minutes?: number;
-      features?: SessionFeatures;
+     *  features). Frozen at creation. Required on the wire — every
+     *  subfield must be present (CLAUDE.md forbids back-compat optional
+     *  wire fields). The wizard is the only caller and always sends a
+     *  fully populated panel. */
+    settings: {
+      difficulty: Difficulty;
+      duration_minutes: number;
+      features: SessionFeatures;
     };
   }): Promise<{
     session_id: string;

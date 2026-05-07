@@ -89,9 +89,10 @@ class CreateSessionBody(BaseModel):
     # Creator-selected scenario tuning (difficulty, target duration,
     # feature toggles) chosen on the new-session wizard's "shaping"
     # step. Frozen at creation; surfaced into setup + play system
-    # prompts so the AI tunes facilitation without re-asking. Defaults
-    # to a balanced standard tabletop (see ``SessionSettings``).
-    settings: SessionSettings = Field(default_factory=SessionSettings)
+    # prompts so the AI tunes facilitation without re-asking. Required
+    # on the wire — the frontend always sends a populated panel; CLAUDE.md
+    # forbids optional-with-default-factory wire shims.
+    settings: SessionSettings
 
 
 class AddRoleBody(BaseModel):

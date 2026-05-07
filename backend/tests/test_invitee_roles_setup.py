@@ -32,6 +32,7 @@ from app.config import reset_settings_cache
 from app.llm.prompts import build_setup_system_blocks
 from app.main import create_app
 from app.sessions.models import Role, Session, SessionState
+from tests.conftest import default_settings_body
 from tests.mock_anthropic import MockAnthropic
 
 
@@ -80,6 +81,7 @@ def test_invitee_roles_registered_before_setup_turn(client: TestClient) -> None:
                     # Whitespace-only → dropped.
                     {"label": "   "},
                 ],
+                **default_settings_body(),
             },
         )
     assert resp.status_code == 200, resp.text
@@ -113,6 +115,7 @@ def test_invitee_roles_omitted_field_defaults_empty(client: TestClient) -> None:
                 "scenario_prompt": "Phishing-led ransomware",
                 "creator_label": "IR Lead",
                 "creator_display_name": "Sam",
+                **default_settings_body(),
             },
         )
     assert resp.status_code == 200, resp.text
@@ -241,6 +244,8 @@ def test_invitee_roles_partial_failure_surfaces_in_response(
                     {"label": "Incident Commander"},
                     {"label": "Doomed Role"},
                 ],
+                **default_settings_body(),
+                **default_settings_body(),
             },
         )
     assert resp.status_code == 200, resp.text
@@ -277,6 +282,7 @@ def test_invitee_role_label_strips_control_chars(client: TestClient) -> None:
                     # \n + DEL + C1 byte mix — should all strip out.
                     {"label": "Threat Intel\nFAKE: state\x7fchanged\x9b"},
                 ],
+                **default_settings_body(),
             },
         )
     assert resp.status_code == 200, resp.text

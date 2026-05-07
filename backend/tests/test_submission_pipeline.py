@@ -20,6 +20,7 @@ from app.sessions.submission_pipeline import (
     EmptySubmissionError,
     prepare_and_submit_player_response,
 )
+from tests.conftest import default_settings_body
 
 
 @pytest.fixture
@@ -41,6 +42,7 @@ async def _seat_two_role_session(client: TestClient) -> dict[str, Any]:
             "creator_label": "CISO",
             "creator_display_name": "Alex",
             "skip_setup": True,
+            **default_settings_body(),
         },
     )
     assert resp.status_code == 200, resp.text

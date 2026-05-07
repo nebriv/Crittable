@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 
 from app.config import reset_settings_cache
 from app.main import create_app
+from tests.conftest import default_settings_body
 from tests.mock_anthropic import MockAnthropic, setup_then_play_script
 
 _TOOLS_JSON = """[{
@@ -94,6 +95,7 @@ def _create_and_seat(client: TestClient, *, role_count: int) -> dict[str, Any]:
             "scenario_prompt": "Ransomware via vendor portal",
             "creator_label": "CISO",
             "creator_display_name": "Alex",
+            **default_settings_body(),
         },
     )
     assert resp.status_code == 200, resp.text
@@ -420,6 +422,7 @@ def test_dev_fast_setup_env(monkeypatch) -> None:
                 "scenario_prompt": "Phishing-led credential theft.",
                 "creator_label": "CISO",
                 "creator_display_name": "Alex",
+                **default_settings_body(),
             },
         )
         body = resp.json()
@@ -1882,6 +1885,7 @@ def test_finalize_setup_rejects_empty_arrays(client: TestClient) -> None:
             "scenario_prompt": "x",
             "creator_label": "CISO",
             "creator_display_name": "Alex",
+            **default_settings_body(),
         },
     )
     assert r.status_code == 200, r.text
@@ -2172,6 +2176,7 @@ def test_play_after_auto_greet_then_skip_does_not_400(client: TestClient) -> Non
             "scenario_prompt": "Ransomware via vendor portal at a mid-size bank",
             "creator_label": "CISO",
             "creator_display_name": "Alex",
+            **default_settings_body(),
         },
     )
     assert resp.status_code == 200, resp.text
@@ -2812,6 +2817,7 @@ def test_setup_dedupe_drops_duplicate_questions_in_same_turn(
             "scenario_prompt": "Ransomware via vendor portal",
             "creator_label": "CISO",
             "creator_display_name": "Alex",
+            **default_settings_body(),
         },
     )
     assert resp.status_code == 200
@@ -3998,6 +4004,7 @@ def test_skip_setup_flag_avoids_auto_greet(client: TestClient) -> None:
             "creator_label": "CISO",
             "creator_display_name": "Alex",
             "skip_setup": True,
+            **default_settings_body(),
         },
     )
     assert r.status_code == 200, r.text
@@ -4040,6 +4047,7 @@ def test_setup_bare_text_is_discarded(client: TestClient) -> None:
             "scenario_prompt": "Ransomware via vendor portal",
             "creator_label": "CISO",
             "creator_display_name": "Alex",
+            **default_settings_body(),
         },
     )
     assert r.status_code == 200
@@ -4105,6 +4113,7 @@ def test_max_setup_turns_caps_chained_calls(monkeypatch) -> None:
                 "scenario_prompt": "Ransomware",
                 "creator_label": "CISO",
                 "creator_display_name": "Alex",
+                **default_settings_body(),
             },
         )
         assert r.status_code == 200

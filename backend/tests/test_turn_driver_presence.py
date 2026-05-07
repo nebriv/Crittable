@@ -26,6 +26,7 @@ from fastapi.testclient import TestClient
 
 from app.config import reset_settings_cache
 from app.main import create_app
+from tests.conftest import default_settings_body
 from tests.mock_anthropic import MockAnthropic, setup_then_play_script
 
 
@@ -59,6 +60,7 @@ def _seat_three(client: TestClient) -> dict[str, Any]:
             "scenario_prompt": "Ransomware via vendor portal",
             "creator_label": "CISO",
             "creator_display_name": "Ben",
+            **default_settings_body(),
         },
     )
     created = resp.json()

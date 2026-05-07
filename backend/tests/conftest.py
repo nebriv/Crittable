@@ -32,3 +32,27 @@ def _reset_settings_singleton() -> None:
     from app.config import reset_settings_cache
 
     reset_settings_cache()
+
+
+def default_settings_body() -> dict[str, object]:
+    """Wire-shape ``settings`` block matching ``SessionSettings`` defaults.
+
+    Every test that POSTs ``/api/sessions`` must include a populated
+    ``settings`` key — the field is required on the wire (CLAUDE.md
+    forbids optional-with-default wire shims). Tests that don't care
+    about specific tuning values spread this helper into the body
+    instead of hand-rolling the default dict at every call site.
+    """
+
+    return {
+        "settings": {
+            "difficulty": "standard",
+            "duration_minutes": 60,
+            "features": {
+                "active_adversary": True,
+                "time_pressure": True,
+                "executive_escalation": True,
+                "media_pressure": False,
+            },
+        },
+    }

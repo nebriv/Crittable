@@ -272,11 +272,12 @@ def test_create_session_accepts_custom_settings_and_persists_them(
     }
 
 
-def test_create_session_with_no_settings_falls_back_to_defaults(
+def test_create_session_rejects_missing_settings(
     client: TestClient,
 ) -> None:
-    """Operators who don't change the wizard knobs should land on the
-    backend defaults with no explicit field in the body."""
+    """``settings`` is required on the wire (CLAUDE.md forbids optional-
+    with-default wire shims). A body without the key must fail validation
+    with 422 instead of silently falling back to a defaulted panel."""
 
     body = {
         "scenario_prompt": "phishing exercise",
@@ -285,15 +286,14 @@ def test_create_session_with_no_settings_falls_back_to_defaults(
         "skip_setup": True,
     }
     res = client.post("/api/sessions", json=body)
-    assert res.status_code == 200
-    sid = res.json()["session_id"]
-    token = res.json()["creator_token"]
-
-    snap = client.get(f"/api/sessions/{sid}?token={token}").json()
-    settings = snap["settings"]
-    assert settings["difficulty"] == "standard"
-    assert settings["duration_minutes"] == 60
-    assert settings["features"]["media_pressure"] is False
+    assert res.status_code == 422
+    # The pydantic detail must call out the missing ``settings`` key so a
+    # frontend bug surfaces in the response body, not buried in logs.
+    body_json = res.json()
+    assert any(
+        err.get("loc", [None, None])[-1] == "settings"
+        for err in body_json.get("detail", [])
+    ), body_json
 
 
 def test_snapshot_redacts_features_for_non_creator(client: TestClient) -> None:

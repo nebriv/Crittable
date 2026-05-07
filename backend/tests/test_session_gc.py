@@ -14,6 +14,7 @@ from app.main import create_app
 from app.sessions.gc import SessionGC
 from app.sessions.models import Role, Session, SessionState
 from app.sessions.repository import InMemoryRepository
+from tests.conftest import default_settings_body
 
 
 def _make_session(
@@ -256,6 +257,7 @@ def test_export_md_returns_410_after_gc_eviction(monkeypatch) -> None:
                 "creator_label": "CISO",
                 "creator_display_name": "A",
                 "skip_setup": True,
+                **default_settings_body(),
             },
         )
         assert r.status_code == 200, r.text

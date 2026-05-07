@@ -61,6 +61,7 @@ from app.sessions.submission_pipeline import (
     prepare_and_submit_player_response,
     validate_mentions,
 )
+from tests.conftest import default_settings_body
 
 
 @pytest.fixture
@@ -82,6 +83,7 @@ async def _seat_two_role_session(client: TestClient) -> dict[str, Any]:
             "creator_label": "CISO",
             "creator_display_name": "Alex",
             "skip_setup": True,
+            **default_settings_body(),
         },
     )
     assert resp.status_code == 200, resp.text
@@ -1153,6 +1155,7 @@ def test_play_turn_reply_tags_facilitator_asker_when_quorum_closes(
             "creator_label": "CISO",
             "creator_display_name": "Alex",
             "skip_setup": True,
+            **default_settings_body(),
         },
     )
     assert resp.status_code == 200
@@ -1263,6 +1266,7 @@ def test_play_turn_freeform_ai_text_also_gets_asker_mention(
             "creator_label": "CISO",
             "creator_display_name": "Alex",
             "skip_setup": True,
+            **default_settings_body(),
         },
     )
     body = resp.json()

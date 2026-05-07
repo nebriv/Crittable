@@ -45,6 +45,7 @@ from app.sessions.models import (
 )
 from app.sessions.repository import InMemoryRepository
 from app.sessions.turn_engine import IllegalTransitionError
+from tests.conftest import default_settings_body
 
 # ----------------------------------------------------------------------
 # No-op collaborator stubs (mirrors test_session_manager_emit.py)
@@ -515,6 +516,7 @@ def _http_seat(client: Any) -> dict[str, str]:
             "creator_label": "CISO",
             "creator_display_name": "Alex",
             "skip_setup": True,
+            **default_settings_body(),
         },
     )
     assert r.status_code == 200, r.text

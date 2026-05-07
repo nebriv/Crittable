@@ -17,6 +17,7 @@ from app.config import reset_settings_cache
 from app.main import create_app
 from app.sessions.models import Session, SessionState, Turn
 from app.sessions.progress import compute_progress_pct
+from tests.conftest import default_settings_body
 from tests.mock_anthropic import MockAnthropic, setup_then_play_script
 
 # ---------------------------------------------------------------- unit tests
@@ -128,6 +129,7 @@ def _seat_two(client: TestClient) -> dict[str, Any]:
             "scenario_prompt": "Ransomware via vendor portal",
             "creator_label": "CISO",
             "creator_display_name": "Alex",
+            **default_settings_body(),
         },
     )
     created = resp.json()
