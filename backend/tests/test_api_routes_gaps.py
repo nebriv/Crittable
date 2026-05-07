@@ -19,7 +19,7 @@ from fastapi.testclient import TestClient
 
 from app.config import reset_settings_cache
 from app.main import create_app
-from app.sessions.models import SessionState
+from app.sessions.models import ScenarioBeat, ScenarioInject, ScenarioPlan, SessionState
 from tests.conftest import default_settings_body
 from tests.mock_anthropic import MockAnthropic
 
@@ -393,3 +393,80 @@ def test_proxy_submit_pending_409_when_no_open_turn(client: TestClient) -> None:
         json={"content": "stand-in"},
     )
     assert r.status_code == 409
+
+
+# ---------------------------------------------------------------- get_session: plan_title / plan_summary
+
+
+def test_get_session_omits_plan_title_summary_when_plan_is_none(
+    client: TestClient,
+) -> None:
+    """Pre-finalize, ``session.plan`` is None — both fields must be null
+    so the JoinIntro hides the brief panel cleanly."""
+
+    seats = _seat(client)
+    r = client.get(
+        f"/api/sessions/{seats['sid']}?token={seats['ptok']}"
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["plan_title"] is None
+    assert body["plan_summary"] is None
+    # Full plan stays creator-only too.
+    assert body["plan"] is None
+
+
+def test_get_session_exposes_plan_title_summary_to_non_creator(
+    client: TestClient,
+) -> None:
+    """Once the plan is set, every participant — including non-creator
+    players — sees ``plan_title`` and ``plan_summary``. The full
+    ``plan`` object stays creator-only."""
+
+    seats = _seat(client)
+    sid = seats["sid"]
+    manager = client.app.state.manager
+
+    plan = ScenarioPlan(
+        title="Ransomware response under regulator scrutiny",
+        executive_summary=(
+            "Multi-team incident with legal, comms, and technical "
+            "decisions under time pressure."
+        ),
+        key_objectives=["Containment decision documented before beat 3"],
+        narrative_arc=[
+            ScenarioBeat(beat=1, label="Detection", expected_actors=["SOC"]),
+        ],
+        injects=[
+            ScenarioInject(trigger="after beat 1", type="event", summary="x"),
+        ],
+    )
+
+    import asyncio
+
+    async def _seed_plan() -> None:
+        async with await manager._lock_for(sid):
+            sess = await manager._repo.get(sid)
+            sess.plan = plan
+            await manager._repo.save(sess)
+
+    asyncio.run(_seed_plan())
+
+    # Non-creator player token sees the title + summary.
+    rp = client.get(f"/api/sessions/{sid}?token={seats['ptok']}")
+    assert rp.status_code == 200, rp.text
+    pbody = rp.json()
+    assert pbody["plan_title"] == plan.title
+    assert pbody["plan_summary"] == plan.executive_summary
+    # ...but not the full plan (still creator-only).
+    assert pbody["plan"] is None
+
+    # Creator sees the full plan AND the convenience fields.
+    rc = client.get(f"/api/sessions/{sid}?token={seats['ctok']}")
+    assert rc.status_code == 200, rc.text
+    cbody = rc.json()
+    assert cbody["plan_title"] == plan.title
+    assert cbody["plan_summary"] == plan.executive_summary
+    assert cbody["plan"] is not None
+    assert cbody["plan"]["title"] == plan.title
+
