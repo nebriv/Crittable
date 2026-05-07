@@ -10,7 +10,7 @@ applyTo: "backend/**"
 - Re-passing fields already bound by middleware (`request_id`, `session_id`, `turn_id`, `role_id`) → **LOW**. They're inherited automatically.
 - New external boundary without `*_start` + `*_complete` / `*_failed` log lines → **HIGH**. LLM calls, DB calls, WS connect/disconnect, tool dispatch, and extension dispatch already do this — match the pattern.
 - `try/except` catching a broad exception without logging it before re-raising or swallowing → **BLOCK**. Silent swallows are bugs.
-- Logging `SESSION_SECRET`, `ANTHROPIC_API_KEY`, raw join tokens, or full participant message bodies (>120 char preview) → **BLOCK**
+- Logging `SESSION_SECRET`, `LLM_API_KEY`, raw join tokens, or full participant message bodies (>120 char preview) → **BLOCK**
 - Wide payload logged without the `_is_oversized` helper from `sessions/manager.py` → **HIGH**
 - Any review finding that calls out a swallowed exception, missing log at a meaningful boundary, silent fallback path, or anything else that hinders production debugging → **HIGH** even if it would otherwise be MEDIUM/LOW. Logging gaps are not "nits" — they're the difference between a 5-minute and a 5-hour diagnose.
 

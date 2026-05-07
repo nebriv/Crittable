@@ -868,7 +868,7 @@ discussion is genuinely wanted.
 The unit + e2e suites cover validator behavior against mocked Anthropic responses.
 To verify the **real model** also produces well-formed outputs under the new
 prompt, run `backend/scripts/live_recovery_check.py` (added in this commit).
-Requires `ANTHROPIC_API_KEY`:
+Requires `LLM_API_KEY`:
 
 ```bash
 cd backend && python scripts/live_recovery_check.py

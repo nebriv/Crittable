@@ -32,7 +32,7 @@ export at session end.
 │  sessions/   models · repository(InMemory) · turn_engine     │
 │              · phase_policy · turn_driver · manager          │
 │              (per-session asyncio.Lock)                      │
-│  llm/    AsyncAnthropic client · prompts · tools             │
+│  llm/    ChatClient ABC + Anthropic/LiteLLM backends         │
 │          · dispatch · guardrail · export                     │
 │  extensions/   ToolRegistry · ResourceRegistry ·             │
 │                PromptRegistry · loaders/env                  │
@@ -43,7 +43,7 @@ export at session end.
                              ▼
                     Anthropic API (HTTPS)
                     (or any Anthropic-compatible
-                     endpoint via ANTHROPIC_BASE_URL)
+                     endpoint via LLM_API_BASE)
 ```
 
 ## Session state machine
@@ -100,7 +100,7 @@ boundaries:
 | Boundary | Module | What it does |
 |---|---|---|
 | **Entry-state check** | `turn_driver.py` (each `run_*_turn`) | Calls `assert_state(tier, state)` at function entry. Raises `PhaseViolation` if a refactor would call the play tier during ENDED, etc. |
-| **Tool-list filter** | `llm/client.py::acomplete + astream` | Calls `filter_allowed_tools(tier, tools, extension_tool_names)` before forwarding to Anthropic. Drops any tool not in the tier's `allowed_tool_names` and logs the dropped names so a regression is visible in the audit trail. |
+| **Tool-list filter** | `llm/client.py::acomplete + astream` and `llm/clients/litellm_client.py::_build_call_kwargs` | Calls `filter_allowed_tools(tier, tools, extension_tool_names)` before forwarding to the provider. Drops any tool not in the tier's `allowed_tool_names` and logs the dropped names so a regression is visible in the audit trail. Both backends share the same gate. |
 | **Runtime tool-call rejection** | `llm/dispatch.py` | When the model emits a tool call that's forbidden in the current state (e.g. `ask_setup_question` during play), the dispatcher returns `is_error=True` in the `tool_result` block. The strict-retry path then feeds those `tool_result` blocks back to the model so it can self-correct rather than retry blind. |
 
 ### Tier policies
@@ -226,20 +226,41 @@ events from the replay buffer.
 
 ## LLM boundary
 
-Single `AsyncAnthropic` instance, instantiated at app startup, reused
-for HTTP keep-alive. Streaming is the default for play turns; deltas
-relay to the WebSocket as `message_chunk` events. The system prompt
-is composed each turn from a stable cached block (identity, mission,
-boundaries, frozen scenario plan, active extension prompts, roster,
-open follow-ups) plus the live transcript. Parallel `tool_use` blocks
-are dispatched concurrently with `asyncio.gather`.
+The engine talks to LLMs through a provider-agnostic `ChatClient` ABC
+(`backend/app/llm/protocol.py`). Two concrete implementations live
+behind the seam:
+
+- `app.llm.client.LLMClient` — talks to Anthropic-direct via
+  `anthropic.AsyncAnthropic` (the original path, default).
+- `app.llm.clients.litellm_client.LiteLLMChatClient` — routes via
+  LiteLLM, supporting ~100 providers (Azure OpenAI, AWS Bedrock,
+  Vertex AI, OpenRouter, OpenAI direct, vLLM/Ollama, …). Selected
+  via `LLM_BACKEND=litellm`. See [`llm_providers.md`](llm_providers.md).
+
+A single `ChatClient` instance is built at app startup (lifespan) by
+`_build_chat_client(settings)` and reused process-wide for HTTP
+keep-alive. Streaming is the default for play turns; deltas relay to
+the WebSocket as `message_chunk` events (used by the frontends as a
+typing-pulse signal — chunk content is ignored, the final message is
+rendered from the snapshot refresh after `message_complete`). The
+system prompt is composed each turn from a stable cached block
+(identity, mission, boundaries, frozen scenario plan, active extension
+prompts, roster, open follow-ups) plus the live transcript. Parallel
+`tool_use` blocks are dispatched concurrently with `asyncio.gather`.
+
+Internal vocabulary stays Anthropic-shaped (content blocks,
+``tool_use``/``tool_result``, ``cache_control: ephemeral``,
+``stop_reason: end_turn|tool_use|max_tokens``). Provider-specific
+clients adapt at the wire boundary; downstream callers — turn driver,
+dispatch, AAR generator, guardrail — never see provider-shaped data.
+See `CLAUDE.md` § "Model-output trust boundary" for why this matters.
 
 ### Tiered models + per-call sampling
 
 Each tier has independent env knobs (see
 [`configuration.md`](configuration.md)):
 
-- `ANTHROPIC_MODEL_<TIER>` — model id (Sonnet / Haiku / Opus / Haiku
+- `LLM_MODEL_<TIER>` — model id (Sonnet / Haiku / Opus / Haiku
   defaults).
 - `LLM_MAX_TOKENS_<TIER>` — output cap (1024 / 1024 / 4096 / 12).
 - `LLM_TEMPERATURE_<TIER>` — sampling temperature (None / None / 0.4
@@ -253,7 +274,7 @@ freeze a session for ten minutes.
 
 ### Provider swap
 
-`ANTHROPIC_BASE_URL` retargets the SDK to any Anthropic-compatible
+`LLM_API_BASE` retargets the SDK to any Anthropic-compatible
 endpoint (Bedrock proxy, OpenRouter anthropic-compat, internal LLM
 gateway, local Ollama via litellm). A startup warning fires if the
 URL uses plain `http://` to a non-loopback host (cleartext prompt
@@ -373,7 +394,7 @@ to see the trace.
     retry-feedback loop. The model sees its own prior `tool_use` +
     dispatcher `tool_result` blocks on retry and self-corrects.
     See [`turn-lifecycle.md`](turn-lifecycle.md).
-  - **Per-tier sampling + timeout knobs**, `ANTHROPIC_BASE_URL`,
+  - **Per-tier sampling + timeout knobs**, `LLM_API_BASE`,
     `LLM_STRICT_RETRY_MAX`, `MAX_SETUP_TURNS`,
     `MAX_PARTICIPANT_SUBMISSION_CHARS`,
     `MAX_SUBMISSIONS_PER_ROLE_PER_TURN`.

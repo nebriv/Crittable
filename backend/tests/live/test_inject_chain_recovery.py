@@ -42,7 +42,7 @@ inject 0% of the time" — that would flake. We assert:
 Cost
 ----
 
-~$0.05 per run at defaults. Skipped unless ``ANTHROPIC_API_KEY`` is
+~$0.05 per run at defaults. Skipped unless ``LLM_API_KEY`` is
 set — see ``conftest.py`` auto-skip for the gate behavior.
 
 Add new failure modes here when you change Block 6's inject-chain

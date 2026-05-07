@@ -50,21 +50,36 @@ Authoritative design doc: [`docs/PLAN.md`](docs/PLAN.md). Architecture details (
 
 ## Configuration
 
-All config is via environment variables. The full reference lives in [`docs/configuration.md`](docs/configuration.md). Required at minimum: `ANTHROPIC_API_KEY`. Hardening checklist before any non-toy deployment is also there (set `CORS_ORIGINS`, enable rate limit, set `SESSION_SECRET`, etc.).
+All config is via environment variables. The full reference lives in [`docs/configuration.md`](docs/configuration.md). Required at minimum: `LLM_API_KEY`. Hardening checklist before any non-toy deployment is also there (set `CORS_ORIGINS`, enable rate limit, set `SESSION_SECRET`, etc.).
+
+## LLM backend selection (read before touching any LLM call site)
+
+Two concrete `ChatClient` implementations sit behind a common ABC at [`backend/app/llm/protocol.py`](backend/app/llm/protocol.py):
+
+- `app.llm.client.LLMClient` — Anthropic-direct via `anthropic.AsyncAnthropic` (default; selected by `LLM_BACKEND=anthropic`).
+- `app.llm.clients.litellm_client.LiteLLMChatClient` — LiteLLM-routed; supports ~100 providers (Azure OpenAI, AWS Bedrock, Vertex AI, OpenRouter, OpenAI direct, vLLM/Ollama, …). Selected by `LLM_BACKEND=litellm`.
+
+Both share the `ChatClient` ABC. Internal vocabulary stays Anthropic-shaped (content blocks, `tool_use`/`tool_result`, `cache_control: ephemeral`, `stop_reason`); provider-specific clients adapt at the wire boundary. Downstream callers (turn driver, dispatch, AAR generator, guardrail) never see provider-shaped data. See [`docs/llm_providers.md`](docs/llm_providers.md) for the full configuration story and [`docs/testing-llm.md`](docs/testing-llm.md) for how to write tests against the seam.
+
+**When adding a new feature that talks to the LLM**: depend on `ChatClient`, not on a specific implementation. The two backends are functionally equivalent (validated by 50/50 live tests passing under both); any drift is a bug. The translator surface lives in `_build_call_kwargs` / `_to_openai_messages` / `_from_litellm_response` in `litellm_client.py` — anything that wouldn't translate cleanly through both backends belongs at the wire boundary, not in `dispatch.py` or `turn_driver.py`.
+
+**Cost reporting**: `app.llm._shared.compute_cost_usd(model, usage_dict)` is the single authoritative cost calculator. Both backends (Anthropic-direct and LiteLLM-routed) call it; it talks to LiteLLM's pricing JSON (`litellm.cost_per_token`). The hand-maintained local pricing table that used to live at `app/llm/cost.py` is gone — it had drifted (Opus 4.7 listed at $15/M input vs. the actual $5/M, off by 3×) and there's no reason to maintain a parallel source of truth when LiteLLM ships a community-updated `model_prices_and_context_window.json` covering ~100 providers. Unknown models return 0.0 with a `compute_cost_usd_unknown_model` warning. The LiteLLM-routed backend's `_usage_to_normalized_dict` still subtracts cache_read+creation out of OpenAI's `prompt_tokens` to recover the Anthropic-shape input count — `compute_cost_usd` consumes the four-key normalized dict (`{input, output, cache_read, cache_creation}`) and `litellm.cost_per_token` charges each separately. Locked by `tests/test_litellm_translators.py::test_from_response_warm_cache_subtracts_cache_read_from_input` and `tests/test_llm_backend_seam.py::test_compute_cost_usd_*`.
+
+**Per-provider API key discovery**: The engine forwards `LLM_API_KEY` to LiteLLM **only** when the wire model targets the `anthropic/` family. Every other provider relies on LiteLLM's auto-discovery from the provider-native env var (`OPENAI_API_KEY`, `AWS_*`, `AZURE_API_KEY`, `GOOGLE_APPLICATION_CREDENTIALS`, `OPENROUTER_API_KEY`). The startup gate in `app/main.py` mirrors this: `cfg.require_llm_api_key()` only runs when `LLM_BACKEND=anthropic` or when `_resolves_to_anthropic(cfg)` is true; non-Anthropic LiteLLM deployments boot without `LLM_API_KEY` set at all (logs `llm_api_key_skipped`). Without this, a `LLM_BACKEND=litellm LLM_MODEL=openai/...` deploy would ship an Anthropic key to OpenAI's auth endpoint — credential mis-routed, key value logged in OpenAI's auth-failure response.
+
+**LiteLLM safety hardening**: `app.llm._shared` zeroes every callback registry (`callbacks`, `success_callback`, `failure_callback`, `input_callback`, `service_callback`, `audit_log_callbacks`, plus the lazy `_async_*` variants — 9 lists) and disables phone-home telemetry on import. Both `ChatClient` backends import from `_shared`, so any boot path produces a hardened litellm. Sets `LITELLM_MODE=PRODUCTION` *before* `import litellm` so the library's import-time `dotenv.load_dotenv()` is skipped. Without these, a stray `LANGSMITH_API_KEY` / `HELICONE_API_KEY` / `LANGFUSE_*` in a contributor's `.env` would silently exfiltrate prompts + participant chat to a third-party SaaS.
 
 ## Test API-key handling (no `TEST_MODE`)
 
-`backend/tests/conftest.py` injects a dummy `ANTHROPIC_API_KEY=dummy-key-for-tests` so unit tests can boot `Settings` without a real key. There is **no `TEST_MODE` placeholder** — `Settings.require_anthropic_key()` simply raises `RuntimeError` whenever `ANTHROPIC_API_KEY` is unset. Don't reintroduce it.
+`backend/tests/conftest.py` injects a dummy `LLM_API_KEY=dummy-key-for-tests` so unit tests can boot `Settings` without a real key. There is **no `TEST_MODE` placeholder** — `Settings.require_llm_api_key()` simply raises `RuntimeError` whenever `LLM_API_KEY` is unset. Don't reintroduce it.
 
 Live-API tests (`backend/tests/live/`) need a real key. The directory's `conftest.py` runs at collection time: pops the dummy, loads the project-root `.env` so a contributor's key actually reaches `os.environ`, and skips the live tests cleanly when no real key is found. The dummy is restored before unit tests run so they still boot. The `anthropic_client` and `judge_client` fixtures defensively assert the resolved key is not the dummy.
 
-`backend/tests/test_live_fixtures.py` source-greps `tests/live/` for `os.environ["ANTHROPIC_API_KEY"]` reads and `"tests/live" in str(...)` substring matches — both ways the original `TEST_MODE` trap shipped — and fails loud at CI time.
+`backend/tests/test_live_fixtures.py` source-greps `tests/live/` for `os.environ["LLM_API_KEY"]` reads and `"tests/live" in str(...)` substring matches — both ways the original `TEST_MODE` trap shipped — and fails loud at CI time.
 
-## Never shadow `ANTHROPIC_*` in the agent harness
+## Live-test API key handling
 
-Claude Code itself talks to the Anthropic API via the official SDK, which auto-discovers `ANTHROPIC_API_KEY`, `ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN`, and friends from process env. **Setting any of them as a session-wide secret in the Claude Code harness's "environment variables" pane shadows the credential the harness uses internally and breaks the session immediately** — auth mismatch, wrong account, wrong entitlement, or silent re-routing of Claude's own calls through your key. Every sandbox-level env var is inherited by Claude Code's own process tree.
-
-The fix: store the live-test key under a non-shadowing name in the harness — e.g. `LIVE_TEST_ANTHROPIC_API_KEY` — and bridge it into the pytest subprocess only at invocation time. The `backend/scripts/run-live-tests.sh` wrapper does this for you:
+The engine reads its API key from `LLM_API_KEY` (renamed in #193 from `ANTHROPIC_API_KEY` so the name is provider-agnostic and doesn't collide with the Anthropic SDK's auto-discovery namespace). The live-test workflow uses `LIVE_TEST_LLM_API_KEY` and bridges it into the pytest subprocess at invocation time. The `backend/scripts/run-live-tests.sh` wrapper does this for you:
 
 ```bash
 backend/scripts/run-live-tests.sh                # full suite
@@ -74,12 +89,12 @@ backend/scripts/run-live-tests.sh -k test_aar    # pytest filter
 If you'd rather invoke pytest directly, the equivalent inline form is:
 
 ```bash
-ANTHROPIC_API_KEY="$LIVE_TEST_ANTHROPIC_API_KEY" pytest backend/tests/live/ -v
+LLM_API_KEY="$LIVE_TEST_LLM_API_KEY" pytest backend/tests/live/ -v
 ```
 
-The `VAR=value command` form scopes the assignment to that one child process; Claude Code's own SDK calls keep using the harness-provided auth. `backend/tests/live/conftest.py` resolves the key via `get_settings().require_anthropic_key()` at collection time (which reads `ANTHROPIC_API_KEY` from env through pydantic-settings), so the bridged var reaches the auto-skip exactly the same way a shell-exported one would. Same rule for any other tool you wire to the harness — never reuse a name the host process's SDK reads.
+The `VAR=value command` form scopes the assignment to that one child process. `backend/tests/live/conftest.py` resolves the key via `get_settings().require_llm_api_key()` at collection time (reading `LLM_API_KEY` through pydantic-settings), so the bridged var reaches the auto-skip exactly the same way a shell-exported one would.
 
-This restriction does **not** apply to GitHub Actions (runners don't host Claude Code), Docker, devcontainers, or local dev shells — name the secret `ANTHROPIC_API_KEY` directly in those, matching the SDK convention.
+**Historical context (resolved):** Before the rename, the engine read `ANTHROPIC_API_KEY` directly. The Anthropic SDK auto-discovers `ANTHROPIC_API_KEY`, `ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN` from process env, so setting our config var as a session-wide secret in the Claude Code harness shadowed the harness's own credentials and broke the session. The rename to `LLM_API_KEY` resolves this — set `LLM_API_KEY` freely in any env (Claude Code session, GitHub Actions, Docker, local shell). The provider-specific env vars used by individual SDKs (`ANTHROPIC_*`, `OPENAI_*`, `AWS_*`, etc.) are still off-limits in the harness for the same reason — but we no longer set those ourselves.
 
 ## Branding (read before any UI / copy work)
 
@@ -342,13 +357,13 @@ We have repeatedly hit "is the app stuck or working?" mysteries during manual te
 - **Bind context**, don't repeat fields. `RequestContextMiddleware` binds `request_id` per HTTP/WS request; the manager / WS layer binds `session_id`, `turn_id`, `role_id`. Once bound, every subsequent log line in that request inherits them — don't re-pass.
 - **`event` is reserved** by structlog (the message key). Don't pass an `event=` kwarg — use `audit_kind`, `tool_name`, etc.
 - **Log every external boundary**:
-  - **LLM calls** — `llm_call_start` / `llm_call_complete` (or `llm_call_failed`) with `tier`, `model`, `duration_ms`, `usage`, `estimated_usd`, `tool_uses`, `stop_reason`. See `app/llm/client.py`.
+  - **LLM calls** — `llm_call_start` / `llm_call_complete` (or `llm_call_failed`) with `tier`, `model`, `duration_ms`, `usage`, `estimated_usd`, `tool_uses`, `stop_reason`. Both backends emit the same shape — see `app/llm/client.py` (Anthropic-direct) and `app/llm/clients/litellm_client.py` (LiteLLM).
   - **State transitions** — every `SessionState` change emits a `session_event` line with `audit_kind`, `state`, `turn_index`. See `SessionManager._emit`.
   - **WebSocket connect/disconnect** — `ws_connected` / `ws_disconnected` with `session_id`, `role_id`, `kind`.
   - **Tool dispatch** — `tool_use` / `tool_use_rejected` (already audit-emitted).
   - **Extension dispatch** — `extension_invoked` / `extension_dispatch_failed`.
 - **Every `try/except` that catches a broad exception must log it** before re-raising or swallowing. Silent swallows are bugs.
-- **Don't log secrets**. `SESSION_SECRET`, `ANTHROPIC_API_KEY`, raw join tokens, or full participant message bodies (preview to ≤120 chars).
+- **Don't log secrets**. `SESSION_SECRET`, `LLM_API_KEY`, raw join tokens, or full participant message bodies (preview to ≤120 chars).
 - **Don't log oversized payloads**. The `_is_oversized` helper in `sessions/manager.py` caps individual fields; reuse it for any wide payload.
 
 ### Browser (TypeScript / `console.*`)

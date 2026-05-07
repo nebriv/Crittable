@@ -27,9 +27,9 @@ from scripts.live_recovery_check import _build_play_messages, _build_session
 
 
 async def main() -> int:
-    api_key = os.environ["ANTHROPIC_API_KEY"]
+    api_key = os.environ["LLM_API_KEY"]
     settings = get_settings()
-    client = AsyncAnthropic(api_key=api_key, base_url=settings.anthropic_base_url)
+    client = AsyncAnthropic(api_key=api_key, base_url=settings.llm_api_base)
     session = _build_session()
     system_blocks = build_play_system_blocks(session, registry=freeze_bundle(ExtensionBundle()))
     messages = _build_play_messages(session)

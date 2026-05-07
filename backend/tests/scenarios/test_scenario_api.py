@@ -89,7 +89,7 @@ def test_list_scenarios_gated_off_404(monkeypatch: pytest.MonkeyPatch) -> None:
     route exists."""
 
     monkeypatch.setenv("DEV_TOOLS_ENABLED", "false")
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+    monkeypatch.setenv("LLM_API_KEY", "sk-ant-test")
     reset_settings_cache()
     from app.main import create_app
 

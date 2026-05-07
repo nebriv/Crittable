@@ -36,7 +36,7 @@ ModelTier = Literal["play", "setup", "aar", "guardrail"]
 # ``dispatch._reject_if_xml_emission``). To prevent the emission in the
 # first place, the setup tier defaults to Sonnet 4.6 — same model as
 # ``play``, no XML-fallback quirk. Operators who need to dial back to
-# Haiku for cost reasons can still set ``ANTHROPIC_MODEL_SETUP=claude-
+# Haiku for cost reasons can still set ``LLM_MODEL_SETUP=claude-
 # haiku-4-5``; the rejection layer + 12k token budget + JSON-only prompt
 # instruction will catch the resulting XML emissions, but the failure
 # mode is no longer the default.
@@ -92,7 +92,7 @@ _TEMPERATURE_DEFAULTS: dict[ModelTier, float | None] = {
 }
 
 # Per-tier timeout defaults (seconds). ``None`` means "inherit
-# ANTHROPIC_TIMEOUT_S". The guardrail explicitly tightens to 15 s
+# LLM_TIMEOUT_S". The guardrail explicitly tightens to 15 s
 # because the per-session lock is held during classification — a hung
 # Haiku call would otherwise freeze the session for the full 600 s.
 # AAR loosens to 900 s because Opus on a 30-message exercise can
@@ -125,27 +125,48 @@ class Settings(BaseSettings):
         env_ignore_empty=True,
     )
 
-    # ---- Anthropic -----------------------------------------------------
-    anthropic_api_key: SecretStr | None = Field(default=None, alias="ANTHROPIC_API_KEY")
-    # Optional ``base_url`` override for the AsyncAnthropic client. Lets
-    # the operator point the engine at an Anthropic-compatible proxy
-    # (Bedrock-via-litellm, OpenRouter's anthropic-compat endpoint, an
-    # internal LLM gateway, a self-hosted Anthropic-shaped server, etc.)
-    # without code changes. ``None`` = use the SDK default
-    # (``https://api.anthropic.com``). See ``docs/llm_providers.md`` for
-    # worked examples.
-    anthropic_base_url: str | None = Field(default=None, alias="ANTHROPIC_BASE_URL")
-    anthropic_model: str | None = Field(default=None, alias="ANTHROPIC_MODEL")
-    anthropic_model_play: str | None = Field(default=None, alias="ANTHROPIC_MODEL_PLAY")
-    anthropic_model_setup: str | None = Field(default=None, alias="ANTHROPIC_MODEL_SETUP")
-    anthropic_model_aar: str | None = Field(default=None, alias="ANTHROPIC_MODEL_AAR")
-    anthropic_model_guardrail: str | None = Field(
-        default=None, alias="ANTHROPIC_MODEL_GUARDRAIL"
+    # ---- LLM (provider-agnostic; see app.llm.protocol.ChatClient) ------
+    llm_api_key: SecretStr | None = Field(default=None, alias="LLM_API_KEY")
+    # Optional ``base_url`` / ``api_base`` override. Anthropic-direct
+    # backend forwards to ``AsyncAnthropic(base_url=…)``; LiteLLM-routed
+    # backend forwards to ``litellm.acompletion(api_base=…)``. Either
+    # way, points the engine at a non-default endpoint (Anthropic-
+    # compatible proxy via litellm sidecar, OpenRouter, internal LLM
+    # gateway, self-hosted server, etc.). ``None`` = use the provider
+    # SDK default. See ``docs/llm_providers.md`` for worked examples.
+    llm_api_base: str | None = Field(default=None, alias="LLM_API_BASE")
+    llm_model: str | None = Field(default=None, alias="LLM_MODEL")
+    llm_model_play: str | None = Field(default=None, alias="LLM_MODEL_PLAY")
+    llm_model_setup: str | None = Field(default=None, alias="LLM_MODEL_SETUP")
+    llm_model_aar: str | None = Field(default=None, alias="LLM_MODEL_AAR")
+    llm_model_guardrail: str | None = Field(
+        default=None, alias="LLM_MODEL_GUARDRAIL"
     )
-    anthropic_max_retries: int = Field(default=4, alias="ANTHROPIC_MAX_RETRIES", ge=0)
-    anthropic_timeout_s: float = Field(
-        default=600.0, alias="ANTHROPIC_TIMEOUT_S", gt=0.0
+    llm_max_retries: int = Field(default=4, alias="LLM_MAX_RETRIES", ge=0)
+    llm_timeout_s: float = Field(
+        default=600.0, alias="LLM_TIMEOUT_S", gt=0.0
     )
+
+    # ---- LLM backend selection ----------------------------------------
+    # Selects which ``ChatClient`` implementation the app instantiates at
+    # startup. ``"anthropic"`` uses ``app.llm.client.LLMClient`` (talks to
+    # Anthropic-direct via the official SDK). ``"litellm"`` uses
+    # ``app.llm.clients.litellm_client.LiteLLMChatClient`` which routes
+    # through LiteLLM and supports ~100 providers (Azure OpenAI, AWS
+    # Bedrock, Vertex AI, OpenRouter, OpenAI-direct, internal LLM
+    # gateways, etc.). See `docs/llm-providers.md` and issue #193 for
+    # the multi-provider configuration story.
+    llm_backend: str = Field(default="anthropic", alias="LLM_BACKEND")
+
+    @field_validator("llm_backend")
+    @classmethod
+    def _validate_llm_backend(cls, value: str) -> str:
+        allowed = {"anthropic", "litellm"}
+        if value not in allowed:
+            raise ValueError(
+                f"LLM_BACKEND must be one of {sorted(allowed)}; got {value!r}"
+            )
+        return value
 
     # ---- Per-tier sampling tunables ------------------------------------
     # Each tier has independent ``max_tokens``, ``temperature`` and
@@ -176,7 +197,7 @@ class Settings(BaseSettings):
     )
 
     # ---- Per-tier timeout overrides ------------------------------------
-    # Falls back to ``ANTHROPIC_TIMEOUT_S`` (default 600s) when unset.
+    # Falls back to ``LLM_TIMEOUT_S`` (default 600s) when unset.
     # Operators typically want a *short* guardrail timeout (the per-session
     # lock is held during classification; a 10-minute hang freezes a
     # session) and a *long* AAR timeout (Opus on a 30-message exercise can
@@ -363,7 +384,7 @@ class Settings(BaseSettings):
         default=8192, alias="EXTENSION_TEMPLATE_MAX_BYTES", ge=64
     )
 
-    @field_validator("anthropic_max_retries", "max_sessions", "max_roles_per_session")
+    @field_validator("llm_max_retries", "max_sessions", "max_roles_per_session")
     @classmethod
     def _positive(cls, v: int) -> int:
         if v < 0:
@@ -399,17 +420,17 @@ class Settings(BaseSettings):
         """Resolve a model id for the given tier.
 
         Resolution order:
-        1. ``ANTHROPIC_MODEL_<TIER>`` if set,
-        2. ``ANTHROPIC_MODEL`` if set,
+        1. ``LLM_MODEL_<TIER>`` if set,
+        2. ``LLM_MODEL`` if set,
         3. tier default from :data:`_TIER_DEFAULTS`.
         """
 
-        tier_attr = f"anthropic_model_{tier}"
+        tier_attr = f"llm_model_{tier}"
         explicit = getattr(self, tier_attr, None)
         if explicit:
             return str(explicit)
-        if self.anthropic_model:
-            return str(self.anthropic_model)
+        if self.llm_model:
+            return str(self.llm_model)
         return _TIER_DEFAULTS[tier]
 
     def max_tokens_for(self, tier: ModelTier) -> int:
@@ -449,7 +470,7 @@ class Settings(BaseSettings):
         """Resolve the per-call timeout for the tier.
 
         Order: ``LLM_TIMEOUT_<TIER>`` env override → tier default in
-        :data:`_TIMEOUT_DEFAULTS` → ``ANTHROPIC_TIMEOUT_S`` (the global
+        :data:`_TIMEOUT_DEFAULTS` → ``LLM_TIMEOUT_S`` (the global
         SDK-wide default). The guardrail tier defaults to a tight 15 s
         so a hung classifier doesn't freeze the per-session lock for
         the full 600 s; AAR defaults to 900 s for long Opus runs.
@@ -461,7 +482,7 @@ class Settings(BaseSettings):
         per_tier_default = _TIMEOUT_DEFAULTS.get(tier)
         if per_tier_default is not None:
             return float(per_tier_default)
-        return float(self.anthropic_timeout_s)
+        return float(self.llm_timeout_s)
 
     def cors_origin_list(self) -> list[str] | Literal["*"]:
         """Parse ``CORS_ORIGINS``: ``*`` returns the literal ``"*"``, else a list."""
@@ -485,13 +506,22 @@ class Settings(BaseSettings):
         )
         return secrets.token_urlsafe(32)
 
-    def require_anthropic_key(self) -> str:
-        """Return the Anthropic API key or raise."""
+    def require_llm_api_key(self) -> str:
+        """Return ``LLM_API_KEY`` or raise.
 
-        if self.anthropic_api_key is not None:
-            return str(self.anthropic_api_key.get_secret_value())
+        Required when ``LLM_BACKEND=anthropic`` (default) or when
+        ``LLM_BACKEND=litellm`` and at least one tier targets the
+        ``anthropic/`` family. For LiteLLM deployments routing only to
+        non-Anthropic providers (OpenAI, Bedrock, Vertex, etc.), the
+        provider-native env var (``OPENAI_API_KEY``, ``AWS_*``,
+        ``GOOGLE_APPLICATION_CREDENTIALS``) is what LiteLLM auto-
+        discovers — ``LLM_API_KEY`` is not used and not required.
+        """
+
+        if self.llm_api_key is not None:
+            return str(self.llm_api_key.get_secret_value())
         raise RuntimeError(
-            "ANTHROPIC_API_KEY is required. Set it in the environment "
+            "LLM_API_KEY is required. Set it in the environment "
             "before starting the app."
         )
 

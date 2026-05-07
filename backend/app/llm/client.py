@@ -1,122 +1,50 @@
-"""Thin wrapper around `anthropic.AsyncAnthropic`.
+"""Anthropic-direct ``ChatClient`` implementation.
 
-Phase-2 responsibilities:
+Wraps ``anthropic.AsyncAnthropic`` and adapts it to the provider-agnostic
+``ChatClient`` ABC defined in ``app.llm.protocol``.
+
+Responsibilities:
+
 * hold a single shared client instance,
 * expose a typed ``acomplete`` that the SessionManager / export pipeline call,
 * attach a prompt-cache breakpoint on the system block,
-* keep a hook (`set_transport`) so tests can inject a deterministic transport,
+* keep a hook (``set_transport``) so tests can inject a deterministic transport,
 * track in-flight calls per session so the creator's activity panel can show
   "AI processing for 12s" in real time.
 
 The full streaming relay over the WebSocket lives in the SessionManager / WS
 layer; this client returns either a complete response or an async-iterator of
 events depending on ``stream``.
+
+Sibling implementation: ``app.llm.clients.litellm_client.LiteLLMChatClient``
+routes via LiteLLM and supports ~100 providers (Azure OpenAI, Bedrock,
+Vertex AI, OpenRouter, OpenAI-direct, etc.). The active backend is selected
+by the ``LLM_BACKEND`` env var, wired in ``app.main``.
 """
 
 from __future__ import annotations
 
 import asyncio
-import secrets
 import time
 from collections.abc import AsyncIterator
-from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol
 
 from ..config import ModelTier, Settings
 from ..logging_setup import get_logger
-from .cost import estimate_usd
+from ._shared import (
+    compute_cost_usd,
+    reconcile_tool_choice,
+    strip_deprecated_sampling_params,
+    validate_tool_choice,
+    with_message_cache,
+    with_system_cache,
+)
+from .protocol import ChatClient, LLMResult
 
 if TYPE_CHECKING:
-    from ..ws.connection_manager import ConnectionManager
+    pass
 
 _logger = get_logger("llm.client")
-
-# Allowlist of acceptable ``tool_choice`` shapes. Validates the kwarg at the
-# call boundary so a future caller (e.g. a less-trusted extension dispatch
-# path) can't pass an arbitrary forced-tool that side-effects beyond what
-# the engine intends. Currently only the strict-retry path uses
-# ``{"type": "any"}``.
-_VALID_TOOL_CHOICE_TYPES = frozenset({"auto", "any", "none", "tool"})
-
-
-# Model id prefixes that reject the ``temperature`` parameter at the API
-# boundary (HTTP 400 ``temperature is deprecated for this model``).
-# Anthropic's Opus 4.x family deprecates the param; sending it produces
-# the failure mode that broke AAR generation in production. Centralising
-# the list here means a future tier change (e.g. swapping play to Opus)
-# inherits the strip automatically rather than each call site having to
-# know.
-_MODELS_REJECTING_TEMPERATURE: tuple[str, ...] = (
-    "claude-opus-4-",
-)
-# Same shape, kept separate because top_p deprecation may diverge from
-# temperature on future models. Currently empty — Opus 4.x accepts
-# top_p — but the plumbing is here so a regression is one constant
-# away from being fixed.
-_MODELS_REJECTING_TOP_P: tuple[str, ...] = ()
-
-
-def _strip_deprecated_sampling_params(
-    model: str, kwargs: dict[str, Any]
-) -> list[str]:
-    """Drop sampling params the target model rejects.
-
-    Returns the list of dropped param names so the caller can audit-log
-    the strip. Mutates ``kwargs`` in place. Called immediately before
-    ``api.create`` so the strip applies regardless of which tier or
-    code path assembled the kwargs.
-
-    The map is conservative — only documented-deprecated combos. If the
-    Anthropic SDK starts rejecting a new param, add the model prefix to
-    the relevant tuple above and the regression is a one-line fix.
-    """
-
-    dropped: list[str] = []
-    if "temperature" in kwargs and any(
-        model.startswith(p) for p in _MODELS_REJECTING_TEMPERATURE
-    ):
-        dropped.append("temperature")
-        kwargs.pop("temperature", None)
-    if "top_p" in kwargs and any(
-        model.startswith(p) for p in _MODELS_REJECTING_TOP_P
-    ):
-        dropped.append("top_p")
-        kwargs.pop("top_p", None)
-    return dropped
-
-
-def _validate_tool_choice(tool_choice: dict[str, Any] | None) -> None:
-    if tool_choice is None:
-        return
-    if not isinstance(tool_choice, dict) or "type" not in tool_choice:
-        raise ValueError(
-            f"tool_choice must be a dict with a 'type' key; got {tool_choice!r}"
-        )
-    if tool_choice["type"] not in _VALID_TOOL_CHOICE_TYPES:
-        raise ValueError(
-            f"tool_choice type must be one of {sorted(_VALID_TOOL_CHOICE_TYPES)}; "
-            f"got {tool_choice['type']!r}"
-        )
-
-
-@dataclass
-class InFlightCall:
-    """One active LLM call. Used by the creator's activity panel.
-
-    ``call_id`` is a short opaque identifier so a real-time WS subscriber
-    (the participant + creator UI's "AI thinking" indicator, see
-    issue #63) can match a ``ai_thinking active=true`` event with the
-    later ``active=false`` event for the same call. Concurrent calls on
-    the same session (e.g. guardrail + interject) overlap, so the
-    indicator must reference-count rather than naively toggle.
-    """
-
-    tier: str
-    model: str
-    stream: bool
-    started_at: float  # time.monotonic() seconds
-    call_id: str = field(default_factory=lambda: secrets.token_hex(6))
-
 
 class _AnthropicCallable(Protocol):
     """Minimal surface the wrapper depends on. Concrete impl = AsyncAnthropic.messages."""
@@ -125,122 +53,16 @@ class _AnthropicCallable(Protocol):
     def stream(self, **kwargs: Any) -> Any: ...
 
 
-class LLMResult:
-    """Resolved (non-streamed) response with a cost estimate attached."""
-
-    def __init__(
-        self,
-        *,
-        model: str,
-        content: list[dict[str, Any]],
-        stop_reason: str | None,
-        usage: dict[str, int],
-        estimated_usd: float,
-    ) -> None:
-        self.model = model
-        self.content = content
-        self.stop_reason = stop_reason
-        self.usage = usage
-        self.estimated_usd = estimated_usd
-
-
-class LLMClient:
-    """Wrapper that owns the AsyncAnthropic instance for the process."""
+class LLMClient(ChatClient):
+    """Anthropic-direct ``ChatClient``. Owns the AsyncAnthropic instance for the process."""
 
     def __init__(self, *, settings: Settings) -> None:
+        super().__init__()
         self._settings = settings
         self._client: Any | None = None
         self._lock = asyncio.Lock()
         self._transport: _AnthropicCallable | None = None
         self._closed = False
-        # In-flight tracker: session_id -> list of InFlightCall (in case the
-        # session manager dispatches the AAR while a guardrail call is also
-        # active; rare but possible).
-        self._in_flight: dict[str, list[InFlightCall]] = {}
-        # ConnectionManager is wired in post-construction (set_connections)
-        # because the app builds the LLM client before the connection manager
-        # in some startup orderings. Until set, ``_begin_call`` / ``_end_call``
-        # skip the WS broadcast — non-fatal (the call still tracks via
-        # ``_in_flight`` for the polled ``/activity`` endpoint).
-        self._connections: ConnectionManager | None = None
-
-    def set_connections(self, connections: ConnectionManager) -> None:
-        """Wire the connection manager so begin/end-of-call events fan out
-        to participant + creator UIs as ``ai_thinking`` WS events. See
-        issue #63 (the "AI thinking" indicator was previously gated on
-        ``session.state``, which left interject / guardrail / setup-tier
-        / AAR-generation work invisible to clients).
-        """
-
-        self._connections = connections
-
-    def in_flight_for(self, session_id: str) -> list[InFlightCall]:
-        """Snapshot of active LLM calls for a session. Safe from any thread."""
-
-        return list(self._in_flight.get(session_id, ()))
-
-    def _begin_call(
-        self,
-        *,
-        session_id: str | None,
-        tier: ModelTier,
-        model: str,
-        stream: bool,
-    ) -> InFlightCall | None:
-        if not session_id:
-            return None
-        call = InFlightCall(tier=tier, model=model, stream=stream, started_at=time.monotonic())
-        self._in_flight.setdefault(session_id, []).append(call)
-        self._broadcast_thinking(session_id, call, active=True)
-        return call
-
-    def _end_call(self, session_id: str | None, call: InFlightCall | None) -> None:
-        if session_id and call is not None:
-            bucket = self._in_flight.get(session_id)
-            if bucket and call in bucket:
-                bucket.remove(call)
-            if bucket is not None and not bucket:
-                self._in_flight.pop(session_id, None)
-            self._broadcast_thinking(session_id, call, active=False)
-
-    def _broadcast_thinking(
-        self, session_id: str, call: InFlightCall, *, active: bool
-    ) -> None:
-        """Fire-and-forget ``ai_thinking`` event so every connected client
-        sees the indicator the moment a call starts / stops, regardless
-        of which tier or driver path triggered it.
-
-        ``record=False`` because the event is stale on reconnect — the
-        replay buffer would otherwise show "AI was thinking" forever
-        for a call that finished an hour ago. Failures are swallowed
-        but logged: a misbehaving WS handler must NOT break the LLM
-        call (a swallowed exception here is intentional, but per
-        CLAUDE.md "Logging rules" it has to be visible in the log).
-        """
-
-        if self._connections is None:
-            return
-        event: dict[str, Any] = {
-            "type": "ai_thinking",
-            "active": active,
-            "tier": call.tier,
-            "call_id": call.call_id,
-        }
-        if active:
-            event["started_at_ms"] = int(call.started_at * 1000)
-        try:
-            asyncio.get_running_loop().create_task(
-                self._connections.broadcast(session_id, event, record=False)
-            )
-        except Exception as exc:
-            _logger.warning(
-                "ai_thinking_broadcast_failed",
-                session_id=session_id,
-                call_id=call.call_id,
-                tier=call.tier,
-                active=active,
-                error=str(exc),
-            )
 
     # ---------------------------------------------------------------- setup
     def set_transport(self, transport: _AnthropicCallable) -> None:
@@ -253,7 +75,7 @@ class LLMClient:
         per-tier timeout override via ``with_options``.
 
         The base ``AsyncAnthropic`` client carries the global timeout
-        (``ANTHROPIC_TIMEOUT_S``); ``settings.timeout_for(tier)`` either
+        (``LLM_TIMEOUT_S``); ``settings.timeout_for(tier)`` either
         returns the same value (no override) or a tier-specific one.
         ``with_options`` is the SDK's per-call surface — cheap.
         """
@@ -263,7 +85,7 @@ class LLMClient:
             # Tests inject a flat transport that doesn't model with_options.
             return base
         per_tier = self._settings.timeout_for(tier)
-        if abs(per_tier - self._settings.anthropic_timeout_s) < 1e-6:
+        if abs(per_tier - self._settings.llm_timeout_s) < 1e-6:
             return base
         # ``self._client`` is the AsyncAnthropic; ``with_options`` returns
         # a derived client; we want its ``messages`` surface.
@@ -281,19 +103,19 @@ class LLMClient:
                     from anthropic import AsyncAnthropic
 
                     kwargs: dict[str, Any] = {
-                        "api_key": self._settings.require_anthropic_key(),
-                        "max_retries": self._settings.anthropic_max_retries,
-                        "timeout": self._settings.anthropic_timeout_s,
+                        "api_key": self._settings.require_llm_api_key(),
+                        "max_retries": self._settings.llm_max_retries,
+                        "timeout": self._settings.llm_timeout_s,
                     }
-                    if self._settings.anthropic_base_url:
+                    if self._settings.llm_api_base:
                         # Operators can point the engine at any
                         # Anthropic-compatible endpoint (Bedrock proxy,
                         # OpenRouter anthropic-compat, internal LLM
                         # gateway, etc). See docs/llm_providers.md.
-                        kwargs["base_url"] = self._settings.anthropic_base_url
+                        kwargs["base_url"] = self._settings.llm_api_base
                         _logger.info(
-                            "anthropic_base_url_override",
-                            base_url=self._settings.anthropic_base_url,
+                            "llm_api_base_override",
+                            base_url=self._settings.llm_api_base,
                         )
                         # Insecure-scheme warning. Plain ``http://`` to a
                         # non-localhost host means every prompt + tool
@@ -302,15 +124,15 @@ class LLMClient:
                         # is fine for local-LLM-via-litellm.
                         from urllib.parse import urlparse
 
-                        parsed = urlparse(self._settings.anthropic_base_url)
+                        parsed = urlparse(self._settings.llm_api_base)
                         host = (parsed.hostname or "").lower()
                         loopback = host in {"localhost", "127.0.0.1", "::1"} or host.startswith(
                             "127."
                         )
                         if parsed.scheme == "http" and not loopback:
                             _logger.warning(
-                                "anthropic_base_url_insecure",
-                                base_url=self._settings.anthropic_base_url,
+                                "llm_api_base_insecure",
+                                base_url=self._settings.llm_api_base,
                                 hint=(
                                     "Plain http:// to a non-loopback host: prompts"
                                     " + participant chat will egress in cleartext."
@@ -365,10 +187,11 @@ class LLMClient:
             max_tokens = self._settings.max_tokens_for(tier)
         kwargs: dict[str, Any] = {
             "model": model,
-            "system": _with_cache(system_blocks),
-            "messages": _with_message_cache(messages),
+            "system": with_system_cache(system_blocks, logger=_logger),
+            "messages": with_message_cache(messages, logger=_logger),
             "max_tokens": max_tokens,
         }
+        kept: list[dict[str, Any]] = []
         if tools:
             # Engine-side tool gate. Drop anything not in the tier's
             # ``allowed_tool_names`` (plus ``extension_tool_names`` for
@@ -388,9 +211,12 @@ class LLMClient:
                 )
             if kept:
                 kwargs["tools"] = kept
-        _validate_tool_choice(tool_choice)
-        if tool_choice:
-            kwargs["tool_choice"] = tool_choice
+        validate_tool_choice(tool_choice)
+        # Drop tool_choice if every tool was filtered out — Anthropic
+        # rejects ``tool_choice`` without ``tools`` with HTTP 400.
+        reconciled_tc = reconcile_tool_choice(kept, tool_choice, logger=_logger, tier=tier)
+        if reconciled_tc:
+            kwargs["tool_choice"] = reconciled_tc
         temperature = self._settings.temperature_for(tier)
         if temperature is not None:
             kwargs["temperature"] = temperature
@@ -414,7 +240,7 @@ class LLMClient:
         started = time.monotonic()
         try:
             api = await self._messages_for_tier(tier)
-            dropped_params = _strip_deprecated_sampling_params(model, kwargs)
+            dropped_params = strip_deprecated_sampling_params(model, kwargs)
             if dropped_params:
                 _logger.info(
                     "llm_call_params_stripped",
@@ -475,10 +301,11 @@ class LLMClient:
             max_tokens = self._settings.max_tokens_for(tier)
         kwargs: dict[str, Any] = {
             "model": model,
-            "system": _with_cache(system_blocks),
-            "messages": _with_message_cache(messages),
+            "system": with_system_cache(system_blocks, logger=_logger),
+            "messages": with_message_cache(messages, logger=_logger),
             "max_tokens": max_tokens,
         }
+        kept: list[dict[str, Any]] = []
         if tools:
             # Engine-side tool gate. Drop anything not in the tier's
             # ``allowed_tool_names`` (plus ``extension_tool_names`` for
@@ -498,9 +325,11 @@ class LLMClient:
                 )
             if kept:
                 kwargs["tools"] = kept
-        _validate_tool_choice(tool_choice)
-        if tool_choice:
-            kwargs["tool_choice"] = tool_choice
+        validate_tool_choice(tool_choice)
+        # Drop tool_choice if every tool was filtered out (HTTP 400 protection).
+        reconciled_tc = reconcile_tool_choice(kept, tool_choice, logger=_logger, tier=tier)
+        if reconciled_tc:
+            kwargs["tool_choice"] = reconciled_tc
         temperature = self._settings.temperature_for(tier)
         if temperature is not None:
             kwargs["temperature"] = temperature
@@ -523,7 +352,7 @@ class LLMClient:
         call = self._begin_call(session_id=session_id, tier=tier, model=model, stream=True)
         started = time.monotonic()
         api = await self._messages_for_tier(tier)
-        dropped_params = _strip_deprecated_sampling_params(model, kwargs)
+        dropped_params = strip_deprecated_sampling_params(model, kwargs)
         if dropped_params:
             _logger.info(
                 "llm_call_params_stripped",
@@ -579,107 +408,6 @@ class LLMClient:
         yield {"type": "complete", "result": result, "text": "".join(text_buffer)}
 
 
-def _with_cache(blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Place a cache breakpoint on the *first* system block.
-
-    The convention across the prompt builders (`build_play_system_blocks`,
-    `build_setup_system_blocks`, `build_aar_system_blocks`,
-    `build_guardrail_system_blocks`) is **stable content first**: the
-    first block carries identity / mission / hard boundaries / tool
-    protocol / frozen plan — content that does not change turn-to-turn
-    within a session. Subsequent blocks (when present) carry volatile
-    content (presence column, follow-ups, rate-limit notices).
-
-    Putting ``cache_control`` on the first block tells Anthropic to
-    cache the prefix [tools + first_block]. Volatile content in any
-    later block sits *after* the breakpoint, gets re-processed cheaply
-    each turn, and never invalidates the cached prefix. On a typical
-    play turn this turns ~5-7k input tokens into cache_reads at ~10%
-    of normal input price.
-
-    Anthropic supports up to 4 cache breakpoints per request; this
-    function uses 1. The other 3 are available — see ``_with_message_cache``
-    below for the multi-turn message-history breakpoint.
-    """
-
-    if not blocks:
-        return blocks
-    out = [dict(b) for b in blocks]
-    out[0] = {**out[0], "cache_control": {"type": "ephemeral"}}
-    return out
-
-
-def _with_message_cache(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Place a cache breakpoint on the last message in the conversation.
-
-    For multi-turn play, the messages array grows as the conversation
-    progresses but the *prefix* (everything before the latest content)
-    is identical between turns. Placing a breakpoint on the last
-    message of turn N means turn N+1 reads the entire prior
-    conversation from cache instead of reprocessing it.
-
-    The breakpoint goes on the last message regardless of role — this
-    is the standard multi-turn pattern from Anthropic's docs. When the
-    last message is the per-call ``_TURN_REMINDER``, this turn's cache
-    won't be reused by the next turn (since the reminder lands at a
-    different position next turn), but the breakpoint is harmless and
-    we still benefit from message caching when the structure is stable
-    (briefing turn, recovery passes).
-
-    The content of the last message may already be a list of blocks
-    (recovery path with tool_results). In that case we add
-    ``cache_control`` to the last block. For string-content messages we
-    convert to a single text block carrying the cache marker.
-
-    Always returns a NEW list — never aliases the caller's list.
-    On the empty-input or non-coercible-content paths the returned
-    copy carries no cache marker (logged at WARNING in the latter
-    case), so the caller can mutate the result freely without
-    affecting the input.
-    """
-
-    if not messages:
-        return list(messages)
-    out = [dict(m) for m in messages]
-    last = dict(out[-1])
-    content = last.get("content")
-    if isinstance(content, str):
-        last["content"] = [
-            {
-                "type": "text",
-                "text": content,
-                "cache_control": {"type": "ephemeral"},
-            }
-        ]
-    elif isinstance(content, list) and content:
-        new_content = [dict(b) if isinstance(b, dict) else b for b in content]
-        # Find the last block that's a dict we can attach cache_control to.
-        for i in range(len(new_content) - 1, -1, -1):
-            blk = new_content[i]
-            if isinstance(blk, dict):
-                blk["cache_control"] = {"type": "ephemeral"}
-                break
-        last["content"] = new_content
-    else:
-        # Empty list / None / int / non-coercible content shape — we
-        # fall through with no breakpoint. Log the skip at WARNING
-        # so a future refactor passing an unexpected content shape
-        # doesn't quietly drop our ~10× cache-read win without any
-        # signal in the audit log. Per CLAUDE.md "Logging rules"
-        # silent fallback paths are debugging blockers. We still
-        # return the (un-marked) copy ``out`` so the contract
-        # "always returns a new list" holds — callers don't need a
-        # second branch to handle aliasing.
-        _logger.warning(
-            "message_cache_skipped",
-            reason="non_coercible_content",
-            content_type=type(content).__name__,
-            role=last.get("role"),
-        )
-        return out
-    out[-1] = last
-    return out
-
 
 def _normalize_response(response: Any, *, model: str) -> LLMResult:
     """Coerce an Anthropic response (or a test-mock dict) into an :class:`LLMResult`."""
@@ -703,19 +431,12 @@ def _normalize_response(response: Any, *, model: str) -> LLMResult:
         "cache_read": int(usage_obj.get("cache_read_input_tokens", 0) or 0),
         "cache_creation": int(usage_obj.get("cache_creation_input_tokens", 0) or 0),
     }
-    estimated = estimate_usd(
-        model=model,
-        input_tokens=usage["input"],
-        output_tokens=usage["output"],
-        cache_read_tokens=usage["cache_read"],
-        cache_creation_tokens=usage["cache_creation"],
-    )
     return LLMResult(
         model=model,
         content=content,
         stop_reason=stop_reason,
         usage=usage,
-        estimated_usd=estimated,
+        estimated_usd=compute_cost_usd(model, usage),
     )
 
 
@@ -746,4 +467,4 @@ def _usage_to_dict(usage: Any) -> dict[str, Any]:
     }
 
 
-__all__ = ["LLMClient", "LLMResult", "_AnthropicCallable"]
+__all__ = ["LLMClient", "_AnthropicCallable"]

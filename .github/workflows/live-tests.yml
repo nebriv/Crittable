@@ -32,7 +32,7 @@ name: Live tests
 #
 # This workflow uses ``pull_request`` (NOT ``pull_request_target``).
 # Per the GitHub trust-boundary docs, ``pull_request`` from a fork
-# does NOT inject secrets — ``ANTHROPIC_API_KEY`` is unset, the live
+# does NOT inject secrets — ``LLM_API_KEY`` is unset, the live
 # conftest's auto-skip fires, and every test is marked SKIP cleanly.
 # A maintainer who wants to live-test a fork PR after code-review
 # triggers ``workflow_dispatch`` against the PR's head ref. We
@@ -55,7 +55,7 @@ on:
       - "backend/app/sessions/**"
       - "backend/app/extensions/**"
       # Settings layer — ``Settings.model_for(...)``, ``temperature_for``,
-      # and ``require_anthropic_key`` decide which model the live
+      # and ``require_llm_api_key`` decide which model the live
       # suite actually routes against. A change here can flip the
       # tier model or the temperature without touching prompts/tools.
       - "backend/app/config.py"
@@ -85,8 +85,8 @@ on:
         description: "Override LIVE_TEST_COST_CAP_USD ($). Blank = workflow default (2.00)."
         required: false
         default: ""
-      anthropic_model_play:
-        description: "Override ANTHROPIC_MODEL_PLAY (e.g. 'claude-sonnet-4-7'). Blank = backend default (claude-sonnet-4-6). Useful for validating a Sonnet N → N+1 migration without code changes."
+      llm_model_play:
+        description: "Override LLM_MODEL_PLAY (e.g. 'claude-sonnet-4-7'). Blank = backend default (claude-sonnet-4-6). Useful for validating a Sonnet N → N+1 migration without code changes."
         required: false
         default: ""
 
@@ -142,8 +142,8 @@ jobs:
           python -m pip install -e ".[dev]"
 
       - name: Run live-API suite (with dollar cap)
-        # ``ANTHROPIC_API_KEY`` is the standard SDK env var; pytest
-        # picks it up via ``Settings.require_anthropic_key()`` exactly
+        # ``LLM_API_KEY`` is the standard SDK env var; pytest
+        # picks it up via ``Settings.require_llm_api_key()`` exactly
         # as production does. ``LIVE_TEST_COST_CAP_USD`` is honored
         # by ``backend/tests/live/cost_cap.py``.
         #
@@ -163,7 +163,7 @@ jobs:
         # also re-validated inside ``cost_cap.py`` against numeric
         # parsing -- a non-numeric override falls back to the default.
         env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
           # ``github.event.inputs.<name>`` is the long-stable context that
           # works across every trigger — the modern ``inputs`` context is
           # only documented for ``workflow_dispatch`` / ``workflow_call``
@@ -178,15 +178,15 @@ jobs:
           # is non-empty; blank lets the backend's documented default
           # (``claude-sonnet-4-6``) apply. Reaches the backend via
           # the standard ``Settings.model_for("play")`` resolution.
-          ANTHROPIC_MODEL_PLAY: ${{ github.event.inputs.anthropic_model_play || '' }}
+          LLM_MODEL_PLAY: ${{ github.event.inputs.llm_model_play || '' }}
         run: |
           set -euo pipefail
-          if [[ -z "${ANTHROPIC_API_KEY:-}" ]]; then
+          if [[ -z "${LLM_API_KEY:-}" ]]; then
             # Single chip in the Actions UI rather than two consecutive
             # warnings. Triggered by fork PRs (intentional — no secrets
             # for forks per fork-safety policy) or by an upstream PR
             # before the secret is configured in repo settings.
-            echo "::warning::ANTHROPIC_API_KEY secret not set; live tests will auto-skip (configure the secret in repo settings, or for a fork PR ask a maintainer to dispatch the workflow against your head ref after code-review)."
+            echo "::warning::LLM_API_KEY secret not set; live tests will auto-skip (configure the secret in repo settings, or for a fork PR ask a maintainer to dispatch the workflow against your head ref after code-review)."
           fi
           # Word-split PYTEST_ARGS so a multi-arg filter like
           # ``-k test_aar -x`` survives. shellcheck disable=SC2086

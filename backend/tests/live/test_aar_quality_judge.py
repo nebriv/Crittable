@@ -12,7 +12,7 @@ to evaluate the AAR against rubrics that encode the contract:
 * the report doesn't leak the hidden plan into the participant view.
 
 Cost: ~$0.07 per test (one Opus AAR call + one Haiku judge call).
-Skipped unless ``ANTHROPIC_API_KEY`` is set.
+Skipped unless ``LLM_API_KEY`` is set.
 """
 
 from __future__ import annotations
@@ -48,7 +48,7 @@ def judge_client() -> AsyncAnthropic:
     test so the cached system block (``cache_control: ephemeral``)
     actually hits on the second + Nth invocation.
 
-    Reads the API key via ``Settings.require_anthropic_key()`` rather
+    Reads the API key via ``Settings.require_llm_api_key()`` rather
     than ``os.environ`` directly — see ``conftest.py`` for the
     rationale (matches the production resolution path; ``.env`` works
     the same as a shell env var).
@@ -61,18 +61,18 @@ def judge_client() -> AsyncAnthropic:
     the three callsites stay in lockstep.
     """
 
-    from tests.conftest import DUMMY_ANTHROPIC_API_KEY
+    from tests.conftest import DUMMY_LLM_API_KEY
 
     settings = get_settings()
-    key = settings.require_anthropic_key()
-    assert key != DUMMY_ANTHROPIC_API_KEY, (
+    key = settings.require_llm_api_key()
+    assert key != DUMMY_LLM_API_KEY, (
         "judge_client fixture must not run with the test-conftest "
         "dummy key; the live conftest's auto-skip should have "
         "intercepted this."
     )
     return AsyncAnthropic(
         api_key=key,
-        base_url=settings.anthropic_base_url,
+        base_url=settings.llm_api_base,
     )
 
 

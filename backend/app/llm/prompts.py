@@ -681,8 +681,9 @@ def build_play_system_blocks(
       itself is byte-identical across turns but lives in the volatile
       suffix so the cache boundary stays at the end of Block 9.
 
-    The cache breakpoint placed by ``LLMClient._with_cache`` lands on
-    the stable prefix, so tools + stable system content gets cached
+    The cache breakpoint placed by ``with_system_cache`` (in
+    ``app.llm._shared``, called by both backends) lands on the stable
+    prefix, so tools + stable system content gets cached
     across every turn while volatile content is re-processed cheaply
     per turn. This cuts per-turn input cost by ~85% on cache hits.
 

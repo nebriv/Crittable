@@ -9,14 +9,15 @@ prompt is composed at runtime.
 prompt as **two text blocks** — a stable prefix (Blocks 1–9, ~85% of
 play-tier system tokens) and a volatile suffix (Block 10 roster +
 presence column, Block 11 follow-ups, conditional Block 12 rate-limit
-notice). `LLMClient._with_cache` plants an `ephemeral` cache breakpoint
-on the stable prefix so the entire ~5–7k-token preamble (plus the
-deterministic tool list rendered before it) cache-reads at ~10% of
-input price on every subsequent turn within a session. Volatile
-content sits *after* the breakpoint and is reprocessed cheaply per
-turn — a single presence flip never invalidates the prefix.
+notice). `with_system_cache` (in `app.llm._shared`, called by both
+backends) plants an `ephemeral` cache breakpoint on the stable prefix
+so the entire ~5–7k-token preamble (plus the deterministic tool list
+rendered before it) cache-reads at ~10% of input price on every
+subsequent turn within a session. Volatile content sits *after* the
+breakpoint and is reprocessed cheaply per turn — a single presence
+flip never invalidates the prefix.
 
-`LLMClient._with_message_cache` plants a second breakpoint on the
+`with_message_cache` (same module) plants a second breakpoint on the
 last message of every call, so multi-turn play also benefits from
 incremental message-history caching. Setup, AAR, and guardrail tiers
 return a single block and behave the same as the pre-split contract:
@@ -68,7 +69,7 @@ this drift. We do not paper over the failure with a recovery layer;
 we eliminate the conditions that produce it and hard-reject any call
 that still tries XML.
 
-1. **Model.** `ANTHROPIC_MODEL_SETUP` defaults to `claude-sonnet-4-6`
+1. **Model.** `LLM_MODEL_SETUP` defaults to `claude-sonnet-4-6`
    (same as the play tier). The setup tier was originally on
    `claude-haiku-4-5` for cost, but Haiku produced the XML-fallback
    loop. Sonnet does not. Operators who want the cheaper tier can

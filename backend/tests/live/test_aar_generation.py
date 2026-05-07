@@ -2,7 +2,7 @@
 
 Each test hits the real Anthropic API and asserts that the AAR generator
 produces a structured ``finalize_report`` tool call with the fields the
-markdown renderer relies on. Skipped unless ``ANTHROPIC_API_KEY`` is set.
+markdown renderer relies on. Skipped unless ``LLM_API_KEY`` is set.
 Cost: ~$0.05 per run (one Opus call per test, ~5K input + ~1.5K output).
 
 Why this exists
@@ -357,7 +357,7 @@ def _build_user_payload(session: Session, audit: AuditLog) -> str:
 # NOTE: there used to be a module-level "defense in depth" skip guard
 # here that evaluated ``get_settings()`` at IMPORT time. It was a
 # misfire: the parent ``backend/tests/conftest.py`` injects a dummy
-# ``ANTHROPIC_API_KEY`` BEFORE this module is imported, so the key
+# ``LLM_API_KEY`` BEFORE this module is imported, so the key
 # always resolved at import; the guard always fired; every test in
 # this file was silently skipped on every run. The directory-level
 # ``backend/tests/live/conftest.py`` handles the real skip-when-no-

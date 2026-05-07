@@ -1,9 +1,27 @@
 """Per-run dollar cap for the live-API test suite.
 
-Tracks cumulative Anthropic spend across every call made by tests in
+Tracks cumulative LLM spend across every call made by tests in
 ``backend/tests/live/`` and aborts the suite once the cumulative cost
 crosses the configured cap. Without this, a runaway loop or a stray
 ``pytest --count=N`` could quietly torch the live-test budget.
+
+Two cost-recording paths
+========================
+
+Crittable supports two LLM backends (``LLM_BACKEND=anthropic|litellm``).
+The cap covers both:
+
+* **Anthropic-direct.** ``_wrap_messages_create`` patches
+  ``AsyncAnthropic.messages.create`` and ``.stream`` and is hooked up via
+  the session-scoped autouse fixture in ``conftest.py``. Records on every
+  ``messages.create`` response and on ``stream.get_final_message()``.
+* **LiteLLM.** ``install_litellm_cost_tracking`` registers a
+  ``litellm.callbacks`` handler that records on every successful and
+  failed completion. Same fixture installs both — a single pytest run
+  can exercise either backend without rewiring.
+
+Both paths feed the same module-singleton ``_CostTracker``, so the cap
+fires regardless of which backend is in use.
 
 Why we need this even with low per-test cost
 --------------------------------------------
@@ -23,8 +41,9 @@ What's tracked
 Every ``AsyncAnthropic.messages.create`` call made during the live
 session is intercepted via an ``__init__`` wrapper installed in the
 session-scoped autouse fixture below. Each call's ``response.usage``
-is multiplied by the per-million-token rate from ``app.llm.cost`` so
-the test cap matches the per-call cost the product itself reports.
+is fed through ``app.llm._shared.compute_cost_usd`` (which talks to
+``litellm.cost_per_token``) so the test cap matches the per-call cost
+the product itself reports.
 
 Coverage:
   * The ``anthropic_client`` fixture in ``conftest.py`` -> wrapped on construction.
@@ -74,10 +93,19 @@ the cap fires.
 from __future__ import annotations
 
 import os
+import re
+from collections.abc import Callable
 from typing import Any
 
-from app.llm.cost import estimate_usd
+from app.llm._shared import compute_cost_usd
 from app.logging_setup import get_logger
+
+# Trailing ``-YYYYMMDD`` date suffix on LiteLLM-returned model ids
+# (e.g. ``claude-haiku-4-5-20251001`` → ``claude-haiku-4-5``). Anthropic-direct
+# returns the bare name; LiteLLM normalizes to the dated id. ``litellm.cost_per_token``
+# tolerates either form, but ``_normalize_model_name`` strips on lookup so
+# the cap reads against the same key shape regardless of backend.
+_LITELLM_DATE_SUFFIX = re.compile(r"-\d{8}$")
 
 _logger = get_logger("tests.live.cost_cap")
 
@@ -144,14 +172,18 @@ class _CostTracker:
     def record(self, *, model: str, usage: Any) -> None:
         if usage is None:
             return
-        cost = estimate_usd(
-            model=model or "claude-sonnet-4-6",
-            input_tokens=int(getattr(usage, "input_tokens", 0) or 0),
-            output_tokens=int(getattr(usage, "output_tokens", 0) or 0),
-            cache_read_tokens=int(getattr(usage, "cache_read_input_tokens", 0) or 0),
-            cache_creation_tokens=int(
-                getattr(usage, "cache_creation_input_tokens", 0) or 0
-            ),
+        cost = compute_cost_usd(
+            model or "claude-sonnet-4-6",
+            {
+                "input": int(getattr(usage, "input_tokens", 0) or 0),
+                "output": int(getattr(usage, "output_tokens", 0) or 0),
+                "cache_read": int(
+                    getattr(usage, "cache_read_input_tokens", 0) or 0
+                ),
+                "cache_creation": int(
+                    getattr(usage, "cache_creation_input_tokens", 0) or 0
+                ),
+            },
         )
         self.cumulative_usd += cost
         self.calls += 1
@@ -261,6 +293,195 @@ def _wrap_messages_create(client: Any) -> None:
 
         messages.stream = tracked_stream
     client._cost_cap_wrapped = True
+
+
+def _normalize_model_name(model: str) -> str:
+    """Map a LiteLLM-returned model id back to the bare name LiteLLM's
+    pricing JSON keys on.
+
+    Anthropic-direct: ``claude-haiku-4-5-20251001`` → ``claude-haiku-4-5``.
+    LiteLLM-via-Bedrock: ``bedrock/anthropic.claude-3-5-sonnet-20240620-v1:0``
+    has trailing ``-v1:0`` after the date so the date-strip pattern
+    intentionally doesn't match — that's fine; ``compute_cost_usd``
+    returns 0.0 with a WARNING for unknown ids and the cap still gets
+    a usable cost figure (under-counts only the unknown-model lines).
+    Provider-prefix stripping is best-effort: only the first ``/`` is
+    removed (``openrouter/anthropic/claude-…`` becomes
+    ``anthropic/claude-…``, which still won't match — see the
+    ``response_cost`` fallback in ``_LiteLLMCostHandler._record`` which
+    consumes LiteLLM's own per-call ``response_cost`` for non-Anthropic
+    providers).
+    """
+
+    if not model:
+        return ""
+    if "/" in model:
+        model = model.split("/", 1)[1]
+    return _LITELLM_DATE_SUFFIX.sub("", model)
+
+
+def _build_litellm_cost_handler() -> Any:
+    """Build a ``CustomLogger`` subclass instance LiteLLM's dispatcher
+    will actually invoke. Done as a function so the import of
+    ``CustomLogger`` is deferred — ``cost_cap.py`` is imported by tests
+    that don't need LiteLLM (most of the unit suite).
+
+    Why a subclass: LiteLLM's success/failure dispatchers gate on
+    ``isinstance(callback, CustomLogger)`` before calling ``log_*_event``.
+    A duck-typed bare object is silently skipped. Caught by QA review
+    on issue #193 — the cap was inert against ``LLM_BACKEND=litellm``
+    until the subclass landed.
+    """
+
+    from litellm.integrations.custom_logger import CustomLogger
+
+    class _LiteLLMCostHandler(CustomLogger):
+        """Records LiteLLM call cost into the shared ``_CostTracker``.
+
+        Idempotency: LiteLLM's async dispatcher fires both
+        ``log_success_event`` (sync, run in a thread) and
+        ``async_log_success_event`` for the same call. We dedupe on
+        ``litellm_call_id`` (a per-call uuid LiteLLM injects into
+        ``kwargs``) to avoid double-counting.
+
+        Failure handling: ``log_failure_event`` is a no-op. The success
+        path is the source of truth for billed usage; recording on
+        failure double-counts on a 429 → retry → 200 sequence
+        because LiteLLM fires both events.
+
+        Cost source: prefer LiteLLM's own ``response_cost`` (the
+        per-call cost LiteLLM injects into ``kwargs`` for free). Fall
+        back to ``compute_cost_usd`` (which also goes through LiteLLM's
+        pricing JSON) only for Anthropic-shaped
+        names where we have first-party pricing.
+        """
+
+        def __init__(self) -> None:
+            super().__init__()
+            self._seen_call_ids: set[str] = set()
+
+        def log_success_event(
+            self,
+            kwargs: dict[str, Any],
+            response_obj: Any,
+            start_time: Any,
+            end_time: Any,
+        ) -> None:
+            self._record_once(kwargs, response_obj)
+
+        async def async_log_success_event(
+            self,
+            kwargs: dict[str, Any],
+            response_obj: Any,
+            start_time: Any,
+            end_time: Any,
+        ) -> None:
+            self._record_once(kwargs, response_obj)
+
+        # log_failure_event / async_log_failure_event intentionally
+        # default to the base class's no-op. Recording on failure
+        # double-counts retried calls.
+
+        def _record_once(self, kwargs: dict[str, Any], response: Any) -> None:
+            if response is None:
+                return
+            call_id = (
+                kwargs.get("litellm_call_id") if isinstance(kwargs, dict) else None
+            ) or id(response)
+            key = str(call_id)
+            if key in self._seen_call_ids:
+                return
+            self._seen_call_ids.add(key)
+            self._record(kwargs, response)
+
+        @staticmethod
+        def _record(kwargs: dict[str, Any], response: Any) -> None:
+            usage = getattr(response, "usage", None)
+            if usage is None:
+                return
+            model_raw = (
+                kwargs.get("model") if isinstance(kwargs, dict) else None
+            ) or getattr(response, "model", "") or ""
+
+            # Prefer LiteLLM's own per-call ``response_cost`` when
+            # present — already-computed and per-provider authoritative.
+            # Fall back to ``compute_cost_usd`` (also via LiteLLM's
+            # pricing JSON) only when LiteLLM didn't supply one
+            # (older versions, providers without per-call cost).
+            response_cost = (
+                kwargs.get("response_cost") if isinstance(kwargs, dict) else None
+            )
+            tracker = get_tracker()
+            if isinstance(response_cost, (int, float)) and response_cost > 0:
+                tracker.cumulative_usd += float(response_cost)
+                tracker.calls += 1
+                if (
+                    tracker.cap_enabled
+                    and tracker.cumulative_usd > tracker.cap_usd
+                    and tracker.abort_message is None
+                ):
+                    tracker.abort_message = (
+                        f"live-test cost cap exceeded: ${tracker.cumulative_usd:.4f} "
+                        f"> ${tracker.cap_usd:.4f} after {tracker.calls} live API "
+                        f"calls (LiteLLM-routed). Raise {ENV_VAR_NAME} or narrow "
+                        "the suite (pytest -k <filter>)."
+                    )
+                    _logger.warning(
+                        "live_test_cost_cap_exceeded",
+                        cumulative_usd=round(tracker.cumulative_usd, 4),
+                        cap_usd=tracker.cap_usd,
+                        calls=tracker.calls,
+                        source="litellm_response_cost",
+                    )
+                return
+
+            # Fallback: estimate via local table on Anthropic-shaped names.
+            tracker.record(model=_normalize_model_name(model_raw), usage=usage)
+
+    return _LiteLLMCostHandler()
+
+
+def install_litellm_cost_tracking() -> Callable[[], None]:
+    """Register a ``litellm.callbacks`` handler that records cost into the
+    shared ``_CostTracker``. Returns a teardown callable.
+
+    No-ops gracefully if ``litellm`` isn't importable (live-test
+    auto-skip will catch that anyway).
+
+    Mutates ``litellm.callbacks`` in place so any cached reference held
+    by ``litellm`` internals (the ``_async_*`` lists are populated lazily
+    from this list on first use) sees the install/teardown atomically.
+    """
+
+    try:
+        import litellm
+    except ImportError:
+        return lambda: None
+
+    handler = _build_litellm_cost_handler()
+    # In-place mutation — see docstring.
+    if not hasattr(litellm, "callbacks") or litellm.callbacks is None:
+        litellm.callbacks = []
+    litellm.callbacks.insert(0, handler)
+
+    def teardown() -> None:
+        try:
+            litellm.callbacks.remove(handler)
+        except ValueError:
+            # Already removed or list was rebound by another caller.
+            pass
+        # Belt-and-braces: also remove from any async-side list that
+        # may have been hoisted from ``callbacks`` on first use.
+        for name in ("_async_input_callback", "_async_success_callback",
+                     "_async_failure_callback"):
+            lst = getattr(litellm, name, None)
+            if isinstance(lst, list):
+                try:
+                    lst.remove(handler)
+                except ValueError:
+                    pass
+
+    return teardown
 
 
 class _TrackedStreamManager:

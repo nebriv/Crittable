@@ -186,7 +186,7 @@ _NON_TOOL_ALLOWLIST = frozenset(
         "kind",
         "type",
         # CLI / config / file paths the prompts mention
-        "ANTHROPIC_API_KEY",
+        "LLM_API_KEY",
         "claude_sonnet",
         # Markdown-ish words the prompts say in backticks for emphasis
         "any",

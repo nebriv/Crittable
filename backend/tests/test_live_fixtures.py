@@ -2,7 +2,7 @@
 
 This module lives at ``backend/tests/test_live_fixtures.py`` (NOT
 under ``tests/live/``).  The directory-level conftest auto-skips
-every test under ``tests/live/`` when ``ANTHROPIC_API_KEY`` is
+every test under ``tests/live/`` when ``LLM_API_KEY`` is
 absent, which would also skip a regression test that lived
 alongside the suite — defeating the entire point.  This file lives
 one level up so it runs in every CI invocation regardless of the
@@ -11,9 +11,9 @@ live-test files for known footgun patterns.
 
 What it locks:
 
-1. **No direct ``os.environ`` reads of ``ANTHROPIC_API_KEY`` in
+1. **No direct ``os.environ`` reads of ``LLM_API_KEY`` in
    ``tests/live/``.**  The production code resolves the key via
-   ``Settings.anthropic_api_key`` (pydantic-settings), which honors
+   ``Settings.llm_api_key`` (pydantic-settings), which honors
    both shell env vars AND (via the live conftest's
    ``_load_project_root_dotenv``) a project-root ``.env`` file.
    Reading ``os.environ`` directly diverges: a contributor whose key
@@ -48,15 +48,15 @@ from __future__ import annotations
 import pathlib
 import re
 
-# Match either ``os.environ["ANTHROPIC_API_KEY"]`` or
-# ``os.environ.get("ANTHROPIC_API_KEY"...)`` in any quoting / spacing.
+# Match either ``os.environ["LLM_API_KEY"]`` or
+# ``os.environ.get("LLM_API_KEY"...)`` in any quoting / spacing.
 # Negative lookbehind on backtick excludes occurrences inside RST-
 # style docstring code spans (`` `` ``os.environ...`` ``) so a file
 # that DOCUMENTS the rule by quoting the bad pattern doesn't trip
 # its own check. Real code doesn't precede ``os.environ`` with a
 # backtick.
 _BAD_OS_ENVIRON_PATTERN = re.compile(
-    r"""(?<!`)os\.environ(?:\.get)?\s*[\[(]\s*['"]ANTHROPIC_API_KEY['"]"""
+    r"""(?<!`)os\.environ(?:\.get)?\s*[\[(]\s*['"]LLM_API_KEY['"]"""
 )
 
 # Match path-substring checks like ``"tests/live" in str(item.fspath)``
@@ -107,11 +107,11 @@ def _grep_live_dir(pattern: re.Pattern[str]) -> list[tuple[str, int, str]]:
     return hits
 
 
-def test_no_direct_os_environ_anthropic_api_key_in_tests_live() -> None:
+def test_no_direct_os_environ_llm_api_key_in_tests_live() -> None:
     """Source-grep ``backend/tests/live/`` for the bad pattern.
 
     Why this test exists: the production code reads the API key via
-    ``Settings.anthropic_api_key`` so a ``.env`` file (loaded by the
+    ``Settings.llm_api_key`` so a ``.env`` file (loaded by the
     live conftest's ``_load_project_root_dotenv``) is honored.
     Test fixtures that read ``os.environ`` directly silently force
     every contributor to export the var into their shell — a
@@ -120,24 +120,24 @@ def test_no_direct_os_environ_anthropic_api_key_in_tests_live() -> None:
     rather than at "I ran ``pytest tests/live/`` and got 24
     confusing errors" time.
 
-    To resolve a fail: swap ``os.environ["ANTHROPIC_API_KEY"]`` for
-    ``get_settings().require_anthropic_key()`` (or the equivalent
+    To resolve a fail: swap ``os.environ["LLM_API_KEY"]`` for
+    ``get_settings().require_llm_api_key()`` (or the equivalent
     Settings-resolved value).  See ``conftest.py``'s ``anthropic_client``
     fixture for the canonical pattern.
     """
 
     hits = _grep_live_dir(_BAD_OS_ENVIRON_PATTERN)
     assert not hits, (
-        "Direct ``os.environ`` access of ``ANTHROPIC_API_KEY`` found "
+        "Direct ``os.environ`` access of ``LLM_API_KEY`` found "
         "in tests/live/ — the production code uses pydantic-settings "
-        "(``Settings.anthropic_api_key``) which reads BOTH shell env "
+        "(``Settings.llm_api_key``) which reads BOTH shell env "
         "vars AND a project-root ``.env`` file (the live conftest "
         "loads it explicitly). Reading ``os.environ`` directly "
         "diverges: a contributor with the key in ``.env`` will see "
         "``KeyError`` even though the application boots cleanly.\n\n"
         "Replace with:\n"
         "    settings = get_settings()\n"
-        "    settings.require_anthropic_key()  # for the api_key param\n\n"
+        "    settings.require_llm_api_key()  # for the api_key param\n\n"
         "Hits:\n"
         + "\n".join(f"  {path}:{ln} → {body}" for path, ln, body in hits)
     )

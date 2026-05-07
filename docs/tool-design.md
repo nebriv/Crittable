@@ -185,7 +185,7 @@ this loop:
 
 1. **Run the live tool-routing suite** to capture the current state:
    ```bash
-   cd backend && ANTHROPIC_API_KEY=sk-ant-... pytest tests/live/ -v
+   cd backend && LLM_API_KEY=sk-ant-... pytest tests/live/ -v
    ```
 2. **Add a case** to `tests/live/test_tool_routing.py` that exercises
    the scenario you care about. Both a positive case (the tool is
@@ -205,7 +205,7 @@ this loop:
 The live tool-routing suite costs ~$0.10 per full run (9 tests × ~$0.01
 each). The full live suite (incl. AAR / consistency / edge-fixture /
 long-context cases) is ~$1.40 per run. Auto-skipped unless
-`ANTHROPIC_API_KEY` is set. Run it:
+`LLM_API_KEY` is set. Run it:
 
 - After every prompt edit to Block 6.
 - After every tool description change.

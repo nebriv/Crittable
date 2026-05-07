@@ -9,8 +9,8 @@ from app.config import Settings
 
 def test_defaults_match_docs(monkeypatch) -> None:
     for key in (
-        "ANTHROPIC_API_KEY",
-        "ANTHROPIC_MODEL",
+        "LLM_API_KEY",
+        "LLM_MODEL",
         "SESSION_SECRET",
         "CORS_ORIGINS",
     ):
@@ -26,8 +26,8 @@ def test_defaults_match_docs(monkeypatch) -> None:
 
 
 def test_model_tier_resolution(monkeypatch) -> None:
-    monkeypatch.setenv("ANTHROPIC_MODEL_PLAY", "play-explicit")
-    monkeypatch.setenv("ANTHROPIC_MODEL", "fallback-everything")
+    monkeypatch.setenv("LLM_MODEL_PLAY", "play-explicit")
+    monkeypatch.setenv("LLM_MODEL", "fallback-everything")
     s = Settings()
     assert s.model_for("play") == "play-explicit"
     assert s.model_for("setup") == "fallback-everything"
@@ -37,11 +37,11 @@ def test_model_tier_resolution(monkeypatch) -> None:
 
 def test_model_tier_default(monkeypatch) -> None:
     for key in (
-        "ANTHROPIC_MODEL",
-        "ANTHROPIC_MODEL_PLAY",
-        "ANTHROPIC_MODEL_SETUP",
-        "ANTHROPIC_MODEL_AAR",
-        "ANTHROPIC_MODEL_GUARDRAIL",
+        "LLM_MODEL",
+        "LLM_MODEL_PLAY",
+        "LLM_MODEL_SETUP",
+        "LLM_MODEL_AAR",
+        "LLM_MODEL_GUARDRAIL",
     ):
         monkeypatch.delenv(key, raising=False)
     s = Settings()
@@ -70,13 +70,13 @@ def test_session_secret_warning_when_unset(monkeypatch) -> None:
     assert any("SESSION_SECRET unset" in str(w.message) for w in caught)
 
 
-def test_require_anthropic_key_strict(monkeypatch) -> None:
-    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+def test_require_llm_api_key_strict(monkeypatch) -> None:
+    monkeypatch.delenv("LLM_API_KEY", raising=False)
     s = Settings()
     import pytest
 
-    with pytest.raises(RuntimeError, match="ANTHROPIC_API_KEY"):
-        s.require_anthropic_key()
+    with pytest.raises(RuntimeError, match="LLM_API_KEY"):
+        s.require_llm_api_key()
 
 
 # --------------------------- per-tier sampling knobs -----------------------
@@ -160,22 +160,22 @@ def test_top_p_only_returned_when_explicitly_set(monkeypatch) -> None:
     assert s2.top_p_for("setup") is None
 
 
-def test_anthropic_base_url_default_is_unset(monkeypatch) -> None:
-    monkeypatch.delenv("ANTHROPIC_BASE_URL", raising=False)
+def test_llm_api_base_default_is_unset(monkeypatch) -> None:
+    monkeypatch.delenv("LLM_API_BASE", raising=False)
     s = Settings()
-    assert s.anthropic_base_url is None
+    assert s.llm_api_base is None
 
 
-def test_anthropic_base_url_can_be_overridden(monkeypatch) -> None:
-    monkeypatch.setenv("ANTHROPIC_BASE_URL", "http://litellm:4000")
-    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+def test_llm_api_base_can_be_overridden(monkeypatch) -> None:
+    monkeypatch.setenv("LLM_API_BASE", "http://litellm:4000")
+    monkeypatch.delenv("LLM_API_KEY", raising=False)
     s = Settings()
-    assert s.anthropic_base_url == "http://litellm:4000"
+    assert s.llm_api_base == "http://litellm:4000"
     # Anthropic key is still required (the override doesn't bypass it).
     import pytest
 
-    with pytest.raises(RuntimeError, match="ANTHROPIC_API_KEY"):
-        s.require_anthropic_key()
+    with pytest.raises(RuntimeError, match="LLM_API_KEY"):
+        s.require_llm_api_key()
 
 
 # --------------------------- access-log scrubber ---------------------------
@@ -225,7 +225,7 @@ def test_scrub_path_passthrough_for_unrelated_paths() -> None:
 
 def test_llm_client_omits_temperature_and_top_p_when_unset(monkeypatch) -> None:
     """The Anthropic SDK is forgiving but this contract matters when the
-    operator points ``ANTHROPIC_BASE_URL`` at a stricter Anthropic-shaped
+    operator points ``LLM_API_BASE`` at a stricter Anthropic-shaped
     proxy (some validate-then-reject unknown keys). Pin it: when no
     per-tier env override is set, the kwargs dict passed to
     ``messages.create`` must NOT contain ``temperature`` (for tiers
@@ -245,7 +245,7 @@ def test_llm_client_omits_temperature_and_top_p_when_unset(monkeypatch) -> None:
         "LLM_TOP_P_SETUP",
     ):
         monkeypatch.delenv(key, raising=False)
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.setenv("LLM_API_KEY", "test-key")
     s = Settings()
     mock = MockAnthropic({"play": [], "setup": []})
     llm = LLMClient(settings=s)
@@ -300,7 +300,7 @@ def test_max_participant_submission_chars_default_and_override(monkeypatch) -> N
 
 def test_timeout_for_uses_per_tier_defaults(monkeypatch) -> None:
     """Per-tier timeout resolution: explicit env override → per-tier
-    default → global ``ANTHROPIC_TIMEOUT_S``. The guardrail tier defaults
+    default → global ``LLM_TIMEOUT_S``. The guardrail tier defaults
     to a tight 15 s (locks the per-session lock during classification);
     AAR defaults to 900 s (long Opus runs); play/setup inherit the
     global 600 s default."""
@@ -310,7 +310,7 @@ def test_timeout_for_uses_per_tier_defaults(monkeypatch) -> None:
         "LLM_TIMEOUT_SETUP",
         "LLM_TIMEOUT_AAR",
         "LLM_TIMEOUT_GUARDRAIL",
-        "ANTHROPIC_TIMEOUT_S",
+        "LLM_TIMEOUT_S",
     ):
         monkeypatch.delenv(key, raising=False)
     s = Settings()
@@ -337,7 +337,7 @@ def test_llm_client_forwards_temperature_when_set(monkeypatch) -> None:
     from app.llm.client import LLMClient
     from tests.mock_anthropic import MockAnthropic
 
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.setenv("LLM_API_KEY", "test-key")
     monkeypatch.setenv("LLM_TEMPERATURE_PLAY", "0.3")
     monkeypatch.setenv("LLM_TOP_P_PLAY", "0.85")
     monkeypatch.setenv("LLM_MAX_TOKENS_PLAY", "777")
@@ -409,10 +409,10 @@ def test_empty_env_vars_fall_back_to_defaults(
     assert resolved.endswith("backend/scenarios")
 
 
-def test_create_app_refuses_without_anthropic_api_key() -> None:
+def test_create_app_refuses_without_llm_api_key() -> None:
     """Issue #118: importing ``app.main`` (which evaluates
     ``app = create_app()`` at module level) must fail at the process
-    boundary when ``ANTHROPIC_API_KEY`` is unset.
+    boundary when ``LLM_API_KEY`` is unset.
 
     Pre-fix the check lived in the lifespan, so uvicorn printed
     ``Started server process``, swallowed the lifespan traceback, then
@@ -431,7 +431,7 @@ def test_create_app_refuses_without_anthropic_api_key() -> None:
     import sys
 
     env = os.environ.copy()
-    env.pop("ANTHROPIC_API_KEY", None)
+    env.pop("LLM_API_KEY", None)
     env.setdefault("SESSION_SECRET", "x" * 32)
 
     result = subprocess.run(
@@ -446,7 +446,7 @@ def test_create_app_refuses_without_anthropic_api_key() -> None:
         f"got {result.returncode}.\nstdout:\n{result.stdout}\n"
         f"stderr:\n{result.stderr}"
     )
-    assert "ANTHROPIC_API_KEY" in result.stderr, (
+    assert "LLM_API_KEY" in result.stderr, (
         "Error message must name the missing variable so the operator "
         f"knows what to fix. stderr:\n{result.stderr}"
     )

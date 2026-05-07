@@ -18,7 +18,7 @@ The pattern is:
 Cost: each test runs two live calls (~$0.02). The judge's static
 system prompt is marked ``cache_control: ephemeral`` so subsequent
 judge calls in the same test run hit the prompt cache. Skipped
-unless ``ANTHROPIC_API_KEY`` is set, same gate as the other live
+unless ``LLM_API_KEY`` is set, same gate as the other live
 tests.
 
 The judge model is intentionally one tier smaller than the model
@@ -117,14 +117,14 @@ def _judge_model() -> str:
 
 
 def _settings_base_url() -> str | None:
-    """Best-effort fetch of ``Settings.anthropic_base_url``. Returns
+    """Best-effort fetch of ``Settings.llm_api_base``. Returns
     ``None`` if the app settings layer can't be imported (keeps this
     leaf module usable without booting the FastAPI app)."""
 
     try:
         from app.config import get_settings
 
-        return get_settings().anthropic_base_url
+        return get_settings().llm_api_base
     except Exception:
         return None
 
@@ -136,7 +136,7 @@ def _settings_api_key() -> str:
     can't import (defensive — preserves judge.py's "usable as a leaf
     utility" property documented above).
 
-    Reading ``os.environ["ANTHROPIC_API_KEY"]`` directly here would
+    Reading ``os.environ["LLM_API_KEY"]`` directly here would
     silently force every contributor to export the var into their
     shell, diverging from how the production code reads it; a key in
     ``.env`` would yield a confusing ``KeyError`` even though the
@@ -146,9 +146,9 @@ def _settings_api_key() -> str:
     try:
         from app.config import get_settings
 
-        return get_settings().require_anthropic_key()
+        return get_settings().require_llm_api_key()
     except Exception:
-        return os.environ["ANTHROPIC_API_KEY"]
+        return os.environ["LLM_API_KEY"]
 
 
 async def judge(

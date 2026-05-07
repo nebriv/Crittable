@@ -18,7 +18,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.config import reset_settings_cache
-from app.llm.client import InFlightCall
+from app.llm.protocol import InFlightCall
 from app.main import create_app
 from app.sessions.turn_engine import IllegalTransitionError
 from tests.conftest import default_settings_body
@@ -27,10 +27,10 @@ from tests.mock_anthropic import MockAnthropic, setup_then_play_script
 
 @pytest.fixture(autouse=True)
 def _env(monkeypatch) -> None:
-    monkeypatch.setenv("ANTHROPIC_MODEL_PLAY", "mock-play")
-    monkeypatch.setenv("ANTHROPIC_MODEL_SETUP", "mock-setup")
-    monkeypatch.setenv("ANTHROPIC_MODEL_AAR", "mock-aar")
-    monkeypatch.setenv("ANTHROPIC_MODEL_GUARDRAIL", "mock-guardrail")
+    monkeypatch.setenv("LLM_MODEL_PLAY", "mock-play")
+    monkeypatch.setenv("LLM_MODEL_SETUP", "mock-setup")
+    monkeypatch.setenv("LLM_MODEL_AAR", "mock-aar")
+    monkeypatch.setenv("LLM_MODEL_GUARDRAIL", "mock-guardrail")
     monkeypatch.setenv("SESSION_SECRET", "x" * 32)
     monkeypatch.setenv("INPUT_GUARDRAIL_ENABLED", "false")
     reset_settings_cache()

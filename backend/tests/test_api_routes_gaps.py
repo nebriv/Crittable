@@ -26,10 +26,10 @@ from tests.mock_anthropic import MockAnthropic
 
 @pytest.fixture(autouse=True)
 def _env(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("ANTHROPIC_MODEL_PLAY", "mock-play")
-    monkeypatch.setenv("ANTHROPIC_MODEL_SETUP", "mock-setup")
-    monkeypatch.setenv("ANTHROPIC_MODEL_AAR", "mock-aar")
-    monkeypatch.setenv("ANTHROPIC_MODEL_GUARDRAIL", "mock-guardrail")
+    monkeypatch.setenv("LLM_MODEL_PLAY", "mock-play")
+    monkeypatch.setenv("LLM_MODEL_SETUP", "mock-setup")
+    monkeypatch.setenv("LLM_MODEL_AAR", "mock-aar")
+    monkeypatch.setenv("LLM_MODEL_GUARDRAIL", "mock-guardrail")
     monkeypatch.setenv("SESSION_SECRET", "x" * 32)
     monkeypatch.setenv("INPUT_GUARDRAIL_ENABLED", "false")
     monkeypatch.setenv("DUPLICATE_SUBMISSION_WINDOW_SECONDS", "0")

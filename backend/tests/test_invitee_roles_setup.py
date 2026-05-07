@@ -38,7 +38,7 @@ from tests.mock_anthropic import MockAnthropic
 
 @pytest.fixture()
 def client(monkeypatch) -> TestClient:
-    monkeypatch.setenv("ANTHROPIC_MODEL_SETUP", "mock-setup")
+    monkeypatch.setenv("LLM_MODEL_SETUP", "mock-setup")
     monkeypatch.setenv("SESSION_SECRET", "x" * 32)
     reset_settings_cache()
     app = create_app()

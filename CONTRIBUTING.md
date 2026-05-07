@@ -37,7 +37,7 @@ backend/        FastAPI + Anthropic SDK; all turn / state / LLM logic
   app/sessions/ Phase machine, turn driver, validator, slots, repository
   app/llm/      Client, prompts, tools, dispatch, export (AAR)
   app/extensions/ Skills-style custom tools / resources / prompts
-  tests/        pytest; live/ runs against a real ANTHROPIC_API_KEY
+  tests/        pytest; live/ runs against a real LLM_API_KEY
 frontend/       React + Vite + TS + Tailwind; serves SPA from same origin
   src/pages/    Facilitator (creator) and Play (participant) pages
   src/components/brand/ Brand-system primitives (use these, don't re-derive)
@@ -58,7 +58,7 @@ load-bearing references; CONTRIBUTING.md is just the index.
 |---|---|
 | [`docs/architecture.md`](docs/architecture.md) | Touching the request/turn flow. Live diagrams, retry-feedback loop, phase-policy contract, current tool palette, operator runtime controls. |
 | [`docs/configuration.md`](docs/configuration.md) | Adding any env var or operator-tunable knob. Quick-start cheat sheet + hardening checklist. |
-| [`docs/llm_providers.md`](docs/llm_providers.md) | Wiring Bedrock / Vertex / OpenRouter / Ollama via `ANTHROPIC_BASE_URL`. |
+| [`docs/llm_providers.md`](docs/llm_providers.md) | Wiring Bedrock / Vertex / OpenRouter / Ollama via `LLM_API_BASE`. |
 | [`docs/prompts.md`](docs/prompts.md) | Editing system prompts, guardrails, tool-use protocol, AAR rubric. JSON tool-use only — no XML function-call shapes. |
 | [`docs/prompt-writing-rules.md`](docs/prompt-writing-rules.md) | **Style guide for prompt copy.** Shape-not-phrase, deflection patterns, trust-boundary first. Distilled from the 2026-05-04 / 2026-05-05 live-test sweep. |
 | [`docs/tool-design.md`](docs/tool-design.md) | **Adding, renaming, or rewording any play-tier tool.** Five trap patterns documented. |
@@ -89,10 +89,10 @@ cd frontend && npm ci && npm run dev
 ```
 
 The Vite dev server proxies `/api` and `/ws` to `localhost:8000`. You
-need `ANTHROPIC_API_KEY` exported; everything else has a default.
+need `LLM_API_KEY` exported; everything else has a default.
 
 GitHub Codespaces also works — the devcontainer installs both stacks
-and forwards `ANTHROPIC_API_KEY` from your Codespaces secrets.
+and forwards `LLM_API_KEY` from your Codespaces secrets.
 
 ## Before you push
 
@@ -102,7 +102,7 @@ and forwards `ANTHROPIC_API_KEY` from your Codespaces secrets.
 | Backend lint / type | `cd backend && ruff check . && mypy app` |
 | Frontend tests | `cd frontend && npm test -- --run` |
 | Frontend lint / type / build | `cd frontend && npm run lint && npm run typecheck && npm run build` |
-| Live LLM tests (touched `tools.py` / Block 6 / a recovery directive) | `cd backend && pytest tests/live/ -v` against a real `ANTHROPIC_API_KEY` |
+| Live LLM tests (touched `tools.py` / Block 6 / a recovery directive) | `cd backend && pytest tests/live/ -v` against a real `LLM_API_KEY` |
 
 For UI changes, start the dev server and exercise the feature in a
 browser. Type-checks verify code correctness, not feature correctness.

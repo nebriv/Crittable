@@ -28,12 +28,12 @@ from typing import Any
 
 from ..auth.audit import AuditEvent
 from ..extensions.registry import FrozenRegistry
-from ..llm.client import LLMResult
 from ..llm.dispatch import DispatchOutcome
 from ..llm.prompts import (
     build_play_system_blocks,
     build_setup_system_blocks,
 )
+from ..llm.protocol import LLMResult
 from ..llm.tools import PLAY_TOOLS, setup_tools_for
 from ..logging_setup import get_logger
 from .active_roles import narrow_active_roles

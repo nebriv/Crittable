@@ -20,7 +20,7 @@ miss two adjacent failure modes:
    to the same tool family.
 
 Cost: ~$0.07 per file (3 + 3 Sonnet calls × ~$0.012). Skipped unless
-``ANTHROPIC_API_KEY`` is set.
+``LLM_API_KEY`` is set.
 
 These tests answer the operator question "does the AI respond
 consistently?" the way the user asked it on the live-test sweep PR.

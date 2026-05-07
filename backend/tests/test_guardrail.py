@@ -31,7 +31,7 @@ async def test_classifier_off_topic_now_passes_through(monkeypatch) -> None:
     silently). Only ``prompt_injection`` should ever block a real
     participant submission."""
 
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
+    monkeypatch.setenv("LLM_API_KEY", "x")
     monkeypatch.setenv("INPUT_GUARDRAIL_ENABLED", "true")
     s = Settings()
     llm = LLMClient(settings=s)

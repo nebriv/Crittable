@@ -21,7 +21,7 @@ Prompt Injection) plus published facilitator-bypass patterns. New
 attack patterns should be added as they're observed in the wild.
 
 Cost: ~$0.04 per test (one or two live calls each, mostly Haiku).
-Skipped unless ``ANTHROPIC_API_KEY`` is set.
+Skipped unless ``LLM_API_KEY`` is set.
 """
 
 from __future__ import annotations
