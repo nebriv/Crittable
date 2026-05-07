@@ -1278,7 +1278,22 @@ export function Facilitator() {
   if (!state || !snapshot) return null;
 
   const activeRoleIds = snapshot.current_turn?.active_role_ids ?? [];
-  const isMyTurn = activeRoleIds.includes(state.creatorRoleId);
+  const readyRoleIds = snapshot.current_turn?.ready_role_ids ?? [];
+  const iAmActive = activeRoleIds.includes(state.creatorRoleId);
+  const iAmReady = readyRoleIds.includes(state.creatorRoleId);
+  // ``isMyTurn`` matches the Play.tsx contract: active on the current
+  // turn AND not yet readied. A creator who has marked ready but is
+  // still on the active set is no longer "their turn" — the AI is
+  // waiting on someone else, the WaitingChip should render, and the
+  // composer's secondary button flips to UNREADY ↺ via
+  // ``isCurrentlyReady`` so the creator can walk it back if needed.
+  const isMyTurn = iAmActive && !iAmReady;
+  // Lifted from the composer IIFE so the "Awaiting your response"
+  // banner can include the role-label suffix that ``Play.tsx:1388``
+  // ships. Without the suffix the creator-as-impersonator can't tell
+  // which of their hats the AI is waiting on (UI/UX + User Agent
+  // review HIGH).
+  const selfRole = snapshot.roles.find((r) => r.id === state.creatorRoleId);
   const playerCount = snapshot.roles.filter((r) => r.kind === "player").length;
 
   // Issue #113: keep the wizard chrome up through setup/ready so the
@@ -1674,15 +1689,29 @@ export function Facilitator() {
                   the "is the AI thinking or stuck?" signal sits where
                   the operator's eye already is during a turn. */}
               <BusyChip busy={busy} message={busyMessage} />
-              {!isMyTurn && snapshot.current_turn?.active_role_ids?.length ? (
+              {/* Mirror of the player-side chip on Play.tsx so the
+                  creator-as-player gets the same at-a-glance "you are
+                  on the hook" cue. Without this, a creator who is on
+                  the active set but never typed anything has no visual
+                  signal — only the small composer label changes —
+                  and the user-agent review flagged this as a real
+                  "did the AI freeze on me?" mystery during solo runs. */}
+              {snapshot.state !== "ENDED" && isMyTurn ? (
+                <div
+                  role="status"
+                  aria-live="polite"
+                  className="mb-2 rounded border border-warn bg-warn-bg px-3 py-1.5 text-center text-xs font-semibold leading-tight text-warn break-words"
+                >
+                  ⚠ Awaiting your response — {selfRole?.label ?? "you"}
+                </div>
+              ) : null}
+              {!isMyTurn && activeRoleIds.length ? (
                 <WaitingChip
                   activeRoleIds={activeRoleIds}
                   submittedRoleIds={
                     snapshot.current_turn?.submitted_role_ids ?? []
                   }
-                  readyRoleIds={
-                    snapshot.current_turn?.ready_role_ids ?? []
-                  }
+                  readyRoleIds={readyRoleIds}
                   roles={snapshot.roles}
                 />
               ) : null}
@@ -1699,9 +1728,9 @@ export function Facilitator() {
                   submittedRoleIds:
                     snapshot.current_turn?.submitted_role_ids ?? [],
                 });
-                const selfRole = snapshot.roles.find(
-                  (r) => r.id === state.creatorRoleId,
-                );
+                // ``selfRole`` is computed at the top of the render
+                // so the "Awaiting your response" banner can use it;
+                // the composer label below reads the same value.
                 // Wave 2: roster the @-popover offers. Excludes the
                 // creator's own role and spectators. Synthetic
                 // facilitator entry is rendered by the popover itself.
@@ -1782,6 +1811,20 @@ export function Facilitator() {
                       impersonateOptions={impersonateOptions}
                       selfLabel={selfRole?.label}
                       mentionRoster={mentionRoster}
+                      // Mirror Play.tsx: surface the creator's own ready
+                      // signal so the secondary button flips to
+                      // ``UNREADY ↺`` after they mark ready, the
+                      // ``You're marked ready`` hint shows, and the
+                      // ``NOTHING TO ADD →`` shortcut hides (no point
+                      // when the role is already in ``ready_role_ids``).
+                      isCurrentlyReady={iAmReady}
+                      // The creator can post out-of-turn sidebar
+                      // comments at any time (issue #78). Hide the
+                      // discuss/ready buttons when they're not on the
+                      // active turn so the affordances only show where
+                      // they're load-bearing — same rule the player
+                      // path uses on Play.tsx.
+                      hideDiscussButton={!iAmActive}
                     />
                   </>
                 );

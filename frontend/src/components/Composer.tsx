@@ -252,6 +252,33 @@ export function Composer({
   // on initial mount.
   const handledErrorEpochRef = useRef<number | undefined>(submitErrorEpoch);
 
+  // "Nothing to add" shortcut — the operator-voice equivalent of "I'm
+  // good, ship it." Posts a brief ``Nothing to add.`` to the transcript
+  // with ``intent="ready"`` so the role lands in
+  // ``turn.ready_role_ids`` without the user having to type filler.
+  // The transcript line keeps the rest of the team informed (vs. a
+  // silent ready-flag the others can't see), and the message body
+  // satisfies the backend's empty-content guard in
+  // ``submission_pipeline.py`` so this stays a pure client-side
+  // affordance — no new server endpoint, no new gate.
+  function submitNothingToAdd() {
+    // Defense-in-depth (security review MINOR): the visibility guard
+    // ``showNothingToAdd`` already includes ``!isCurrentlyReady``, so
+    // a user who has marked ready can't see the button to click it.
+    // If a future refactor drops that clause from the predicate, this
+    // guard keeps a re-affirmation submit from sneaking through —
+    // the backend's dedupe window would catch the duplicate body, but
+    // we'd rather not rely on it for correctness.
+    if (!enabled || isCurrentlyReady) return;
+    const fallback = "Nothing to add.";
+    onSubmit(fallback, "ready", [], asRoleId || undefined);
+    setText("");
+    setMarks([]);
+    closeMentionPopover();
+    setAsRoleId("");
+    emitTypingStop("submit");
+  }
+
   function submit(intent: SubmissionIntent) {
     if (!enabled || !text.trim()) return;
     const trimmed = text.trim();
@@ -708,6 +735,19 @@ export function Composer({
     : undefined;
   const proxyIsOffTurn = Boolean(proxyOptionSelected?.offTurn);
   const showDiscussButton = !hideDiscussButton && !proxyIsOffTurn;
+  // "Nothing to add" appears only when there's a real ready/discuss
+  // quorum to participate in (so ``hideDiscussButton`` hides it on
+  // sidebar / off-turn submissions), the role hasn't already readied,
+  // the user isn't impersonating someone else (proxying a "Nothing to
+  // add." for another role would be a footgun), and the textarea is
+  // empty — the moment they start typing, the regular SUBMIT & READY
+  // path is the right affordance.
+  const showNothingToAdd =
+    !hideDiscussButton &&
+    !proxyIsOffTurn &&
+    !isCurrentlyReady &&
+    !asRoleId &&
+    !text.trim();
 
   return (
     <form
@@ -861,6 +901,28 @@ export function Composer({
               className="mono rounded-r-1 border border-ink-400 bg-ink-800 px-3 py-1.5 text-[11px] font-bold uppercase tracking-[0.18em] text-ink-100 hover:border-signal-deep hover:bg-ink-700 focus-visible:outline focus-visible:outline-2 focus-visible:outline-ink-300 disabled:cursor-not-allowed disabled:opacity-50"
             >
               {isCurrentlyReady ? "UNREADY ↺" : "STILL DISCUSSING →"}
+            </button>
+          ) : null}
+          {showNothingToAdd ? (
+            // Secondary-styled (matches STILL DISCUSSING) so the
+            // signal-filled SUBMIT & READY → button stays the
+            // unambiguous primary action when text is typed. UI/UX
+            // review MEDIUM: a signal-tinted middle button drew the
+            // eye away from the actual primary CTA.
+            //
+            // Label puts READY first (User Agent HIGH) so the user
+            // can scan the row and immediately tell the button marks
+            // them ready; "NOTHING TO ADD" describes the transcript
+            // line. Arrow glyph matches the rest of the row — no
+            // decorative ``✓`` (HANDOFF.md "no emoji as decoration").
+            <button
+              type="button"
+              onClick={submitNothingToAdd}
+              disabled={!enabled}
+              title="Mark yourself ready without adding to the discussion. Posts a brief 'Nothing to add.' to the transcript so the team sees you're done."
+              className="mono rounded-r-1 border border-ink-400 bg-ink-800 px-3 py-1.5 text-[11px] font-bold uppercase tracking-[0.18em] text-ink-100 hover:border-signal-deep hover:bg-ink-700 focus-visible:outline focus-visible:outline-2 focus-visible:outline-ink-300 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              READY — NOTHING TO ADD →
             </button>
           ) : null}
           <button

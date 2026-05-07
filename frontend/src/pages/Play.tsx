@@ -1563,6 +1563,7 @@ const WAITING_TIPS: readonly string[] = [
   "Disagree with a teammate? Say so. The AI tracks decisions and dissents in the AAR.",
   "Out of your lane? \"Loop in Legal\" or \"hand off to Comms\" — the AI will pivot the conversation.",
   "Focus on your reasoning — the AAR captures decisions and rationale, not right-vs-wrong scoring.",
+  "Nothing to add on a turn? Hit READY — NOTHING TO ADD instead of typing filler — keeps the team's pace up.",
 ];
 const WAITING_TIP_ROTATE_MS = 7000;
 
@@ -1875,6 +1876,24 @@ export function JoinIntro({
                 </span>{" "}
                 chip appears. The most recent AI message is also
                 outlined so you can spot what to react to.
+              </li>
+              <li>
+                <span className="font-semibold text-ink-100">Submit, discuss, or pass.</span>{" "}
+                <span className="mono rounded-r-1 border border-signal-deep bg-ink-800 px-1.5 py-0.5 text-[10px] font-bold uppercase text-signal">
+                  SUBMIT &amp; READY →
+                </span>{" "}
+                posts your reply AND marks you ready — the AI advances
+                once everyone is ready.{" "}
+                <span className="mono rounded-r-1 border border-ink-400 bg-ink-800 px-1.5 py-0.5 text-[10px] font-bold uppercase text-ink-100">
+                  STILL DISCUSSING →
+                </span>{" "}
+                posts but keeps your seat open for follow-ups. Nothing
+                to add this turn?{" "}
+                <span className="mono rounded-r-1 border border-ink-400 bg-ink-800 px-1.5 py-0.5 text-[10px] font-bold uppercase text-ink-100">
+                  READY — NOTHING TO ADD →
+                </span>{" "}
+                marks you ready without forcing filler — useful when a
+                teammate already covered your angle.
               </li>
             </ul>
           )}
