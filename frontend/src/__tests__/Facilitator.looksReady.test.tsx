@@ -56,6 +56,8 @@ function fakeSnapshotWithoutPlan(): SessionSnapshot {
     state: "SETUP",
     created_at: "2026-05-07T00:00:00Z",
     scenario_prompt: "test scenario",
+    plan_title: null,
+    plan_summary: null,
     settings: {
       difficulty: "standard",
       duration_minutes: 60,
