@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from ..auth.audit import AuditEvent, AuditLog
 from ..auth.authn import HMACAuthenticator
+from ..auth.authz import AuthorizationError
 from ..config import Settings
 from ..extensions.registry import FrozenRegistry
 from ..logging_setup import get_logger
@@ -154,7 +155,7 @@ class SessionManager:
         self._lock_meta = asyncio.Lock()
         self._closed = False
         # Background tasks (currently just AAR generation). Kept on the manager
-        # so they aren't garbage-collected mid-flight; cancelled on shutdown.
+        # so they aren't garbage-collected mid-flight; canceled on shutdown.
         self._bg_tasks: set[asyncio.Task[Any]] = set()
         # Shared markdown notepad service (issue #98). Holds the per-session
         # pycrdt Doc; mutations must be performed under the same per-session
@@ -334,6 +335,8 @@ class SessionManager:
         label: str,
         display_name: str | None = None,
         kind: ParticipantKindLiteral = "player",
+        acting_role_id: str,
+        acting_token_version: int,
     ) -> tuple[Role, str]:
         # Strip C0/C1/DEL controls from the label and (optional)
         # display_name via ``sanitize_role_text``. Both the bulk
@@ -351,6 +354,19 @@ class SessionManager:
         dn_clean = sanitize_role_text(display_name)
         async with await self._lock_for(session_id):
             session = await self._repo.get(session_id)
+            # Re-verify creator authorization inside the lock. The route
+            # already ran ``require_creator(token)`` against the bound token,
+            # but a concurrent revocation can land between bind and lock,
+            # leaving us with a stale-but-valid-looking token. Bumping
+            # ``token_version`` is the only revocation signal, so we recheck
+            # it against the current session state.
+            acting_role = session.role_by_id(acting_role_id)
+            if (
+                acting_role is None
+                or acting_role.token_version != acting_token_version
+                or acting_role.id != session.creator_role_id
+            ):
+                raise AuthorizationError("creator authorization revoked")
             if session.state in (SessionState.ENDED,):
                 raise IllegalTransitionError("cannot add roles to an ENDED session")
             if len(session.roles) >= self._settings.max_roles_per_session:
@@ -486,9 +502,9 @@ class SessionManager:
         should hit this path.
 
         Emits a ``participant_renamed`` WS event so connected clients
-        refresh their snapshot without polling. The previous behaviour
+        refresh their snapshot without polling. The previous behavior
         (display_name lived in localStorage only) had to be removed
-        because no event signalled the rename to peer clients.
+        because no event signaled the rename to peer clients.
         """
 
         # Strip C0 (``\x00-\x1f``) + DEL (``\x7f``) + C1 (``\x80-\x9f``)
@@ -501,7 +517,7 @@ class SessionManager:
         # (some terminal emulators, log shippers, ANSI-aware viewers
         # interpret 0x80-0x9F as escape sequences). This is the first
         # player-callable mutation route, so the rule lands here. The
-        # frontend's React render path is XSS-safe; this is defence-
+        # frontend's React render path is XSS-safe; this is defense-
         # in-depth at the storage boundary.
         import re
 
@@ -900,7 +916,7 @@ class SessionManager:
         role *is* in the current turn's active set, every post counts
         as a turn submission (Wave 1 dropped the one-and-done cap — a
         player can submit multiple messages on the same turn before
-        signalling ready). Non-active roles' posts are recorded as
+        signaling ready). Non-active roles' posts are recorded as
         out-of-turn interjections — appended to the transcript so the
         AI sees them on the next turn (and so the WS layer can fire
         ``run_interject`` for ``@facilitator`` mentions), but with no
@@ -912,7 +928,7 @@ class SessionManager:
         ``"discuss"`` removes them if previously ready. The state-flip
         predicate now reads ``all_ready(turn)`` rather than
         ``all_submitted(turn)``, so the AI only advances once every
-        active role has explicitly signalled ready (or the creator
+        active role has explicitly signaled ready (or the creator
         force-advances). Out-of-turn interjections never touch the
         ready quorum (they don't touch ``submitted_role_ids`` either).
 
@@ -1676,7 +1692,13 @@ class SessionManager:
         async with await self._lock_for(session_id):
             try:
                 session = await self._repo.get(session_id)
-            except Exception:
+            except Exception as exc:
+                _logger.warning(
+                    "aar_generation_aborted_repo_get_failed",
+                    session_id=session_id,
+                    stage="initial_load",
+                    error=str(exc),
+                )
                 return
             if session.aar_status not in ("pending", "failed"):
                 return
@@ -1686,7 +1708,7 @@ class SessionManager:
         await self._connections.broadcast(
             session_id, {"type": "aar_status_changed", "status": "generating"}
         )
-        # Labelled AI-status breadcrumb so the operator's UI shows
+        # Labeled AI-status breadcrumb so the operator's UI shows
         # "AI — Drafting the after-action report" during the 30 s+
         # generation. Without this the UI only had ``aar_status_changed``
         # WS events, which connected clients see but reload-the-tab
@@ -1702,7 +1724,13 @@ class SessionManager:
             async with await self._lock_for(session_id):
                 try:
                     session = await self._repo.get(session_id)
-                except Exception:
+                except Exception as repo_exc:
+                    _logger.warning(
+                        "aar_failure_persist_aborted_repo_get_failed",
+                        session_id=session_id,
+                        original_error=str(exc),
+                        repo_error=str(repo_exc),
+                    )
                     return
                 session.aar_status = "failed"
                 session.aar_error = str(exc)[:500]
@@ -1720,7 +1748,13 @@ class SessionManager:
         async with await self._lock_for(session_id):
             try:
                 session = await self._repo.get(session_id)
-            except Exception:
+            except Exception as exc:
+                _logger.warning(
+                    "aar_save_aborted_repo_get_failed",
+                    session_id=session_id,
+                    stage="ready_persist",
+                    error=str(exc),
+                )
                 return
             session.aar_markdown = markdown
             session.aar_report = report
@@ -1738,7 +1772,7 @@ class SessionManager:
     async def _broadcast_ai_status(
         self, session_id: str, *, phase: str | None
     ) -> None:
-        """Manager-side helper for emitting the labelled ``ai_status``
+        """Manager-side helper for emitting the labeled ``ai_status``
         breadcrumb. Symmetric with ``TurnDriver._emit_ai_status`` —
         both broadcast to ``record=False`` so the events don't clog
         the replay buffer. Wrapped because a misbehaving WS handler
@@ -1981,13 +2015,6 @@ class SessionManager:
 
     async def with_lock(self, session_id: str) -> asyncio.Lock:
         return await self._lock_for(session_id)
-
-    async def append_setup_dialogue(
-        self, *, session_id: str, speaker: str, content: str
-    ) -> None:
-        await self.append_setup_message(
-            session_id=session_id, speaker=speaker, content=content
-        )
 
     async def emit(self, kind: str, session: Session, **payload: Any) -> None:
         self._emit(kind, session, **payload)

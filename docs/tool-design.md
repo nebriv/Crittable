@@ -12,7 +12,7 @@ Anthropic models pick tools based on **two signals** with roughly
 comparable weight:
 1. The tool's `description` string (sent in every API call alongside
    the system prompt).
-2. The system prompt's behavioural rules (Block 6 in this codebase).
+2. The system prompt's behavioral rules (Block 6 in this codebase).
 
 When the two are inconsistent — even subtly — the model picks based
 on description, not the rule. The system prompt loses. So writing

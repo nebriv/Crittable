@@ -118,7 +118,7 @@ def register_devtools_routes(app: FastAPI) -> None:
         return Path(_settings(req).resolved_dev_scenarios_path()).resolve()
 
     def _safe_load_scenarios(req: Request) -> dict[str, Any]:
-        """Load scenarios from the resolved path with two defences:
+        """Load scenarios from the resolved path with two defenses:
 
         * Symlinks whose realpath escapes the resolved root are
           skipped (``WARNING`` audit line) — stops the loader from

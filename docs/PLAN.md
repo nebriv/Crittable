@@ -8,7 +8,7 @@
 > structure — but it is not the live reference for how the app behaves
 > today.
 >
-> **For current behaviour, prefer:**
+> **For current behavior, prefer:**
 > - [`docs/architecture.md`](architecture.md) — live diagrams,
 >   tool palette, phase-policy contract, slot taxonomy, recovery
 >   cascade. Updated as the engine evolves.

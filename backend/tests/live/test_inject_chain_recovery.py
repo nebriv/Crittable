@@ -32,10 +32,10 @@ inject 0% of the time" — that would flake. We assert:
 
   * When a solo inject DOES fire, the dispatcher rejects it with the
     documented chain-shape hint (no LLM round-trip needed). Pure
-    engine behaviour — runs every CI pass.
+    engine behavior — runs every CI pass.
   * When the inject-grounded recovery directive runs, the model's
     pinned broadcast references the inject's content (headline /
-    body keywords). Live API call. Asserts the expected behavioural
+    body keywords). Live API call. Asserts the expected behavioral
     improvement over the generic recovery without flaking on the
     handful of model phrasings that don't include the keyword.
 
@@ -43,7 +43,7 @@ Cost
 ----
 
 ~$0.05 per run at defaults. Skipped unless ``ANTHROPIC_API_KEY`` is
-set — see ``conftest.py`` auto-skip for the gate behaviour.
+set — see ``conftest.py`` auto-skip for the gate behavior.
 
 Add new failure modes here when you change Block 6's inject-chain
 rule or extend the dispatcher's pairing scan.
@@ -402,5 +402,5 @@ async def test_drive_recovery_after_inject_grounds_on_event(
 # Pure engine-level dispatcher-rejection coverage lives in
 # ``backend/tests/test_dispatch_tools.py::test_inject_critical_event_rejected_when_unpaired``
 # and friends. The live tests in this file focus on the cases that
-# require real-model behaviour to verify (the prompt rule itself, and
+# require real-model behavior to verify (the prompt rule itself, and
 # the recovery directive's grounding).

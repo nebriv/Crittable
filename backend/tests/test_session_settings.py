@@ -221,7 +221,11 @@ def test_play_system_block_includes_block_12_session_settings() -> None:
     blocks = build_play_system_blocks(
         s, registry=FrozenRegistry(tools={}, resources={}, prompts={})
     )
-    text = blocks[0]["text"]
+    # build_play_system_blocks splits stable prefix + volatile suffix
+    # across two text blocks for prompt-cache placement; Block 12 lives
+    # in the volatile suffix (alongside the seated roster and open
+    # follow-ups), so join both before asserting presence.
+    text = "\n\n".join(b["text"] for b in blocks)
     assert "## Block 12 — Session settings" in text
     assert "**Difficulty: hard**" in text
 

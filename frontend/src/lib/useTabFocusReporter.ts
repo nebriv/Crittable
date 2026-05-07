@@ -5,14 +5,14 @@ import { WsClient } from "./ws";
  * Push the current tab's visibility / focus state to the backend so the
  * creator's RolesPanel can render a tri-state status dot per role:
  *
- * - **grey** — not joined (no WS tabs open for this role)
+ * - **gray** — not joined (no WS tabs open for this role)
  * - **blue** — joined and *this tab is focused* (the player is actively
  *   on the exercise window)
  * - **yellow** — joined but every tab is backgrounded (player has
  *   alt-tabbed away to email, Slack, etc.)
  *
  * We listen to ``visibilitychange`` (the canonical "tab in foreground"
- * signal — covers tab switches, minimised windows, and locked screens)
+ * signal — covers tab switches, minimized windows, and locked screens)
  * plus ``focus`` / ``blur`` so an OS-level window switch is reflected
  * even when the browser keeps the document "visible".
  *
@@ -65,7 +65,7 @@ export function useTabFocusReporter(
     function isFocused(): boolean {
       // ``document.visibilityState`` is the broader signal: it's
       // "hidden" both for tab switches and when the entire window is
-      // minimised. ``document.hasFocus()`` catches the case where the
+      // minimized. ``document.hasFocus()`` catches the case where the
       // tab is still visible but another OS window is in front (the
       // browser keeps the document "visible" but the user can't see
       // it). Either condition suffices for "focused" in our tri-state.

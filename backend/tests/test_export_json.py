@@ -34,7 +34,7 @@ from fastapi.testclient import TestClient
 
 # Reuse the harness fixtures + helpers from the main e2e suite — same
 # TestClient setup, same minimal LLM mock, same _create_and_seat
-# helper. Re-importing keeps the new tests behaviourally identical
+# helper. Re-importing keeps the new tests behaviorally identical
 # to the existing export.md tests they parallel.
 from .test_e2e_session import _create_and_seat, client  # noqa: F401
 

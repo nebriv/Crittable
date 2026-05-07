@@ -184,12 +184,17 @@ class ScenarioRunner:
         self._role_ids["creator"] = creator_role_id
         self._role_ids[s.creator_label] = creator_role_id
         self._role_tokens[creator_role_id] = creator_token
+        creator_role = session.role_by_id(creator_role_id)
+        if creator_role is None:
+            raise RuntimeError("creator role missing after session create")
         for role_spec in s.roster:
             role, role_token = await self._manager.add_role(
                 session_id=session.id,
                 label=role_spec.label,
                 display_name=role_spec.display_name,
                 kind=role_spec.kind,
+                acting_role_id=creator_role.id,
+                acting_token_version=creator_role.token_version,
             )
             self._role_ids[role_spec.label] = role.id
             self._role_tokens[role.id] = role_token

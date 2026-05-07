@@ -9,7 +9,7 @@ Coverage:
 * Operator-facing markdown exports (creator-only):
   - ``/exports/timeline.md`` — sections render correctly;
   - ``/exports/full-record.md`` — chronological grouping + per-row flags;
-  - visibility-list filter respected (defence in depth).
+  - visibility-list filter respected (defense in depth).
 * Feature-flag default — ``WORKSTREAMS_ENABLED`` is now True.
 * AAR isolation: workstream-blind regardless of the flag (plan §6.9).
 """
@@ -370,7 +370,7 @@ def test_filenames_use_plan_title_slug() -> None:
 
 
 def test_export_visibility_filter_respected() -> None:
-    """Renderers honor each message's visibility list. Defence in depth —
+    """Renderers honor each message's visibility list. Defense in depth —
     catches a future caller that invokes the renderer directly with a
     non-creator role.
     """
@@ -628,7 +628,7 @@ def test_override_workstream_403_for_third_party_role(http_client: Any) -> None:
 def test_override_workstream_empty_string_normalised_to_null(
     http_client: Any,
 ) -> None:
-    """Security review LOW #2: ``""`` in the JSON body is normalised
+    """Security review LOW #2: ``""`` in the JSON body is normalized
     to ``None`` (the #main bucket). A creator submitting
     ``{"workstream_id": ""}`` gets a 200 OK (idempotent no-op when the
     message is already in #main) rather than a confusing 400 about

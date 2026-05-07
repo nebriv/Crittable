@@ -89,7 +89,7 @@ export interface TurnView {
   /** Role-ids that have already submitted on this turn. */
   submitted_role_ids?: string[];
   /**
-   * Wave 1 (issue #134): role-ids that have signalled
+   * Wave 1 (issue #134): role-ids that have signaled
    * ``intent="ready"`` on their most recent submission this turn. The
    * AI advances when ``set(active_role_ids) ⊆ set(ready_role_ids)``
    * (or the creator force-advances). A role can walk back ready by
@@ -408,7 +408,7 @@ export const api = {
   /** Creator-only solo-test helper: submit on behalf of a specific role.
    *
    * ``intent`` (Wave 1, issue #134): ``"ready"`` mirrors the historical
-   * "advance now" behaviour; ``"discuss"`` injects a discussion message
+   * "advance now" behavior; ``"discuss"`` injects a discussion message
    * that doesn't trip the ready-quorum gate. Required — the backend
    * rejects payloads without it (CLAUDE.md "no backwards compat").
    */

@@ -21,7 +21,7 @@ import { WIZARD_STEPS, type WizardStepId } from "./wizardSteps";
  * action in the rail keeps it geographically distant from step 06's
  * START SESSION button (which lives in the main panel sidecar).
  *
- * Responsive behaviour is owned by ``SetupWizard``'s parent grid:
+ * Responsive behavior is owned by ``SetupWizard``'s parent grid:
  * below the ``lg`` breakpoint the grid switches from
  * ``[260px_1fr]`` to a single column so the rail stacks ABOVE the
  * panel as a vertical strip (NOT a horizontal top bar — the rail's

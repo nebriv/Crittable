@@ -35,7 +35,7 @@ def register_ws_routes(app: FastAPI) -> None:
         settings: Settings = websocket.app.state.settings
 
         # Origin check — when the operator has narrowed CORS_ORIGINS, refuse WS
-        # upgrades from any other origin. This is the post-token-leak defence:
+        # upgrades from any other origin. This is the post-token-leak defense:
         # even if a join URL escapes (referrer header, screenshot, support
         # session), it can't be opened from a malicious page.
         cors = settings.cors_origin_list()
@@ -457,8 +457,14 @@ async def _client_pump(
         except SessionNotFoundError:
             try:
                 await websocket.close(code=CLOSE_NOT_FOUND)
-            except Exception:
-                pass
+            except Exception as exc:
+                _logger.warning(
+                    "ws_close_failed",
+                    session_id=session_id,
+                    role_id=role_id,
+                    reason="session_not_found",
+                    error=str(exc),
+                )
             return False
         role = session.role_by_id(role_id)
         if role is None or role.token_version != token_version:
@@ -478,12 +484,23 @@ async def _client_pump(
                         "message": "your seat was removed by the facilitator",
                     }
                 )
-            except Exception:
-                pass
+            except Exception as exc:
+                _logger.warning(
+                    "ws_revocation_send_failed",
+                    session_id=session_id,
+                    role_id=role_id,
+                    error=str(exc),
+                )
             try:
                 await websocket.close(code=CLOSE_BAD_TOKEN)
-            except Exception:
-                pass
+            except Exception as exc:
+                _logger.warning(
+                    "ws_close_failed",
+                    session_id=session_id,
+                    role_id=role_id,
+                    reason="token_revoked",
+                    error=str(exc),
+                )
             return False
         return True
     try:
@@ -500,7 +517,7 @@ async def _client_pump(
                 # ``focused`` flag; broadcasts a ``presence`` frame with
                 # the role-level aggregate so the creator's RolesPanel
                 # can paint blue (any tab focused) vs yellow (all tabs
-                # backgrounded) vs grey (no tabs). ``record=False``
+                # backgrounded) vs gray (no tabs). ``record=False``
                 # because focus state is live signal, not history.
                 #
                 # Spectators are allowed to send this — they're already

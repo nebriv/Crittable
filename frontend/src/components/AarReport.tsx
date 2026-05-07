@@ -30,7 +30,7 @@ interface PerRoleScore {
   decisions: number;
   rationale?: string;
   /** Backend-resolved short label (e.g. "CISO", "IR Lead"). The AI
-   *  occasionally emits unrecognised role_ids; the route handler
+   *  occasionally emits unrecognized role_ids; the route handler
    *  falls back to label-as-id matching, then to the raw value, so
    *  the UI never has to render a UUID prefix. */
   label?: string;
@@ -93,12 +93,12 @@ export function AarReportView({
   const [state, setState] = useState<LoadState>({ kind: "loading" });
 
   useEffect(() => {
-    let cancelled = false;
+    let canceled = false;
     (async () => {
       try {
         const url = `/api/sessions/${sessionId}/export.json?token=${encodeURIComponent(token)}`;
         const res = await fetch(url, { credentials: "same-origin" });
-        if (cancelled) return;
+        if (canceled) return;
         if (!res.ok) {
           if (res.status === 410) {
             setState({
@@ -117,9 +117,9 @@ export function AarReportView({
           return;
         }
         const body = (await res.json()) as AarReport;
-        if (!cancelled) setState({ kind: "ready", report: body });
+        if (!canceled) setState({ kind: "ready", report: body });
       } catch (e) {
-        if (cancelled) return;
+        if (canceled) return;
         setState({
           kind: "error",
           message: e instanceof Error ? e.message : String(e),
@@ -127,7 +127,7 @@ export function AarReportView({
       }
     })();
     return () => {
-      cancelled = true;
+      canceled = true;
     };
   }, [sessionId, token]);
 

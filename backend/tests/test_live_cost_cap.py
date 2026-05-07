@@ -168,7 +168,7 @@ def test_cache_tokens_count_toward_total() -> None:
     assert tracker.cumulative_usd == pytest.approx(0.30)
 
 
-# ---------------------------------------------------------------- abort behaviour
+# ---------------------------------------------------------------- abort behavior
 
 
 def test_abort_fires_once_when_cap_exceeded() -> None:

@@ -47,7 +47,7 @@ def test_can_submit_and_all_submitted() -> None:
     turn.submitted_role_ids = ["r1"]
     assert all_submitted(turn) is False
     # Wave 1 (issue #134): an active role can submit again on the same
-    # turn (e.g. a discussion follow-up before signalling ready).
+    # turn (e.g. a discussion follow-up before signaling ready).
     # ``can_submit`` no longer caps at one-per-role.
     assert can_submit(turn, "r1") is True
     turn.submitted_role_ids = ["r1", "r2"]

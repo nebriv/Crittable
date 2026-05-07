@@ -209,7 +209,7 @@ PLAY_TOOLS: list[dict[str, Any]] = [
             "lists, packet captures, threat-intel records, host "
             "inventories — any structured fictional data the team would "
             "screenshot or copy. Renders as your AI bubble with the "
-            "data clearly labelled and monospace-friendly. "
+            "data clearly labeled and monospace-friendly. "
             "TRIGGER PHRASES (must be in a recent player message): "
             "\"what do we see in <tool>?\", \"pull the <X> logs\", "
             "\"give me the indicators\", \"show me the alerts\", "

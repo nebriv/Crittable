@@ -98,7 +98,7 @@ class RecordedMessage(BaseModel):
     The recorder dumps every non-player ``Message`` here so a replay
     against ``replay_mode="deterministic"`` can reproduce the EXACT
     transcript that drove the original UI — message highlights,
-    role-coded colours, filtering, the broadcast/share_data tool icons,
+    role-coded colors, filtering, the broadcast/share_data tool icons,
     everything that depends on ``Message.kind`` + ``Message.tool_name``
     + ``Message.body``.
 
@@ -296,7 +296,7 @@ class Scenario(BaseModel):
     cost: RecordedCost | None = None
     # ``deterministic`` — replay AI messages from ``play_turns[*].ai_messages``
     # verbatim, never call the LLM during play. Required for UI-fidelity
-    # tests (highlighting, colours, filtering all depend on message kind
+    # tests (highlighting, colors, filtering all depend on message kind
     # / tool_name / body, which only the recorder can guarantee).
     #
     # ``engine`` — call the live LLM for every play turn (or the

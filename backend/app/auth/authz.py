@@ -40,7 +40,7 @@ def require_seated(token: JoinTokenPayload) -> None:
     """
 
     if token["kind"] not in ("creator", "player", "spectator"):
-        raise AuthorizationError("token kind not recognised")
+        raise AuthorizationError("token kind not recognized")
 
 
 def require_active_role(

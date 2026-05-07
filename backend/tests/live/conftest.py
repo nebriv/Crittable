@@ -208,7 +208,7 @@ def anthropic_client() -> Any:
     as belt-and-braces against the auto-skip's path check missing an
     item: the SDK would happily pass the dummy to Anthropic for a
     silent 401 — the failure mode that originally inspired this
-    defence.
+    defense.
     """
 
     from anthropic import AsyncAnthropic
@@ -516,7 +516,7 @@ async def call_play(
     """Call the live API with the production message-build path.
 
     ``workstreams_enabled`` defaults to ``False`` to preserve the
-    existing live-test behaviour. Pass ``True`` explicitly when a
+    existing live-test behavior. Pass ``True`` explicitly when a
     test needs production-parity prompts (production
     ``Settings.workstreams_enabled`` defaults to ``True``); an audit
     of every existing call site is tracked separately so this default
@@ -526,7 +526,7 @@ async def call_play(
     ``connected_role_ids`` / ``focused_role_ids`` are forwarded to
     ``build_play_system_blocks`` so a test can set Block 10's
     ``presence`` column. Default ``None`` falls through to the
-    "presence unknown — treat every seat as joined_focused" behaviour,
+    "presence unknown — treat every seat as joined_focused" behavior,
     preserving existing live-test routing assertions."""
 
     system_blocks = build_play_system_blocks(

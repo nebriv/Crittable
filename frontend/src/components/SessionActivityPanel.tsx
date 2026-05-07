@@ -105,10 +105,10 @@ export function SessionActivityPanel({
   const [error, setError] = useState<string | null>(null);
   const [now, setNow] = useState(() => Date.now());
   const fetchedAt = useRef<number>(Date.now());
-  const cancelled = useRef(false);
+  const canceled = useRef(false);
 
   useEffect(() => {
-    cancelled.current = false;
+    canceled.current = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
 
     async function tick() {
@@ -121,17 +121,17 @@ export function SessionActivityPanel({
       }
       try {
         const body = (await api.getActivity(sessionId, creatorToken)) as ActivitySnapshot;
-        if (!cancelled.current) {
+        if (!canceled.current) {
           setData(body);
           fetchedAt.current = Date.now();
           setError(null);
         }
       } catch (err) {
-        if (!cancelled.current) {
+        if (!canceled.current) {
           setError(err instanceof Error ? err.message : String(err));
         }
       }
-      if (!cancelled.current) {
+      if (!canceled.current) {
         timer = setTimeout(tick, pollMs);
       }
     }
@@ -148,7 +148,7 @@ export function SessionActivityPanel({
     document.addEventListener("visibilitychange", onVisible);
     tick();
     return () => {
-      cancelled.current = true;
+      canceled.current = true;
       if (timer) clearTimeout(timer);
       document.removeEventListener("visibilitychange", onVisible);
     };
@@ -243,14 +243,14 @@ export function SessionActivityPanel({
               {/* Wave 1 (issue #134): waiting_on_role_ids is now
                   derived from ready_role_ids, not submitted_role_ids
                   — i.e. "not yet ready", which can include roles who
-                  have spoken but haven't signalled ready yet. The
+                  have spoken but haven't signaled ready yet. The
                   copy reflects that. */}
               Waiting on (not yet ready):{" "}
               {data.turn.waiting_on_role_ids.map(roleLabel).join(", ")}
             </p>
           ) : data.turn?.active_role_ids?.length ? (
             <p className="text-xs text-signal">
-              All active roles have signalled ready.
+              All active roles have signaled ready.
             </p>
           ) : null}
           {data.turn?.error_reason ? (

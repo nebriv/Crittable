@@ -98,7 +98,7 @@ export function Play({ sessionId, token }: Props) {
   // alongside the existing state-based heuristic so the indicator lights
   // up even during interject / guardrail / setup / AAR (issue #63).
   const [aiCalls, setAiCalls] = useState<Set<string>>(() => new Set());
-  // Labelled status from the turn driver, e.g. recovery pass 2/3.
+  // Labeled status from the turn driver, e.g. recovery pass 2/3.
   // ``phase: null`` (or null state itself) clears the label.
   const [aiStatus, setAiStatus] = useState<{
     phase: "play" | "interject" | "setup" | "briefing" | "aar";
@@ -147,7 +147,7 @@ export function Play({ sessionId, token }: Props) {
   // chat. Quality is single-valued (All / @Me / Critical); track set
   // is multi-select OR within the set, AND-combined with quality.
   // Default = ``"all" + empty set`` = no filtering = identical
-  // behaviour to the pre-Phase-B chat.
+  // behavior to the pre-Phase-B chat.
   const [transcriptFilter, setTranscriptFilter] =
     useState<FilterState>(DEFAULT_FILTER);
   // Chat-declutter polish: workstream-override contextmenu state. The
@@ -250,7 +250,7 @@ export function Play({ sessionId, token }: Props) {
       case "state_changed":
         console.info("[play] state changed", evt);
         refreshSnapshot();
-        // Clear the labelled status AND the in-flight call set when
+        // Clear the labeled status AND the in-flight call set when
         // leaving a busy state. ``ai_thinking`` events use
         // ``record=False``, so a reconnect during an LLM call won't
         // replay the matching ``active=false`` event — without this
@@ -530,7 +530,7 @@ export function Play({ sessionId, token }: Props) {
   // ``useCallback(fn, [])`` gives ``handleTypingChange`` a stable identity
   // across re-renders (Play re-renders on every WS event). Without it the
   // ``useEffect([onTypingChange])`` cleanup in Composer fires on *every*
-  // re-render, cancelling the pending-start timer and leaving its ref as a
+  // re-render, canceling the pending-start timer and leaving its ref as a
   // stale truthy integer — which permanently blocks new typing sessions for
   // the rest of the session (issue #77 regression).
   const handleTypingChange = useCallback((t: boolean) => {
@@ -943,7 +943,7 @@ export function Play({ sessionId, token }: Props) {
   // anything more specific. Participant-facing copy: we deliberately
   // hide the engineering jargon (``missing_yield`` / ``missing_drive``)
   // from non-operator viewers — they read as "the AI is broken" rather
-  // than "the AI is normalising its tool call". The full breadcrumb
+  // than "the AI is normalizing its tool call". The full breadcrumb
   // stays visible to the operator in Facilitator.tsx.
   const aiStatusLabel = (() => {
     if (!showAiThinking) return undefined;
@@ -984,7 +984,7 @@ export function Play({ sessionId, token }: Props) {
   const iHaveSubmitted = selfRoleId !== null && submittedRoleIds.includes(selfRoleId);
   const iAmReady = selfRoleId !== null && readyRoleIds.includes(selfRoleId);
   // "My turn" = the engine is waiting on me to signal ready. Wave 1
-  // changes this from "I haven't submitted" to "I haven't yet signalled
+  // changes this from "I haven't submitted" to "I haven't yet signaled
   // ready" so the composer stays available for follow-up discussion
   // submissions even after a first message lands. The composer's
   // primary button still flips to "Walk back ready" via the

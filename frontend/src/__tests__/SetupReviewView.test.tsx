@@ -171,7 +171,7 @@ describe("SetupReviewView — back-to-lobby affordance", () => {
 
   it("hides the affordance when the parent did not wire onBackToLobby", () => {
     // Storybook / isolated previews / older parent surfaces don't
-    // get a stranded button with no behaviour wired up.
+    // get a stranded button with no behavior wired up.
     render(
       <SetupReviewView
         roles={[role({ is_creator: true })]}

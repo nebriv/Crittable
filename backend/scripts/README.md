@@ -41,7 +41,7 @@ Add `--verbose` to dump the full request/response for each call.
 
 ## issue_151_before_after.py
 
-Reproduces issue #151's "AI silently yields after `inject_critical_event`" failure mode and demonstrates the post-fix engine + recovery behaviour. Three probes:
+Reproduces issue #151's "AI silently yields after `inject_critical_event`" failure mode and demonstrates the post-fix engine + recovery behavior. Three probes:
 
 1. **Solo-inject baseline rate** (`--runs N`, default 5). On a fixture seeded to provoke `inject_critical_event` (a critical-typed inject in the plan, transcript past the inject's trigger), counts how often the live model emits the inject without a same-response DRIVE-slot tool. The fix doesn't change this rate — it changes how the engine *responds* when the rate is non-zero. Last measured at ~50–80% on `claude-sonnet-4-6`.
 2. **Dispatch-layer rejection (fix A)**. Replays a synthetic solo-inject response through the dispatcher in two configurations: pre-fix (pairing scan bypassed → inject lands; `is_error=False`; banner fires) and post-fix (live code → inject rejected with structured chain-shape hint; `is_error=True`; banner does NOT fire). No live API call.

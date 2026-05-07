@@ -90,7 +90,7 @@ export function findPinInsertPos(
  * originating client should call this — Yjs collab propagates to peers
  * automatically.
  *
- * If the section heading isn't present, the behaviour depends on the
+ * If the section heading isn't present, the behavior depends on the
  * section: ``timeline`` falls back to end-of-doc (most templates
  * already include the heading; if a user blew it away that's still
  * "near the bottom" by intent), while ``aar_review`` auto-inserts the

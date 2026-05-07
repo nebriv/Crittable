@@ -11,7 +11,7 @@ interface Props {
    * page owns the filter state and can clear it then re-attempt the
    * scroll, surface a recovery toast, etc. Optional — without a
    * handler the click degrades to a console warning + no-op (the
-   * pre-Phase-B behaviour).
+   * pre-Phase-B behavior).
    */
   onScrollMissed?: (messageId: string) => void;
 }
@@ -236,7 +236,7 @@ export function Timeline({
     >
       {/* Visually-hidden heading — the parent ``CollapsibleRailPanel``
           renders the visible "TIMELINE" chrome, but screen readers
-          still benefit from the section being labelled inside the
+          still benefit from the section being labeled inside the
           accordion body. */}
       <h3
         id="timeline-heading"

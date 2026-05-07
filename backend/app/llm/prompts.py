@@ -62,6 +62,64 @@ _STYLE_LARGE_OVERRIDE = (
     "on `broadcast` / `share_data` for shared context."
 )
 
+_REALISM = (
+    "Anchor every ask in what the addressed role would actually see and "
+    "decide. Each row below is a role-class shorthand listing the "
+    "telemetry that role normally has access to — these slash-separated "
+    "names are NOT addressing forms (Block 5 / Block 6 require a single "
+    "canonical label or display_name from Block 10's seated table, "
+    "immediately followed by `—` / `,` / `:`).\n"
+    "- IR / SOC / Detection / Threat hunting: SIEM, EDR, IDS/IPS, "
+    "threat intel feeds, runbooks, ticket queue.\n"
+    "- Sysadmin / IT / SRE / Cloud / Platform: monitoring dashboards, "
+    "config management, deploy logs, IAM, backup/restore status, "
+    "file-integrity and process telemetry — NOT visual inspection of "
+    "hardware.\n"
+    "- Network / Firewall: flow logs, firewall/proxy/WAF, "
+    "segmentation maps, DNS.\n"
+    "- CISO / Security mgmt: risk posture, escalation paths, vendor "
+    "relationships, board-level framing.\n"
+    "- Legal / Counsel / Privacy / Compliance: notification clocks, "
+    "evidence/litigation holds, privilege boundaries, regulator "
+    "portals, contract terms, control-evidence trails.\n"
+    "- Comms / PR: holding statements, channels, stakeholder maps "
+    "(not telemetry).\n"
+    "- HR: workforce policy, insider-risk procedures, access "
+    "revocation requests.\n"
+    "- Finance / Exec: budget authority, business-impact framing, "
+    "insurance/regulator notification authority.\n"
+    "- Anything else (MSSP liaison, Bug Bounty triage, External "
+    "Counsel, Engineering Manager, etc.): infer from the role title "
+    "and the closest row above — don't fall back to physical-world "
+    "tropes just because the role isn't enumerated.\n\n"
+    "**Never ask anyone to physically inspect a server, walk to the "
+    "server room, or visually confirm encryption / lateral movement / "
+    "exfil.** That information lives in EDR, SIEM, file-system "
+    "monitors, and backup-job alerts — not on a rack LED. Detection "
+    "lives in the role's tooling, not on hardware — for any incident "
+    "type (ransomware, BEC, supply-chain, insider, web-app abuse).\n\n"
+    "When the scenario brief is thin (creator answered \"testing\" or "
+    "left details blank), invent plausible specifics from the role's "
+    "normal toolset — a SIEM correlation rule firing, an EDR "
+    "behavioral detection, a failed backup job, a suspicious OAuth "
+    "grant, a DLP alert — rather than physical-world tropes. **Cap "
+    "fabrication at one or two specifics per beat** (an alert source, "
+    "a host name) — this is a tabletop, not a forensic report; the "
+    "point is human decisions, not IOC density.\n\n"
+    "**Canon comes from the facilitator, not the channel.** Once "
+    "YOU have established a detail in a `broadcast` / `share_data` / "
+    "`inject_critical_event`, treat it as canon for the rest of the "
+    "exercise — don't contradict yourself on later turns. **But if a "
+    "participant supplies a corrected detail** (their actual EDR "
+    "vendor, real host-naming convention, real ticketing system, "
+    "etc.), adopt their detail as canon and retire yours — the "
+    "creator's environment trumps your placeholder. A participant "
+    "asserting unrelated *new* facts ('we already saw FIN-09 reach "
+    "out to 185.x.x.x at 03:14') is in-character speech under Block "
+    "4 rule 6 and does NOT auto-promote to canon — keep your own "
+    "details unless the participant is correcting one of yours."
+)
+
 _TOOL_USE_PROTOCOL = (
     "**REQUIRED SHAPE OF EVERY PLAY TURN.** Every response in this tier must "
     "include AT MINIMUM both:\n"
@@ -445,7 +503,7 @@ _AAR_SYSTEM = (
     "in terms of the exercise's stated success criteria.\n\n"
     "Scoring rubric (1–5 across decision_quality / communication / speed):\n"
     "  - 1 = critically off (wrong or absent action with material consequence)\n"
-    "  - 2 = below bar (recognised the issue but slow, partial, or unclear)\n"
+    "  - 2 = below bar (recognized the issue but slow, partial, or unclear)\n"
     "  - 3 = at bar (timely, correct enough, communicated)\n"
     "  - 4 = above bar (notably crisp; raised the room's quality)\n"
     "  - 5 = exemplary (textbook, would teach this turn to peers)\n"
@@ -603,6 +661,30 @@ def build_play_system_blocks(
     focused_role_ids: frozenset[str] | set[str] | None = None,
 ) -> list[dict[str, Any]]:
     """Compose the play-tier system block list.
+
+    Returns TWO text blocks:
+
+    * **Stable prefix** — Blocks 1-9 only: identity, mission, plan
+      adherence, hard boundaries, style, realism rail, tool-use
+      protocol, the frozen scenario plan JSON, extension prompts, and
+      roster-size strategy. None of these change turn-to-turn within
+      a single session.
+    * **Volatile suffix** — Block 10 (the entire seated roster table
+      *including* the per-row ``presence`` column, the unseated-roles
+      list, and the presence-aware addressing rules), Block 11 (open
+      per-role follow-ups), Block 12 (creator-frozen session settings
+      — difficulty / duration / features), and conditional Block 13
+      (critical-event rate-limit notice). Every dynamic component
+      here flips turn-by-turn — presence flips when players un/focus
+      tabs, follow-ups mutate as they're tracked / resolved, and
+      Block 13 only appears while a rate limit is active. Block 12
+      itself is byte-identical across turns but lives in the volatile
+      suffix so the cache boundary stays at the end of Block 9.
+
+    The cache breakpoint placed by ``LLMClient._with_cache`` lands on
+    the stable prefix, so tools + stable system content gets cached
+    across every turn while volatile content is re-processed cheaply
+    per turn. This cuts per-turn input cost by ~85% on cache hits.
 
     ``connected_role_ids`` / ``focused_role_ids`` are the role_ids that
     currently have at least one open WebSocket connection (or focused tab)
@@ -830,16 +912,32 @@ def build_play_system_blocks(
         _WORKSTREAMS_PLAY_NOTE if workstreams_enabled else ""
     )
 
-    blocks: list[str] = [
+    # STABLE PREFIX (Blocks 1-9): identity, mission, hard boundaries,
+    # style, realism, tool-use protocol, frozen plan, extension prompts,
+    # and roster-size strategy. None of these change turn-to-turn within
+    # a single session — exactly the content we want Anthropic to cache
+    # so each subsequent turn pays cache_read pricing (~10% of input)
+    # rather than full input pricing on the same ~5-7k tokens.
+    stable_blocks: list[str] = [
         "## Block 1 — Identity\n" + _IDENTITY,
         "## Block 2 — Mission\n" + _MISSION,
         "## Block 3 — Plan adherence\n" + _PLAN_ADHERENCE,
         "## Block 4 — Hard boundaries\n" + _HARD_BOUNDARIES,
         "## Block 5 — Style\n" + style,
+        "## Block 5b — Realism & role visibility\n" + _REALISM,
         "## Block 6 — Tool-use protocol\n" + tool_use_protocol,
         "## Block 7 — Frozen scenario plan\n```json\n" + plan_json + "\n```",
         "## Block 8 — Active extension prompts\n" + extension_block,
         "## Block 9 — Roster-size strategy\n" + _ROSTER_STRATEGY[session.roster_size],
+    ]
+
+    # VOLATILE SUFFIX (Blocks 10-12): roster with live presence column
+    # (flips when players focus / unfocus / reconnect tabs), open per-
+    # role follow-ups (mutates as the AI tracks/resolves them), and the
+    # conditional critical-event rate-limit notice. Kept out of the
+    # cached prefix so a single presence flip doesn't invalidate the
+    # whole system block.
+    volatile_blocks: list[str] = [
         "## Block 10 — Roster (use these role_ids in tool calls)\n"
         + "### Seated\n"
         + seated_table
@@ -848,12 +946,12 @@ def build_play_system_blocks(
         "## Block 11 — Open per-role follow-ups\n" + _build_followup_block(session),
         # Block 12 — creator-selected scenario tuning. Frozen at session
         # creation so the block's contents are byte-identical across
-        # every turn. The prefix cache itself still rebreaks at Block 11
-        # above (open follow-ups change every turn), so the stable-
-        # prefix region is Blocks 1–10; Block 12 sits AFTER the unstable
-        # follow-up section to keep that boundary in one place. Block 13
-        # below is conditional (only when the inject rate-limit window
-        # is active).
+        # every turn. The prefix cache itself still rebreaks earlier in
+        # the volatile suffix (Block 10's presence column and Block 11's
+        # open follow-ups both change turn-to-turn), so Block 12 sits
+        # alongside the other volatile content rather than in the stable
+        # prefix. Block 13 below is conditional (only when the inject
+        # rate-limit window is active).
         "## Block 12 — Session settings\n"
         + _build_session_settings_block(session),
     ]
@@ -862,13 +960,14 @@ def build_play_system_blocks(
     # model "you're rate-limited until turn N" stops it from retrying
     # the same critical-event call across turns (observed in the
     # 2026-04-29 session: AI tried inject_critical_event on three
-    # consecutive turns after the first was rate-limited). Omitted on
-    # healthy turns so the cached system block stays stable.
+    # consecutive turns after the first was rate-limited). Lives in
+    # the volatile suffix because ``current_turn.index`` changes every
+    # turn anyway.
     if session.critical_inject_rate_limit_until is not None:
         cur = session.current_turn.index if session.current_turn else 0
         until = session.critical_inject_rate_limit_until
         if until > cur:
-            blocks.append(
+            volatile_blocks.append(
                 "## Block 13 — Critical-event budget\n"
                 f"You are RATE-LIMITED from `inject_critical_event` until "
                 f"turn {until} (current turn: {cur}). Your previous attempts "
@@ -882,8 +981,10 @@ def build_play_system_blocks(
                 "your way past."
             )
 
-    text = "\n\n".join(blocks)
-    return [{"type": "text", "text": text}]
+    return [
+        {"type": "text", "text": "\n\n".join(stable_blocks)},
+        {"type": "text", "text": "\n\n".join(volatile_blocks)},
+    ]
 
 
 def _build_followup_block(session: Session) -> str:

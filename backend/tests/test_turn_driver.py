@@ -1,4 +1,4 @@
-"""Tests for the labelled ``ai_status`` breadcrumbs emitted by the
+"""Tests for the labeled ``ai_status`` breadcrumbs emitted by the
 turn driver (issue #63 — without these, the operator could not tell
 "AI is on recovery pass 2/3" from "AI is stuck", and the entire
 ``run_interject`` path was invisible to clients because state stays
@@ -122,7 +122,7 @@ def _ai_statuses(rec: _RecordingConnections) -> list[dict[str, Any]]:
 
 
 def test_run_play_turn_emits_ai_status_with_phase_play(client: TestClient) -> None:
-    """The play-tier turn driver must light the labelled status during
+    """The play-tier turn driver must light the labeled status during
     its LLM call so the operator sees something more specific than
     just "thinking"."""
 

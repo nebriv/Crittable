@@ -23,7 +23,7 @@ before editing a prompt block.
 > with paraphrases, repeats, and edge fixtures.**
 
 Every rule below is a corollary. The prompt is a contract; the model
-is a contract-fulfilling counterparty that will minimise effort along
+is a contract-fulfilling counterparty that will minimize effort along
 any axis you didn't bind. If you only specify a phrase, the model
 will paraphrase. If you only specify "common case", the model will
 slip on the edge case. If you only specify single-call shape, the
@@ -31,7 +31,7 @@ model will flake non-deterministically.
 
 ---
 
-## Pattern catalogue (what we learned this sweep)
+## Pattern catalog (what we learned this sweep)
 
 ### 1. Forbid the *shape*, not the *phrase*
 
@@ -91,7 +91,7 @@ authority. The classifier's lexical examples didn't cover that.
 
 Then mirror the same distinction in `_HARD_BOUNDARIES` rule 6 so the
 play-tier model carries the same model even if a claim slips past
-the classifier (defence in depth).
+the classifier (defense in depth).
 
 **Heuristic.** When a rule talks about *legitimate* and *illegitimate*
 versions of the same surface form, name the **distinguishing target**
@@ -201,7 +201,7 @@ comply more often, but the boundary catches the inevitable misses.
   numerics, log drops).
 - Add unit tests at the boundary, not just live-API tests.
 - Then update the prompt to discourage the failure mode — but treat
-  the prompt as the second line of defence, not the first.
+  the prompt as the second line of defense, not the first.
 
 See CLAUDE.md → "Model-output trust boundary" for the full rule and
 [`backend/app/llm/export.py::_extract_report`](../backend/app/llm/export.py)
@@ -285,7 +285,7 @@ For structured output (JSON tool input):
    `_extract_*` helpers; live-API tests for the average-case
    round-trip.
 3. **Then update the prompt** to make the failure mode rarer. The
-   prompt is the second line of defence, not the first.
+   prompt is the second line of defense, not the first.
 
 ### R5 — Tool descriptions own routing
 

@@ -12,7 +12,7 @@ and ``session.messages`` (the full transcript), grouping events by
 Capturing AI messages is what makes replay a fidelity test rather than
 an "approximately like that" test. Frontend features that key off
 ``Message.kind`` + ``Message.tool_name`` + ``Message.body`` (highlight
-colours, broadcast vs. share_data icons, critical-inject banners,
+colors, broadcast vs. share_data icons, critical-inject banners,
 transcript filtering) rely on the AI side of the transcript matching;
 without it, a recorded session replays to a visibly different UI even
 though the player input was identical.

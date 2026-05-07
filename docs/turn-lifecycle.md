@@ -127,7 +127,7 @@ valid output?"). Phase policy never imports the validator and vice-versa.
 > **Wave 1 (issue #134) — per-submission intent + ready-quorum gate.** The
 > ``AWAITING_PLAYERS → AI_PROCESSING`` flip no longer happens when every
 > active role has *submitted at least once*; it now happens when every
-> active role has signalled ``intent="ready"`` on a recent submission
+> active role has signaled ``intent="ready"`` on a recent submission
 > (or the creator force-advances). A submission with ``intent="discuss"``
 > contributes to the transcript and adds the role to ``submitted_role_ids``
 > but does **not** trip the gate; a follow-up ``intent="ready"`` adds the
@@ -251,7 +251,7 @@ Force-advance still bypasses this check (operator escape hatch
 preserved).
 
 **`can_submit` widened.** Active roles can now post **any number of
-submissions on an awaiting turn** before signalling ready. Pre-Wave-1
+submissions on an awaiting turn** before signaling ready. Pre-Wave-1
 the second message from an active role was treated as an
 out-of-turn interjection; under the ready-quorum model every
 submission from an active role on an awaiting turn is a turn
@@ -681,11 +681,11 @@ flowchart TD
 | `app/sessions/turn_validator.py` `_DRIVE_RECOVERY_NOTE` | Added "answer the open `?` first" + Block-4 plan-disclosure defense | Make the recovery broadcast actually answer the question and not be coercible into plan disclosure. |
 | `app/sessions/turn_validator.py` `drive_recovery_directive(pending_player_question=…)` | Verbatim quoting in user nudge | Grounds the recovery so the model can't satisfy DRIVE with a generic broadcast. |
 | `app/sessions/turn_validator.py` helper rename | `_open_player_question` → `_most_recent_unreplied_player_question` | Returns the body for grounding; old boolean wrapper retained for the kill-switch path. |
-| `app/llm/prompts.py` Block 6 | Removed "yielding silently is fine" sentence; replaced with "always pair broadcast/address_role with set_active_roles" | The prompt no longer encourages the broken behaviour. |
+| `app/llm/prompts.py` Block 6 | Removed "yielding silently is fine" sentence; replaced with "always pair broadcast/address_role with set_active_roles" | The prompt no longer encourages the broken behavior. |
 | `app/llm/prompts.py` `_STRICT_YIELD_NOTE` | Added "this is the one exception to silent-yield prohibition" sentence | Resolve the apparent contradiction between Block 6 and the strict-yield recovery. |
 | `app/llm/prompts.py` `_ROSTER_STRATEGY["large"]` | "Every regular turn ends with a broadcast/address_role" | Clarify the every-3-4-turn summary is *additional*, not a replacement. |
 | `docs/configuration.md` | Updated default and explanation | Future operators understand why the kill-switch exists and why not to flip it. |
-| `backend/tests/test_turn_validator.py` | New tests + renamed legacy ones | Kill-switch behaviour, dynamic user nudge, verbatim quoting, edge cases. |
+| `backend/tests/test_turn_validator.py` | New tests + renamed legacy ones | Kill-switch behavior, dynamic user nudge, verbatim quoting, edge cases. |
 | `backend/tests/test_e2e_session.py` | New high-fidelity regression test | Replays the captured production scenario; asserts cascade + verbatim quote + Block-4 reference. |
 
 ---
@@ -849,7 +849,7 @@ double-counting.
 A startup warning fires (`legacy_carve_out_enabled` log line) so the next operator
 knows. The carve-out re-activates and the regression returns. The legacy unit tests
 still pass with `soft_drive_carve_out_enabled=True` explicitly to lock the path's
-behaviour. **This is intentional** — emergency rollback shouldn't require code
+behavior. **This is intentional** — emergency rollback shouldn't require code
 changes.
 
 ### 8j. Player message with `?` but addressed to another player

@@ -185,11 +185,11 @@ async def prepare_and_submit_player_response(
     NOT included.
 
     ``intent`` (Wave 1, issue #134): "ready" signals the player is done
-    talking and the AI may advance once every active role has signalled
+    talking and the AI may advance once every active role has signaled
     ready; "discuss" leaves the player in the turn so the team can
     keep talking. Defaults to "ready" so legacy callers (test fixtures,
     pre-Wave-1 scenarios) get the historical "submit-and-advance"
-    behaviour. The WS handler must always pass an explicit value
+    behavior. The WS handler must always pass an explicit value
     parsed from the wire payload.
 
     ``mentions`` (Wave 2): structural mention targets from the

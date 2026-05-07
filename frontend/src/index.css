@@ -196,7 +196,7 @@ html, body {
 
 /*
  * Brand scrollbars. The default WebKit / Firefox scrollbars read as
- * chunky chrome-grey on the ink-900 surface — wrong both visually
+ * chunky chrome-gray on the ink-900 surface — wrong both visually
  * (clashes with the operator palette) and semantically (the rails
  * should disappear into the chrome, the chat is the focus).
  *
@@ -256,7 +256,7 @@ html, body {
  * The ``prose prose-invert`` classes on the editor are aspirational —
  * @tailwindcss/typography isn't installed, and adding the ~40 KB plugin
  * just to style a small editor doesn't pay for itself. Hand-roll the
- * subset we actually use; brand tokens keep colours consistent.
+ * subset we actually use; brand tokens keep colors consistent.
  */
 [data-notepad-editor] h1 {
   font-size: 1.4rem;
@@ -408,7 +408,7 @@ html, body {
 }
 /*
  * Remote-user selected-text decoration. y-tiptap sets
- * ``background-color`` inline (semi-transparent user colour); we just
+ * ``background-color`` inline (semi-transparent user color); we just
  * make sure the highlight doesn't bleed past the line by clamping the
  * decoration to the inline rendering.
  */

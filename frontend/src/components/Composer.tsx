@@ -27,7 +27,7 @@ import {
 
 /**
  * Wave 1 (issue #134): per-submission intent. ``"ready"`` means the
- * player is signalling "I'm done — AI may advance once everyone
+ * player is signaling "I'm done — AI may advance once everyone
  * else is ready"; ``"discuss"`` means "I'm contributing to discussion,
  * keep my seat open". The composer's two submit buttons map 1:1 onto
  * these values.
@@ -91,7 +91,7 @@ interface Props {
    */
   mentionRoster?: MentionRosterEntry[];
   /**
-   * When ``true``, the local participant has already signalled ready
+   * When ``true``, the local participant has already signaled ready
    * for the current turn. The composer surfaces this as a small
    * "Currently ready ✓" hint and primes the secondary button to
    * "Walk back ready" so the player can re-open discussion if needed.
@@ -408,7 +408,7 @@ export function Composer({
   function handleKeyDown(e: KeyboardEvent<HTMLTextAreaElement>) {
     // Wave 2: when the mention popover is open it absorbs the
     // navigation keys (ArrowUp/Down/Enter/Escape/Tab) so the
-    // composer's submit / newline behaviour doesn't fire mid-pick.
+    // composer's submit / newline behavior doesn't fire mid-pick.
     // The popover's filtered slice is recomputed here so we don't
     // re-render the popover before clamping the highlight.
     if (mentionTrigger != null) {
@@ -444,7 +444,7 @@ export function Composer({
           // next focusable element — otherwise a keyboard-only
           // user is trapped in the textarea, having to press Tab
           // a second time after every commit. Enter keeps focus
-          // on the textarea (typical chat composer behaviour); Tab
+          // on the textarea (typical chat composer behavior); Tab
           // commits + lets the native Tab advance fire by NOT
           // preventDefault'ing.
           const entry = visible[mentionHighlight] ?? visible[0];
@@ -669,7 +669,7 @@ export function Composer({
       // peers don't see a stuck "X is typing…" indicator for
       // the length of TYPING_VISIBLE_MS after we navigate away.
       // Use ``teardownTypingTimers`` rather than inline clears so
-      // every ref is nulled: a non-null but cancelled timer ID in
+      // every ref is nulled: a non-null but canceled timer ID in
       // ``pendingStartTimer.current`` would prevent future typing
       // sessions from scheduling a new gate timer (issue #77).
       teardownTypingTimers();

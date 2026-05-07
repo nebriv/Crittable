@@ -7,7 +7,7 @@ end-to-end interaction with the ``@facilitator`` routing branch.
 The PR #152 routing branch (``ws/routes.py`` line ~739) already
 consumes ``Session.ai_paused``; ``test_composer_mentions_routing.py
 ::test_ws_routing_skips_interject_when_ai_paused`` already locks the
-behaviour by mutating the field directly. This file exercises the
+behavior by mutating the field directly. This file exercises the
 **human-facing affordance** that flips that field — i.e. the new
 endpoints, idempotency, the WS broadcast contract, and the
 persisted ``Message.ai_paused_at_submit`` snapshot the transcript
