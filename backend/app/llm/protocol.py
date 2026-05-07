@@ -9,7 +9,7 @@ Two production implementations live behind this seam:
   * ``app.llm.clients.litellm_client.LiteLLMChatClient`` — routes via LiteLLM
     (~100 providers: Azure OpenAI, Bedrock, Vertex, OpenRouter, …).
 
-Selected at startup by ``LLM_BACKEND``. See `docs/llm-providers.md` and
+Selected at startup by ``LLM_BACKEND``. See `docs/llm_providers.md` and
 issue #193.
 
 # Design choices

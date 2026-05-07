@@ -9,7 +9,7 @@ Locks in the contracts the Phase 1 commit established:
     Phase-1 skeleton methods raise ``NotImplementedError`` rather than
     silently mis-behaving — so a hypothetical premature operator
     flipping the flag gets a loud, traceable failure.
-  * ``litellm`` is hardened on import: the six callback registries
+  * ``litellm`` is hardened on import: the nine callback registries
     listed in the security audit are empty, ``LITELLM_MODE`` is set to
     ``"PRODUCTION"``, and ``telemetry`` is off. Any one of these
     regressing risks scenario data exfiltrating to a third-party SaaS
@@ -393,7 +393,7 @@ def test_resolve_wire_model_passes_through_known_providers() -> None:
 
 def test_resolve_wire_model_rejects_unknown_provider_prefix() -> None:
     """Typos and unrecognized prefixes fail loud — operator must add
-    them to the allowlist + document in docs/llm-providers.md.
+    them to the allowlist + document in docs/llm_providers.md.
     """
 
     from app.llm.clients.litellm_client import LiteLLMChatClient

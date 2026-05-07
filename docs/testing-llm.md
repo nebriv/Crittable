@@ -166,9 +166,12 @@ def install_mock_chat_client(test_client, scripts=None):
     mock = MockChatClient(scripts=scripts)
     state = test_client.app.state
     state.llm = mock
-    if hasattr(state, "manager"):
-        state.manager._llm = mock
-        state.manager._guardrail._llm = mock
+    manager = getattr(state, "manager", None)
+    if manager is not None:
+        manager._llm = mock
+        guardrail = getattr(manager, "_guardrail", None)
+        if guardrail is not None:
+            guardrail._llm = mock
     return mock
 ```
 
@@ -257,7 +260,8 @@ LLM_API_KEY=$LIVE_TEST_LLM_API_KEY LLM_BACKEND=litellm pytest tests/live/
 ```
 
 Both pass against the same Anthropic API in their respective shapes —
-the migration was validated end-to-end this way (see issue #193).
+the LiteLLM migration itself was validated end-to-end this way (issue
+#193); only mechanical legacy-path cleanup remains in #195.
 
 ## Common gotchas
 
@@ -309,4 +313,4 @@ For tool-only responses (no text), `astream` skips straight to the
 - Mock tests: [`backend/tests/test_mock_chat_client.py`](../backend/tests/test_mock_chat_client.py)
 - Translator unit tests: [`backend/tests/test_litellm_translators.py`](../backend/tests/test_litellm_translators.py)
 - ABC contract: [`backend/app/llm/protocol.py`](../backend/app/llm/protocol.py)
-- Migration tracking: GitHub issue #193
+- Migration tracking: GitHub issue #195

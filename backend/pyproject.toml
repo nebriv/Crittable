@@ -27,7 +27,7 @@ dependencies = [
     # Provider router — routes LLM calls to ~100 providers (Azure OpenAI,
     # AWS Bedrock, Vertex AI, OpenRouter, OpenAI-direct, internal LLM
     # gateways, etc). Selected at runtime via ``LLM_BACKEND=litellm``. See
-    # `docs/llm-providers.md` and issue #193.
+    # `docs/llm_providers.md` and issue #193.
     #
     # Dep-intake (per CLAUDE.md): MIT-licensed, actively maintained
     # (BerriAI/litellm — daily commits as of 2026-05). Provider SDKs load

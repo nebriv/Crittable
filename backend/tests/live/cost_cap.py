@@ -16,9 +16,12 @@ The cap covers both:
   the session-scoped autouse fixture in ``conftest.py``. Records on every
   ``messages.create`` response and on ``stream.get_final_message()``.
 * **LiteLLM.** ``install_litellm_cost_tracking`` registers a
-  ``litellm.callbacks`` handler that records on every successful and
-  failed completion. Same fixture installs both — a single pytest run
-  can exercise either backend without rewiring.
+  ``litellm.callbacks`` handler that records successful completions.
+  Failure callbacks are intentionally a no-op: LiteLLM may auto-retry
+  upstream errors, and counting both the failed attempt and the
+  eventual success would inflate per-call cost attribution. Same fixture
+  installs both — a single pytest run can exercise either backend
+  without rewiring.
 
 Both paths feed the same module-singleton ``_CostTracker``, so the cap
 fires regardless of which backend is in use.

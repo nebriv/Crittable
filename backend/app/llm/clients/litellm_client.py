@@ -4,7 +4,7 @@ Routes every LLM call through ``litellm.acompletion`` so any of the ~100
 providers LiteLLM supports (Azure OpenAI, AWS Bedrock, Vertex AI,
 OpenRouter, OpenAI-direct, vLLM/LocalAI, etc.) works as a Crittable
 backend with no code change — just env config. Selected via
-``LLM_BACKEND=litellm``. See `docs/llm-providers.md` and issue #193.
+``LLM_BACKEND=litellm``. See `docs/llm_providers.md` and issue #193.
 
 # Internal vocabulary stays Anthropic-shaped
 
@@ -78,7 +78,7 @@ _OPENAI_TO_ANTHROPIC_FINISH = {
 # logic, which can dispatch to a provider we don't intend (security
 # review M3 on issue #193). Operators wanting a new provider should add
 # its prefix here in the same PR that documents it in
-# ``docs/llm-providers.md``.
+# ``docs/llm_providers.md``.
 _KNOWN_PROVIDER_PREFIXES = frozenset(
     {
         "anthropic",
@@ -101,6 +101,7 @@ _ALLOWED_LITELLM_KWARGS = frozenset(
     {
         "model",
         "messages",
+        "stream",
         "max_tokens",
         "api_base",
         "api_key",
@@ -537,7 +538,7 @@ class LiteLLMChatClient(ChatClient):
              ``anthropic-direct/...`` (or worse, ``evil/path``) fails
              loud at first call. Operators adding a new provider must
              land it in the allowlist *and* document it in
-             ``docs/llm-providers.md`` — same PR.
+            ``docs/llm_providers.md`` — same PR.
           3. **Unknown bare name** (e.g. ``my-finetuned-model``). Refuse
              to guess — raise a ``RuntimeError`` directing the operator
              to set the fully-qualified id explicitly. Avoids silently
@@ -552,7 +553,7 @@ class LiteLLMChatClient(ChatClient):
                     f"unrecognized provider prefix {prefix!r} in model id {bare!r} "
                     f"for tier {tier}. Allowlist: {sorted(_KNOWN_PROVIDER_PREFIXES)}. "
                     "Add the prefix to _KNOWN_PROVIDER_PREFIXES and document the "
-                    "deployment recipe in docs/llm-providers.md before using it."
+                    "deployment recipe in docs/llm_providers.md before using it."
                 )
             return bare
         if bare.startswith("claude-"):
@@ -621,6 +622,7 @@ class LiteLLMChatClient(ChatClient):
         tier: ModelTier,
         system_blocks: list[dict[str, Any]],
         messages: list[dict[str, Any]],
+        stream: bool = False,
         tools: list[dict[str, Any]] | None,
         max_tokens: int,
         tool_choice: dict[str, Any] | None,
@@ -678,6 +680,8 @@ class LiteLLMChatClient(ChatClient):
             "messages": _to_openai_messages(cached_system, cached_messages),
             "max_tokens": max_tokens,
         }
+        if stream:
+            kwargs["stream"] = True
         if self._settings.llm_api_base:
             kwargs["api_base"] = self._settings.llm_api_base
         # ``LLM_API_KEY`` is provider-agnostic in name only — its *value*
@@ -880,12 +884,12 @@ class LiteLLMChatClient(ChatClient):
             tier=tier,
             system_blocks=system_blocks,
             messages=messages,
+            stream=True,
             tools=tools,
             max_tokens=max_tokens,
             tool_choice=tool_choice,
             extension_tool_names=extension_tool_names,
         )
-        kwargs["stream"] = True
         bare_model = self.model_for(tier)
         _logger.info(
             "llm_call_start",

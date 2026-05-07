@@ -272,6 +272,7 @@ def test_with_message_cache_promotes_string_content() -> None:
         {"role": "assistant", "content": "second"},
     ]
     out = _with_message_cache(msgs)
+    assert out is not msgs
     assert out[-1]["content"] == [
         {
             "type": "text",
@@ -281,6 +282,8 @@ def test_with_message_cache_promotes_string_content() -> None:
     ]
     # Earlier message untouched.
     assert out[0]["content"] == "first"
+    # Input message list/content remains unchanged.
+    assert msgs[1]["content"] == "second"
 
 
 def test_with_message_cache_preserves_structured_content() -> None:
@@ -304,11 +307,14 @@ def test_with_message_cache_preserves_structured_content() -> None:
         }
     ]
     out = _with_message_cache(msgs)
+    assert out is not msgs
     last_block = out[-1]["content"][-1]
     assert last_block["cache_control"] == {"type": "ephemeral"}
     # tool_result block in the same content list is NOT mutated.
     tr_block = out[-1]["content"][0]
     assert "cache_control" not in tr_block
+    # Input content list remains unchanged.
+    assert "cache_control" not in msgs[0]["content"][-1]
 
 
 def test_with_message_cache_empty_returns_empty() -> None:

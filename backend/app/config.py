@@ -154,7 +154,7 @@ class Settings(BaseSettings):
     # ``app.llm.clients.litellm_client.LiteLLMChatClient`` which routes
     # through LiteLLM and supports ~100 providers (Azure OpenAI, AWS
     # Bedrock, Vertex AI, OpenRouter, OpenAI-direct, internal LLM
-    # gateways, etc.). See `docs/llm-providers.md` and issue #193 for
+    # gateways, etc.). See `docs/llm_providers.md` and issue #193 for
     # the multi-provider configuration story.
     llm_backend: str = Field(default="anthropic", alias="LLM_BACKEND")
 
