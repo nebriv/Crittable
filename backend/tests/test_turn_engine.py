@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 
 from app.auth.audit import AuditLog
-from app.llm.client import LLMResult
+from app.llm.protocol import LLMResult
 from app.sessions.models import Session, SessionState, Turn
 from app.sessions.turn_driver import TurnDriver
 from app.sessions.turn_engine import (

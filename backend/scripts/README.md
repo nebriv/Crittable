@@ -1,12 +1,12 @@
 # Backend scripts
 
 Utility scripts for the play-tier engine. Most hit the live Anthropic
-API and require `ANTHROPIC_API_KEY` in the environment. They auto-skip
+API and require `LLM_API_KEY` in the environment. They auto-skip
 or print a clear "set the key" message when it's missing.
 
 | Script | When to run it | Cost (per run) |
 |---|---|---|
-| `run-live-tests.sh` | Whenever you want to run `backend/tests/live/` from inside the Claude Code agent harness (or any environment where setting `ANTHROPIC_API_KEY` directly would collide with the host process's SDK auth). Bridges `LIVE_TEST_ANTHROPIC_API_KEY` -> pytest. | ~$0.10 (full suite) |
+| `run-live-tests.sh` | Whenever you want to run `backend/tests/live/` from inside the Claude Code agent harness (or any environment where setting `LLM_API_KEY` directly would collide with the host process's SDK auth). Bridges `LIVE_TEST_LLM_API_KEY` -> pytest. | ~$0.10 (full suite) |
 | `live_recovery_check.py` | Before every push that touches `_DRIVE_RECOVERY_NOTE`, `_STRICT_YIELD_NOTE`, `_format_drive_user_nudge`, `Block 6` of the system prompt, or any `drive_recovery_directive` plumbing. | ~$0.03 |
 | `issue_151_before_after.py` | Issue #151 regression demo. Run when changing the dispatcher's inject-pairing scan, the validator's `pending_critical_inject_args` plumbing, or Block 6's "Critical-inject chain" rule. Three probes: (1) live solo-inject baseline rate, (2) dispatcher-level fix-A pre/post comparison (no API), (3) live recovery-grounding fix-B pre/post comparison. Emits a JSON report with `--json`. | ~$0.15 |
 | `diagnostic_full_response.py` | When you suspect a tool is being mis-picked and want to see the full model response (text + all tool_use blocks) across three palette variants. | ~$0.05 |
@@ -34,7 +34,7 @@ Exit code 0 if checks 2+3 pass (regardless of check 1). Use as a
 pre-push smoke test.
 
 ```bash
-cd backend && ANTHROPIC_API_KEY=sk-ant-... python scripts/live_recovery_check.py
+cd backend && LLM_API_KEY=sk-ant-... python scripts/live_recovery_check.py
 ```
 
 Add `--verbose` to dump the full request/response for each call.
@@ -50,14 +50,14 @@ Reproduces issue #151's "AI silently yields after `inject_critical_event`" failu
    - **Strict leading-with-inject rate**: the broadcast OPENS with an inject frame ("CRITICAL INJECT", "BREAKING", "MEDIA LEAK", "🚨"). Last measured 40% pre-fix → 100% post-fix.
 
 ```bash
-cd backend && ANTHROPIC_API_KEY=sk-ant-... python scripts/issue_151_before_after.py
+cd backend && LLM_API_KEY=sk-ant-... python scripts/issue_151_before_after.py
 # tighter / cheaper:
 python scripts/issue_151_before_after.py --runs 3 --recovery-samples 2
 # JSON report (clean stdout, audit chatter goes to stderr):
 python scripts/issue_151_before_after.py --json > report.json
 ```
 
-Inside the harness, prefix the call with `ANTHROPIC_API_KEY="$LIVE_TEST_ANTHROPIC_API_KEY"` to scope the bridged var to the subprocess only (per the same harness-shadowing rule that motivated `run-live-tests.sh`).
+Inside the harness, prefix the call with `LLM_API_KEY="$LIVE_TEST_LLM_API_KEY"` to scope the bridged var to the subprocess only (per the same harness-shadowing rule that motivated `run-live-tests.sh`).
 
 ## diagnostic_full_response.py
 
@@ -75,7 +75,7 @@ candidate tools you can see whether the issue is X being too
 attractive or Y being too unattractive.
 
 ```bash
-cd backend && ANTHROPIC_API_KEY=sk-ant-... python scripts/diagnostic_full_response.py
+cd backend && LLM_API_KEY=sk-ant-... python scripts/diagnostic_full_response.py
 ```
 
 ## Tool-routing pytest suite
@@ -89,16 +89,16 @@ Run them after any change to:
 * the per-turn reminder in `app/sessions/turn_driver.py`.
 
 ```bash
-cd backend && ANTHROPIC_API_KEY=sk-ant-... pytest tests/live/ -v
+cd backend && LLM_API_KEY=sk-ant-... pytest tests/live/ -v
 ```
 
 Auto-skipped without the key. Cost ~$0.10 per tool-routing run; the
 full live suite (incl. AAR / consistency / edge-fixture / long-context)
 is ~$1.40.
 
-Inside the Claude Code agent harness, **don't** set `ANTHROPIC_API_KEY`
+Inside the Claude Code agent harness, **don't** set `LLM_API_KEY`
 as a session-wide secret — it shadows the harness's own SDK auth and
-breaks the session. Store the key as `LIVE_TEST_ANTHROPIC_API_KEY`
+breaks the session. Store the key as `LIVE_TEST_LLM_API_KEY`
 instead and use the wrapper, which scopes the bridged var to the
 pytest subprocess only:
 
@@ -124,7 +124,7 @@ runs the live suite automatically on:
   paths changed, use `workflow_dispatch`.)
 * **`workflow_dispatch`** — Actions-UI button. Optional inputs:
   `pytest_args` (narrow filter), `cost_cap_usd` (override the per-run
-  dollar cap), `anthropic_model_play` (validate Sonnet N → N+1
+  dollar cap), `llm_model_play` (validate Sonnet N → N+1
   migration).
 
 There is no scheduled cron — see [`docs/tool-design.md`](../../docs/tool-design.md)

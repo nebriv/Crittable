@@ -29,7 +29,7 @@ Cost
 ----
 
 ~$0.01 per test. Suite cost ~$0.10 per run. Skipped unless
-``ANTHROPIC_API_KEY`` is set.
+``LLM_API_KEY`` is set.
 
 Adding a case
 -------------
@@ -38,7 +38,7 @@ Adding a case
    transcript shape you want to test.
 2. Add a ``@pytest.mark.asyncio`` test below that calls
    ``call_play(...)`` and asserts on ``tool_names(resp)``.
-3. Run ``ANTHROPIC_API_KEY=... pytest tests/live/ -v``.
+3. Run ``LLM_API_KEY=... pytest tests/live/ -v``.
 4. If a soft-pass shows up, decide whether to tighten the tool
    description / prompt or accept it as adjacent-good.
 """

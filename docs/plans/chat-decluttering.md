@@ -636,7 +636,7 @@ Three layers, all already established in this codebase:
 
 ### 9.3 Live-API (`backend/tests/live/`)
 
-Two new tests, both gated on `ANTHROPIC_API_KEY`:
+Two new tests, both gated on `LLM_API_KEY`:
 
 - **Setup workstream declaration** — assert that for a multi-track scenario (we have one in `backend/tests/fixtures/`), `declare_workstreams` fires during setup with 2–5 entries. Don't assert names.
 - **Play-time workstream tagging** — assert that ≥ 50% of `address_role` calls in a 10-turn play loop carry `workstream_id`. Don't assert exact values. (50% is a deliberately soft floor to leave headroom for prompt drift.)
@@ -647,7 +647,7 @@ Per CLAUDE.md `tool-design.md`: live tests assert *shape*, not content. Don't lo
 
 - `test_prompt_tool_consistency.py` continues to pass (covered automatically per §3.6).
 - `test_phase_policy.py` continues to pass (we don't change phase policy).
-- `pytest backend/tests/live/` against `ANTHROPIC_API_KEY` after every prompt edit (CLAUDE.md mandate).
+- `pytest backend/tests/live/` against `LLM_API_KEY` after every prompt edit (CLAUDE.md mandate).
 
 ### 9.5 Sub-agent review pipeline
 

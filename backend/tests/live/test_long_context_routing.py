@@ -35,7 +35,7 @@ Cost
 
 ~$0.03 per run on `claude-sonnet-4-6` (~10K input × $3/Mtok plus
 ~500 output × $15/Mtok = $0.038). About 3x the short-context cases.
-Skipped unless ``ANTHROPIC_API_KEY`` is set. The cost-cap fixture in
+Skipped unless ``LLM_API_KEY`` is set. The cost-cap fixture in
 ``conftest.py`` records the spend like any other live call.
 """
 

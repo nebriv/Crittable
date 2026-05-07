@@ -10,7 +10,7 @@ implementation.
 The vast majority of operators only set one variable.
 
 ```bash
-export ANTHROPIC_API_KEY=sk-ant-…
+export LLM_API_KEY=sk-ant-…
 docker compose up --build
 ```
 
@@ -19,44 +19,56 @@ default. Three small layers above that:
 
 | Layer | Vars | When |
 |---|---|---|
-| **Required** | `ANTHROPIC_API_KEY` | Always — the app refuses to start without it. |
+| **Required** | `LLM_API_KEY` | Always — the app refuses to start without it. |
 | **Before going public** | `SESSION_SECRET`, `CORS_ORIGINS`, `RATE_LIMIT_ENABLED` | Before anyone outside your machine touches the app. The app boots without these but warns loudly. See [the hardening checklist](#before-going-public--hardening-checklist). |
-| **Tweaks worth knowing** | `ANTHROPIC_BASE_URL`, `ANTHROPIC_MODEL_<TIER>`, `LOG_LEVEL`, `MAX_TURNS_PER_SESSION`, `INPUT_GUARDRAIL_ENABLED` | When you want to point at a non-Anthropic backend, change models, see more logs, change cost caps, or disable the off-topic guardrail. |
+| **Tweaks worth knowing** | `LLM_BACKEND`, `LLM_API_BASE`, `LLM_MODEL_<TIER>`, `LOG_LEVEL`, `MAX_TURNS_PER_SESSION`, `INPUT_GUARDRAIL_ENABLED` | When you want a different LLM backend, change models, see more logs, change cost caps, or disable the off-topic guardrail. See [`llm_providers.md`](llm_providers.md) for the multi-provider story. |
 | **Dev-only — never set in production** | `DEV_FAST_SETUP`, `DEV_TOOLS_ENABLED`, `AAR_INLINE_ON_END` | Iterating on the play UI / running scenario replays / running tests. Each one degrades security or correctness if left on. |
 
 The rest of this page is the long form: every var, its default, and
 why you'd touch it.
 
-> **Heads-up: don't shadow `ANTHROPIC_*` in agent harnesses.** The
-> Anthropic SDK auto-discovers `ANTHROPIC_API_KEY`, `ANTHROPIC_BASE_URL`,
-> `ANTHROPIC_AUTH_TOKEN`. Setting any of them as a session-wide env var
-> in a Claude Code harness shadows the harness's own credentials. For
-> the live-test workflow we wrap the variable as
-> `LIVE_TEST_ANTHROPIC_API_KEY` and bridge it inline (see
-> [`backend/scripts/run-live-tests.sh`](../backend/scripts/run-live-tests.sh)
-> and the corresponding section in [`CLAUDE.md`](../CLAUDE.md)).
-> This restriction does NOT apply to GitHub Actions, Docker, or local
-> shells — name the variable `ANTHROPIC_API_KEY` directly there.
+> **Heads-up: harness-shadow concern resolved.** Earlier versions
+> of the engine read its API key from `ANTHROPIC_API_KEY`, which
+> collided with the Anthropic SDK's auto-discovery namespace and
+> meant setting it at a Claude Code session level shadowed the
+> harness's own credentials. The engine now reads `LLM_API_KEY`
+> instead — set it freely in any env (Claude Code session, GitHub
+> Actions, Docker, local shell). For the live-test workflow we
+> wrap the variable as `LIVE_TEST_LLM_API_KEY` and bridge it
+> inline (see
+> [`backend/scripts/run-live-tests.sh`](../backend/scripts/run-live-tests.sh)).
 
 ## Required
 
 | Var | Effect |
 |---|---|
-| `ANTHROPIC_API_KEY` | Anthropic API key. The app refuses to start without it. The pytest suite injects a dummy value automatically via `backend/tests/conftest.py`; production / dev shells must export a real key into the process env. The app's `Settings` itself is configured with `env_file=None` and does not read a `.env` file directly — operators using a `.env` need an external loader (`docker compose` reads it for `${VAR}` interpolation, `direnv` exports it, the live-test conftest has a tiny inline parser). |
+| `LLM_API_KEY` | API key for the engine's primary credential. Required when `LLM_BACKEND=anthropic` (default; the SDK reads it directly) or when `LLM_BACKEND=litellm` and at least one tier targets the `anthropic/` family. **Not required for LiteLLM deployments routing only to non-Anthropic providers** — LiteLLM auto-discovers `OPENAI_API_KEY` / `AWS_*` / `AZURE_API_KEY` / `GOOGLE_APPLICATION_CREDENTIALS` from the process env at first call. The startup gate ([`app/main.py`](../backend/app/main.py)) fails fast when the key is needed and missing; conversely it logs `llm_api_key_skipped` and boots when a non-Anthropic LiteLLM target makes the key unnecessary. The pytest suite injects a dummy value via `backend/tests/conftest.py`. The app's `Settings` is configured with `env_file=None` and does not read `.env` directly — operators using a `.env` need an external loader (`docker compose` reads it for `${VAR}` interpolation, `direnv` exports it, the live-test conftest has a tiny inline parser). See [`llm_providers.md`](llm_providers.md) for per-provider env var conventions. |
+
+## LLM backend selection
+
+| Var | Default | Effect |
+|---|---|---|
+| `LLM_BACKEND` | `anthropic` | Chooses the LLM client implementation. `"anthropic"` uses `anthropic.AsyncAnthropic` directly (the original path; smallest dep footprint, Anthropic-only). `"litellm"` routes via LiteLLM, supporting ~100 providers (Azure OpenAI, AWS Bedrock, Vertex AI, OpenRouter, OpenAI direct, vLLM/Ollama, …). See [`llm_providers.md`](llm_providers.md) for the full multi-provider configuration story. Both backends share the same `ChatClient` ABC so downstream code is identical. |
 
 ## Models (tiered)
 
-If `ANTHROPIC_MODEL` is set, it is the fallback for any unset tier.
+If `LLM_MODEL` is set, it is the fallback for any unset tier.
 
 | Var | Default | Used for |
 |---|---|---|
-| `ANTHROPIC_MODEL_PLAY` | `claude-sonnet-4-6` | Per-turn facilitation |
-| `ANTHROPIC_MODEL_SETUP` | `claude-sonnet-4-6` | Setup dialogue with the creator. Was `claude-haiku-4-5` originally; switched to Sonnet because Haiku occasionally fell back to legacy XML function-call markup inside JSON tool inputs (the dispatcher now hard-rejects that — see [`docs/prompts.md`](prompts.md#tool-call-format-json-only)). Operators can still set `ANTHROPIC_MODEL_SETUP=claude-haiku-4-5` to dial back if cost is a concern; the rejection layer, 12k token budget, and JSON-only prompt instruction catch the resulting failures, they're just no longer the default. |
-| `ANTHROPIC_MODEL_AAR` | `claude-opus-4-7` | Final after-action report generation |
-| `ANTHROPIC_MODEL_GUARDRAIL` | `claude-haiku-4-5` | Optional input-side classifier |
-| `ANTHROPIC_MAX_RETRIES` | `4` | SDK retry budget on 429/5xx |
-| `ANTHROPIC_TIMEOUT_S` | `600` | Per-request timeout in seconds |
-| `ANTHROPIC_BASE_URL` | _unset_ | Forwarded to `AsyncAnthropic(base_url=…)`. Lets the engine talk to any Anthropic-compatible endpoint (Bedrock/Vertex via litellm, OpenRouter, internal gateway). See [`llm_providers.md`](llm_providers.md). |
+| `LLM_MODEL_PLAY` | `claude-sonnet-4-6` | Per-turn facilitation |
+| `LLM_MODEL_SETUP` | `claude-sonnet-4-6` | Setup dialogue with the creator. Was `claude-haiku-4-5` originally; switched to Sonnet because Haiku occasionally fell back to legacy XML function-call markup inside JSON tool inputs (the dispatcher now hard-rejects that — see [`docs/prompts.md`](prompts.md#tool-call-format-json-only)). Operators can still set `LLM_MODEL_SETUP=claude-haiku-4-5` to dial back if cost is a concern; the rejection layer, 12k token budget, and JSON-only prompt instruction catch the resulting failures, they're just no longer the default. |
+| `LLM_MODEL_AAR` | `claude-opus-4-7` | Final after-action report generation |
+| `LLM_MODEL_GUARDRAIL` | `claude-haiku-4-5` | Optional input-side classifier |
+| `LLM_MAX_RETRIES` | `4` | SDK retry budget on 429/5xx |
+| `LLM_TIMEOUT_S` | `600` | Per-request timeout in seconds |
+| `LLM_API_BASE` | _unset_ | Anthropic-direct backend: forwarded to `AsyncAnthropic(base_url=…)` for talking to Anthropic-compatible endpoints. LiteLLM backend: forwarded as `api_base` to `litellm.acompletion`. Either way, points the engine at a non-default endpoint. See [`llm_providers.md`](llm_providers.md). |
+
+When `LLM_BACKEND=litellm`, set `LLM_MODEL_<TIER>` to a fully-
+qualified id like `bedrock/anthropic.claude-opus-4-7-20251101-v1:0`,
+`vertex_ai/claude-sonnet-4-6`, `openai/gpt-4o`, etc. Bare ``claude-...``
+names auto-prefix with ``anthropic/``. Other bare names are rejected at
+startup with a clear error message.
 
 ### Per-tier sampling tunables
 
@@ -76,7 +88,7 @@ rationale for each default lives in `backend/app/config.py`
 | `LLM_TEMPERATURE_AAR` | `0.4` | Lower = more faithful summaries. |
 | `LLM_TEMPERATURE_GUARDRAIL` | `0.0` | Deterministic verdict. |
 | `LLM_TOP_P_PLAY` / `_SETUP` / `_AAR` / `_GUARDRAIL` | _SDK default_ | Nucleus sampling. Only forwarded when explicitly set. |
-| `LLM_TIMEOUT_PLAY` / `_SETUP` / `_AAR` / `_GUARDRAIL` | inherits `ANTHROPIC_TIMEOUT_S` | Per-call timeout (seconds). Operators typically tighten guardrail (e.g. 5s — the per-session lock is held during classification) and loosen AAR (e.g. 900s — Opus on a 30-message exercise can run 1–3 min). |
+| `LLM_TIMEOUT_PLAY` / `_SETUP` / `_AAR` / `_GUARDRAIL` | inherits `LLM_TIMEOUT_S` | Per-call timeout (seconds). Operators typically tighten guardrail (e.g. 5s — the per-session lock is held during classification) and loosen AAR (e.g. 900s — Opus on a 30-message exercise can run 1–3 min). |
 
 ### Engine retry / loop caps
 
@@ -171,4 +183,4 @@ Defaults preserve historical behavior so unset = no change.
 3. Set `RATE_LIMIT_ENABLED=true` and tune `RATE_LIMIT_REQ_PER_MIN`.
 4. Restrict the GHCR image's port exposure to the reverse proxy only.
 5. Front the container with a TLS-terminating proxy (Caddy / Cloudflare / etc.).
-6. Confirm `ANTHROPIC_API_KEY` is supplied via the runtime secret store, not baked in.
+6. Confirm `LLM_API_KEY` is supplied via the runtime secret store, not baked in.

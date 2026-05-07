@@ -89,7 +89,7 @@ async def _passthrough_app(scope: dict[str, Any], receive: Any, send: Any) -> No
 
 def _settings(*, enabled: bool = True, cap: int = 5) -> Settings:
     return Settings(
-        ANTHROPIC_API_KEY="x",
+        LLM_API_KEY="x",
         SESSION_SECRET="x" * 32,
         RATE_LIMIT_ENABLED=enabled,
         RATE_LIMIT_REQ_PER_MIN=cap,

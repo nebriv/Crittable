@@ -19,7 +19,7 @@ Findings here are **BLOCK** by default; require PR-body justification to downgra
 
 ## Tools (`tools.py` and tier palettes)
 - Flag tools violating the five trap patterns in `docs/tool-design.md`
-- New/renamed tools: was `pytest backend/tests/test_prompt_tool_consistency.py` run? Was `pytest backend/tests/live/ -v` run against a real `ANTHROPIC_API_KEY`? Mandatory if diff touches `tools.py`, Block 6 of `prompts.py`, or any recovery directive. Absence → **BLOCK**.
+- New/renamed tools: was `pytest backend/tests/test_prompt_tool_consistency.py` run? Was `pytest backend/tests/live/ -v` run against a real `LLM_API_KEY`? Mandatory if diff touches `tools.py`, Block 6 of `prompts.py`, or any recovery directive. Absence → **BLOCK**.
 - New tool in a tier without updating `phase_policy.POLICIES` and `ALLOWED_*_TOOL_NAMES` → **BLOCK** (filtered from API; model hallucinates)
 - New input field appearing in prompt copy (e.g. `share_data`'s `label`) — added to `_NON_TOOL_ALLOWLIST` in the consistency test?
 - Description tells the model *how* instead of *when*. Descriptions are dispatch hints, not docs.

@@ -44,7 +44,7 @@ Usage
 -----
 
     cd backend
-    ANTHROPIC_API_KEY=sk-ant-... python scripts/issue_151_before_after.py
+    LLM_API_KEY=sk-ant-... python scripts/issue_151_before_after.py
 
     # tighter / cheaper:
     python scripts/issue_151_before_after.py --runs 3 --recovery-samples 2
@@ -978,14 +978,14 @@ async def main() -> int:
             cache_logger_on_first_use=False,
         )
 
-    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    api_key = os.environ.get("LLM_API_KEY")
     if not api_key:
         msg = (
-            "ANTHROPIC_API_KEY not set. This script makes real API calls "
+            "LLM_API_KEY not set. This script makes real API calls "
             "(~$0.15/run). In the harness, run via "
             "`backend/scripts/run-live-tests.sh` or set "
-            "LIVE_TEST_ANTHROPIC_API_KEY then bridge it inline:\n"
-            "    ANTHROPIC_API_KEY=\"$LIVE_TEST_ANTHROPIC_API_KEY\" "
+            "LIVE_TEST_LLM_API_KEY then bridge it inline:\n"
+            "    LLM_API_KEY=\"$LIVE_TEST_LLM_API_KEY\" "
             "python scripts/issue_151_before_after.py"
         )
         if args.json:
@@ -1007,8 +1007,8 @@ async def main() -> int:
     model = settings.model_for("play")
     if not args.json:
         _progress(f"Live verification against model: {model}")
-        _progress(f"Base URL: {settings.anthropic_base_url}")
-    client = AsyncAnthropic(api_key=api_key, base_url=settings.anthropic_base_url)
+        _progress(f"Base URL: {settings.llm_api_base}")
+    client = AsyncAnthropic(api_key=api_key, base_url=settings.llm_api_base)
 
     p1 = await probe_1_inject_solo_rate(
         client=client, model=model, runs=args.runs, verbose=args.verbose

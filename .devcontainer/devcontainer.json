@@ -27,7 +27,7 @@
     "PIP_DISABLE_PIP_VERSION_CHECK": "1"
   },
   "remoteEnv": {
-    "ANTHROPIC_API_KEY": "${localEnv:ANTHROPIC_API_KEY}"
+    "LLM_API_KEY": "${localEnv:LLM_API_KEY}"
   },
   "postCreateCommand": "bash .devcontainer/post-create.sh",
   "customizations": {

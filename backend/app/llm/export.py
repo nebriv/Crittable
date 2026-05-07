@@ -15,8 +15,8 @@ from typing import Any
 from ..auth.audit import AuditEvent, AuditLog
 from ..logging_setup import get_logger
 from ..sessions.models import Message, Session
-from .client import LLMClient
 from .prompts import build_aar_system_blocks
+from .protocol import ChatClient
 from .tools import AAR_TOOL
 
 _logger = get_logger("llm.export")
@@ -72,7 +72,7 @@ def strip_creator_only(markdown: str) -> str:
 
 
 class AARGenerator:
-    def __init__(self, *, llm: LLMClient, audit: AuditLog) -> None:
+    def __init__(self, *, llm: ChatClient, audit: AuditLog) -> None:
         self._llm = llm
         self._audit = audit
 

@@ -33,8 +33,10 @@ Open a session, brief the AI, share per-role join links, and Claude
 runs the room while your team responds. The after-action report drafts
 itself while the room is still warm.
 
-> **Status.** Phase 1 + Phase 2 shipped. Phase 3 in design (Redis pub/sub
-> for multi-process WS fan-out, native non-Anthropic LLM adapters).
+> **Status.** Phase 1 + Phase 2 shipped. Multi-provider LLM support
+> shipped (issue #193) — flip `LLM_BACKEND=litellm` to route through
+> Azure OpenAI / AWS Bedrock / Vertex AI / OpenRouter / vLLM / etc.
+> Phase 3 in design (Redis pub/sub for multi-process WS fan-out).
 > Authoritative architecture: [`docs/PLAN.md`](docs/PLAN.md).
 
 ## What it does
@@ -53,12 +55,12 @@ itself while the room is still warm.
 - **Operator-tunable everything.** Per-tier model / max_tokens / temperature
   / top_p / timeout, strict-retry count, setup-turn cap, submission cap,
   poll cadences. See [`docs/configuration.md`](docs/configuration.md).
-- **Provider swap.** `ANTHROPIC_BASE_URL` → Bedrock / Vertex / OpenRouter
+- **Provider swap.** `LLM_API_BASE` → Bedrock / Vertex / OpenRouter
   / local Ollama via litellm. See [`docs/llm_providers.md`](docs/llm_providers.md).
 
 ## Quickstart
 
-> **Minimum viable config:** export `ANTHROPIC_API_KEY` and run one of
+> **Minimum viable config:** export `LLM_API_KEY` and run one of
 > the recipes below. Everything else has a sensible default.
 > See [Environment variables](#environment-variables) for the
 > shortlist that actually matters and
@@ -68,14 +70,14 @@ itself while the room is still warm.
 ### GitHub Codespaces (zero-install)
 
 Open the repo in Codespaces. The devcontainer installs both halves.
-Add `ANTHROPIC_API_KEY` to your Codespaces secrets — it's forwarded
+Add `LLM_API_KEY` to your Codespaces secrets — it's forwarded
 into the container automatically. Then run `docker compose up --build`
 in the terminal and click the forwarded port.
 
 ### Local Docker (single container)
 
 ```bash
-export ANTHROPIC_API_KEY=sk-ant-…
+export LLM_API_KEY=sk-ant-…
 docker compose up --build
 # visit http://localhost:8000
 ```
@@ -84,7 +86,7 @@ Or pull the published image directly (no clone needed):
 
 ```bash
 docker run --rm -p 8000:8000 \
-  -e ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY" \
+  -e LLM_API_KEY="$LLM_API_KEY" \
   ghcr.io/nebriv/crittable:latest
 ```
 
@@ -94,7 +96,7 @@ Two terminals — backend reload + Vite HMR:
 
 ```bash
 # Terminal 1 — backend (auto-reload on save)
-export ANTHROPIC_API_KEY=sk-ant-…
+export LLM_API_KEY=sk-ant-…
 cd backend && pip install -e ".[dev]"
 uvicorn app.main:app --reload --app-dir .
 
@@ -115,7 +117,7 @@ matter day-to-day. Everything else has a working default.
 
 | Var | Why |
 |---|---|
-| `ANTHROPIC_API_KEY` | The app refuses to start without it. Also accepts an Anthropic-compatible endpoint via `ANTHROPIC_BASE_URL` (see below). |
+| `LLM_API_KEY` | The app refuses to start without it. Also accepts an Anthropic-compatible endpoint via `LLM_API_BASE`, or **flip `LLM_BACKEND=litellm` to route through LiteLLM and bring your own provider** — Azure OpenAI, AWS Bedrock, Vertex AI, OpenRouter, OpenAI direct, vLLM/Ollama, etc. See [`docs/llm_providers.md`](docs/llm_providers.md). |
 
 ### Required before any non-toy deployment
 
@@ -134,8 +136,8 @@ is the long form.
 
 | Var | Default | Why |
 |---|---|---|
-| `ANTHROPIC_BASE_URL` | _unset_ | Point at Bedrock / Vertex / OpenRouter / Ollama via litellm. See [`docs/llm_providers.md`](docs/llm_providers.md). |
-| `ANTHROPIC_MODEL_PLAY` / `_SETUP` / `_AAR` / `_GUARDRAIL` | Sonnet 4.6 / Sonnet 4.6 / Opus 4.7 / Haiku 4.5 | Per-tier model overrides. Drop the setup tier to Haiku if you want cheaper setup turns (with a small XML-fallback risk; see configuration.md). |
+| `LLM_API_BASE` | _unset_ | Point at Bedrock / Vertex / OpenRouter / Ollama via litellm. See [`docs/llm_providers.md`](docs/llm_providers.md). |
+| `LLM_MODEL_PLAY` / `_SETUP` / `_AAR` / `_GUARDRAIL` | Sonnet 4.6 / Sonnet 4.6 / Opus 4.7 / Haiku 4.5 | Per-tier model overrides. Drop the setup tier to Haiku if you want cheaper setup turns (with a small XML-fallback risk; see configuration.md). |
 | `LOG_LEVEL` / `LOG_FORMAT` | `INFO` / `json` | Lower to `DEBUG` for verbose; switch to `console` for human-readable output during local dev. |
 | `MAX_TURNS_PER_SESSION` | `40` | Soft warning at 80%, hard stop at limit. |
 | `INPUT_GUARDRAIL_ENABLED` | `true` | Cheap Haiku off-topic / prompt-injection pre-classifier. |
@@ -183,7 +185,7 @@ boundaries are enforced in code:
 - [`docs/configuration.md`](docs/configuration.md) — every env var,
   defaults, "before going public" hardening checklist.
 - [`docs/llm_providers.md`](docs/llm_providers.md) — swap to Bedrock /
-  Vertex / OpenRouter / local Ollama via `ANTHROPIC_BASE_URL`.
+  Vertex / OpenRouter / local Ollama via `LLM_API_BASE`.
 - [`docs/extensions.md`](docs/extensions.md) — Skills-style custom tools /
   resources / prompts.
 

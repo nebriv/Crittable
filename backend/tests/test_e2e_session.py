@@ -27,10 +27,10 @@ _TOOLS_JSON = """[{
 
 @pytest.fixture(autouse=True)
 def _e2e_env(monkeypatch) -> None:
-    monkeypatch.setenv("ANTHROPIC_MODEL_PLAY", "mock-play")
-    monkeypatch.setenv("ANTHROPIC_MODEL_SETUP", "mock-setup")
-    monkeypatch.setenv("ANTHROPIC_MODEL_AAR", "mock-aar")
-    monkeypatch.setenv("ANTHROPIC_MODEL_GUARDRAIL", "mock-guardrail")
+    monkeypatch.setenv("LLM_MODEL_PLAY", "mock-play")
+    monkeypatch.setenv("LLM_MODEL_SETUP", "mock-setup")
+    monkeypatch.setenv("LLM_MODEL_AAR", "mock-aar")
+    monkeypatch.setenv("LLM_MODEL_GUARDRAIL", "mock-guardrail")
     monkeypatch.setenv("SESSION_SECRET", "x" * 32)
     monkeypatch.setenv("INPUT_GUARDRAIL_ENABLED", "false")
     monkeypatch.setenv("EXTENSIONS_TOOLS_JSON", _TOOLS_JSON)
@@ -4273,8 +4273,8 @@ def test_per_tier_timeout_passed_to_anthropic(monkeypatch) -> None:
     from app.config import Settings
     from app.llm.client import LLMClient
 
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
-    monkeypatch.setenv("ANTHROPIC_TIMEOUT_S", "600")
+    monkeypatch.setenv("LLM_API_KEY", "test-key")
+    monkeypatch.setenv("LLM_TIMEOUT_S", "600")
     monkeypatch.setenv("LLM_TIMEOUT_GUARDRAIL", "5")
 
     captured: dict[str, Any] = {}
@@ -4340,8 +4340,8 @@ def test_temperature_stripped_for_opus_4_x(monkeypatch) -> None:
     from app.config import Settings
     from app.llm.client import LLMClient
 
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
-    monkeypatch.setenv("ANTHROPIC_MODEL_AAR", "claude-opus-4-7")
+    monkeypatch.setenv("LLM_API_KEY", "test-key")
+    monkeypatch.setenv("LLM_MODEL_AAR", "claude-opus-4-7")
     monkeypatch.setenv("LLM_TEMPERATURE_AAR", "0.4")
 
     captured: dict[str, Any] = {}
@@ -4382,7 +4382,7 @@ def test_temperature_stripped_for_opus_4_x(monkeypatch) -> None:
         f"Anthropic); kwargs sent: {sorted(kwargs)}"
     )
     # Sonnet keeps temperature — the strip is targeted, not blanket.
-    monkeypatch.setenv("ANTHROPIC_MODEL_AAR", "claude-sonnet-4-6")
+    monkeypatch.setenv("LLM_MODEL_AAR", "claude-sonnet-4-6")
     s2 = Settings()
     llm2 = LLMClient(settings=s2)
     llm2._client = _StubClient()  # type: ignore[assignment]

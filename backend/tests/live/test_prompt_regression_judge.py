@@ -11,7 +11,7 @@ ROUTING (which tool family was picked); these tests lock in the
 QUALITY (whether the chosen tool's content satisfied the rubric).
 
 Cost: ~$0.03 per test (one Sonnet call + one Haiku judge call).
-Skipped unless ``ANTHROPIC_API_KEY`` is set.
+Skipped unless ``LLM_API_KEY`` is set.
 
 When a judge result is wrong (false pass / false fail), the FIX is
 to tighten the rubric — make the criteria narrower and more

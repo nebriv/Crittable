@@ -24,6 +24,17 @@ dependencies = [
     # happens client-side. MIT-licensed, actively maintained — same
     # library Jupyter's Real-Time Collaboration extension uses.
     "pycrdt>=0.10",
+    # Provider router — routes LLM calls to ~100 providers (Azure OpenAI,
+    # AWS Bedrock, Vertex AI, OpenRouter, OpenAI-direct, internal LLM
+    # gateways, etc). Selected at runtime via ``LLM_BACKEND=litellm``. See
+    # `docs/llm_providers.md` and issue #193.
+    #
+    # Dep-intake (per CLAUDE.md): MIT-licensed, actively maintained
+    # (BerriAI/litellm — daily commits as of 2026-05). Provider SDKs load
+    # lazily; the import-time footprint is comparable to ``anthropic``
+    # alone. Pinned to >=1.83 so Anthropic prompt-caching round-trips
+    # cleanly (validated in PoC, see issue #193 Phase 0).
+    "litellm>=1.83",
 ]
 
 [project.optional-dependencies]
@@ -42,7 +53,7 @@ include = ["app*"]
 testpaths = ["tests"]
 asyncio_mode = "auto"
 markers = [
-    "live: hits the real Anthropic API; cost ~$0.01/test; auto-skipped unless ANTHROPIC_API_KEY is set",
+    "live: hits the real Anthropic API; cost ~$0.01/test; auto-skipped unless LLM_API_KEY is set",
 ]
 
 [tool.ruff]

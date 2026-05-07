@@ -47,9 +47,9 @@ from .turn_engine import (
 )
 
 if TYPE_CHECKING:
-    from ..llm.client import LLMClient
     from ..llm.dispatch import ToolDispatcher
     from ..llm.guardrail import InputGuardrail
+    from ..llm.protocol import ChatClient
     from ..ws.connection_manager import ConnectionManager
 
 
@@ -135,7 +135,7 @@ class SessionManager:
         repository: SessionRepository,
         connections: ConnectionManager,
         audit: AuditLog,
-        llm: LLMClient,
+        llm: ChatClient,
         guardrail: InputGuardrail,
         tool_dispatcher: ToolDispatcher,
         extension_registry: FrozenRegistry,
@@ -1988,7 +1988,7 @@ class SessionManager:
             )
 
     # ------------------------------------------------- AI turn loop helpers
-    def llm(self) -> LLMClient:
+    def llm(self) -> ChatClient:
         return self._llm
 
     def settings(self) -> Settings:

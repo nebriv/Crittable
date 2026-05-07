@@ -194,7 +194,7 @@ def test_llm_client_drops_forbidden_tools(monkeypatch) -> None:
     from app.llm.client import LLMClient
     from tests.mock_anthropic import MockAnthropic
 
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.setenv("LLM_API_KEY", "test-key")
     s = Settings()
     mock = MockAnthropic({"play": []})
     llm = LLMClient(settings=s)

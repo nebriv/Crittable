@@ -62,7 +62,7 @@ Set one of the `EXTENSIONS_*_JSON` (inline) or `EXTENSIONS_*_PATH` (file path) e
 
 ```bash
 docker run --rm -p 8000:8000 \
-  -e ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY" \
+  -e LLM_API_KEY="$LLM_API_KEY" \
   -e EXTENSIONS_TOOLS_JSON='[{"name":"lookup_threat_intel","description":"...","input_schema":{...},"handler_kind":"static_text","handler_config":"sim TLP:AMBER"}]' \
   ghcr.io/nebriv/crittable:latest
 ```

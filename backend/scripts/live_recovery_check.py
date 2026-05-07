@@ -30,7 +30,7 @@ Three checks
 Usage
 -----
     cd backend
-    ANTHROPIC_API_KEY=sk-ant-... python scripts/live_recovery_check.py
+    LLM_API_KEY=sk-ant-... python scripts/live_recovery_check.py
 
 Add `--verbose` to dump the full request/response JSON for each call.
 """
@@ -347,12 +347,12 @@ async def main() -> int:
     parser.add_argument("--verbose", action="store_true", help="dump tool_use JSON")
     args = parser.parse_args()
 
-    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    api_key = os.environ.get("LLM_API_KEY")
     if not api_key:
         print(
-            f"{SKIP} — ANTHROPIC_API_KEY not set. This script makes real API "
+            f"{SKIP} — LLM_API_KEY not set. This script makes real API "
             f"calls (~$0.03/run). Export the key and re-run.\n"
-            f"    export ANTHROPIC_API_KEY=sk-ant-...\n"
+            f"    export LLM_API_KEY=sk-ant-...\n"
             f"    python scripts/live_recovery_check.py"
         )
         return 0  # not a failure — just nothing to verify
@@ -366,8 +366,8 @@ async def main() -> int:
     settings = get_settings()
     model = settings.model_for("play")
     print(f"Live verification against model: {model}")
-    print(f"Base URL: {settings.anthropic_base_url}")
-    client = AsyncAnthropic(api_key=api_key, base_url=settings.anthropic_base_url)
+    print(f"Base URL: {settings.llm_api_base}")
+    client = AsyncAnthropic(api_key=api_key, base_url=settings.llm_api_base)
 
     attempt1 = await check_normal_turn(client, model, args.verbose)
     drive_ok = await check_drive_recovery(client, model, args.verbose)

@@ -2,10 +2,10 @@
 
 These tests hit the real Anthropic API once each. Cost: roughly $0.01 per
 test (~5K input + ~500 output tokens each). They are SKIPPED unless a
-real ``ANTHROPIC_API_KEY`` resolves at collection time.
+real ``LLM_API_KEY`` resolves at collection time.
 
 The parent ``backend/tests/conftest.py`` injects a dummy
-``ANTHROPIC_API_KEY=dummy-key-for-tests`` so unit tests can boot
+``LLM_API_KEY=dummy-key-for-tests`` so unit tests can boot
 ``Settings`` without a real key.  For live tests that placeholder is
 exactly wrong — the SDK would happily forward it to Anthropic and
 produce a confusing 401 ``invalid x-api-key`` instead of a clean
@@ -17,11 +17,11 @@ later unit tests still boot.
 
 Run them explicitly:
 
-    cd backend && ANTHROPIC_API_KEY=sk-ant-... pytest tests/live/ -v
+    cd backend && LLM_API_KEY=sk-ant-... pytest tests/live/ -v
 
 Or with the project-root ``.env`` (auto-loaded by this conftest):
 
-    cd backend && pytest tests/live/ -v   # if ANTHROPIC_API_KEY is in <repo>/.env
+    cd backend && pytest tests/live/ -v   # if LLM_API_KEY is in <repo>/.env
 
 Or as part of a release gate:
 
@@ -31,8 +31,8 @@ The suite is the authoritative regression net for tool-routing
 behavior — every new tool, prompt edit, or recovery directive should
 add a case here.
 
-**Do NOT read ``os.environ["ANTHROPIC_API_KEY"]`` directly in this
-suite.** Use ``get_settings().require_anthropic_key()`` instead so the
+**Do NOT read ``os.environ["LLM_API_KEY"]`` directly in this
+suite.** Use ``get_settings().require_llm_api_key()`` instead so the
 test uses the same key-resolution path the production code uses (env
 var → ``.env`` → fail).  ``test_live_fixtures.py`` source-greps every
 file under ``tests/live/`` and fails the suite if the bad pattern
@@ -64,10 +64,11 @@ from app.sessions.models import (
     SetupNote,
 )
 from app.sessions.turn_driver import _play_messages
-from tests.conftest import DUMMY_ANTHROPIC_API_KEY
+from tests.conftest import DUMMY_LLM_API_KEY
 from tests.live.cost_cap import (
     _wrap_messages_create,
     get_tracker,
+    install_litellm_cost_tracking,
 )
 
 
@@ -121,7 +122,7 @@ def _load_project_root_dotenv() -> None:
 
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
     """Auto-skip the entire ``tests/live/`` directory unless a real
-    ``ANTHROPIC_API_KEY`` is set.
+    ``LLM_API_KEY`` is set.
 
     Three things this hook has to do correctly to avoid the
     confusing-401 trap (see module docstring):
@@ -143,8 +144,8 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
     """
 
     saved_dummy_key = (
-        os.environ.pop("ANTHROPIC_API_KEY", None)
-        if os.environ.get("ANTHROPIC_API_KEY") == DUMMY_ANTHROPIC_API_KEY
+        os.environ.pop("LLM_API_KEY", None)
+        if os.environ.get("LLM_API_KEY") == DUMMY_LLM_API_KEY
         else None
     )
     _load_project_root_dotenv()
@@ -153,15 +154,15 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
     try:
         settings = get_settings()
         real_key = (
-            settings.anthropic_api_key.get_secret_value()
-            if settings.anthropic_api_key is not None
+            settings.llm_api_key.get_secret_value()
+            if settings.llm_api_key is not None
             else None
         )
-        if real_key is not None and real_key != DUMMY_ANTHROPIC_API_KEY:
+        if real_key is not None and real_key != DUMMY_LLM_API_KEY:
             _live_will_run = True
         else:
             reason = (
-                "live-API tests require a real ANTHROPIC_API_KEY (env "
+                "live-API tests require a real LLM_API_KEY (env "
                 "var or project-root .env; cost ~$0.01/test)"
             )
             skip_marker = pytest.mark.skip(reason=reason)
@@ -181,7 +182,7 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
         # restore, the unit-test suite would break because
         # ``Settings`` would demand a real API key it doesn't have.
         if not _live_will_run and saved_dummy_key is not None:
-            os.environ["ANTHROPIC_API_KEY"] = saved_dummy_key
+            os.environ["LLM_API_KEY"] = saved_dummy_key
         reset_settings_cache()
 
 
@@ -196,9 +197,9 @@ def empty_registry() -> Any:
 def anthropic_client() -> Any:
     """Async Anthropic client wired to the configured base URL.
 
-    Reads the API key via ``Settings.require_anthropic_key()`` — the
+    Reads the API key via ``Settings.require_llm_api_key()`` — the
     same resolution path the production ``LLMClient`` uses.  Reading
-    ``os.environ["ANTHROPIC_API_KEY"]`` directly here would diverge:
+    ``os.environ["LLM_API_KEY"]`` directly here would diverge:
     a contributor with the key in ``.env`` (which the auto-skip's
     dotenv loader handles into ``os.environ`` first) would otherwise
     see ``KeyError`` on the fixture even though the application boots
@@ -214,8 +215,8 @@ def anthropic_client() -> Any:
     from anthropic import AsyncAnthropic
 
     settings = get_settings()
-    key = settings.require_anthropic_key()
-    assert key != DUMMY_ANTHROPIC_API_KEY, (
+    key = settings.require_llm_api_key()
+    assert key != DUMMY_LLM_API_KEY, (
         "anthropic_client fixture must not run with the test-conftest "
         "dummy key; the auto-skip in pytest_collection_modifyitems "
         "should have skipped this test. If you see this assertion, "
@@ -223,7 +224,7 @@ def anthropic_client() -> Any:
     )
     client = AsyncAnthropic(
         api_key=key,
-        base_url=settings.anthropic_base_url,
+        base_url=settings.llm_api_base,
     )
     # The session-scoped __init__ patch in ``_live_cost_cap`` already
     # wraps every AsyncAnthropic; this is belt-and-braces for the
@@ -613,9 +614,15 @@ def _live_cost_cap() -> Any:
     # cost-cap wrapper. mypy flags re-assigning a method on a class
     # (method-assign); intentional here.
     AsyncAnthropic.__init__ = init_wrapper  # type: ignore[method-assign]
+    # LiteLLM-backed runs go through ``litellm.acompletion``, not
+    # ``AsyncAnthropic``. Register the LiteLLM callback so the same
+    # ``_CostTracker`` records both backends. No-op if litellm isn't
+    # importable.
+    teardown_litellm_tracking = install_litellm_cost_tracking()
     try:
         yield get_tracker()
     finally:
+        teardown_litellm_tracking()
         # Restore the original at session end so a later non-live
         # test invocation in the same shell sees an unwrapped class.
         AsyncAnthropic.__init__ = original_init  # type: ignore[method-assign]

@@ -30,7 +30,7 @@ covered by the standard fixtures; here we lock in the edge invariants.
    actors". The ``set_active_roles`` yield must NOT contain all
    15 roles — that's the "wide yield" / "addresses everyone" bug.
 
-Cost: ~$0.06 (3 Sonnet calls). Skipped unless ``ANTHROPIC_API_KEY``
+Cost: ~$0.06 (3 Sonnet calls). Skipped unless ``LLM_API_KEY``
 is set.
 """
 

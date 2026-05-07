@@ -23,7 +23,7 @@
 > palette was redesigned 2026-04-30 (added `share_data` / `pose_choice`,
 > removed `inject_event` / `mark_timeline_point`); `end_session` was
 > removed from the AI palette in 2026-05-02 (issue #104); per-tier
-> defaults moved (`ANTHROPIC_MODEL_SETUP` shifted from Haiku to Sonnet;
+> defaults moved (`LLM_MODEL_SETUP` shifted from Haiku to Sonnet;
 > `MAX_ROLES_PER_SESSION` default is now 24, not 8); the AAR pipeline
 > grew structured-output validation; multiple Wave-1/2/3 features
 > shipped that aren't reflected below.
@@ -40,7 +40,7 @@
 
 A multi-user, browser-based chat application that runs cybersecurity tabletop exercises facilitated by Claude. A creator opens "New session," provides a scenario prompt, defines participant roles (e.g., CISO, IR Lead, Legal, Comms, Engineering), and shares a unique join link per role. The creator also plays a role. Claude holds the scenario brief and full roster, drives a turn-based loop (narrates events, decides which role(s) act next, ingests responses over WebSocket, advances the exercise), and at the end produces a downloadable markdown after-action report with scores.
 
-The repo (originally `nebriv/ai-tabletop-facilitator`, now `nebriv/Crittable`) was empty at plan time. Bootstrap from scratch on branch `claude/ai-cybersecurity-chat-app-fEYFi`. Primary development environment is GitHub Codespaces, so devcontainer + CI + Docker image build are first-class Phase-1 deliverables. `ANTHROPIC_API_KEY` is provided via env var.
+The repo (originally `nebriv/ai-tabletop-facilitator`, now `nebriv/Crittable`) was empty at plan time. Bootstrap from scratch on branch `claude/ai-cybersecurity-chat-app-fEYFi`. Primary development environment is GitHub Codespaces, so devcontainer + CI + Docker image build are first-class Phase-1 deliverables. `LLM_API_KEY` is provided via env var.
 
 Long-term intent: this may become a subscription SaaS. **Build with the right seams now, not the heavy machinery.** Async-first, per-session (not global) locks, repository/registry interfaces, pluggable AAA, tenancy-shaped data model — but no DB, no auth backends, no horizontal-scale infra in MVP.
 
@@ -52,9 +52,9 @@ Long-term intent: this may become a subscription SaaS. **Build with the right se
 |---|---|
 | Backend | Python 3.12 + FastAPI (async) |
 | Frontend | React + Vite + TypeScript + Tailwind |
-| LLM | `anthropic` Async SDK, default `claude-sonnet-4-6`, prompt caching on system prompt, streaming over WS |
+| LLM | `ChatClient` ABC with two backends: Anthropic-direct (`anthropic` SDK, default) or LiteLLM-routed (~100 providers, opt-in via `LLM_BACKEND=litellm`); default model `claude-sonnet-4-6`, prompt caching on system prompt, streaming over WS. See [`llm_providers.md`](llm_providers.md). |
 | Storage | **Pure in-memory.** Final markdown export at end of session is the durable artifact. Repository interface so SQLite/Postgres slot in later. |
-| Deployment | Single Docker image. `docker run -e ANTHROPIC_API_KEY=… -p 8000:8000 <img>` is the entire run command. |
+| Deployment | Single Docker image. `docker run -e LLM_API_KEY=… -p 8000:8000 <img>` is the entire run command. |
 | Reconnect | Role link/token is durable for session lifetime; rejoin replays transcript and resumes. |
 | Idle handling | No auto-timeout. Anyone in the session can force-advance a stalled turn; only the creator can end the session (issue #104 — the AI was occasionally narrating "I'll end here" without actually committing, so the capability is creator-only). |
 | Visibility | All roles see all messages in MVP. Message model carries `visibility` field so role-scoped messaging is a Phase-3 add, not a rewrite. |
@@ -66,7 +66,7 @@ Long-term intent: this may become a subscription SaaS. **Build with the right se
 | AI failure handling | If the AI returns malformed output (no yielding tool call) or the API errors after the SDK's retries: auto-retry once with a stricter "you must yield via a tool" system note, then mark the turn errored and surface a "Retry" / "Force-advance" control. All audit-logged. |
 | Spectators | Data model carries `participant_kind = "player" \| "spectator"` (and `Message.visibility` already covers it); **no UI affordance to create spectator links in MVP** — Phase 3 surfaces them. |
 | Plan edits during play | The frozen plan supports **inline edits of specific fields only** (`key_objectives`, `guardrails`, `injects`, `out_of_scope`, `success_criteria`) via a creator-only API. Title and `narrative_arc` are immutable once finalized; changing them requires the creator to end the session and restart. Each edit is audit-logged and shown as a system note in the transcript. |
-| Model mix | Tiered with env-var overrides. Defaults: `ANTHROPIC_MODEL_PLAY=claude-sonnet-4-6` (facilitation), `ANTHROPIC_MODEL_SETUP=claude-sonnet-4-6` (setup dialogue — was Haiku 4.5 but it occasionally emitted legacy XML function-call markup inside JSON tool inputs), `ANTHROPIC_MODEL_AAR=claude-opus-4-7` (final report), `ANTHROPIC_MODEL_GUARDRAIL=claude-haiku-4-5` (input classifier — single-word output, not affected by the XML quirk). All overridable; any unset falls back to a single `ANTHROPIC_MODEL` (default `claude-sonnet-4-6`). |
+| Model mix | Tiered with env-var overrides. Defaults: `LLM_MODEL_PLAY=claude-sonnet-4-6` (facilitation), `LLM_MODEL_SETUP=claude-sonnet-4-6` (setup dialogue — was Haiku 4.5 but it occasionally emitted legacy XML function-call markup inside JSON tool inputs), `LLM_MODEL_AAR=claude-opus-4-7` (final report), `LLM_MODEL_GUARDRAIL=claude-haiku-4-5` (input classifier — single-word output, not affected by the XML quirk). All overridable; any unset falls back to a single `LLM_MODEL` (default `claude-sonnet-4-6`). |
 | Cost visibility | Per-turn token usage (input/output/cache_read/cache_creation) recorded in audit log and aggregated on the session. Creator's UI shows a live meter: turns-used / max, tokens, estimated $ (cost table baked in by model). Participants do not see the meter. Foundation for future SaaS billing. |
 | Hardening defaults | Permissive out-of-box for ease of Codespaces dev: `CORS_ORIGINS="*"`, rate-limit middleware present but disabled. `docs/configuration.md` and `CLAUDE.md` include a "Before going public" hardening checklist (set CORS allowlist, enable rate limit, set `SESSION_SECRET`, etc.). |
 | Extensions | Custom **tools**, **resources**, and **prompts** (Skills-style), registered at startup via pluggable loaders. MVP loader = env var / JSON file. Future loaders (DB/UI/MCP) drop in without changing the registry contract. |
@@ -93,7 +93,10 @@ Crittable/  (originally `ai-tabletop-facilitator`)
 │   │   │   ├── models.py          # Session, Role, Turn, Message (incl. visibility, tenant_id stub)
 │   │   │   └── repository.py      # SessionRepository iface + InMemoryRepository
 │   │   ├── llm/
-│   │   │   ├── client.py          # AsyncAnthropic wrapper, prompt cache, retry, streaming
+│   │   │   ├── protocol.py        # ChatClient ABC + LLMResult / InFlightCall + lifecycle base
+│   │   │   ├── _shared.py         # cache helpers, tool_choice validation, sampling-param strip
+│   │   │   ├── client.py          # Anthropic-direct ChatClient (anthropic SDK)
+│   │   │   ├── clients/litellm_client.py  # LiteLLM-routed ChatClient (~100 providers)
 │   │   │   ├── prompts.py         # system prompt assembly
 │   │   │   ├── tools.py           # built-in tool schemas + dispatch
 │   │   │   └── export.py          # end-of-session AAR + score generation
@@ -153,7 +156,7 @@ See [`architecture.md`](architecture.md#phase-policy--engine-side-guardrails) fo
 
 ### Claude integration (`backend/app/llm/`)
 
-- `AsyncAnthropic` client, instantiated once at app startup, reused across requests (HTTP keep-alive). Concurrent in-flight calls supported natively.
+- `ChatClient` instance (Anthropic-direct or LiteLLM-routed depending on `LLM_BACKEND`), instantiated once at app startup, reused across requests (HTTP keep-alive). Concurrent in-flight calls supported natively.
 - One `messages.create` call per AI turn with the full transcript. Streaming enabled; deltas relayed to all session connections via `ConnectionManager.broadcast`.
 - **Prompt caching** on the system prompt block (scenario brief + role roster + active extension prompts). Stable across the session ⇒ near-100 % cache hits after turn 1.
 - **Parallel tool use**: Claude may return multiple `tool_use` blocks per turn. Dispatcher executes them concurrently via `asyncio.gather`, then sends a single `tool_result` batch back.
@@ -324,7 +327,7 @@ Client → server events: `submit_response`, `request_force_advance`, `request_e
 
 All via env, documented in `docs/configuration.md`. Names:
 
-`ANTHROPIC_API_KEY`, `ANTHROPIC_MODEL` (default `claude-sonnet-4-6`), `ANTHROPIC_MAX_RETRIES`, `LOG_LEVEL`, `LOG_FORMAT` (`json`|`console`), `SESSION_SECRET` (HMAC key), `MAX_SESSIONS`, `MAX_ROLES_PER_SESSION` (default 24 — was 8 in the original plan), `MAX_TURNS_PER_SESSION` (default 40), `AI_TURN_SOFT_WARN_PCT` (default 80), `WS_HEARTBEAT_S`, `CORS_ORIGINS`, `EXTENSIONS_*_JSON`, `EXTENSIONS_*_PATH`. The current full list is in [`docs/configuration.md`](configuration.md).
+`LLM_API_KEY`, `LLM_MODEL` (default `claude-sonnet-4-6`), `LLM_MAX_RETRIES`, `LOG_LEVEL`, `LOG_FORMAT` (`json`|`console`), `SESSION_SECRET` (HMAC key), `MAX_SESSIONS`, `MAX_ROLES_PER_SESSION` (default 24 — was 8 in the original plan), `MAX_TURNS_PER_SESSION` (default 40), `AI_TURN_SOFT_WARN_PCT` (default 80), `WS_HEARTBEAT_S`, `CORS_ORIGINS`, `EXTENSIONS_*_JSON`, `EXTENSIONS_*_PATH`. The current full list is in [`docs/configuration.md`](configuration.md).
 
 ### Logging
 
@@ -356,7 +359,7 @@ Goal: Codespace opens cleanly, CI is green, a Docker image builds, and the docs/
 
 Deliverables:
 
-1. `.devcontainer/devcontainer.json` — Python 3.12 + Node 20 features, post-create installs backend (`pip install -e backend[dev]`) and frontend (`npm ci`) deps, forwards port 8000, picks up `ANTHROPIC_API_KEY` from Codespaces secrets.
+1. `.devcontainer/devcontainer.json` — Python 3.12 + Node 20 features, post-create installs backend (`pip install -e backend[dev]`) and frontend (`npm ci`) deps, forwards port 8000, picks up `LLM_API_KEY` from Codespaces secrets.
 2. `docker/Dockerfile` — multi-stage: `node:20-slim` builds the SPA → `python:3.12-slim` installs backend, copies built frontend into `backend/app/static/`, runs `uvicorn app.main:app`.
 3. `docker-compose.yml` — single service for local dev with bind mounts.
 4. `.github/workflows/ci.yml` — matrix: backend (`ruff`, `mypy`, `pytest`), frontend (`eslint`, `tsc --noEmit`, `vitest`).
@@ -377,7 +380,7 @@ CLAUDE.md must reference these milestones explicitly; every sub-agent review beg
 
 > **Status: complete.** All 9 epics (#11–#19) closed; the bow-tying
 > additions in PR #29 added per-tier sampling/timeout knobs,
-> `ANTHROPIC_BASE_URL`, the engine-side phase policy guardrails
+> `LLM_API_BASE`, the engine-side phase policy guardrails
 > (`backend/app/sessions/phase_policy.py`), the strict-retry feedback
 > loop (the model sees its own prior `tool_use` + dispatcher
 > `tool_result` blocks on retry), the HTTP access-log middleware, AI
@@ -392,11 +395,11 @@ No authentication beyond signed join tokens, but every modern necessity scaffold
 - `sessions/models.py` (Session, Role, Turn, Message — `Message` carries `visibility: Literal["all"] | list[role_id]`; Session carries an unused `tenant_id: str | None` field as a tenancy stub).
 - `sessions/repository.py` (`SessionRepository` Protocol + `InMemoryRepository`).
 - `sessions/manager.py` with per-session locks; `sessions/turn_engine.py` pure state machine.
-- `llm/client.py` (AsyncAnthropic + prompt caching + retries + streaming), `llm/prompts.py` (system prompt assembly merging scenario + roster + active extension prompts), `llm/tools.py` (built-in tools + dispatch into `SessionManager` + `ExtensionDispatcher`), `llm/export.py` (AAR generation).
+- `llm/protocol.py` (ChatClient ABC + lifecycle), `llm/client.py` (Anthropic-direct backend), `llm/clients/litellm_client.py` (LiteLLM backend), `llm/prompts.py` (system prompt assembly merging scenario + roster + active extension prompts), `llm/tools.py` (built-in tools + dispatch into `SessionManager` + `ExtensionDispatcher`), `llm/export.py` (AAR generation).
 - `extensions/{registry,models,dispatch,loaders/env}.py` — populated at `lifespan` startup, immutable thereafter.
 - `api/` REST endpoints, `ws/` WebSocket endpoint + `ConnectionManager` (per-connection asyncio queues).
 - `audit/log.py` JSONL writer + ring buffer.
-- `tests/` — unit tests per module, an integration test that drives a full session via `TestClient` + WebSocket + a mocked `AsyncAnthropic`.
+- `tests/` — unit tests per module, an integration test that drives a full session via `TestClient` + WebSocket + a mocked `ChatClient` (the new `MockChatClient` at the ABC layer is the canonical mock; see `docs/testing-llm.md`).
 
 **Frontend**
 - `pages/Facilitator.tsx`: scenario prompt → role list editor → "Start session" → live transcript with turn indicator, force-advance + end-session controls, export-download button on `ENDED`.
@@ -405,7 +408,7 @@ No authentication beyond signed join tokens, but every modern necessity scaffold
 - Tailwind layout, dark mode default, accessible focus management, ARIA live region for streaming AI text.
 
 **Phase 2 acceptance gates:**
-1. `docker run -e ANTHROPIC_API_KEY=… -p 8000:8000 <image>` boots and serves the SPA.
+1. `docker run -e LLM_API_KEY=… -p 8000:8000 <image>` boots and serves the SPA.
 2. Creator creates a session, completes a `SETUP` dialogue with the AI (covering background / capabilities / environment / scenario shaping), reviews and approves the proposed scenario plan, then defines ≥3 roles (themselves included) and copies ≥3 join URLs.
 3. ≥3 separate browsers join via those URLs (display-name modal works), and complete ≥10 AI-driven turns. The frozen scenario plan is referenced by the AI's behavior (verifiable in tool-call audit log) and is **never** revealed to non-creator roles.
 4. AI fires at least one `inject_critical_event` during the run (either plan-driven or improvised); the UI surfaces it as a banner; the audit log records it.
@@ -476,12 +479,12 @@ OAuth/SSO authentication, persistent repository (SQLite then Postgres), tenant/o
    - Push branch → CI workflow green; tag → Docker workflow publishes to GHCR.
    - GitHub MCP `list_issues` shows ≥1 issue per Phase 1/2/3 component, grouped under their milestones.
 2. **Phase 2**
-   - `docker run -e ANTHROPIC_API_KEY=$KEY -e EXTENSIONS_TOOLS_JSON='[…]' -p 8000:8000 <image>`; open browser, create a session, define 4 roles, share links to 4 incognito tabs.
+   - `docker run -e LLM_API_KEY=$KEY -e EXTENSIONS_TOOLS_JSON='[…]' -p 8000:8000 <image>`; open browser, create a session, define 4 roles, share links to 4 incognito tabs.
    - Run a 10-turn ransomware scenario; confirm `set_active_roles` gates input correctly and that the custom tool fires at least once.
    - Force a reconnect on one participant; confirm the transcript replays.
    - Click "End session" → markdown downloads; inspect for transcript + AAR + scores.
    - `curl /healthz` → 200; tail container logs → JSON-structured.
-   - `pytest backend/tests/test_e2e_session.py` — drives the full flow against a mocked `AsyncAnthropic`.
+   - `pytest backend/tests/test_e2e_session.py` — drives the full flow against a mocked `ChatClient`.
 
 ---
 

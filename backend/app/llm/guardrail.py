@@ -18,8 +18,8 @@ from typing import Literal
 
 from ..config import Settings
 from ..logging_setup import get_logger
-from .client import LLMClient
 from .prompts import build_guardrail_system_blocks
+from .protocol import ChatClient
 
 GuardrailVerdict = Literal["on_topic", "prompt_injection"]
 
@@ -27,7 +27,7 @@ _logger = get_logger("llm.guardrail")
 
 
 class InputGuardrail:
-    def __init__(self, *, llm: LLMClient, settings: Settings) -> None:
+    def __init__(self, *, llm: ChatClient, settings: Settings) -> None:
         self._llm = llm
         self._settings = settings
 

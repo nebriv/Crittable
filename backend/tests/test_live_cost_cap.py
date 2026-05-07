@@ -1,7 +1,7 @@
 """Unit tests for the live-test cost cap.
 
 Lives at ``backend/tests/`` (NOT under ``tests/live/``) so it runs in
-every CI pass regardless of whether ``ANTHROPIC_API_KEY`` is set. The
+every CI pass regardless of whether ``LLM_API_KEY`` is set. The
 tracker logic is pure Python (token-count -> USD math + threshold
 check); the only piece that touches the network is the
 ``AsyncAnthropic.__init__`` patch wired up in the live conftest, and
@@ -10,8 +10,9 @@ against a stub instance.
 
 What this file locks:
 
-1. The dollar-cap math matches ``app.llm.cost.estimate_usd`` so the
-   test cap matches what the product itself reports.
+1. The dollar-cap math matches ``app.llm._shared.compute_cost_usd``
+   (which talks to ``litellm.cost_per_token``) so the test cap matches
+   what the product itself reports.
 2. Repeated low-cost calls don't drift past the cap silently — each
    ``record`` call rechecks and flips ``abort_message`` once.
 3. Bad ``LIVE_TEST_COST_CAP_USD`` values fall back to the default
@@ -136,9 +137,14 @@ def test_record_with_no_usage_is_noop() -> None:
     assert tracker.calls == 0
 
 
-def test_unknown_model_uses_default_pricing() -> None:
-    """A future model not yet in ``_PRICES`` shouldn't crash — it
-    bills at the documented default rate (claude-sonnet-4-6).
+def test_unknown_model_records_zero_cost() -> None:
+    """A future model not in LiteLLM's pricing JSON returns 0.0 from
+    ``compute_cost_usd`` (logged WARNING). Pre-unification this fell
+    back to a hand-maintained ``_DEFAULT`` rate; that table drifted
+    out of date (Opus 4.7 listed at $15/M vs the actual $5/M) so we
+    stopped maintaining it. The cap under-counts unknown models, but
+    a 0.0 cost line + matching ``compute_cost_usd_unknown_model``
+    warning surfaces the gap clearly in audit.
     """
 
     tracker = cost_cap._CostTracker(cap_usd=10.0)
@@ -146,7 +152,10 @@ def test_unknown_model_uses_default_pricing() -> None:
         model="claude-future-9-9",
         usage=_StubUsage(input_tokens=1_000_000, output_tokens=0),
     )
-    assert tracker.cumulative_usd == pytest.approx(3.00)
+    assert tracker.cumulative_usd == 0.0
+    # Call still counted — the cap only caches the dollar number,
+    # not the cost-source success.
+    assert tracker.calls == 1
 
 
 def test_cache_tokens_count_toward_total() -> None:
@@ -246,12 +255,12 @@ def test_disabled_cap_never_aborts() -> None:
     tracker = cost_cap._CostTracker(cap_usd=0.0)
     tracker.record(
         model="claude-opus-4-7",
-        # Opus output is $75/M — 100K tokens = $7.50, way over the
+        # Opus output is $25/M — 100K tokens = $2.50, well over the
         # default cap, but cap=0 means disabled.
         usage=_StubUsage(input_tokens=0, output_tokens=100_000),
     )
     assert tracker.abort_message is None
-    assert tracker.cumulative_usd == pytest.approx(7.50)
+    assert tracker.cumulative_usd == pytest.approx(2.50)
 
 
 # ---------------------------------------------------------------- wrapper hygiene
@@ -447,11 +456,11 @@ async def test_wrap_stream_kwargs_model_takes_precedence() -> None:
     async with client.messages.stream(model="claude-haiku-4-5") as stream:
         await stream.get_final_message()
 
-    # Haiku rates: $0.80/M input × 100 tokens = $0.00008
-    #              $4.00/M output × 200 tokens = $0.0008
-    #              total ~$0.00088
+    # Haiku 4.5 rates per LiteLLM: $1.00/M input × 100 = $0.00010
+    #                              $5.00/M output × 200 = $0.00100
+    #                              total $0.00110
     tracker = cost_cap.get_tracker()
-    assert tracker.cumulative_usd == pytest.approx(0.00088, rel=1e-3)
+    assert tracker.cumulative_usd == pytest.approx(0.00110, rel=1e-3)
 
 
 @pytest.mark.asyncio
