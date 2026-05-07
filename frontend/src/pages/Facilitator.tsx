@@ -1,6 +1,4 @@
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
 import {
   api,
   CostSnapshot,
@@ -39,6 +37,7 @@ import { TurnStateRail } from "../components/brand/TurnStateRail";
 import { SetupWizard, type SetupRoleSlot } from "../components/setup/SetupWizard";
 import { SetupLobbyView } from "../components/setup/SetupLobbyView";
 import { SetupReviewView } from "../components/setup/SetupReviewView";
+import { PlanView } from "../components/setup/PlanView";
 import {
   buildImpersonateOptions,
   countUnjoinedImpersonateOptions,
@@ -269,22 +268,17 @@ export function Facilitator() {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [busyMessage, setBusyMessage] = useState<string | null>(null);
-  // Prominent in-chat indicator for the LOOKS-READY → propose-plan path.
-  // Distinct from ``busy`` because the chat-region DieLoader needs to
-  // be visible *only* during the plan-drafting wait — not during the
-  // dozen other things that flip ``busy`` (regular Q&A reply,
-  // finalize, skip-setup-dev, etc.). The setup tier is non-streaming
-  // so we can't detect mid-call whether the model chose
-  // ``ask_setup_question`` vs ``propose_scenario_plan``; the explicit
-  // button click is the one moment we *know* what's coming, so we
-  // light the banner client-side there.
-  //
-  // Implicit-nudge gap (tracked follow-up): when the AI decides to
-  // propose during a regular reply turn (not LOOKS READY), the
-  // operator still sees only the small typing dots until the plan
-  // lands. Closing that gap requires either streaming the setup tier
-  // (so the model's tool choice is observable mid-call) or a
-  // mid-call "now drafting" WS event. Out of scope for this PR.
+  // Prominent in-chat indicator with the LOOKS-READY-specific label
+  // ("Drafting scenario plan · typically 10–30 sec"). True from the
+  // moment the operator clicks LOOKS READY → propose-the-plan until
+  // the plan lands or an error surfaces. Distinct from ``busy``
+  // because the chat-region DieLoader's *plan-specific* label is
+  // honest only when we know a plan is imminent — i.e. the operator
+  // explicitly asked for one. The implicit "AI is thinking" indicator
+  // for regular pre-plan replies is owned by SetupView itself
+  // (debounced; soft label) so quick chip-pick turns under ~1.5 s
+  // never mount the heavy banner. See SetupView's
+  // ``showImplicitThinkingBanner`` state for that branch.
   const [draftingPlan, setDraftingPlan] = useState(false);
   const [wsStatus, setWsStatus] = useState<"connecting" | "open" | "closed" | "error" | "kicked" | "rejected" | "session-gone">("connecting");
 
@@ -912,6 +906,12 @@ export function Facilitator() {
     setError(null);
     setBusy(true);
     setBusyMessage(busyText);
+    // Note: this path does NOT set ``draftingPlan`` — that flag is
+    // reserved for the LOOKS READY click where we know a plan is
+    // imminent. The implicit-thinking banner (debounced, with a
+    // softer "AI is thinking" label) is owned by SetupView itself
+    // based on ``busy && !hasPlan && !draftingPlan``. See
+    // ``SetupView``'s ``showImplicitThinkingBanner`` state.
     try {
       await api.setupReply(state.sessionId, state.token, content.trim());
       await refreshSnapshot();
@@ -940,33 +940,38 @@ export function Facilitator() {
   }
 
   /**
-   * "Looks ready" button: force progress toward a finalized plan.
-   * - If a draft plan already exists → finalize directly (skip the AI loop).
-   * - Otherwise → nudge the AI to propose, then auto-finalize if it does.
+   * "Looks ready — propose the plan" button: nudge the AI to draft a
+   * plan so the operator can review it in the PlanPanel. Does NOT
+   * finalize — the operator commits the plan by clicking APPROVE &
+   * START LOBBY in the PlanPanel, which routes through
+   * ``handleApprovePlan`` → ``api.setupFinalize``. Auto-finalizing
+   * here would skip the panel render and dump the operator on step 5
+   * (the lobby) without ever seeing the plan, with no rail back-
+   * navigation to recover.
    */
   async function handleLooksReady() {
     if (!state || !snapshot) return;
     setError(null);
+    // Tab-background race: ``hasPlan`` hides the button in render, but
+    // a plan that lands between paint and click leaves a stale button
+    // reachable for one frame. Route to APPROVE in that case.
     if (snapshot.plan) {
       await handleApprovePlan();
       return;
     }
     setBusy(true);
     setDraftingPlan(true);
+    console.debug("[facilitator] draftingPlan", { value: true, source: "looks-ready" });
     setBusyMessage("Drafting the scenario plan… typically 10–30 seconds.");
+    console.info("[facilitator] looks_ready_clicked nudging plan");
     try {
       const reply = await api.setupReply(state.sessionId, state.token, NUDGE_PROPOSE);
       const snap = await api.getSession(state.sessionId, state.token);
       setSnapshot(snap);
       if (snap.plan) {
-        // Plan landed — drop the prominent drafting banner so the
-        // operator's eye moves to the plan card; the smaller BusyChip
-        // continues to communicate the fast finalize step.
+        console.info("[facilitator] plan_proposed awaiting_approve");
         setDraftingPlan(false);
-        setBusyMessage("Plan drafted — finalizing…");
-        await api.setupFinalize(state.sessionId, state.token);
-        const after = await api.getSession(state.sessionId, state.token);
-        setSnapshot(after);
+        console.debug("[facilitator] draftingPlan", { value: false, source: "looks-ready-plan-landed" });
       } else {
         // Disambiguate the failure mode using server-side diagnostics
         // so the operator knows whether to raise max_tokens, share more
@@ -990,11 +995,14 @@ export function Facilitator() {
         setError(message);
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn("[facilitator] looks_ready_failed", msg, err);
+      setError(msg);
     } finally {
       setBusy(false);
       setBusyMessage(null);
       setDraftingPlan(false);
+      console.debug("[facilitator] draftingPlan", { value: false, source: "looks-ready-finally" });
     }
   }
 
@@ -1004,12 +1012,15 @@ export function Facilitator() {
     setError(null);
     setBusy(true);
     setBusyMessage("Finalizing plan and moving to the lobby…");
+    console.info("[facilitator] approve_plan_clicked finalizing");
     try {
       await api.setupFinalize(state.sessionId, state.token);
       const snap = await api.getSession(state.sessionId, state.token);
       setSnapshot(snap);
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn("[facilitator] approve_plan_failed", msg, err);
+      setError(msg);
     } finally {
       setBusy(false);
       setBusyMessage(null);
@@ -2319,17 +2330,83 @@ export function SetupView({
   onPickOption: (option: string) => void;
   busy: boolean;
   busyMessage: string | null;
-  /** True from the moment the operator clicks LOOKS READY → PROPOSE THE
-   *  PLAN until either the plan arrives or an error surfaces. Drives a
-   *  prominent in-chat banner so the operator has unambiguous feedback
-   *  during the 5–30 s plan-drafting wait (otherwise the small typing
-   *  dots in the chat read as "stuck"). Required, not optional —
-   *  every call site already passes it explicitly and a default would
-   *  silently hide the indicator if a future site forgets. */
+  /** True from the moment the operator clicks LOOKS READY → PROPOSE
+   *  THE PLAN until either the plan arrives or an error surfaces.
+   *  Drives a prominent in-chat banner with the plan-specific label
+   *  "Drafting scenario plan · typically 10–30 sec" so the operator
+   *  has unambiguous feedback during the 10–30 s wait. The implicit
+   *  branch — AI is thinking during a regular reply / option pick —
+   *  is owned by SetupView's internal ``showImplicitThinkingBanner``
+   *  state (debounced, neutral label) so quick turns don't mount the
+   *  heavy banner. Required, not optional — every call site already
+   *  passes it explicitly and a default would silently hide the
+   *  indicator if a future site forgets. */
   draftingPlan: boolean;
 }) {
   const hasPlan = Boolean(snapshot.plan);
   const notes = snapshot.setup_notes ?? [];
+
+  // Implicit-thinking banner: shown during a regular reply / option
+  // pick (not LOOKS READY) when the AI is processing pre-plan and the
+  // wait crosses ~1.5 s. Two design choices, both from
+  // user-persona + UI/UX review:
+  //   1. **Debounce** — fast turns (chip pick → 5 s question) keep
+  //      the small typing dots; only slow turns (≳1.5 s) escalate to
+  //      the banner. Without this the banner would mount/unmount on
+  //      every routine Q&A round, training the operator to ignore it
+  //      and undermining its signal value when LOOKS-READY actually
+  //      runs.
+  //   2. **Neutral label** — "AI is thinking · typically 5–30 sec"
+  //      rather than the LOOKS-READY-specific "Drafting scenario
+  //      plan". The setup tier is non-streaming so we can't tell
+  //      mid-call whether the AI is producing another question or
+  //      the actual plan; a neutral label is honest in either case.
+  //      The plan-specific label is reserved for ``draftingPlan``
+  //      (the explicit operator-clicked-LOOKS-READY path) where a
+  //      plan IS the documented next step.
+  // The 1500 ms threshold matches the perceptual "barely noticed"
+  // → "definitely waiting" boundary; tune if user feedback diverges.
+  const [showImplicitThinkingBanner, setShowImplicitThinkingBanner] =
+    useState(false);
+  useEffect(() => {
+    // The implicit banner only applies pre-plan and only when the
+    // explicit LOOKS-READY banner isn't already up.
+    if (busy && !hasPlan && !draftingPlan) {
+      const timer = window.setTimeout(() => {
+        setShowImplicitThinkingBanner(true);
+        console.debug("[facilitator] implicit-thinking banner mounted");
+      }, 1500);
+      return () => {
+        window.clearTimeout(timer);
+        // The cleanup runs both on unmount and on dep change. If the
+        // banner had mounted, ensure it clears so a transition from
+        // "busy without plan" → "plan exists" / "LOOKS-READY took
+        // over" / "request finished" doesn't leave a stale banner.
+        setShowImplicitThinkingBanner(false);
+      };
+    }
+    // Defensive reset for the ``busy=false`` / ``hasPlan=true`` /
+    // ``draftingPlan=true`` branches — the cleanup above only fires
+    // on dep change *from the previous truthy branch*, so a
+    // first-render with the banner already false has no effect here.
+    setShowImplicitThinkingBanner(false);
+    return undefined;
+  }, [busy, hasPlan, draftingPlan]);
+
+  // The prominent banner is shown when EITHER explicit signal
+  // (``draftingPlan``) or the debounced implicit signal is true and
+  // no plan exists yet. The implicit branch is also gated on
+  // ``busy`` directly (not just on the latched
+  // ``showImplicitThinkingBanner`` state) so a render commit where
+  // ``busy`` has just flipped false but the effect cleanup hasn't
+  // run yet doesn't paint a stale banner for one frame (Copilot
+  // PR #201 review). The state still drives the *delay* (banner only
+  // appears after the 1500 ms timer); the ``busy`` gate just makes
+  // the unmount synchronous with the request finishing.
+  const showLooksReadyBanner = draftingPlan && !hasPlan;
+  const showThinkingBanner =
+    showImplicitThinkingBanner && busy && !hasPlan && !draftingPlan;
+  const bannerVisible = showLooksReadyBanner || showThinkingBanner;
 
   // Layout intent (across both branches):
   //   - No plan: single column — chat → reply form, top to bottom.
@@ -2367,15 +2444,16 @@ export function SetupView({
           can't dispatch a second ``api.setupReply()`` while a
           LOOKS-READY draft is mid-air (PR #186 review block).
           ``aiTyping`` is the indicator-only flag: suppress the
-          small bouncing dots while the prominent drafting-plan
-          banner below is the dominant signal, otherwise mirror
-          ``busy``. The two flags are deliberately split — combining
-          them would silently re-enable chip clicks during the
-          draft. */}
+          small bouncing dots once a prominent banner takes over,
+          otherwise mirror ``busy``. Sub-debounce regular replies
+          (``busy=true``, banner not yet mounted) keep the dots so
+          quick turns get a light indicator. The two flags are
+          deliberately split — combining them would silently
+          re-enable chip clicks during the draft. */}
       <SetupChat
         notes={notes}
         busy={busy}
-        aiTyping={busy && !draftingPlan}
+        aiTyping={busy && !bannerVisible}
         onPickOption={onPickOption}
       />
 
@@ -2387,31 +2465,46 @@ export function SetupView({
           expectation inline so screen readers announce the full
           message in one pass.
 
-          ``!hasPlan`` race guard: the Facilitator clears
-          ``draftingPlan`` as soon as the plan lands, but a
-          render-cycle race could leave both true for a frame. Hiding
-          the banner once a plan exists makes that race a no-op
-          rather than a "drafting" caption flashing over the new plan
-          card. */}
-      {draftingPlan && !hasPlan ? (
+          Two label branches share one banner element (single
+          ``data-testid`` so existing tests / observers find it):
+          ``draftingPlan`` (operator clicked LOOKS READY) → the
+          plan-specific label with the 10–30 s window we know
+          applies; the implicit/debounced branch → a neutral "AI is
+          thinking" label that's honest whether the AI ends up
+          drafting another question or the plan.
+
+          ``!hasPlan`` race guard on both branches: the Facilitator
+          clears ``draftingPlan`` as soon as the plan lands, but a
+          render-cycle race could leave both true for a frame.
+          Hiding the banner once a plan exists makes that race a
+          no-op rather than a "drafting" caption flashing over the
+          new plan card. */}
+      {bannerVisible ? (
         <div
           data-testid="drafting-plan-banner"
+          data-banner-variant={
+            showLooksReadyBanner ? "looks-ready" : "implicit-thinking"
+          }
           className="flex flex-col items-center gap-3 rounded-r-3 border border-signal-deep bg-signal-tint p-6"
         >
           <DieLoader
-            label="Drafting scenario plan · typically 10–30 sec"
+            label={
+              showLooksReadyBanner
+                ? "Drafting scenario plan · typically 10–30 sec"
+                : "AI is thinking · typically 5–30 sec"
+            }
             size={64}
           />
         </div>
       ) : null}
 
-      {/* Suppress the small chip while the prominent banner above is
-          claiming the operator's attention (UI/UX review: three
-          parallel indicators read as duplicate UI). The chip continues
-          to communicate the fast post-plan finalize step
+      {/* Suppress the small chip while a prominent banner is
+          claiming the operator's attention (UI/UX review: parallel
+          indicators read as duplicate UI). The chip continues to
+          communicate the fast post-plan finalize step
           (``busyMessage = "Plan drafted — finalizing…"``) and every
           other ``busy`` state. */}
-      <BusyChip busy={busy && !draftingPlan} message={busyMessage} />
+      <BusyChip busy={busy && !bannerVisible} message={busyMessage} />
     </div>
   );
 
@@ -2449,7 +2542,7 @@ export function SetupView({
             onClick={onLooksReady}
             disabled={busy}
             className="mono rounded-r-1 border border-signal-deep px-3 py-1.5 text-[11px] font-semibold uppercase tracking-[0.16em] text-signal hover:bg-signal-tint focus-visible:outline focus-visible:outline-2 focus-visible:outline-signal disabled:opacity-50"
-            title="Asks the AI to draft a plan; auto-finalizes it if one comes back."
+            title="Asks the AI to draft a plan you can review and approve."
           >
             LOOKS READY — PROPOSE THE PLAN
           </button>
@@ -2607,202 +2700,6 @@ function PlanPanel({
         </button>
       </div>
     </section>
-  );
-}
-
-/**
- * Readable structured plan view with optional spoiler-hide.
- *
- * The plan was previously dumped as ``JSON.stringify`` which (a) clipped on
- * narrow viewports and (b) spoiled every upcoming inject for the creator.
- * The creator is the only one who sees the plan in any case (it's
- * creator-only by ``visible_messages`` filtering), but as the operator
- * they may still want to play "fresh" alongside the team.
- *
- * Default: title, executive_summary, key_objectives, guardrails,
- * success_criteria, and out_of_scope are visible. ``narrative_arc`` and
- * ``injects`` are spoiler-hidden behind a Reveal toggle whose state is
- * persisted in localStorage so it carries across reloads.
- */
-function PlanView({
-  plan,
-  sessionId,
-}: {
-  plan: ScenarioPlan;
-  /**
-   * Optional session id used to scope the spoiler-reveal preference.
-   * Without this the preference would persist across sessions and a
-   * creator who screen-shares with their team after a previous solo
-   * test would silently spoil the next plan. Per-session scoping makes
-   * each new exercise reset to the safe (hidden) default while still
-   * respecting the user's choice within the current session.
-   */
-  sessionId?: string;
-}) {
-  const storageKey = sessionId
-    ? `atf-plan-reveal:${sessionId}`
-    : "atf-plan-reveal";
-  const [reveal, setReveal] = useState<boolean>(() => {
-    try {
-      return window.localStorage.getItem(storageKey) === "1";
-    } catch {
-      return false;
-    }
-  });
-  function toggleReveal() {
-    setReveal((cur) => {
-      const next = !cur;
-      try {
-        window.localStorage.setItem(storageKey, next ? "1" : "0");
-      } catch {
-        /* localStorage may be disabled; preference is best-effort. */
-      }
-      return next;
-    });
-  }
-  return (
-    <article className="flex flex-col gap-4 text-sm text-ink-100">
-      <header>
-        <h3 className="text-lg font-semibold text-signal-100">{plan.title}</h3>
-      </header>
-
-      {plan.executive_summary ? (
-        <section className="flex flex-col gap-1">
-          <h4 className="text-xs uppercase tracking-widest text-ink-400">
-            Executive summary
-          </h4>
-          <ReactMarkdown
-            skipHtml
-            remarkPlugins={[remarkGfm]}
-            components={{
-              p: ({ children }) => (
-                <p className="whitespace-pre-wrap leading-relaxed">{children}</p>
-              ),
-              strong: ({ children }) => <strong className="font-semibold">{children}</strong>,
-              em: ({ children }) => <em className="italic">{children}</em>,
-            }}
-          >
-            {plan.executive_summary}
-          </ReactMarkdown>
-        </section>
-      ) : null}
-
-      {plan.key_objectives.length > 0 ? (
-        <section className="flex flex-col gap-1">
-          <h4 className="text-xs uppercase tracking-widest text-ink-400">Key objectives</h4>
-          <ul className="ml-4 list-disc space-y-0.5">
-            {plan.key_objectives.map((o, i) => (
-              <li key={i}>{o}</li>
-            ))}
-          </ul>
-        </section>
-      ) : null}
-
-      {plan.guardrails.length > 0 ? (
-        <section className="flex flex-col gap-1">
-          <h4 className="text-xs uppercase tracking-widest text-ink-400">Guardrails</h4>
-          <ul className="ml-4 list-disc space-y-0.5">
-            {plan.guardrails.map((o, i) => (
-              <li key={i}>{o}</li>
-            ))}
-          </ul>
-        </section>
-      ) : null}
-
-      {plan.success_criteria.length > 0 ? (
-        <section className="flex flex-col gap-1">
-          <h4 className="text-xs uppercase tracking-widest text-ink-400">
-            Success criteria
-          </h4>
-          <ul className="ml-4 list-disc space-y-0.5">
-            {plan.success_criteria.map((o, i) => (
-              <li key={i}>{o}</li>
-            ))}
-          </ul>
-        </section>
-      ) : null}
-
-      {plan.out_of_scope.length > 0 ? (
-        <section className="flex flex-col gap-1">
-          <h4 className="text-xs uppercase tracking-widest text-ink-400">Out of scope</h4>
-          <ul className="ml-4 list-disc space-y-0.5">
-            {plan.out_of_scope.map((o, i) => (
-              <li key={i}>{o}</li>
-            ))}
-          </ul>
-        </section>
-      ) : null}
-
-      {plan.narrative_arc.length > 0 || plan.injects.length > 0 ? (
-        <section className="flex flex-col gap-2 rounded border border-warn bg-warn-bg p-2">
-          <header className="flex flex-wrap items-center justify-between gap-2">
-            <h4 className="text-xs uppercase tracking-widest text-warn">
-              Narrative arc &amp; injects
-            </h4>
-            <button
-              type="button"
-              onClick={toggleReveal}
-              className="rounded border border-warn px-2 py-0.5 text-xs font-semibold text-warn hover:bg-warn-bg"
-              aria-pressed={reveal}
-              title={
-                reveal
-                  ? "Switch to participant mode — hide upcoming injects so you can play fresh."
-                  : "Switch to facilitator mode — show upcoming injects so you can pace the meeting."
-              }
-            >
-              {reveal ? "Switch to participant mode" : "Switch to facilitator mode"}
-            </button>
-          </header>
-          {!reveal ? (
-            <p className="text-xs text-warn">
-              <span className="font-semibold">Participant mode.</span>{" "}
-              Hidden so you can play through fresh. {plan.narrative_arc.length}{" "}
-              beat{plan.narrative_arc.length === 1 ? "" : "s"}, {plan.injects.length}{" "}
-              inject{plan.injects.length === 1 ? "" : "s"} planned. Switch to
-              facilitator mode if you need to pace the meeting block.
-            </p>
-          ) : (
-            <>
-              {plan.narrative_arc.length > 0 ? (
-                <div className="flex flex-col gap-1">
-                  <p className="text-[11px] uppercase tracking-widest text-warn">
-                    Narrative arc
-                  </p>
-                  <ol className="ml-4 list-decimal space-y-1">
-                    {plan.narrative_arc.map((b) => (
-                      <li key={b.beat}>
-                        <span className="font-semibold">{b.label}</span>
-                        {b.expected_actors.length > 0 ? (
-                          <span className="ml-1 text-ink-400">
-                            — {b.expected_actors.join(", ")}
-                          </span>
-                        ) : null}
-                      </li>
-                    ))}
-                  </ol>
-                </div>
-              ) : null}
-              {plan.injects.length > 0 ? (
-                <div className="flex flex-col gap-1">
-                  <p className="text-[11px] uppercase tracking-widest text-warn">
-                    Injects
-                  </p>
-                  <ul className="ml-4 list-disc space-y-1">
-                    {plan.injects.map((inj, i) => (
-                      <li key={i}>
-                        <span className="text-ink-400">[{inj.trigger}]</span>{" "}
-                        <span className="text-ink-400">({inj.type})</span>{" "}
-                        {inj.summary}
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              ) : null}
-            </>
-          )}
-        </section>
-      ) : null}
-    </article>
   );
 }
 

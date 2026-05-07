@@ -241,9 +241,26 @@ function formatGenerated(iso: string | null): string {
   return `${yyyy}-${mm}-${dd} ${hh}:${mi} UTC`;
 }
 
+/**
+ * Mean of ``nums``, treating ``0`` and non-finite values as
+ * "no score" rather than as F-equivalents. Per ``gradeForScore``
+ * the rubric is 1–5; 0 is the documented "no-score" sentinel
+ * (a sub-score the model didn't emit, or one the backend
+ * extractor coerced down to 0). Including those zeros in a
+ * straight mean drags an otherwise solid role into the wrong
+ * grade band — e.g. ``[0, 5, 5]`` would average to 3.33 → "C"
+ * while the expanded breakdown row already renders "—" for the
+ * missing cell. Filtering them out keeps the headline letter
+ * honest and consistent with the cell-level rendering.
+ *
+ * Returns 0 when no scores survive the filter — call sites pass
+ * that through to ``gradeForScore`` which renders "—" + neutral
+ * ink. Caught by Copilot review on PR #204.
+ */
 function avg(nums: number[]): number {
-  if (nums.length === 0) return 0;
-  return nums.reduce((a, b) => a + b, 0) / nums.length;
+  const valid = nums.filter((n) => Number.isFinite(n) && n > 0);
+  if (valid.length === 0) return 0;
+  return valid.reduce((a, b) => a + b, 0) / valid.length;
 }
 
 function LeftColumn({ report }: { report: AarReport }) {
@@ -313,17 +330,6 @@ function LeftColumn({ report }: { report: AarReport }) {
           ) : null}
         </section>
       ) : null}
-
-      {report.overall_rationale ? (
-        <section className="rounded-r-2 border border-signal-deep bg-signal-tint p-4">
-          <p className="mono mb-2 text-[10px] font-bold uppercase tracking-[0.20em] text-signal">
-            OVERALL · {report.overall_score} / 5
-          </p>
-          <p className="whitespace-pre-wrap text-sm leading-relaxed text-ink-100">
-            {report.overall_rationale}
-          </p>
-        </section>
-      ) : null}
     </section>
   );
 }
@@ -364,11 +370,36 @@ function RightColumn({
 }) {
   const { meta, per_role_scores } = report;
   const labelById = new Map(meta.roles.map((r) => [r.id, r] as const));
+  // Per-role expansion state. Set, not boolean, so multiple rows can
+  // be open at once for side-by-side comparison ("why did CISO get B
+  // when SOC also got B?"). Resets to empty whenever the dialog
+  // re-mounts; the report is meant to be read in one sitting.
+  const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
+  const toggle = (roleId: string): void => {
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(roleId)) next.delete(roleId);
+      else next.add(roleId);
+      return next;
+    });
+  };
+
   return (
     <section className="flex max-h-full flex-col gap-4 overflow-y-auto rounded-r-3 border border-ink-600 bg-ink-850 p-4">
-      <p className="mono text-[10px] font-bold uppercase tracking-[0.22em] text-ink-300">
-        PER-ROLE SCORING
-      </p>
+      <div className="flex flex-col gap-1">
+        <p className="mono text-[10px] font-bold uppercase tracking-[0.22em] text-ink-300">
+          PER-ROLE SCORING
+        </p>
+        {/* Discoverability + grade-legend caption. The bare letter
+            grade carries no anchoring without a key (a CISO seeing
+            "B" can't tell if it's "fine" or "we need a postmortem"),
+            and the chevron alone reads as ornament — calling out the
+            tap affordance turns a static-looking row into a clearly
+            interactive one. */}
+        <p className="mono text-[9px] uppercase tracking-[0.14em] text-ink-400">
+          Tap a row for the breakdown · A exemplary · B above bar · C at bar · D below bar · F critical
+        </p>
+      </div>
       <ul className="flex flex-col gap-2">
         {per_role_scores.map((s) => {
           // Prefer the backend-resolved label/display_name (which
@@ -379,37 +410,91 @@ function RightColumn({
           const label = s.label ?? fromMeta?.label ?? "—";
           const displayName =
             (s.display_name ?? fromMeta?.display_name) ?? null;
-          const overall = (s.decision_quality + s.communication + s.speed) / 3;
+          // ``avg`` skips 0 / non-finite sub-scores — see its
+          // docstring. A role with one missing sub-score is graded
+          // on the others, not penalised by the zero. The expanded
+          // panel still renders "—" for the missing cell so the
+          // user can see what was vs. wasn't scored.
+          const overall = avg([
+            s.decision_quality,
+            s.communication,
+            s.speed,
+          ]);
           const grade = gradeForScore(overall);
           const isEmpty = grade === "—";
           const tone = toneForScore(overall);
           const tc = toneClass(tone);
           const gradeColor = isEmpty ? "text-ink-500" : tc.text;
+          const isOpen = expanded.has(s.role_id);
+          const detailId = `aar-role-detail-${s.role_id}`;
           return (
             <li
               key={`${s.role_id}-${label}`}
-              className="flex items-center gap-3 rounded-r-1 border border-ink-600 bg-ink-800 px-3 py-2"
-              title={s.rationale ?? undefined}
+              className="rounded-r-1 border border-ink-600 bg-ink-800"
             >
-              <span
-                className="mono shrink-0 truncate text-[11px] font-bold uppercase tracking-[0.10em] text-ink-100"
-                style={{ minWidth: 56, maxWidth: 96 }}
+              <button
+                type="button"
+                onClick={() => toggle(s.role_id)}
+                aria-expanded={isOpen}
+                aria-controls={detailId}
+                aria-label={`${label}${
+                  displayName ? `, ${displayName}` : ""
+                }: overall ${grade}, ${s.decisions} ${
+                  s.decisions === 1 ? "decision" : "decisions"
+                }. Toggle breakdown.`}
+                className="flex w-full items-center gap-3 px-3 py-2 text-left hover:bg-ink-700 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-signal"
               >
-                {label}
-              </span>
-              <span className="sans flex-1 truncate text-[13px] text-ink-200">
-                {displayName ?? (
-                  <span className="text-ink-500">— not joined —</span>
-                )}
-              </span>
-              <span className="mono text-[10px] uppercase tracking-[0.10em] text-ink-400 tabular-nums">
-                {s.decisions} {s.decisions === 1 ? "DECISION" : "DECISIONS"}
-              </span>
-              <span
-                className={`mono w-7 text-right text-[16px] font-bold tabular-nums ${gradeColor}`}
-              >
-                {grade}
-              </span>
+                <span
+                  aria-hidden="true"
+                  className="mono shrink-0 text-[9px] leading-none text-ink-200"
+                  style={{ width: 8 }}
+                >
+                  {isOpen ? "▼" : "▶"}
+                </span>
+                <span
+                  className="mono shrink-0 truncate text-[11px] font-bold uppercase tracking-[0.10em] text-ink-100"
+                  style={{ minWidth: 56, maxWidth: 96 }}
+                >
+                  {label}
+                </span>
+                <span className="sans flex-1 truncate text-[13px] text-ink-200">
+                  {displayName ?? (
+                    <span className="text-ink-500">— not joined —</span>
+                  )}
+                </span>
+                <span className="mono text-[10px] uppercase tracking-[0.10em] text-ink-400 tabular-nums">
+                  {s.decisions} {s.decisions === 1 ? "DECISION" : "DECISIONS"}
+                </span>
+                <span
+                  className={`mono w-7 text-right text-[16px] font-bold tabular-nums ${gradeColor}`}
+                >
+                  {grade}
+                </span>
+              </button>
+              {isOpen ? (
+                <div
+                  id={detailId}
+                  className="flex flex-col gap-2 border-t border-ink-700 bg-ink-850 px-3 py-3"
+                >
+                  <div className="grid grid-cols-3 gap-2">
+                    <SubScoreCell
+                      label="DECISION"
+                      value={s.decision_quality}
+                    />
+                    <SubScoreCell label="COMMS" value={s.communication} />
+                    <SubScoreCell label="SPEED" value={s.speed} />
+                  </div>
+                  {s.rationale ? (
+                    <p className="text-[12px] leading-relaxed text-ink-200">
+                      {s.rationale}
+                    </p>
+                  ) : (
+                    <p className="mono text-[10px] uppercase tracking-[0.16em] text-ink-500">
+                      No rationale recorded.
+                    </p>
+                  )}
+                </div>
+              ) : null}
             </li>
           );
         })}
@@ -446,6 +531,36 @@ function RightColumn({
           no need to repeat it inline; we just take the spare height
           so the column doesn't visually trail off. */}
     </section>
+  );
+}
+
+/**
+ * One labeled sub-score (DECISION / COMMS / SPEED) shown inside the
+ * expanded per-role panel. Surfaces the raw 0-5 rubric value so two
+ * roles that both round to "B" overall still tell a different story
+ * (e.g. 5/5/3 reads very differently from 4/4/4). Uses the same
+ * tone bands as the headline letter — color carries severity, the
+ * number carries precision.
+ */
+function SubScoreCell({ label, value }: { label: string; value: number }) {
+  const isEmpty = !Number.isFinite(value) || value <= 0;
+  const tone = toneForScore(value);
+  const tc = toneClass(tone);
+  const valueColor = isEmpty ? "text-ink-500" : tc.text;
+  return (
+    <div className="flex flex-col gap-0.5">
+      <span className="mono text-[9px] font-bold uppercase tracking-[0.16em] text-ink-400">
+        {label}
+      </span>
+      <span
+        className={`mono text-[14px] font-bold tabular-nums ${valueColor}`}
+      >
+        {isEmpty ? "—" : value}
+        {isEmpty ? null : (
+          <span className="text-ink-500"> / 5</span>
+        )}
+      </span>
+    </div>
   );
 }
 

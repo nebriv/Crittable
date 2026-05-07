@@ -1,5 +1,5 @@
-import { fireEvent, render, screen, within } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { act, fireEvent, render, screen, within } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SetupView } from "../pages/Facilitator";
 import {
   DEFAULT_SESSION_FEATURES,
@@ -28,6 +28,8 @@ function fakeSnapshot(plan: ScenarioPlan | null): SessionSnapshot {
     state: plan ? "SETUP" : "SETUP",
     created_at: "2026-05-05T00:00:00Z",
     scenario_prompt: "test scenario",
+    plan_title: plan?.title ?? null,
+    plan_summary: plan?.executive_summary ?? null,
     settings: {
       difficulty: "standard",
       duration_minutes: 60,
@@ -195,9 +197,24 @@ describe("SetupView — with-plan branch", () => {
 /**
  * The plan-drafting wait is 5–30 s of non-streaming LLM work; pre-fix,
  * the operator only saw the small typing dots inside the chat
- * transcript and the LOOKS READY button reading as "stuck." The
- * ``draftingPlan`` prop renders a prominent in-chat banner with the
- * brand DieLoader so the wait reads as an explicit, named step.
+ * transcript and the LOOKS READY button reading as "stuck." A
+ * prominent in-chat banner with the brand DieLoader names the wait
+ * as an explicit step.
+ *
+ * Two banner variants share one ``data-testid="drafting-plan-banner"``
+ * element; ``data-banner-variant`` distinguishes them:
+ *
+ *  - ``looks-ready`` — driven by the ``draftingPlan`` prop
+ *    (Facilitator's ``handleLooksReady`` click). Mounts immediately,
+ *    label "Drafting scenario plan · typically 10–30 sec". A plan IS
+ *    the documented next step here.
+ *  - ``implicit-thinking`` — internal SetupView state. Mounts after
+ *    a 1.5 s debounce when ``busy && !hasPlan && !draftingPlan``.
+ *    Label "AI is thinking · typically 5–30 sec" — neutral because
+ *    the AI may end up drafting another question or the plan, and we
+ *    can't tell mid-call (the setup tier is non-streaming). Quick
+ *    chip-pick turns under the threshold keep the small typing dots
+ *    only — no heavy banner mount/unmount thrash.
  *
  * The banner intentionally relies on ``<DieLoader>``'s own
  * ``role="status" aria-live="polite"`` rather than wrapping in a
@@ -206,12 +223,12 @@ describe("SetupView — with-plan branch", () => {
  * expectation so a single announcement covers both pieces.
  */
 describe("SetupView — draftingPlan banner", () => {
-  it("does NOT render the banner when draftingPlan is false", () => {
+  it("does NOT render the banner when not busy and no draftingPlan", () => {
     render(<SetupView snapshot={fakeSnapshot(null)} {...baseProps()} />);
     expect(screen.queryByTestId("drafting-plan-banner")).not.toBeInTheDocument();
   });
 
-  it("renders the prominent banner when draftingPlan is true and no plan yet", () => {
+  it("renders the LOOKS-READY banner immediately (no debounce) with the plan-specific label", () => {
     render(
       <SetupView
         snapshot={fakeSnapshot(null)}
@@ -223,6 +240,9 @@ describe("SetupView — draftingPlan banner", () => {
     );
     const banner = screen.getByTestId("drafting-plan-banner");
     expect(banner).toBeInTheDocument();
+    // The plan-specific variant is honest only when LOOKS READY was
+    // explicitly clicked — that's what ``draftingPlan`` represents.
+    expect(banner).toHaveAttribute("data-banner-variant", "looks-ready");
     // The DieLoader label is the load-bearing copy — names the step
     // ("Drafting scenario plan") and sets a timing expectation
     // ("typically 10–30 sec"). The operator's complaint was "feels
@@ -308,5 +328,184 @@ describe("SetupView — draftingPlan banner", () => {
     );
     expect(screen.getByRole("button", { name: "Option A" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Option B" })).toBeDisabled();
+  });
+});
+
+/**
+ * The implicit-thinking variant covers the case the user reported in
+ * the bug fix that introduced this code: when the AI is processing a
+ * regular setup reply (not LOOKS READY) and may decide to draft the
+ * plan on its own, the operator was previously left with only the
+ * small typing dots — feels stuck.
+ *
+ * Two design rules these tests pin (both came directly from review):
+ *  - **Debounce.** Quick turns (chip pick → 5 s question response)
+ *    keep the small typing dots; only slow turns (≳1.5 s) escalate
+ *    to the banner. Without the debounce, fast Q&A round-trips cause
+ *    the heavy banner to mount/unmount on every reply, training the
+ *    operator to ignore it (banner-fatigue) and undermining its
+ *    signal value when LOOKS-READY actually runs.
+ *  - **Neutral label.** "AI is thinking · typically 5–30 sec"
+ *    rather than "Drafting scenario plan". The setup tier is
+ *    non-streaming so we can't tell mid-call whether the AI is
+ *    producing another question or the actual plan; a neutral label
+ *    is honest in either case. The plan-specific label is reserved
+ *    for ``draftingPlan`` (LOOKS-READY click) where a plan IS the
+ *    documented next step.
+ */
+describe("SetupView — implicit-thinking banner (debounced)", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("does NOT render under the 1500 ms debounce threshold", () => {
+    render(
+      <SetupView
+        snapshot={fakeSnapshot(null)}
+        {...baseProps()}
+        busy
+        busyMessage="AI is thinking — drafting the next setup question…"
+      />,
+    );
+    // Banner is absent at t=0.
+    expect(screen.queryByTestId("drafting-plan-banner")).not.toBeInTheDocument();
+    // Still absent just before the threshold — fast turns shouldn't
+    // mount the heavy banner.
+    act(() => {
+      vi.advanceTimersByTime(1499);
+    });
+    expect(screen.queryByTestId("drafting-plan-banner")).not.toBeInTheDocument();
+  });
+
+  it("renders with the neutral label after the 1500 ms debounce", () => {
+    render(
+      <SetupView
+        snapshot={fakeSnapshot(null)}
+        {...baseProps()}
+        busy
+        busyMessage="AI is thinking — drafting the next setup question…"
+      />,
+    );
+    act(() => {
+      vi.advanceTimersByTime(1500);
+    });
+    const banner = screen.getByTestId("drafting-plan-banner");
+    expect(banner).toBeInTheDocument();
+    expect(banner).toHaveAttribute("data-banner-variant", "implicit-thinking");
+    // Neutral label is honest whether the AI ends up drafting another
+    // question or the plan.
+    expect(within(banner).getByText(/AI is thinking/i)).toBeInTheDocument();
+    expect(within(banner).getByText(/5–30 sec/i)).toBeInTheDocument();
+    // The plan-specific label MUST NOT appear in the implicit branch
+    // — it would lie when the AI is just drafting another question.
+    expect(
+      within(banner).queryByText(/Drafting scenario plan/i),
+    ).not.toBeInTheDocument();
+  });
+
+  it("clears in the same render commit when busy goes false (no flicker)", () => {
+    // Copilot PR #201 review flagged a one-frame flicker risk: the
+    // latched ``showImplicitThinkingBanner`` state would still be
+    // true on the render where ``busy`` flipped false, until the
+    // ``useEffect`` cleanup committed the reset. The fix is to gate
+    // ``showThinkingBanner`` on ``busy`` directly. This test pins
+    // that — the banner must be absent on the very first render
+    // after ``busy=false`` is passed in, BEFORE any subsequent
+    // effect tick.
+    const { rerender } = render(
+      <SetupView
+        snapshot={fakeSnapshot(null)}
+        {...baseProps()}
+        busy
+        busyMessage="AI is thinking…"
+      />,
+    );
+    act(() => {
+      vi.advanceTimersByTime(1500);
+    });
+    expect(screen.getByTestId("drafting-plan-banner")).toBeInTheDocument();
+    // Re-render with busy=false but DON'T wrap in act — we want to
+    // observe the synchronous render commit. (act wraps state +
+    // effect flushes; the gate must work without that.)
+    rerender(
+      <SetupView
+        snapshot={fakeSnapshot(null)}
+        {...baseProps()}
+        busy={false}
+      />,
+    );
+    expect(screen.queryByTestId("drafting-plan-banner")).not.toBeInTheDocument();
+  });
+
+  it("does not arm the implicit banner when LOOKS-READY is already showing", () => {
+    // Concurrency invariant: when ``draftingPlan`` is true, the
+    // LOOKS-READY variant takes priority — the implicit timer must
+    // not also arm and swap labels mid-wait.
+    render(
+      <SetupView
+        snapshot={fakeSnapshot(null)}
+        {...baseProps()}
+        busy
+        draftingPlan
+        busyMessage="Drafting the scenario plan…"
+      />,
+    );
+    // LOOKS-READY variant shows immediately.
+    const banner = screen.getByTestId("drafting-plan-banner");
+    expect(banner).toHaveAttribute("data-banner-variant", "looks-ready");
+    // Even after the implicit-debounce window passes, the variant
+    // must stay LOOKS-READY (priority guard).
+    act(() => {
+      vi.advanceTimersByTime(2000);
+    });
+    expect(banner).toHaveAttribute("data-banner-variant", "looks-ready");
+  });
+
+  it("does not arm when a plan already exists (revision case)", () => {
+    // The revision case (``hasPlan=true`` + ``busy=true``) is owned
+    // by the BusyChip's "revising the plan" message. The prominent
+    // banner would compete with the plan card itself.
+    render(
+      <SetupView
+        snapshot={fakeSnapshot(fakePlan())}
+        {...baseProps()}
+        busy
+        busyMessage="AI is thinking — revising the plan…"
+      />,
+    );
+    act(() => {
+      vi.advanceTimersByTime(2000);
+    });
+    expect(screen.queryByTestId("drafting-plan-banner")).not.toBeInTheDocument();
+  });
+
+  it("suppresses the small BusyChip once the implicit banner is up", () => {
+    // Same indicator-hierarchy invariant as the LOOKS-READY case:
+    // banner + chip + dots together read as duplicate UI.
+    render(
+      <SetupView
+        snapshot={fakeSnapshot(null)}
+        {...baseProps()}
+        busy
+        busyMessage="AI is thinking — drafting the next setup question…"
+      />,
+    );
+    // Pre-debounce: chip is visible (small indicator) and banner is
+    // absent.
+    expect(
+      screen.getByText(/AI is thinking — drafting the next setup question…/),
+    ).toBeInTheDocument();
+    expect(screen.queryByTestId("drafting-plan-banner")).not.toBeInTheDocument();
+    // Post-debounce: banner is up, chip text is suppressed.
+    act(() => {
+      vi.advanceTimersByTime(1500);
+    });
+    expect(screen.getByTestId("drafting-plan-banner")).toBeInTheDocument();
+    expect(
+      screen.queryByText(/AI is thinking — drafting the next setup question…/),
+    ).not.toBeInTheDocument();
   });
 });
