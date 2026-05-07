@@ -10,7 +10,13 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import {
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 
 import { AarReportView } from "../components/AarReport";
 
@@ -269,6 +275,283 @@ describe("AarReportView", () => {
     const pdfBtn = screen.getByText(/PDF REPORT/i).closest("button")!;
     expect(pdfBtn).toBeDisabled();
     expect(pdfBtn.getAttribute("aria-disabled")).toBe("true");
+  });
+
+  it("does not render the OVERALL · N / 5 block (the three top score cards already carry the team grade)", async () => {
+    _mockFetch(200, _report());
+    render(
+      <AarReportView
+        sessionId="s1"
+        token="tok"
+        downloadMdHref="/x.md"
+        downloadJsonHref="/x.json"
+      />,
+    );
+    await waitFor(() =>
+      expect(screen.getByText("CISO")).toBeInTheDocument(),
+    );
+    // The legacy "OVERALL · 4 / 5" eyebrow and the overall_rationale
+    // prose used to render here. Both are gone; the three score cards
+    // (CONTAINMENT / COMMS / DECISION SPEED) at the top already convey
+    // the team's grade in the same letter scheme as the per-role rows.
+    expect(screen.queryByText(/OVERALL\s*·\s*\d+\s*\/\s*5/)).toBeNull();
+    expect(
+      screen.queryByText(/Solid exercise with one notable gap\./),
+    ).toBeNull();
+  });
+
+  it("per-role rows start collapsed and expand on click to show sub-scores + rationale", async () => {
+    _mockFetch(200, _report());
+    render(
+      <AarReportView
+        sessionId="s1"
+        token="tok"
+        downloadMdHref="/x.md"
+        downloadJsonHref="/x.json"
+      />,
+    );
+    await waitFor(() => expect(screen.getByText("CISO")).toBeInTheDocument());
+
+    // Sub-score labels and rationale are hidden until the row is
+    // toggled open. "DECISION" is unique to the per-role panel (the
+    // top card is "DECISION SPEED"); "COMMS" + "SPEED" appear in
+    // both the team-aggregate cards and the per-role panel, so the
+    // expansion-driven assertions below scope queries to the row.
+    expect(screen.queryByText("DECISION")).toBeNull();
+    expect(
+      screen.queryByText(/Decisive on isolation, kept comms cadence\./),
+    ).toBeNull();
+
+    // The row is a real <button type="button"> (not a div with role).
+    // Lock the element so a future refactor to a non-button can't
+    // silently regress keyboard activation.
+    const cisoToggle = screen.getByText("CISO").closest("button")!;
+    const cisoRow = within(cisoToggle.closest("li")!);
+    expect(cisoToggle.tagName).toBe("BUTTON");
+    expect(cisoToggle.getAttribute("type")).toBe("button");
+    expect(cisoToggle.getAttribute("aria-expanded")).toBe("false");
+
+    // aria-controls must reference a real DOM id once the panel
+    // renders (i.e. on expansion). Pre-expand we just verify the
+    // attribute is present and non-empty; the linkage is checked
+    // after click.
+    const controlsId = cisoToggle.getAttribute("aria-controls");
+    expect(controlsId).toBeTruthy();
+
+    // Chevron is the visual analog of aria-expanded — locked so a
+    // regression to a static glyph or an inverted toggle is caught.
+    expect(within(cisoToggle).getByText("▶")).toBeInTheDocument();
+
+    fireEvent.click(cisoToggle);
+
+    // After click: aria-expanded flips, chevron flips, the three
+    // sub-score cells appear with their numeric values, the model's
+    // rationale renders inline (not as a tooltip), and aria-controls
+    // resolves to the panel that just appeared. Scope to the row's
+    // <li> so "COMMS" / "SPEED" don't ambiguously match the top
+    // score cards.
+    expect(cisoToggle.getAttribute("aria-expanded")).toBe("true");
+    expect(within(cisoToggle).getByText("▼")).toBeInTheDocument();
+    expect(document.getElementById(controlsId!)).not.toBeNull();
+    expect(cisoRow.getByText("DECISION")).toBeInTheDocument();
+    expect(cisoRow.getByText("COMMS")).toBeInTheDocument();
+    expect(cisoRow.getByText("SPEED")).toBeInTheDocument();
+    expect(
+      cisoRow.getByText(/Decisive on isolation, kept comms cadence\./),
+    ).toBeInTheDocument();
+
+    // Click again → collapses back.
+    fireEvent.click(cisoToggle);
+    expect(cisoToggle.getAttribute("aria-expanded")).toBe("false");
+    expect(within(cisoToggle).getByText("▶")).toBeInTheDocument();
+    expect(cisoRow.queryByText("DECISION")).toBeNull();
+  });
+
+  it("multiple per-role rows can be expanded simultaneously (side-by-side comparison)", async () => {
+    _mockFetch(200, _report());
+    render(
+      <AarReportView
+        sessionId="s1"
+        token="tok"
+        downloadMdHref="/x.md"
+        downloadJsonHref="/x.json"
+      />,
+    );
+    await waitFor(() => expect(screen.getByText("CISO")).toBeInTheDocument());
+
+    fireEvent.click(screen.getByText("CISO").closest("button")!);
+    fireEvent.click(screen.getByText("SOC").closest("button")!);
+
+    // Both rationales should be visible — neither click closed the
+    // other panel.
+    expect(
+      screen.getByText(/Decisive on isolation, kept comms cadence\./),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/Provided telemetry on request\./),
+    ).toBeInTheDocument();
+  });
+
+  it("renders the discoverability + grade-legend caption above the per-role list", async () => {
+    _mockFetch(200, _report());
+    render(
+      <AarReportView
+        sessionId="s1"
+        token="tok"
+        downloadMdHref="/x.md"
+        downloadJsonHref="/x.json"
+      />,
+    );
+    await waitFor(() =>
+      expect(screen.getByText("CISO")).toBeInTheDocument(),
+    );
+    // The legend tells a first-time creator (a) the rows are
+    // tappable and (b) what each letter actually means. Without it
+    // the bare "B" carries no anchoring.
+    expect(
+      screen.getByText(
+        /Tap a row for the breakdown.*A exemplary.*B above bar.*C at bar.*D below bar.*F critical/,
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it("each per-role toggle button has an accessible label describing the action", async () => {
+    _mockFetch(200, _report());
+    render(
+      <AarReportView
+        sessionId="s1"
+        token="tok"
+        downloadMdHref="/x.md"
+        downloadJsonHref="/x.json"
+      />,
+    );
+    await waitFor(() => expect(screen.getByText("CISO")).toBeInTheDocument());
+    // CISO row: label="CISO", display_name="Alex", decisions=3,
+    // computed grade from (5+4+4)/3≈4.33→B (rounds to 4 → "B").
+    const cisoBtn = screen.getByText("CISO").closest("button")!;
+    const ariaLabel = cisoBtn.getAttribute("aria-label") ?? "";
+    expect(ariaLabel).toMatch(/CISO/);
+    expect(ariaLabel).toMatch(/Alex/);
+    expect(ariaLabel).toMatch(/B/);
+    expect(ariaLabel).toMatch(/3 decisions/);
+    expect(ariaLabel).toMatch(/toggle breakdown/i);
+  });
+
+  it("a 0 sub-score (no-score sentinel) does not drag the headline letter — counted only as '—' in the cell, skipped in the average", async () => {
+    // Regression: PR #204 review caught that `(0 + 5 + 5) / 3 = 3.33`
+    // would round to a "C" headline letter while the expanded panel
+    // already renders "—" for the 0 sub-score (per
+    // `gradeForScore`'s rubric, 0 means "no score", not F-equivalent).
+    // The fix filters 0 / non-finite values in `avg()` and reuses
+    // it for the per-role overall — so 0/5/5 grades as A on the
+    // surviving sub-scores.
+    _mockFetch(
+      200,
+      _report([
+        {
+          role_id: "role-partial",
+          decision_quality: 0, // not scored
+          communication: 5,
+          speed: 5,
+          decisions: 2,
+          rationale: "Strong on comms and speed; decision data missing.",
+          label: "PARTIAL",
+          display_name: "Riley",
+        },
+      ]),
+    );
+    render(
+      <AarReportView
+        sessionId="s1"
+        token="tok"
+        downloadMdHref="/x.md"
+        downloadJsonHref="/x.json"
+      />,
+    );
+    await waitFor(() =>
+      expect(screen.getByText("PARTIAL")).toBeInTheDocument(),
+    );
+    const toggle = screen.getByText("PARTIAL").closest("button")!;
+    const row = within(toggle.closest("li")!);
+    // Headline grade: avg of {5, 5} = 5 → "A". Pre-fix: avg of
+    // {0, 5, 5} = 3.33 → "C". The aria-label echoes the same
+    // headline letter so we can read it without expanding.
+    expect(toggle.getAttribute("aria-label")).toMatch(/overall A/);
+    fireEvent.click(toggle);
+    // Expanded: DECISION cell renders "—" (the 0 sub-score), the
+    // other two render their numeric values. Use a regex over the
+    // cell's mono span so a stray "5" elsewhere in the panel
+    // doesn't satisfy the assertion.
+    expect(row.getByText("DECISION")).toBeInTheDocument();
+    expect(row.getByText("COMMS")).toBeInTheDocument();
+    expect(row.getByText("SPEED")).toBeInTheDocument();
+    expect(row.getByText("—")).toBeInTheDocument();
+  });
+
+  it("a role with all sub-scores at 0 renders '—' as the headline grade (no valid data)", async () => {
+    _mockFetch(
+      200,
+      _report([
+        {
+          role_id: "role-empty",
+          decision_quality: 0,
+          communication: 0,
+          speed: 0,
+          decisions: 0,
+          rationale: undefined,
+          label: "ABSENT",
+          display_name: null,
+        },
+      ]),
+    );
+    render(
+      <AarReportView
+        sessionId="s1"
+        token="tok"
+        downloadMdHref="/x.md"
+        downloadJsonHref="/x.json"
+      />,
+    );
+    await waitFor(() =>
+      expect(screen.getByText("ABSENT")).toBeInTheDocument(),
+    );
+    // The headline-letter span lives in the toggle button. With
+    // all sub-scores at 0 the avg() filter leaves nothing; overall
+    // falls back to 0; gradeForScore renders "—" in neutral ink.
+    const toggle = screen.getByText("ABSENT").closest("button")!;
+    expect(toggle.getAttribute("aria-label")).toMatch(/overall —/);
+  });
+
+  it("expanded row without a rationale falls back to a placeholder line", async () => {
+    _mockFetch(
+      200,
+      _report([
+        {
+          role_id: "role-x",
+          decision_quality: 2,
+          communication: 2,
+          speed: 2,
+          decisions: 1,
+          rationale: undefined,
+          label: "ANALYST",
+          display_name: "Casey",
+        },
+      ]),
+    );
+    render(
+      <AarReportView
+        sessionId="s1"
+        token="tok"
+        downloadMdHref="/x.md"
+        downloadJsonHref="/x.json"
+      />,
+    );
+    await waitFor(() =>
+      expect(screen.getByText("ANALYST")).toBeInTheDocument(),
+    );
+
+    fireEvent.click(screen.getByText("ANALYST").closest("button")!);
+    expect(screen.getByText(/no rationale recorded/i)).toBeInTheDocument();
   });
 });
 
