@@ -129,17 +129,25 @@ interface Props {
    */
   onAbandonSession?: () => void;
   /**
-   * Lobby-override flag (controlled by ``Facilitator``). When true,
-   * the post-creation step pins to 5 (Invite players) even if the
-   * launch gates are met (plan finalized + ≥ 2 player seats).
-   * Lets the creator manage the lobby after seeing the launch
-   * screen — clicking "← Back to lobby" inside ``SetupReviewView``
-   * sets this; clicking step 6 in the rail clears it.
+   * Whether the creator has explicitly advanced from step 5 (Invite
+   * players) to step 6 (Review & launch). Default is false — after
+   * the plan is finalised the wizard lands on step 5 so the creator
+   * can copy invite links and confirm the lobby BEFORE reviewing.
+   * Flipped to true when they click step 6 in the rail (or when
+   * launch gates are met and they hit a forward affordance), and
+   * back to false when they click step 5 / "← Back to lobby".
+   *
+   * Pre-fix the wizard auto-jumped to step 6 the moment the plan was
+   * approved if there were ≥ 2 seats — bypassing the invite UI
+   * entirely, which left the creator hunting for a way back to copy
+   * the per-role join links. The "Approve & start lobby" button copy
+   * also implied a lobby landing, so the auto-jump contradicted what
+   * the action advertised.
    */
-  lobbyOverride?: boolean;
-  /** Setter for ``lobbyOverride`` so the rail click in step 6
-   *  can clear it without round-tripping through the parent. */
-  setLobbyOverride?: (v: boolean) => void;
+  advancedToReview?: boolean;
+  /** Setter for ``advancedToReview`` so the rail clicks can drive
+   *  step navigation without round-tripping through the parent. */
+  setAdvancedToReview?: (v: boolean) => void;
 }
 
 // Stable React keys for custom-role rows the operator adds. We can't
@@ -157,31 +165,38 @@ export function SetupWizard(props: Props) {
   // and submitting step 3 triggers session creation. Once created
   // (phase != "intro"), the step is derived from backend state.
   const [introStep, setIntroStep] = useState<1 | 2 | 3>(1);
-  // Lobby-override flag is owned by ``Facilitator`` so the
+  // Step 5 → 6 advance flag is owned by ``Facilitator`` so the
   // ``SetupReviewView`` (rendered into the ``postCreationContent``
   // slot below) can request a hop back to step 5 without props
   // round-tripping through this component. Local fallback to
   // ``false`` keeps the component usable in isolation (Storybook,
   // tests).
-  const lobbyOverride = props.lobbyOverride ?? false;
-  const setLobbyOverride = props.setLobbyOverride;
+  const advancedToReview = props.advancedToReview ?? false;
+  const setAdvancedToReview = props.setAdvancedToReview;
 
   const current: WizardStepId = useMemo<WizardStepId>(() => {
     if (props.phase === "intro") return introStep;
     if (props.phase === "setup") return 4;
     if (props.phase === "ready") {
-      // READY with a finalized plan + ≥2 players → review/launch
-      // (step 6). Otherwise we're still gathering joiners → step 5.
-      // ``lobbyOverride`` lets the creator pin step 5 to manage the
-      // lobby even after the gates are met — set when they click
-      // "← Back to lobby" from the review screen.
-      const ready =
+      // After plan finalisation we land on step 5 (Invite players)
+      // so the creator can copy join links and watch the lobby fill
+      // up. Step 6 (Review & launch) is reachable via the rail (or
+      // the "ADVANCE TO REVIEW" affordance in the lobby's sidecar)
+      // once the launch gates are met — but the lobby owns its own
+      // START SESSION CTA, so step 6 is optional, not required.
+      const launchReady =
         props.snapshot?.plan != null && (props.playerCount ?? 0) >= 2;
-      if (lobbyOverride) return 5;
-      return ready ? 6 : 5;
+      if (advancedToReview && launchReady) return 6;
+      return 5;
     }
     return 1;
-  }, [props.phase, introStep, props.snapshot, props.playerCount, lobbyOverride]);
+  }, [
+    props.phase,
+    introStep,
+    props.snapshot,
+    props.playerCount,
+    advancedToReview,
+  ]);
 
   const done = useMemo(() => {
     const s = new Set<WizardStepId>();
@@ -194,34 +209,28 @@ export function SetupWizard(props: Props) {
       s.add(2);
       s.add(3);
       if (props.phase === "ready") s.add(4);
-      // step 5 done when plan is finalized + roster gate met (we're
-      // either in step 6, or pinned back on step 5 via lobbyOverride
-      // but the room is launch-ready). The ``done`` set doubles as
-      // the rail's "clickable" set — see WizardRail's ``isClickable``
-      // calculation — so adding step 5 here is what makes the
-      // "← BACK TO LOBBY" rail link work from step 6.
+      // The ``done`` set doubles as the rail's "clickable" set
+      // (see WizardRail's ``isClickable`` calculation) AND drives
+      // the ✓ glyph next to each step. We only want ✓ on steps the
+      // user has actually moved past — never on the current step.
+      //
+      //  - Step 5 → done when current=6 (back-nav clickability).
+      //  - Step 6 → done when current=5 AND launch gates are met
+      //    (forward-nav clickability). Current step never adds
+      //    itself to ``done`` so it doesn't render a stale ✓.
       const launchReady =
         props.snapshot?.plan != null && (props.playerCount ?? 0) >= 2;
-      if (current === 6 || launchReady) s.add(5);
-      // Step 6 normally only flips to "done" after START SESSION
-      // runs, but in lobbyOverride mode (user clicked "← Back to
-      // lobby" from step 6) we mark it ``done`` so the rail
-      // exposes it as a forward-jump target — otherwise the user
-      // would have to clear the override by some other means
-      // before they could return to the launch screen. Only
-      // applies when the launch gates are met; without that gate
-      // step 6 would render as a half-broken review screen with
-      // no working START SESSION CTA.
-      if (lobbyOverride && launchReady) s.add(6);
+      const current = advancedToReview && launchReady ? 6 : 5;
+      if (props.phase === "ready" && current === 6) s.add(5);
+      if (props.phase === "ready" && current === 5 && launchReady) s.add(6);
     }
     return s;
   }, [
     props.phase,
     introStep,
-    current,
     props.snapshot,
     props.playerCount,
-    lobbyOverride,
+    advancedToReview,
   ]);
 
   // Step navigation. Intro phase: user moves backward through
@@ -239,30 +248,22 @@ export function SetupWizard(props: Props) {
       setIntroStep(id);
       return;
     }
-    if (props.phase === "ready" && setLobbyOverride) {
-      // Ignore clicks on the step that's already current — re-firing
-      // the same handler is at best a no-op and at worst a footgun
-      // (clicking the *current* Step 5 when launch gates aren't yet
-      // met would still flip ``lobbyOverride`` to true, pinning the
-      // wizard to the lobby once gates DO get met and silently
-      // suppressing the auto-advance to Step 6 — Copilot review on
-      // PR #187).
+    if (props.phase === "ready" && setAdvancedToReview) {
       if (id === current) return;
       const launchReady =
         props.snapshot?.plan != null && (props.playerCount ?? 0) >= 2;
       if (id === 5) {
-        // Only honor a jump to Step 5 from Step 6 — i.e. when the
-        // user is actually using the back-nav. From any other step
-        // (e.g. Step 4 while the AI is drafting), Step 5 isn't yet
-        // reachable and the override flag would just be misleading.
-        if (current === 6 && launchReady) setLobbyOverride(true);
+        // Hop back to the lobby. Always allowed in the ready phase
+        // because step 5 is the natural landing for the phase —
+        // clearing the advance flag puts us back there.
+        setAdvancedToReview(false);
         return;
       }
       if (id === 6) {
         // Only allow forward jump to 6 if the launch gates are met,
         // otherwise the user would land on a half-rendered review
         // screen that can't actually launch.
-        if (launchReady) setLobbyOverride(false);
+        if (launchReady) setAdvancedToReview(true);
         return;
       }
       return;
@@ -287,14 +288,13 @@ export function SetupWizard(props: Props) {
         // the rail static — the AI is mid-draft and there's no
         // backward path from "AI is drafting" anyway. The ready-
         // phase wiring also requires the parent to have plumbed
-        // ``setLobbyOverride`` through; without it the rail handler
-        // returns early on every click, so leaving steps clickable
-        // would just produce dead-affordance clicks (Copilot review
-        // on PR #187).
+        // ``setAdvancedToReview`` through; without it the rail
+        // handler returns early on every click, so leaving steps
+        // clickable would just produce dead-affordance clicks.
         onJumpToStep={
           props.phase === "intro"
             ? onJumpToStep
-            : props.phase === "ready" && setLobbyOverride
+            : props.phase === "ready" && setAdvancedToReview
               ? onJumpToStep
               : undefined
         }

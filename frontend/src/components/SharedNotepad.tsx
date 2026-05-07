@@ -172,7 +172,21 @@ export function SharedNotepad({
   // happens inside the provider via ``ws.subscribe`` so callers
   // don't have to pass a stable subscribe function.
   useEffect(() => {
-    if (!editor) return;
+    if (!editor) {
+      // ``useEditor`` returns null on the first render then commits
+      // the editor on the second — emitting a warn here would fire
+      // every page load. Use debug so the breadcrumb is available
+      // for a "notepad never loaded" investigation without crowding
+      // the production console. (Product review feedback; May 2026.)
+      console.debug("[notepad] editor not ready — provider start deferred", {
+        session_id: sessionId,
+      });
+      return;
+    }
+    console.debug("[notepad] mounting provider", {
+      session_id: sessionId,
+      self_role_id: selfRoleId,
+    });
     const provider = new WsYjsProvider(
       ydoc,
       awareness,
@@ -196,8 +210,13 @@ export function SharedNotepad({
       (msg) => setErrorMsg(msg),
     );
     provider.start();
-    return () => provider.stop();
-  }, [editor, ydoc, awareness, ws]);
+    return () => {
+      console.debug("[notepad] unmounting provider", {
+        session_id: sessionId,
+      });
+      provider.stop();
+    };
+  }, [editor, ydoc, awareness, ws, sessionId, selfRoleId]);
 
   // Reflect the lock flag onto the editor's editable state.
   useEffect(() => {

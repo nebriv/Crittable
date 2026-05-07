@@ -172,11 +172,26 @@ export function Play({ sessionId, token }: Props) {
       const padded = head + "=".repeat((4 - (head.length % 4)) % 4);
       const decoded = atob(padded.replace(/-/g, "+").replace(/_/g, "/"));
       const parsed = JSON.parse(decoded);
-      return typeof parsed.role_id === "string" ? parsed.role_id : null;
-    } catch {
+      const value = typeof parsed.role_id === "string" ? parsed.role_id : null;
+      if (!value) {
+        console.warn("[play] token payload missing role_id field", {
+          session_id: sessionId,
+        });
+      }
+      return value;
+    } catch (err) {
+      // Decode failure is load-bearing for several gates (notepad,
+      // highlight popover, mention-self filtering). Without a log
+      // line here a "notepad never mounted" report is opaque — the
+      // gate condition ``wsClient && selfRoleId`` would silently
+      // hold null forever. (Issue #4 in the May 2026 UI sweep.)
+      console.warn("[play] selfRoleId decode failed", {
+        session_id: sessionId,
+        message: err instanceof Error ? err.message : String(err),
+      });
       return null;
     }
-  }, [token]);
+  }, [token, sessionId]);
 
   // Snapshot fetch runs unconditionally so the join-intro page can
   // show the player's role label + scenario context (was: gated on
@@ -223,6 +238,21 @@ export function Play({ sessionId, token }: Props) {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [displayName, sessionId, token]);
+
+  // Boundary log for the notepad / highlight-popover mount gate. Both
+  // are gated on ``wsClient && selfRoleId`` — a "notepad never loaded"
+  // bug report needs to distinguish "WS never opened" from "selfRoleId
+  // decode failed" from "both are fine, so the bug is downstream".
+  // Pure debug log; only fires when the gate flips, so it doesn't
+  // crowd the production console. (Issue #4 in the May 2026 UI sweep.)
+  useEffect(() => {
+    console.debug("[play] notepad gate", {
+      session_id: sessionId,
+      ws_connected: Boolean(wsClient),
+      self_role_id_present: Boolean(selfRoleId),
+      will_mount: Boolean(wsClient && selfRoleId),
+    });
+  }, [wsClient, selfRoleId, sessionId]);
 
   // Report this tab's focus / visibility state so the creator's
   // RolesPanel can show this player as engaged (blue) vs tabbed away
@@ -737,14 +767,20 @@ export function Play({ sessionId, token }: Props) {
     wasShowingMidSessionChipRef.current = show;
   }, [snapshot, selfRoleId, sessionId]);
 
-  // Issue #76 transition cue: detect the SETUP/BRIEFING →
+  // Issue #76 transition cue: detect the SETUP/READY/BRIEFING →
   // AWAITING_PLAYERS flip and surface a transient "Session started"
   // banner so the participant has an explicit acknowledgement that
   // their JoinIntro screen was replaced (UI/UX review HIGH: pre-fix
   // the page hard-cut and a screen-reader user had no signal).
+  // READY is included here so a player who joined during the lobby
+  // (waiting on the creator to click Start) gets the same banner as
+  // one who joined during SETUP — without it, the banner would only
+  // fire for the lucky few who arrived before plan finalisation.
   useEffect(() => {
     const isWaitingNow =
-      snapshot?.state === "SETUP" || snapshot?.state === "BRIEFING";
+      snapshot?.state === "SETUP" ||
+      snapshot?.state === "READY" ||
+      snapshot?.state === "BRIEFING";
     const wasWaiting = wasWaitingRef.current;
     // Always update the ref before any conditional return — pre-fix
     // the early `return` left ``wasWaitingRef.current`` stuck at
@@ -819,8 +855,18 @@ export function Play({ sessionId, token }: Props) {
   // instead, with the form swapped for a "Waiting for the facilitator
   // to start" panel + tip carousel. Auto-resolves the moment the
   // session transitions to AWAITING_PLAYERS / AI_PROCESSING / etc.
+  //
+  // READY is included so a player who joins during the lobby phase
+  // (after plan finalisation, before the creator clicks Start) sees
+  // the same waiting variant — pre-fix they fell through to the
+  // empty-transcript chat view, and were then yanked BACK to a
+  // waiting screen the moment the creator hit Start (state went
+  // READY → BRIEFING). Holding them on JoinIntro across the full
+  // SETUP → READY → BRIEFING arc removes that jarring round-trip.
   const isWaitingForSessionStart =
-    snapshot?.state === "SETUP" || snapshot?.state === "BRIEFING";
+    snapshot?.state === "SETUP" ||
+    snapshot?.state === "READY" ||
+    snapshot?.state === "BRIEFING";
 
   // Issue #127: terminal WS close codes must short-circuit BEFORE
   // the JoinIntro guard. Pre-fix a kicked player who reopened the
@@ -1609,7 +1655,10 @@ export function JoinIntro({
   // form variant to the waiting variant inside a single mount.
   const [tipIndex, setTipIndex] = useState(0);
   const isWaitingVariant =
-    hasName && (sessionState === "SETUP" || sessionState === "BRIEFING");
+    hasName &&
+    (sessionState === "SETUP" ||
+      sessionState === "READY" ||
+      sessionState === "BRIEFING");
   // Log the variant so a "stuck on JoinIntro" report has a clear
   // trail. ``console.debug`` (not info) so the breadcrumb doesn't
   // crowd the production console — pair of enter+exit lines keyed
@@ -1913,9 +1962,13 @@ export function JoinIntro({
               >
                 {sessionState === "BRIEFING"
                   ? "The AI is preparing the scenario brief…"
-                  : joinedDisplayName
-                    ? `Welcome, ${joinedDisplayName} — waiting for your facilitator to start the scenario…`
-                    : "Waiting for your facilitator to start the scenario…"}
+                  : sessionState === "READY"
+                    ? joinedDisplayName
+                      ? `Welcome, ${joinedDisplayName} — your facilitator is finalising the lobby and will start shortly…`
+                      : "Your facilitator is finalising the lobby and will start shortly…"
+                    : joinedDisplayName
+                      ? `Welcome, ${joinedDisplayName} — waiting for your facilitator to start the scenario…`
+                      : "Waiting for your facilitator to start the scenario…"}
               </h2>
             </div>
             {roleLabel ? (

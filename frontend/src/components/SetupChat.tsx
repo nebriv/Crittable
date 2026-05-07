@@ -1,3 +1,4 @@
+import { useEffect, useRef } from "react";
 import { SetupNoteView } from "../api/client";
 import { ChatIndicator } from "./ChatIndicator";
 
@@ -27,6 +28,41 @@ interface Props {
  * buttons that send the option text as the next reply.
  */
 export function SetupChat({ notes, busy, aiTyping, onPickOption }: Props) {
+  // Auto-scroll the chat region to the bottom whenever a new note
+  // arrives or the typing indicator flips on — but only when the
+  // operator is already near the bottom. Without the near-bottom
+  // gate, an operator who scrolls up to re-read a clarifying
+  // question gets yanked back to the bottom on every WS event
+  // (canonical chat anti-pattern). ``scrollHeight`` is read *after*
+  // the current commit so the new note's height is included.
+  //
+  // The gate's threshold (80px) lines up with the standard
+  // "auto-pin if within ~one message of the bottom" pattern used
+  // in Slack / Discord; per-pixel exactness isn't important
+  // because the threshold is checked against the OLD
+  // scrollHeight, not the new one. We capture ``wasNearBottom``
+  // *before* layout has reconciled the new note into the DOM
+  // (the effect runs in the commit phase, after React's
+  // virtual-dom diff but before the browser repaints) so the
+  // measurement reflects whether the user was at the bottom
+  // immediately prior to this update.
+  const NEAR_BOTTOM_PX = 80;
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const wasNearBottomRef = useRef(true);
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    if (wasNearBottomRef.current) {
+      el.scrollTop = el.scrollHeight;
+    }
+  }, [notes.length, aiTyping]);
+  const handleScroll = () => {
+    const el = containerRef.current;
+    if (!el) return;
+    wasNearBottomRef.current =
+      el.scrollHeight - el.scrollTop - el.clientHeight <= NEAR_BOTTOM_PX;
+  };
+
   if (notes.length === 0) {
     return (
       <div className="mono rounded-r-3 border border-ink-600 bg-ink-850 p-3 text-[11px] uppercase tracking-[0.06em] text-ink-400">
@@ -39,6 +75,8 @@ export function SetupChat({ notes, busy, aiTyping, onPickOption }: Props) {
 
   return (
     <div
+      ref={containerRef}
+      onScroll={handleScroll}
       className="flex max-h-[60vh] flex-col gap-2 overflow-y-auto rounded-r-3 border border-ink-600 bg-ink-850 p-3"
       role="log"
       aria-live="polite"
