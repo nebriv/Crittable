@@ -579,7 +579,7 @@ async def test_single_addressee_yields_narrowly_or_engine_narrows(
     )
     assert "role-ciso" in result.kept, (
         f"CISO was the addressee but didn't make the final active "
-        f"set. AI yield: {ai_set}, narrower kept: {result.kept}, "
+        f"set. AI groups: {ai_groups}, narrower kept: {result.kept}, "
         f"reason: {result.reason}, appended: "
         f"{[m.body[:160] for m in appended]}"
     )
