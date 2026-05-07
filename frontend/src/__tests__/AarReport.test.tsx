@@ -437,6 +437,91 @@ describe("AarReportView", () => {
     expect(ariaLabel).toMatch(/toggle breakdown/i);
   });
 
+  it("a 0 sub-score (no-score sentinel) does not drag the headline letter — counted only as '—' in the cell, skipped in the average", async () => {
+    // Regression: PR #204 review caught that `(0 + 5 + 5) / 3 = 3.33`
+    // would round to a "C" headline letter while the expanded panel
+    // already renders "—" for the 0 sub-score (per
+    // `gradeForScore`'s rubric, 0 means "no score", not F-equivalent).
+    // The fix filters 0 / non-finite values in `avg()` and reuses
+    // it for the per-role overall — so 0/5/5 grades as A on the
+    // surviving sub-scores.
+    _mockFetch(
+      200,
+      _report([
+        {
+          role_id: "role-partial",
+          decision_quality: 0, // not scored
+          communication: 5,
+          speed: 5,
+          decisions: 2,
+          rationale: "Strong on comms and speed; decision data missing.",
+          label: "PARTIAL",
+          display_name: "Riley",
+        },
+      ]),
+    );
+    render(
+      <AarReportView
+        sessionId="s1"
+        token="tok"
+        downloadMdHref="/x.md"
+        downloadJsonHref="/x.json"
+      />,
+    );
+    await waitFor(() =>
+      expect(screen.getByText("PARTIAL")).toBeInTheDocument(),
+    );
+    const toggle = screen.getByText("PARTIAL").closest("button")!;
+    const row = within(toggle.closest("li")!);
+    // Headline grade: avg of {5, 5} = 5 → "A". Pre-fix: avg of
+    // {0, 5, 5} = 3.33 → "C". The aria-label echoes the same
+    // headline letter so we can read it without expanding.
+    expect(toggle.getAttribute("aria-label")).toMatch(/overall A/);
+    fireEvent.click(toggle);
+    // Expanded: DECISION cell renders "—" (the 0 sub-score), the
+    // other two render their numeric values. Use a regex over the
+    // cell's mono span so a stray "5" elsewhere in the panel
+    // doesn't satisfy the assertion.
+    expect(row.getByText("DECISION")).toBeInTheDocument();
+    expect(row.getByText("COMMS")).toBeInTheDocument();
+    expect(row.getByText("SPEED")).toBeInTheDocument();
+    expect(row.getByText("—")).toBeInTheDocument();
+  });
+
+  it("a role with all sub-scores at 0 renders '—' as the headline grade (no valid data)", async () => {
+    _mockFetch(
+      200,
+      _report([
+        {
+          role_id: "role-empty",
+          decision_quality: 0,
+          communication: 0,
+          speed: 0,
+          decisions: 0,
+          rationale: undefined,
+          label: "ABSENT",
+          display_name: null,
+        },
+      ]),
+    );
+    render(
+      <AarReportView
+        sessionId="s1"
+        token="tok"
+        downloadMdHref="/x.md"
+        downloadJsonHref="/x.json"
+      />,
+    );
+    await waitFor(() =>
+      expect(screen.getByText("ABSENT")).toBeInTheDocument(),
+    );
+    // The headline-letter span lives in the toggle button. With
+    // all sub-scores at 0 the avg() filter leaves nothing; overall
+    // falls back to 0; gradeForScore renders "—" in neutral ink.
+    const toggle = screen.getByText("ABSENT").closest("button")!;
+    expect(toggle.getAttribute("aria-label")).toMatch(/overall —/);
+  });
+
   it("expanded row without a rationale falls back to a placeholder line", async () => {
     _mockFetch(
       200,

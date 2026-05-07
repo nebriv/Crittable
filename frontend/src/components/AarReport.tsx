@@ -241,9 +241,26 @@ function formatGenerated(iso: string | null): string {
   return `${yyyy}-${mm}-${dd} ${hh}:${mi} UTC`;
 }
 
+/**
+ * Mean of ``nums``, treating ``0`` and non-finite values as
+ * "no score" rather than as F-equivalents. Per ``gradeForScore``
+ * the rubric is 1–5; 0 is the documented "no-score" sentinel
+ * (a sub-score the model didn't emit, or one the backend
+ * extractor coerced down to 0). Including those zeros in a
+ * straight mean drags an otherwise solid role into the wrong
+ * grade band — e.g. ``[0, 5, 5]`` would average to 3.33 → "C"
+ * while the expanded breakdown row already renders "—" for the
+ * missing cell. Filtering them out keeps the headline letter
+ * honest and consistent with the cell-level rendering.
+ *
+ * Returns 0 when no scores survive the filter — call sites pass
+ * that through to ``gradeForScore`` which renders "—" + neutral
+ * ink. Caught by Copilot review on PR #204.
+ */
 function avg(nums: number[]): number {
-  if (nums.length === 0) return 0;
-  return nums.reduce((a, b) => a + b, 0) / nums.length;
+  const valid = nums.filter((n) => Number.isFinite(n) && n > 0);
+  if (valid.length === 0) return 0;
+  return valid.reduce((a, b) => a + b, 0) / valid.length;
 }
 
 function LeftColumn({ report }: { report: AarReport }) {
@@ -357,7 +374,7 @@ function RightColumn({
   // be open at once for side-by-side comparison ("why did CISO get B
   // when SOC also got B?"). Resets to empty whenever the dialog
   // re-mounts; the report is meant to be read in one sitting.
-  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
   const toggle = (roleId: string): void => {
     setExpanded((prev) => {
       const next = new Set(prev);
@@ -393,7 +410,16 @@ function RightColumn({
           const label = s.label ?? fromMeta?.label ?? "—";
           const displayName =
             (s.display_name ?? fromMeta?.display_name) ?? null;
-          const overall = (s.decision_quality + s.communication + s.speed) / 3;
+          // ``avg`` skips 0 / non-finite sub-scores — see its
+          // docstring. A role with one missing sub-score is graded
+          // on the others, not penalised by the zero. The expanded
+          // panel still renders "—" for the missing cell so the
+          // user can see what was vs. wasn't scored.
+          const overall = avg([
+            s.decision_quality,
+            s.communication,
+            s.speed,
+          ]);
           const grade = gradeForScore(overall);
           const isEmpty = grade === "—";
           const tone = toneForScore(overall);
