@@ -107,6 +107,103 @@ cd frontend && npm ci && npm run dev
 The Vite dev server proxies `/api` and `/ws` to `localhost:8000`, so
 the two halves co-develop without CORS friction.
 
+## Drafting a brief with your work's LLM
+
+Crittable's setup wizard takes four short text sections — **SCENARIO
+BRIEF**, **ABOUT YOUR TEAM**, **ABOUT YOUR ENVIRONMENT**, **CONSTRAINTS
+/ AVOID** — plus a tuning panel (difficulty, target duration, feature
+toggles) and a roster on later steps. You can write the four sections
+yourself, or paste the template below into your work's LLM (ChatGPT,
+Claude, Gemini, an enterprise assistant with memory / connectors), fill
+in the bracketed fields once with your real environment, and let it draft
+a scenario tuned to *your* shop.
+
+The output is structured to match the wizard's four textareas one-for-one
+— copy each section into the matching field, then click through Step 2
+(difficulty / features) and Step 3 (roles) as you would for any session.
+Re-run the prompt to get a different scenario against the same
+environment; the bracketed setup is meant to be filled in once and
+re-used.
+
+> Tip: name systems by product (Splunk, Defender, Okta, IRIS, PagerDuty),
+> not generic categories. The more concrete the environment, the more it
+> shows up in the AI's injects during play.
+
+````text
+We're going to run a simulated cybersecurity tabletop exercise on a
+tool called Crittable. Draft the brief — I'll paste your output
+straight into the tool's setup form.
+
+Pull what you know about our environment, team, and tooling from
+memory / connectors / prior chats. Where you don't have detail, use
+the values below.
+
+OUR SHOP (fill in once; re-use this prompt for new scenarios):
+
+- Identity & directory: [e.g. "Microsoft 365, hybrid Entra ID + on-prem
+  AD forest, ~20 years of GPO sprawl, classic AD controllers"]
+- Endpoints: [e.g. "Defender for Endpoint on Windows fleet; Jamf-managed
+  Macs for engineering"]
+- Cloud / SaaS: [e.g. "AWS prod (us-east-1, us-west-2), Salesforce,
+  GitHub Enterprise Cloud, Workday"]
+- Network / perimeter: [e.g. "Palo Alto firewalls, Zscaler ZIA for
+  egress, Cloudflare in front of marketing"]
+- Detection & response: [e.g. "homebrew IRIS workflow for alert
+  triage; PagerDuty for paging; Splunk ES as SIEM"]
+- Crown jewels: [e.g. "customer billing DB on RDS, prod K8s cluster,
+  source repos, HR/payroll instance"]
+- Regulatory: [e.g. "SOC 2 Type II, PCI-DSS L2, GDPR; not HIPAA-scope"]
+- Maturity note: [e.g. "IT sprawl is heavy and 20+ years old; security
+  program is well-resourced and modern"]
+
+OUR TEAM:
+
+- Size & shape: [e.g. "8-person security team inside a 600-person SaaS
+  company"]
+- Roles in the room for the tabletop: [e.g. "CISO (creator), IR Lead,
+  SOC analyst, SRE on-call, Legal counsel, Comms / PR lead"]
+- Seniority & posture: [e.g. "IR lead 10y; SOC is junior; legal has
+  done one prior breach; follow-the-sun on-call across US + EU"]
+
+CONSTRAINTS:
+
+- Learning objectives: [e.g. "stress-test the AD-compromise containment
+  playbook; force comms to draft an external statement under pressure"]
+- Hard NOs: [e.g. "no fatalities / physical-safety injects; don't pin
+  blame on real named employees; don't simulate regulators we're not
+  actually subject to"]
+- Time budget: [e.g. "60 minutes"]
+
+Now draft the brief in EXACTLY these four sections, each under a clear
+header, no preamble, no closing summary. Pick the scenario yourself —
+surprise me — but make it realistic for the environment above
+(ransomware, BEC, OAuth phish, supply-chain compromise, leaked cloud
+creds, malicious insider, etc.). Include the plausible first signal
+that would land in our SIEM.
+
+[1] SCENARIO BRIEF
+What happened, when, at what severity. ~3–5 short bullets or a tight
+paragraph. Don't worry about prose.
+
+[2] ABOUT YOUR TEAM
+Restate the team above in the form Crittable expects: roles,
+seniority, on-call posture.
+
+[3] ABOUT YOUR ENVIRONMENT
+Restate the stack above in the form Crittable expects: stack, identity
+provider, EDR / XDR, crown jewels, regulatory regime.
+
+[4] CONSTRAINTS / AVOID
+Restate hard NOs and learning objectives, plus anything you (the LLM)
+flag as worth avoiding given the scenario you picked.
+
+Also suggest — outside the four sections, as a postscript — a
+difficulty (EASY / STANDARD / HARD), a target duration (15–180 min),
+and which of these feature toggles to flip on for this scenario:
+active_adversary, time_pressure, executive_escalation, media_pressure.
+I'll set those on Crittable's Step 2 tuning panel.
+````
+
 ## Environment variables
 
 The full reference is [`docs/configuration.md`](docs/configuration.md).
