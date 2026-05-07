@@ -149,7 +149,7 @@ def _session_with(settings: SessionSettings) -> Session:
         roles=[Role(id="role-a", label="A", is_creator=True)],
         plan=plan,
         state=SessionState.AWAITING_PLAYERS,
-        turns=[Turn(index=0, status="awaiting", active_role_ids=["role-a"])],
+        turns=[Turn(index=0, status="awaiting", active_role_groups=[["role-a"]])],
     )
 
 

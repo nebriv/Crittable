@@ -107,6 +107,7 @@ function _baseSnapshot(): SessionSnapshot {
     ],
     current_turn: {
       index: 0,
+      active_role_groups: [["role-soc"]],
       active_role_ids: ["role-soc"],
       submitted_role_ids: [],
       status: "open",

@@ -171,10 +171,32 @@ class SessionRecorder:
                 # AI / system / critical_inject.
                 ai_messages[turn_id].append(_to_recorded(msg, role_id_to_label))
 
+        # Issue #168 (role-groups): capture the AI's actual yield
+        # shape so a multi-role any-of group round-trips on replay.
+        # Without this, the runner falls back to "infer one singleton
+        # group per role that submitted" and a recorded `[[paul,
+        # lawrence]]` turn becomes `[[paul], [lawrence]]` on replay —
+        # the gate would stall waiting on both ready votes when only
+        # one was originally needed.
+        turn_groups_by_id: dict[str, list[list[str]]] = {}
+        for turn in session.turns:
+            label_groups: list[list[str]] = []
+            for group in turn.active_role_groups:
+                label_group: list[str] = []
+                for rid in group:
+                    label = role_id_to_label.get(rid)
+                    if label:
+                        label_group.append(label)
+                if label_group:
+                    label_groups.append(label_group)
+            if label_groups:
+                turn_groups_by_id[turn.id] = label_groups
+
         play_turns = [
             PlayTurn(
                 submissions=player_steps.get(tid, []),
                 ai_messages=ai_messages.get(tid, []),
+                active_role_label_groups=turn_groups_by_id.get(tid, []),
             )
             for tid in turn_order
         ]

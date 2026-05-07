@@ -317,7 +317,7 @@ async def test_discussion_then_ready_scenario_runs(
             session = await manager.get_session(sid)
             new_turn = Turn(
                 index=len(session.turns),
-                active_role_ids=[creator_id, soc_id],
+                active_role_groups=[[creator_id], [soc_id]],
                 status="awaiting",
             )
             session.turns.append(new_turn)

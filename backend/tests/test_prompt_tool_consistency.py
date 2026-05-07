@@ -120,6 +120,11 @@ _NON_TOOL_ALLOWLIST = frozenset(
         # Tool input fields the prompt references inline
         "role_id",
         "role_ids",
+        # Issue #168: ``role_groups`` is the new param name on
+        # ``set_active_roles`` (replaces flat ``role_ids``); the
+        # legacy backticked occurrences in the prompt are concept-
+        # references, not tool names.
+        "role_groups",
         # ``id`` (without the role prefix) is referenced in the AAR
         # tier's ``## Roster (canonical IDs)`` block — "use these
         # exact ``id`` values in ``per_role_scores[].role_id``".

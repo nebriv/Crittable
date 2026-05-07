@@ -274,7 +274,7 @@ class ScenarioRunner:
         session = await self._manager.start_session(session_id=sid)
         if session.current_turn is None:
             session.turns.append(
-                Turn(index=0, active_role_ids=[], status="processing")
+                Turn(index=0, active_role_groups=[], status="processing")
             )
         deterministic = self._scenario.replay_mode == "deterministic"
         turn = session.current_turn
@@ -584,29 +584,66 @@ class ScenarioRunner:
         await self._inject_ai_messages(turn.ai_messages)
         if next_turn is None:
             return
-        next_active = self._next_active_role_ids(next_turn)
+        next_groups = self._next_active_role_groups(next_turn)
+        if not next_groups:
+            self._log("no active groups for next turn; nothing to open")
+            return
         try:
-            await self._manager.open_turn(
-                session_id=sid, active_role_ids=next_active
+            await self._manager.open_turn_with_groups(
+                session_id=sid, active_role_groups=next_groups
             )
         except Exception as exc:
             self._log(f"open_turn failed in deterministic replay: {exc}")
             raise
 
-    def _next_active_role_ids(self, turn: Any) -> list[str]:
-        """Resolve a scripted PlayTurn's submission role labels to the
-        ids the runner should mark active when opening the turn.
+    def _next_active_role_groups(self, turn: Any) -> list[list[str]]:
+        """Resolve a scripted PlayTurn's role-groups (or its
+        submissions, in legacy fixtures) to the role-id groups the
+        runner should mark active when opening the next turn.
 
-        De-duplicates while preserving order so a turn that lists
-        ``[creator, SOC, creator]`` opens with ``[creator, SOC]``.
+        Two paths, in priority order:
+
+        1. **Explicit groups** (``active_role_label_groups``) — the
+           recorder captured the AI's actual yield-shape, so we
+           reproduce it exactly. This is the only way to faithfully
+           replay a multi-role any-of group; without this the legacy
+           inference would split it into two singleton "must-respond"
+           groups and the gate would stall.
+        2. **Legacy inference from submissions** — empty
+           ``active_role_label_groups`` means a pre-#168 fixture; we
+           open the turn with one singleton group per role that
+           appeared in the submissions list. This preserves the
+           original "all-must-ready" behavior so existing scenarios
+           round-trip without re-recording.
         """
 
-        seen: dict[str, bool] = {}
+        if getattr(turn, "active_role_label_groups", None):
+            resolved: list[list[str]] = []
+            for group_labels in turn.active_role_label_groups:
+                group_ids: list[str] = []
+                seen: set[str] = set()
+                for label in group_labels:
+                    rid = self._role_ids.get(label)
+                    if rid and rid not in seen:
+                        seen.add(rid)
+                        group_ids.append(rid)
+                if group_ids:
+                    resolved.append(group_ids)
+            if resolved:
+                return resolved
+
+        # Legacy path — derive a singleton-per-role group list from
+        # the recorded submissions. De-duplicates while preserving
+        # order so a turn that lists ``[creator, SOC, creator]`` opens
+        # as ``[[creator], [SOC]]``.
+        seen_ids: set[str] = set()
+        flat: list[str] = []
         for step in turn.submissions:
             role_id = self._role_ids.get(step.role_label)
-            if role_id and role_id not in seen:
-                seen[role_id] = True
-        return list(seen.keys())
+            if role_id and role_id not in seen_ids:
+                seen_ids.add(role_id)
+                flat.append(role_id)
+        return [[rid] for rid in flat]
 
     async def _inject_ai_messages(
         self, ai_messages: list[Any]

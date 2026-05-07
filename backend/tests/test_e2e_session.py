@@ -316,7 +316,7 @@ def test_non_active_role_can_interject(client: TestClient) -> None:
         session = await manager.get_session(sid)
         turn = Turn(
             index=0,
-            active_role_ids=[creator_role_id],
+            active_role_groups=[[creator_role_id]],
             status="awaiting",
         )
         session.turns.append(turn)
@@ -1013,7 +1013,7 @@ def test_strict_retry_recovers_when_ai_skips_yield(
         content=[_ContentBlock(
             type="tool_use",
             name="set_active_roles",
-            input={"role_ids": [seats["role_ids"][1]]},
+            input={"role_groups": [[seats["role_ids"][1]]]},
             id="tu_yield",
         )],
         stop_reason="tool_use",
@@ -1124,7 +1124,7 @@ def test_strict_retry_cannot_be_coerced_into_end_session(client: TestClient) -> 
         content=[_ContentBlock(
             type="tool_use",
             name="set_active_roles",
-            input={"role_ids": [seats["role_ids"][1]]},
+            input={"role_groups": [[seats["role_ids"][1]]]},
             id="tu_yield",
         )],
         stop_reason="tool_use",
@@ -1230,7 +1230,7 @@ def test_strict_retry_recovers_from_solo_inject_critical_event(
             _ContentBlock(
                 type="tool_use",
                 name="set_active_roles",
-                input={"role_ids": [second_role_id]},
+                input={"role_groups": [[second_role_id]]},
                 id="tu_yield",
             )
         ],
@@ -1327,7 +1327,7 @@ def test_briefing_recovers_when_ai_skips_broadcast(client: TestClient) -> None:
             _ContentBlock(
                 type="tool_use",
                 name="set_active_roles",
-                input={"role_ids": [seats["role_ids"][0], seats["role_ids"][1]]},
+                input={"role_groups": [[seats["role_ids"][0]], [seats["role_ids"][1]]]},
                 id="tu_yield_1",
             ),
         ],
@@ -1421,7 +1421,7 @@ def test_briefing_does_not_recover_when_broadcast_already_present(client: TestCl
             _ContentBlock(
                 type="tool_use",
                 name="set_active_roles",
-                input={"role_ids": [seats["role_ids"][1]]},
+                input={"role_groups": [[seats["role_ids"][1]]]},
                 id="tu_yield_ok",
             ),
         ],
@@ -1469,7 +1469,7 @@ def test_drive_required_on_mid_exercise_yield(client: TestClient) -> None:
             _ContentBlock(
                 type="tool_use",
                 name="set_active_roles",
-                input={"role_ids": [creator_role]},
+                input={"role_groups": [[creator_role]]},
                 id="tu_yield_brief",
             ),
         ],
@@ -1487,7 +1487,7 @@ def test_drive_required_on_mid_exercise_yield(client: TestClient) -> None:
             _ContentBlock(
                 type="tool_use",
                 name="set_active_roles",
-                input={"role_ids": [other_role]},
+                input={"role_groups": [[other_role]]},
                 id="tu_yield_mid",
             ),
         ],
@@ -1610,7 +1610,7 @@ def test_player_question_does_not_downgrade_drive_recovery(
             _ContentBlock(
                 type="tool_use",
                 name="set_active_roles",
-                input={"role_ids": [creator_role]},
+                input={"role_groups": [[creator_role]]},
                 id="tu_yield_brief",
             ),
         ],
@@ -1652,7 +1652,7 @@ def test_player_question_does_not_downgrade_drive_recovery(
             _ContentBlock(
                 type="tool_use",
                 name="set_active_roles",
-                input={"role_ids": [other_role]},
+                input={"role_groups": [[other_role]]},
                 id="tu_yield_recovery",
             )
         ],
@@ -1806,7 +1806,7 @@ def test_compound_violation_runs_drive_then_yield_sequentially(client: TestClien
         content=[_ContentBlock(
             type="tool_use",
             name="set_active_roles",
-            input={"role_ids": [seats["role_ids"][0]]},
+            input={"role_groups": [[seats["role_ids"][0]]]},
             id="tu_y",
         )],
         stop_reason="tool_use",
@@ -1956,7 +1956,7 @@ def test_critical_inject_rate_limit_until_visible_to_model() -> None:
         roles=[Role(id="role-a", label="A", is_creator=True)],
         plan=plan,
         state=SessionState.AWAITING_PLAYERS,
-        turns=[Turn(index=2, status="awaiting", active_role_ids=["role-a"])],
+        turns=[Turn(index=2, status="awaiting", active_role_groups=[["role-a"]])],
         critical_injects_window=[2],
         critical_inject_rate_limit_until=7,
     )
@@ -2003,7 +2003,7 @@ def test_critical_inject_block_13_omitted_when_no_rate_limit() -> None:
         roles=[Role(id="role-a", label="A", is_creator=True)],
         plan=plan,
         state=SessionState.AWAITING_PLAYERS,
-        turns=[Turn(index=0, status="awaiting", active_role_ids=["role-a"])],
+        turns=[Turn(index=0, status="awaiting", active_role_groups=[["role-a"]])],
         critical_injects_window=[],
         critical_inject_rate_limit_until=None,
     )
@@ -2028,7 +2028,7 @@ def test_tool_choice_does_not_leak_to_setup_or_aar(client: TestClient) -> None:
         content=[_ContentBlock(
             type="tool_use",
             name="set_active_roles",
-            input={"role_ids": [seats["role_ids"][1]]},
+            input={"role_groups": [[seats["role_ids"][1]]]},
             id="tu_yield",
         )],
         stop_reason="tool_use",
@@ -2151,7 +2151,7 @@ def test_play_after_auto_greet_then_skip_does_not_400(client: TestClient) -> Non
             _ContentBlock(
                 type="tool_use",
                 name="set_active_roles",
-                input={"role_ids": []},  # filled in below
+                input={"role_groups": []},  # filled in below
                 id="tu_set",
             ),
         ],
@@ -2895,7 +2895,7 @@ def test_admin_abort_turn_happy_path_then_force_advance(client: TestClient) -> N
 
         turn = Turn(
             index=0,
-            active_role_ids=[seats["role_ids"][0]],
+            active_role_groups=[[seats["role_ids"][0]]],
             status="processing",
         )
         session.turns.append(turn)
@@ -3059,7 +3059,7 @@ def test_mark_timeline_point_dispatch_emits_system_marker(client: TestClient) ->
             _ContentBlock(
                 type="tool_use",
                 name="set_active_roles",
-                input={"role_ids": [seats["role_ids"][1]]},
+                input={"role_groups": [[seats["role_ids"][1]]]},
                 id="tu_set",
             ),
         ],
@@ -3111,7 +3111,7 @@ def test_set_active_roles_resolves_label_fallback(client: TestClient) -> None:
                 # Pass the LABEL ("Player_1" — assigned by _create_and_seat)
                 # plus a non-existent label ("Engineering") to verify
                 # soft-success handles both.
-                input={"role_ids": ["Player_1", "Engineering"]},
+                input={"role_groups": [["Player_1"], ["Engineering"]]},
                 id="tu_set",
             ),
         ],
@@ -3151,7 +3151,7 @@ def test_admin_proxy_respond_impersonates_role(client: TestClient) -> None:
         session = await manager.get_session(sid)
         turn = Turn(
             index=0,
-            active_role_ids=seats["role_ids"],
+            active_role_groups=[[r] for r in seats["role_ids"]],
             status="awaiting",
         )
         session.turns.append(turn)
@@ -3538,7 +3538,7 @@ def test_ai_auto_interjects_on_facilitator_mention(client: TestClient) -> None:
         session = await manager.get_session(sid)
         turn = Turn(
             index=0,
-            active_role_ids=seats["role_ids"],
+            active_role_groups=[[r] for r in seats["role_ids"]],
             status="awaiting",
         )
         session.turns.append(turn)
@@ -3605,7 +3605,7 @@ def test_active_role_can_post_followup_after_submitting(
         # multi-submission-per-active-role path.
         turn = Turn(
             index=0,
-            active_role_ids=seats["role_ids"],
+            active_role_groups=[[r] for r in seats["role_ids"]],
             status="awaiting",
         )
         session.turns.append(turn)
@@ -3682,7 +3682,7 @@ def test_proxy_respond_rejects_unknown_or_spectator_role(
         session = await manager.get_session(sid)
         turn = Turn(
             index=0,
-            active_role_ids=[creator_role_id],
+            active_role_groups=[[creator_role_id]],
             status="awaiting",
         )
         session.turns.append(turn)
@@ -3754,7 +3754,7 @@ def test_proxy_respond_blocks_prompt_injection(client: TestClient) -> None:
         session = await manager.get_session(sid)
         turn = Turn(
             index=0,
-            active_role_ids=[creator_role_id],
+            active_role_groups=[[creator_role_id]],
             status="awaiting",
         )
         session.turns.append(turn)
@@ -3838,7 +3838,7 @@ def test_out_of_turn_facilitator_mention_fires_interject(client: TestClient) -> 
         session = await manager.get_session(sid)
         turn = Turn(
             index=0,
-            active_role_ids=[creator_role_id],
+            active_role_groups=[[creator_role_id]],
             status="awaiting",
         )
         session.turns.append(turn)
@@ -3953,7 +3953,7 @@ def test_max_participant_submission_chars_truncates(monkeypatch) -> None:
             mgr = c.app.state.manager
             session = await mgr.get_session(sid)
             session.turns.append(
-                Turn(index=0, active_role_ids=seats["role_ids"], status="awaiting")
+                Turn(index=0, active_role_groups=[[r] for r in seats["role_ids"]], status="awaiting")
             )
             session.state = SessionState.AWAITING_PLAYERS
             await mgr._repo.save(session)
@@ -4174,7 +4174,7 @@ def test_strict_retry_feeds_dispatcher_rejection_back_to_model(client: TestClien
             _ContentBlock(
                 type="tool_use",
                 name="set_active_roles",
-                input={"role_ids": [seats["role_ids"][1]]},
+                input={"role_groups": [[seats["role_ids"][1]]]},
                 id="tu_set",
             ),
         ],
@@ -4431,7 +4431,7 @@ def test_ws_submit_truncates_with_marker_and_warning(monkeypatch) -> None:
             mgr = c.app.state.manager
             session = await mgr.get_session(sid)
             session.turns.append(
-                Turn(index=0, active_role_ids=[creator_role_id], status="awaiting")
+                Turn(index=0, active_role_groups=[[creator_role_id]], status="awaiting")
             )
             session.state = SessionState.AWAITING_PLAYERS
             await mgr._repo.save(session)

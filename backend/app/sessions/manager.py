@@ -38,11 +38,12 @@ from .submission_pipeline import FACILITATOR_MENTION_TOKEN
 from .turn_engine import (
     IllegalTransitionError,
     SubmissionIntent,
-    all_ready,
     assert_plan_edit_field,
     assert_transition,
     can_submit,
     critical_inject_allowed,
+    groups_from_flat,
+    groups_quorum_met,
     record_critical_inject,
 )
 
@@ -562,10 +563,16 @@ class SessionManager:
                 raise IllegalTransitionError("cannot remove the creator's role")
             if session.current_turn and role_id in session.current_turn.active_role_ids:
                 # Drop the active-role slot so the turn isn't stuck waiting
-                # on a kicked player.
-                session.current_turn.active_role_ids = [
-                    r for r in session.current_turn.active_role_ids if r != role_id
-                ]
+                # on a kicked player. Walk every group in
+                # ``active_role_groups`` and remove the kicked id;
+                # groups that empty out are dropped entirely (an empty
+                # group would never close).
+                trimmed_groups: list[list[str]] = []
+                for group in session.current_turn.active_role_groups:
+                    pruned = [rid for rid in group if rid != role_id]
+                    if pruned:
+                        trimmed_groups.append(pruned)
+                session.current_turn.active_role_groups = trimmed_groups
             if session.current_turn:
                 # Wave 1 (issue #134) security review H1: scrub the kicked
                 # role from ``ready_role_ids`` and ``submitted_role_ids``
@@ -811,6 +818,50 @@ class SessionManager:
     async def open_turn(
         self, *, session_id: str, active_role_ids: Iterable[str]
     ) -> Turn:
+        """Open the next awaiting turn with each role in its own group.
+
+        Convenience wrapper for the common "every role must respond"
+        case (force-advance recovery, briefing turn opener, legacy
+        scenario fixtures). For the multi-role any-of case, callers
+        should use :meth:`open_turn_with_groups` directly.
+        """
+
+        return await self.open_turn_with_groups(
+            session_id=session_id,
+            active_role_groups=groups_from_flat(list(active_role_ids)),
+        )
+
+    async def open_turn_with_groups(
+        self,
+        *,
+        session_id: str,
+        active_role_groups: Iterable[Iterable[str]],
+    ) -> Turn:
+        """Open the next awaiting turn with the AI's exact yield shape.
+
+        Each entry of ``active_role_groups`` is a list of role_ids and
+        represents one ASK; the gate (``groups_quorum_met``) advances
+        the turn only when EVERY group has at least one ready vote.
+        Empty groups are dropped here (an empty group could never
+        close the gate); a fully-empty input raises since there's
+        nothing to wait on.
+        """
+
+        normalized: list[list[str]] = []
+        seen_in_groups: set[str] = set()
+        for group in active_role_groups:
+            deduped: list[str] = []
+            for rid in group:
+                if rid in seen_in_groups:
+                    continue
+                seen_in_groups.add(rid)
+                deduped.append(rid)
+            if deduped:
+                normalized.append(deduped)
+        if not normalized:
+            raise IllegalTransitionError(
+                "open_turn_with_groups requires at least one non-empty group"
+            )
         async with await self._lock_for(session_id):
             session = await self._repo.get(session_id)
             target = SessionState.AWAITING_PLAYERS
@@ -827,7 +878,7 @@ class SessionManager:
             session.state = target
             turn = Turn(
                 index=len(session.turns),
-                active_role_ids=list(active_role_ids),
+                active_role_groups=normalized,
                 status="awaiting",
             )
             session.turns.append(turn)
@@ -839,6 +890,12 @@ class SessionManager:
                 "type": "turn_changed",
                 "turn_index": turn.index,
                 "active_role_ids": turn.active_role_ids,
+                # Issue #168: send the canonical groups shape too so
+                # the frontend can render "either Paul or Lawrence"
+                # for multi-role any-of groups instead of flattening
+                # to "Paul, Lawrence" (which misleads the player into
+                # thinking BOTH must answer).
+                "active_role_groups": turn.active_role_groups,
                 # Issue #111: ride the new-turn fan-out so a freshly-
                 # opened turn (e.g. after force-advance reopens an
                 # active set) carries the reset progress fraction.
@@ -926,11 +983,13 @@ class SessionManager:
         ``intent`` controls the ready-quorum gate.
         ``"ready"`` adds the role to ``turn.ready_role_ids``;
         ``"discuss"`` removes them if previously ready. The state-flip
-        predicate now reads ``all_ready(turn)`` rather than
-        ``all_submitted(turn)``, so the AI only advances once every
-        active role has explicitly signaled ready (or the creator
-        force-advances). Out-of-turn interjections never touch the
-        ready quorum (they don't touch ``submitted_role_ids`` either).
+        predicate is ``groups_quorum_met(turn)``: every group in
+        ``turn.active_role_groups`` has at least one member in
+        ``ready_role_ids``. Single-role groups reduce to "that role
+        must ready"; multi-role groups (issue #168) advance on the
+        first ready vote in the group. Force-advance bypasses the
+        check. Out-of-turn interjections never touch the ready quorum
+        (they don't touch ``submitted_role_ids`` either).
 
         ``mentions`` (Wave 2): cleaned list of mention targets — real
         ``role_id`` values + the literal ``"facilitator"``. The
@@ -1044,7 +1103,7 @@ class SessionManager:
                     if role_id in turn.ready_role_ids:
                         turn.ready_role_ids.remove(role_id)
                         walked_back = True
-                ready_to_advance = all_ready(turn)
+                ready_to_advance = groups_quorum_met(turn)
                 if ready_to_advance:
                     turn.status = "processing"
                     session.state = SessionState.AI_PROCESSING
@@ -1165,7 +1224,7 @@ class SessionManager:
                 player_role_ids = [r.id for r in session.roles if r.kind == "player"]
                 new_turn = Turn(
                     index=len(session.turns),
-                    active_role_ids=player_role_ids,
+                    active_role_groups=groups_from_flat(player_role_ids),
                     status="awaiting",
                 )
                 session.turns.append(new_turn)
@@ -1187,6 +1246,8 @@ class SessionManager:
                         "type": "turn_changed",
                         "turn_index": new_turn.index,
                         "active_role_ids": new_turn.active_role_ids,
+                        # Issue #168: send the groups shape too.
+                        "active_role_groups": new_turn.active_role_groups,
                         # Issue #111: fresh turn → reset progress
                         # fraction (computed from active/submitted on
                         # the new turn).
@@ -1331,7 +1392,7 @@ class SessionManager:
                 else:
                     if as_role_id in turn.ready_role_ids:
                         turn.ready_role_ids.remove(as_role_id)
-                ready_to_advance = all_ready(turn)
+                ready_to_advance = groups_quorum_met(turn)
                 # Mirror submit_response: when the ready quorum is met
                 # we MUST flip state to AI_PROCESSING so the route
                 # knows to drive the next AI turn. Pre-fix the proxy
@@ -1454,7 +1515,7 @@ class SessionManager:
                     )
                 )
                 filled.append(rid)
-            ready_to_advance = all_ready(turn)
+            ready_to_advance = groups_quorum_met(turn)
             if ready_to_advance:
                 turn.status = "processing"
                 session.state = SessionState.AI_PROCESSING

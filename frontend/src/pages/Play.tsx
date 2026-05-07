@@ -1053,9 +1053,29 @@ export function Play({ sessionId, token }: Props) {
   // is still pending from the AI's perspective (the turn won't advance
   // until they signal ready); reading off ``readyRoleIds`` keeps the
   // wait copy in lock-step with the actual gate.
-  const otherPending = activeRoleIds
-    .filter((id) => id !== selfRoleId && !readyRoleIds.includes(id))
-    .map((id) => snapshot.roles.find((r) => r.id === id)?.label ?? id);
+  //
+  // Issue #168 (role-groups): a multi-role any-of group reads as
+  // "either Paul or Lawrence" rather than "Paul, Lawrence" — only ONE
+  // member of an open group needs to ready for the group to close, so
+  // rendering it as a flat list misleads the player about who must
+  // act. We compute ``otherPendingGroups`` per-group and join the
+  // group strings with commas. Single-role groups still read
+  // verbatim ("Ben"); multi-role groups join with " or "
+  // ("Paul or Lawrence"); a fully-closed group disappears so the
+  // copy doesn't say "still waiting on" a group that's done.
+  const labelById = new Map(snapshot.roles.map((r) => [r.id, r.label] as const));
+  const activeGroups = snapshot.current_turn?.active_role_groups ?? [];
+  const otherPendingGroups: string[] = [];
+  for (const group of activeGroups) {
+    const groupHasReady = group.some((id) => readyRoleIds.includes(id));
+    if (groupHasReady) continue; // Group already closed; nothing to wait on.
+    const memberLabels = group
+      .filter((id) => id !== selfRoleId)
+      .map((id) => labelById.get(id) ?? id);
+    if (memberLabels.length === 0) continue;
+    otherPendingGroups.push(memberLabels.join(" or "));
+  }
+  const otherPending = otherPendingGroups; // Compatibility alias.
   // Issue #78: composer is enabled for any participant whenever the
   // session is ``AWAITING_PLAYERS`` so out-of-turn comments / follow-
   // ups can land in the transcript. Spectators stay locked out (the WS

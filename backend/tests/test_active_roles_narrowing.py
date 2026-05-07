@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import pytest
 
-from app.sessions.active_roles import narrow_active_roles
+from app.sessions.active_roles import narrow_active_role_groups
 from app.sessions.models import Message, MessageKind, Role
 
 
@@ -64,10 +64,10 @@ def test_drops_unaddressed_role_when_broadcast_names_only_one() -> None:
 
     msgs = [_broadcast("Ben — you're in the advisor seat. What's the call?")]
 
-    result = narrow_active_roles(
+    result = narrow_active_role_groups(
         roles=[ben, eng],
         appended_messages=msgs,
-        ai_set=[ben.id, eng.id],
+        ai_groups=[[ben.id], [eng.id]],
     )
 
     assert result.narrowed is True
@@ -87,10 +87,10 @@ def test_drops_unaddressed_role_when_label_addressed() -> None:
 
     msgs = [_broadcast("Cybersecurity Manager — Ready to close Operation Frozen Ledger?")]
 
-    result = narrow_active_roles(
+    result = narrow_active_role_groups(
         roles=[ben, eng],
         appended_messages=msgs,
-        ai_set=[ben.id, eng.id],
+        ai_groups=[[ben.id], [eng.id]],
     )
 
     assert result.narrowed is True
@@ -113,10 +113,10 @@ def test_passing_mention_does_not_address() -> None:
 
     msgs = [_broadcast("Ben — you should check with Mike, right?")]
 
-    result = narrow_active_roles(
+    result = narrow_active_role_groups(
         roles=[ben, mike],
         appended_messages=msgs,
-        ai_set=[ben.id, mike.id],
+        ai_groups=[[ben.id], [mike.id]],
     )
 
     assert result.narrowed is True
@@ -133,10 +133,10 @@ def test_referenced_role_in_loop_in_phrase_not_addressed() -> None:
 
     msgs = [_broadcast("Cybersecurity Engineer — pull the logs, then loop in Mike.")]
 
-    result = narrow_active_roles(
+    result = narrow_active_role_groups(
         roles=[eng, mike],
         appended_messages=msgs,
-        ai_set=[eng.id, mike.id],
+        ai_groups=[[eng.id], [mike.id]],
     )
 
     assert result.narrowed is True
@@ -153,10 +153,10 @@ def test_descriptive_mention_with_following_word_not_addressed() -> None:
 
     msgs = [_broadcast("Mike Benedetto is not yet notified. Ben — your call?")]
 
-    result = narrow_active_roles(
+    result = narrow_active_role_groups(
         roles=[ben, mike],
         appended_messages=msgs,
-        ai_set=[ben.id, mike.id],
+        ai_groups=[[ben.id], [mike.id]],
     )
 
     assert result.narrowed is True
@@ -175,10 +175,10 @@ def test_two_addressees_both_kept() -> None:
 
     msgs = [_broadcast("Ben — confirm isolation. Cybersecurity Engineer — pull logs.")]
 
-    result = narrow_active_roles(
+    result = narrow_active_role_groups(
         roles=[ben, eng],
         appended_messages=msgs,
-        ai_set=[ben.id, eng.id],
+        ai_groups=[[ben.id], [eng.id]],
     )
 
     assert result.narrowed is False
@@ -194,10 +194,10 @@ def test_comma_separator_addressing_works() -> None:
 
     msgs = [_broadcast("Ben, what's your call? Engineer is on standby.")]
 
-    result = narrow_active_roles(
+    result = narrow_active_role_groups(
         roles=[ben, eng],
         appended_messages=msgs,
-        ai_set=[ben.id, eng.id],
+        ai_groups=[[ben.id], [eng.id]],
     )
 
     # "Engineer is" — Engineer at clause start but followed by " is"
@@ -221,10 +221,10 @@ def test_address_role_explicit_target_always_kept() -> None:
     # Body doesn't use clause-start addressing — just a question.
     msgs = [_address_role(ben.id, "What's the next step here?")]
 
-    result = narrow_active_roles(
+    result = narrow_active_role_groups(
         roles=[ben, eng],
         appended_messages=msgs,
-        ai_set=[ben.id, eng.id],
+        ai_groups=[[ben.id], [eng.id]],
     )
 
     assert result.narrowed is True
@@ -238,10 +238,10 @@ def test_pose_choice_explicit_target_always_kept() -> None:
 
     msgs = [_pose_choice(ben.id, "Generate AAR now?", ["Yes", "No"])]
 
-    result = narrow_active_roles(
+    result = narrow_active_role_groups(
         roles=[ben, eng],
         appended_messages=msgs,
-        ai_set=[ben.id, eng.id],
+        ai_groups=[[ben.id], [eng.id]],
     )
 
     assert result.narrowed is True
@@ -262,10 +262,10 @@ def test_generic_broadcast_no_names_keeps_full_set() -> None:
 
     msgs = [_broadcast("Team — what's our move? Everyone weigh in.")]
 
-    result = narrow_active_roles(
+    result = narrow_active_role_groups(
         roles=[ben, eng],
         appended_messages=msgs,
-        ai_set=[ben.id, eng.id],
+        ai_groups=[[ben.id], [eng.id]],
     )
 
     assert result.narrowed is False
@@ -285,10 +285,10 @@ def test_would_narrow_to_empty_keeps_original() -> None:
     # start match for either role.
     msgs = [_broadcast("Benji — your call here?")]
 
-    result = narrow_active_roles(
+    result = narrow_active_role_groups(
         roles=[ben, eng],
         appended_messages=msgs,
-        ai_set=[ben.id, eng.id],
+        ai_groups=[[ben.id], [eng.id]],
     )
 
     # No addressed roles found at all → reason is the no-addressed branch.
@@ -314,10 +314,10 @@ def test_address_role_plus_broadcast_combine_addressed() -> None:
         _broadcast("Ben — while the engineer runs that, brief Mike."),
     ]
 
-    result = narrow_active_roles(
+    result = narrow_active_role_groups(
         roles=[ben, eng],
         appended_messages=msgs,
-        ai_set=[ben.id, eng.id],
+        ai_groups=[[ben.id], [eng.id]],
     )
 
     # Engineer addressed via tool target; Ben addressed via clause-start
@@ -343,10 +343,10 @@ def test_request_artifact_target_counts_as_addressed() -> None:
         },
     )
 
-    result = narrow_active_roles(
+    result = narrow_active_role_groups(
         roles=[ben, legal],
         appended_messages=[artifact_msg],
-        ai_set=[ben.id, legal.id],
+        ai_groups=[[ben.id], [legal.id]],
     )
 
     assert result.narrowed is True
@@ -362,10 +362,10 @@ def test_request_artifact_target_counts_as_addressed() -> None:
 def test_empty_ai_set_returns_empty() -> None:
     ben = _make_role(id_label="Cybersecurity Manager", display_name="Ben")
 
-    result = narrow_active_roles(
+    result = narrow_active_role_groups(
         roles=[ben],
         appended_messages=[_broadcast("Ben — your call?")],
-        ai_set=[],
+        ai_groups=[],
     )
 
     assert result.kept == []
@@ -388,10 +388,10 @@ def test_no_player_facing_messages_keeps_original() -> None:
         tool_args=None,
     )
 
-    result = narrow_active_roles(
+    result = narrow_active_role_groups(
         roles=[ben, eng],
         appended_messages=[bookkeeping_msg],
-        ai_set=[ben.id, eng.id],
+        ai_groups=[[ben.id], [eng.id]],
     )
 
     assert result.narrowed is False
@@ -407,10 +407,10 @@ def test_em_dash_as_clause_separator() -> None:
 
     msgs = [_broadcast("Logs are in — Ben, your read on this?")]
 
-    result = narrow_active_roles(
+    result = narrow_active_role_groups(
         roles=[ben, eng],
         appended_messages=msgs,
-        ai_set=[ben.id, eng.id],
+        ai_groups=[[ben.id], [eng.id]],
     )
 
     assert result.narrowed is True
@@ -422,10 +422,10 @@ def test_case_insensitive_match() -> None:
 
     msgs = [_broadcast("BEN — your call on this?")]
 
-    result = narrow_active_roles(
+    result = narrow_active_role_groups(
         roles=[ben],
         appended_messages=msgs,
-        ai_set=[ben.id],
+        ai_groups=[[ben.id]],
     )
 
     assert ben.id in result.addressed_role_ids
@@ -442,10 +442,10 @@ def test_kept_preserves_input_order() -> None:
 
     msgs = [_broadcast("Alpha — go. Charlie — go. Bravo, hold.")]
 
-    result = narrow_active_roles(
+    result = narrow_active_role_groups(
         roles=[a, b, c],
         appended_messages=msgs,
-        ai_set=[c.id, a.id, b.id],  # deliberately scrambled
+        ai_groups=[[c.id], [a.id], [b.id]],  # deliberately scrambled
     )
 
     assert result.kept == [c.id, a.id, b.id]
@@ -487,13 +487,13 @@ def test_cumulative_merge_after_strict_retry_narrows_correctly() -> None:
     # ``tool_choice`` was pinned to ``set_active_roles``.
     cumulative_messages = [_broadcast("CISO — your call on isolation?")]
 
-    # The cumulative ``set_active_role_ids`` is the attempt-2 yield.
-    ai_set = [ciso.id, soc.id]
+    # The cumulative ``set_active_role_groups`` is the attempt-2 yield.
+    ai_groups = [[ciso.id], [soc.id]]
 
-    result = narrow_active_roles(
+    result = narrow_active_role_groups(
         roles=[ciso, soc],
         appended_messages=cumulative_messages,
-        ai_set=ai_set,
+        ai_groups=ai_groups,
     )
 
     assert result.narrowed is True, (

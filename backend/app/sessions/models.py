@@ -13,7 +13,7 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, computed_field
 
 PLAN_EDITABLE_FIELDS = frozenset(
     {"key_objectives", "guardrails", "injects", "out_of_scope", "success_criteria"}
@@ -221,15 +221,28 @@ class Turn(BaseModel):
 
     id: str = Field(default_factory=_short_id)
     index: int
-    active_role_ids: list[str] = Field(default_factory=list)
+    # Optional-mentions model (issue #168). The AI yields to one or more
+    # *groups* of roles; each group is closed when ANY ONE of its
+    # members signals ``intent="ready"`` and the turn advances when
+    # *every* group is closed. A single-role group is the "must
+    # respond" case (same shape as the pre-#168 single-id yield); a
+    # multi-role group is the "either of you can answer" case (the
+    # screenshot from issue #168: "Paul and Lawrence — one of you owns
+    # this ticket"). The flat union is exposed as ``active_role_ids``
+    # for legacy reads (visibility checks, "is this role on the active
+    # set?" predicates, frontend chrome). Mutations always go through
+    # ``active_role_groups`` so the gate stays in sync.
+    active_role_groups: list[list[str]] = Field(default_factory=list)
     submitted_role_ids: list[str] = Field(default_factory=list)
-    # Ready-quorum gate (Wave 1, issue #134). A role lands here when its
-    # most recent submission on this turn carried ``intent="ready"``; a
-    # subsequent ``intent="discuss"`` submission removes it. The play
-    # engine advances ``AWAITING_PLAYERS → AI_PROCESSING`` only when
-    # ``set(active_role_ids) ⊆ set(ready_role_ids)``. Force-advance
-    # bypasses this check entirely. Briefing turns never gate on it
-    # (they fire from ``/start``, not from ``submit_response``).
+    # Ready-quorum gate (Wave 1, issue #134; reshaped by #168). A role
+    # lands here when its most recent submission on this turn carried
+    # ``intent="ready"``; a subsequent ``intent="discuss"`` submission
+    # removes it. The play engine advances ``AWAITING_PLAYERS →
+    # AI_PROCESSING`` when ``groups_quorum_met(turn)`` returns True —
+    # i.e. every group in ``active_role_groups`` has at least one role
+    # in ``ready_role_ids``. Force-advance bypasses this check entirely.
+    # Briefing turns never gate on it (they fire from ``/start``, not
+    # from ``submit_response``).
     ready_role_ids: list[str] = Field(default_factory=list)
     status: TurnStatus = "awaiting"
     started_at: datetime = Field(default_factory=_now)
@@ -247,6 +260,27 @@ class Turn(BaseModel):
     # BRIEFING; AWAITING_PLAYERS computes its own progress from
     # ``submitted_role_ids / active_role_ids`` at snapshot time.
     ai_progress_pct: float | None = None
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def active_role_ids(self) -> list[str]:
+        """Flat union of every role mentioned across ``active_role_groups``.
+
+        Preserves first-seen order so the legacy ordering (which the
+        frontend's "your turn" predicate and a few audit lines rely on)
+        survives the move to groups. De-duplicates because a role
+        legitimately appears in only one group, but defensive code may
+        construct duplicates during narrowing edge cases.
+        """
+
+        seen: set[str] = set()
+        flat: list[str] = []
+        for group in self.active_role_groups:
+            for rid in group:
+                if rid not in seen:
+                    seen.add(rid)
+                    flat.append(rid)
+        return flat
 
 
 class ScenarioInject(BaseModel):

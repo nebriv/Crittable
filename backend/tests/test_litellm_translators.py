@@ -735,7 +735,7 @@ def test_messages_assistant_multiple_tool_calls_produces_list() -> None:
                         "type": "tool_use",
                         "id": "tu_002",
                         "name": "set_active_roles",
-                        "input": {"role_ids": ["r1"]},
+                        "input": {"role_groups": [["r1"]]},
                     },
                 ],
             }

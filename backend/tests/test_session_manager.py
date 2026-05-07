@@ -184,7 +184,10 @@ async def _force_two_active(client: TestClient, seats: dict[str, Any]) -> None:
         session = await manager._repo.get(sid)
         turn = session.current_turn
         assert turn is not None
-        turn.active_role_ids = [seats["creator_role_id"], seats["other_role_id"]]
+        turn.active_role_groups = [
+            [seats["creator_role_id"]],
+            [seats["other_role_id"]],
+        ]
         turn.submitted_role_ids = []
         await manager._repo.save(session)
 

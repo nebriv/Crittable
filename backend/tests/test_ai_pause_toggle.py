@@ -85,7 +85,7 @@ async def _seat_two_role_session(client: TestClient) -> dict[str, Any]:
     session = await manager.get_session(sid)
     turn = Turn(
         index=0,
-        active_role_ids=[creator_id, soc_id],
+        active_role_groups=[[creator_id], [soc_id]],
         status="awaiting",
     )
     session.turns.append(turn)

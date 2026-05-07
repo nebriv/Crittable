@@ -103,7 +103,7 @@ async def _seat_two_role_session(client: TestClient) -> dict[str, Any]:
     session = await manager.get_session(sid)
     turn = Turn(
         index=0,
-        active_role_ids=[creator_id, soc_id],
+        active_role_groups=[[creator_id], [soc_id]],
         status="awaiting",
     )
     session.turns.append(turn)
@@ -1168,7 +1168,7 @@ def test_play_turn_reply_tags_facilitator_asker_when_quorum_closes(
         session = await manager.get_session(sid)
         turn = Turn(
             index=0,
-            active_role_ids=[creator_id],
+            active_role_groups=[[creator_id]],
             status="awaiting",
         )
         session.turns.append(turn)
@@ -1191,7 +1191,7 @@ def test_play_turn_reply_tags_facilitator_asker_when_quorum_closes(
             _ContentBlock(
                 type="tool_use",
                 name="set_active_roles",
-                input={"role_ids": [creator_id]},
+                input={"role_groups": [[creator_id]]},
                 id="tu_sar",
             ),
         ],
@@ -1277,7 +1277,7 @@ def test_play_turn_freeform_ai_text_also_gets_asker_mention(
         manager = client.app.state.manager
         session = await manager.get_session(sid)
         session.turns.append(
-            Turn(index=0, active_role_ids=[creator_id], status="awaiting")
+            Turn(index=0, active_role_groups=[[creator_id]], status="awaiting")
         )
         session.state = SessionState.AWAITING_PLAYERS
         await manager._repo.save(session)
@@ -1301,7 +1301,7 @@ def test_play_turn_freeform_ai_text_also_gets_asker_mention(
             _ContentBlock(
                 type="tool_use",
                 name="set_active_roles",
-                input={"role_ids": [creator_id]},
+                input={"role_groups": [[creator_id]]},
                 id="tu_sar_freeform",
             ),
         ],
