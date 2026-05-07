@@ -86,6 +86,52 @@ def test_play_prompt_forbids_physical_inspection() -> None:
     assert "physically inspect" in text
 
 
+def test_play_prompt_forbids_data_extract_asks() -> None:
+    """Regression net for the user-reported "Joe — what does Sentinel
+    show on info-uapp-003?" failure mode. The AI is the source of
+    ground truth for telemetry — players don't have a real Sentinel /
+    SIEM / EDR. The telemetry-boundary rule (Block 5b) and the
+    Concrete-handoff rule (Block 6) both forbid the AI from posing
+    "what does <tool> show?" as a question to players. If this
+    assertion fails, audit any diff that touched ``_REALISM`` or
+    ``_TOOL_USE_PROTOCOL`` — both rules need to stay aligned or the
+    model regresses to asking players to fabricate telemetry.
+
+    The block also has to keep reminding the model it is a
+    *facilitator*, not a narrator — narration without a decision
+    prompt would be a different failure mode (stuck turn).
+
+    The phrase pins are deliberate: a refactor that re-derives the
+    blocks but drops the user-facing example phrasings would still
+    break the regression net even though the constant-equality check
+    in :func:`test_realism_block_wired_into_play_system_blocks`
+    survives.
+    """
+
+    text = _flatten_blocks(
+        build_play_system_blocks(_minimal_session(), registry=_empty_registry())
+    )
+    # Block 5b — telemetry-boundary rule (the AI provides the data;
+    # players provide the decisions)
+    assert "Telemetry boundary" in text
+    # Block 5b — facilitator-not-narrator guard (so the model doesn't
+    # over-correct into pure-narration mode and drop pose_choice on
+    # tactical-decision asks)
+    assert "still a facilitator, not a narrator" in text
+    # Block 5b — explicit scope carve-out: the rule only narrows
+    # data-extract asks; tactical / doctrine / comms forks still go
+    # through pose_choice. Without this carve-out the model regresses
+    # into situation-briefing prose when the player asks for tactical
+    # options (caught by the live tests on the doctrine-fork fixture).
+    assert "narrows ONE class" in text or "applies only to" in text
+    # Both blocks — the canonical antipattern phrasing the user
+    # complained about ("Joe — what does Sentinel show on
+    # info-uapp-003?") must remain in the forbidden-phrasings list.
+    assert "what does Sentinel show" in text
+    # Block 6 — concrete-handoff rule prescribing the right reframe
+    assert "direction-of-investigation fork" in text
+
+
 def test_realism_block_absent_from_aar_prompt() -> None:
     """The AAR pipeline uses the trust-boundary contract documented in
     CLAUDE.md (canonical-IDs block, drop-don't-repair) — it does not
