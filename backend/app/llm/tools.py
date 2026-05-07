@@ -216,7 +216,7 @@ PLAY_TOOLS: list[dict[str, Any]] = [
             "\"what does <SIEM/EDR/IDS> show?\". These are PLAYER-SIDE "
             "triggers — the player asks YOU for data, you narrate it. "
             "The AI must NEVER pose these phrasings as questions to "
-            "players (Block 5b's DM-style narration rule). When a "
+            "players (Block 5b's telemetry-boundary rule). When a "
             "player commits to a direction-of-investigation (\"I'm "
             "pulling the Sentinel host page\"), that is also a trigger "
             "— narrate the data they asked to see. "
