@@ -198,10 +198,13 @@ export function SetupWizard(props: Props) {
     advancedToReview,
   ]);
 
+  // ``done`` strictly means "user has visited and moved past this
+  // step" — drives the ✓ glyph in WizardRail. Step 5 only counts as
+  // done once the user has advanced to step 6; step 6 is never done
+  // until launch (which exits the wizard entirely).
   const done = useMemo(() => {
     const s = new Set<WizardStepId>();
     if (props.phase === "intro") {
-      // Mark earlier intro steps as done as the user advances.
       for (let i = 1; i < introStep; i++) s.add(i as WizardStepId);
     } else {
       // Pre-creation steps are all done once the session is created.
@@ -209,20 +212,16 @@ export function SetupWizard(props: Props) {
       s.add(2);
       s.add(3);
       if (props.phase === "ready") s.add(4);
-      // The ``done`` set doubles as the rail's "clickable" set
-      // (see WizardRail's ``isClickable`` calculation) AND drives
-      // the ✓ glyph next to each step. We only want ✓ on steps the
-      // user has actually moved past — never on the current step.
-      //
-      //  - Step 5 → done when current=6 (back-nav clickability).
-      //  - Step 6 → done when current=5 AND launch gates are met
-      //    (forward-nav clickability). Current step never adds
-      //    itself to ``done`` so it doesn't render a stale ✓.
+      // Step 5 is "done" only after the user has advanced to step 6
+      // (and launch gates are met — otherwise step 6 isn't reachable
+      // and the advance state isn't meaningful). Step 6 is never
+      // marked done from inside the wizard; once START SESSION fires
+      // we leave the wizard for the play view. (Copilot review on
+      // PR #199 caught the prior code marking step 6 as done while
+      // the user was still on step 5.)
       const launchReady =
         props.snapshot?.plan != null && (props.playerCount ?? 0) >= 2;
-      const current = advancedToReview && launchReady ? 6 : 5;
-      if (props.phase === "ready" && current === 6) s.add(5);
-      if (props.phase === "ready" && current === 5 && launchReady) s.add(6);
+      if (props.phase === "ready" && advancedToReview && launchReady) s.add(5);
     }
     return s;
   }, [
@@ -232,6 +231,21 @@ export function SetupWizard(props: Props) {
     props.playerCount,
     advancedToReview,
   ]);
+
+  // ``clickableExtra`` is the "forward-reachable but not visited"
+  // set — adds rail clickability without implying completion. In the
+  // ready phase, step 6 is reachable from step 5 once launch gates
+  // are met. (No ✓ glyph; just a clickable rail entry.)
+  const clickableExtra = useMemo(() => {
+    const s = new Set<WizardStepId>();
+    if (props.phase === "ready") {
+      const launchReady =
+        props.snapshot?.plan != null && (props.playerCount ?? 0) >= 2;
+      const current = advancedToReview && launchReady ? 6 : 5;
+      if (current === 5 && launchReady) s.add(6);
+    }
+    return s;
+  }, [props.phase, props.snapshot, props.playerCount, advancedToReview]);
 
   // Step navigation. Intro phase: user moves backward through
   // completed form steps (state lives in ``introStep``). Post-
@@ -282,6 +296,7 @@ export function SetupWizard(props: Props) {
       <WizardRail
         current={current}
         done={done}
+        clickableExtra={clickableExtra}
         // Wired in two distinct phases: intro (back-nav through
         // the form-state steps 1-3) and ready (hop between
         // lobby step 5 and review step 6). Setup phase 4 keeps

@@ -23,44 +23,6 @@ function note(overrides: Partial<SetupNoteView>): SetupNoteView {
 }
 
 describe("SetupChat — auto-scroll on note arrival", () => {
-  it("pins to the bottom on first render", () => {
-    const notes = [note({ speaker: "ai", content: "first" })];
-    const { container } = render(<SetupChat notes={notes} />);
-    const log = container.querySelector("[role='log']") as HTMLDivElement;
-    // jsdom doesn't lay out — scrollHeight / clientHeight default to 0.
-    // We assert the assignment happened (scrollTop is settable here)
-    // by mocking the layout values and re-running the effect via a
-    // re-render with a new note count.
-    Object.defineProperty(log, "scrollHeight", {
-      configurable: true,
-      value: 1000,
-    });
-    Object.defineProperty(log, "clientHeight", {
-      configurable: true,
-      value: 400,
-    });
-    log.scrollTop = 0; // reset
-    // Re-render with a new note to fire the effect.
-    const { container: c2 } = render(
-      <SetupChat
-        notes={[note({ speaker: "ai", content: "first" }), note({ speaker: "creator", content: "second" })]}
-      />,
-    );
-    const log2 = c2.querySelector("[role='log']") as HTMLDivElement;
-    Object.defineProperty(log2, "scrollHeight", {
-      configurable: true,
-      value: 1000,
-    });
-    Object.defineProperty(log2, "clientHeight", {
-      configurable: true,
-      value: 400,
-    });
-    // First-render path: wasNearBottomRef defaults to true, so the
-    // effect set scrollTop = scrollHeight. Confirm the slot at least
-    // received a numeric set (jsdom doesn't clamp).
-    expect(typeof log2.scrollTop).toBe("number");
-  });
-
   it("does NOT clobber scrollTop when the user has scrolled up (User Agent HIGH)", () => {
     // User Agent review caught this as HIGH: pre-fix the auto-pin was
     // unconditional, which yanked an operator who'd scrolled up to

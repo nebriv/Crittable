@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useLayoutEffect, useRef } from "react";
 import { SetupNoteView } from "../api/client";
 import { ChatIndicator } from "./ChatIndicator";
 
@@ -33,23 +33,27 @@ export function SetupChat({ notes, busy, aiTyping, onPickOption }: Props) {
   // operator is already near the bottom. Without the near-bottom
   // gate, an operator who scrolls up to re-read a clarifying
   // question gets yanked back to the bottom on every WS event
-  // (canonical chat anti-pattern). ``scrollHeight`` is read *after*
-  // the current commit so the new note's height is included.
+  // (canonical chat anti-pattern).
   //
   // The gate's threshold (80px) lines up with the standard
   // "auto-pin if within ~one message of the bottom" pattern used
-  // in Slack / Discord; per-pixel exactness isn't important
-  // because the threshold is checked against the OLD
-  // scrollHeight, not the new one. We capture ``wasNearBottom``
-  // *before* layout has reconciled the new note into the DOM
-  // (the effect runs in the commit phase, after React's
-  // virtual-dom diff but before the browser repaints) so the
-  // measurement reflects whether the user was at the bottom
-  // immediately prior to this update.
+  // in Slack / Discord. ``wasNearBottomRef`` is updated by the
+  // ``onScroll`` handler so the next layout-effect knows whether
+  // the user was near the bottom *before* the new content was
+  // appended.
+  //
+  // ``useLayoutEffect`` is load-bearing: scroll positioning needs
+  // to happen synchronously *after* React commits the new node and
+  // *before* the browser paints, otherwise the user sees a
+  // one-frame flash where the new note appears below the fold then
+  // jumps to the bottom. (Copilot review on PR #199 flagged the
+  // prior comment claiming "before browser repaints" while using
+  // ``useEffect`` — wrong about the timing; switched to
+  // ``useLayoutEffect`` to make the comment honest.)
   const NEAR_BOTTOM_PX = 80;
   const containerRef = useRef<HTMLDivElement | null>(null);
   const wasNearBottomRef = useRef(true);
-  useEffect(() => {
+  useLayoutEffect(() => {
     const el = containerRef.current;
     if (!el) return;
     if (wasNearBottomRef.current) {

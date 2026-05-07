@@ -33,6 +33,15 @@ interface Props {
   /** Set of step ids the user has completed (rendered with a ✓). */
   done: Set<WizardStepId>;
   /**
+   * Optional extra step ids the rail should treat as clickable beyond
+   * ``done`` and the current step. Use this for "forward-reachable"
+   * steps the user can jump to but hasn't visited yet (e.g. step 6 is
+   * reachable from step 5 once launch gates are met, but should NOT
+   * render a ✓ — that would lie about completion). Defaults to empty.
+   * Copilot review on PR #199.
+   */
+  clickableExtra?: Set<WizardStepId>;
+  /**
    * Optional click handler for a step. Only wired by the parent for
    * intro-phase back-nav (steps 1-3 before session creation); always
    * undefined post-creation since the post-creation step is derived
@@ -43,7 +52,13 @@ interface Props {
   onAbandonSession?: () => void;
 }
 
-export function WizardRail({ current, done, onJumpToStep, onAbandonSession }: Props) {
+export function WizardRail({
+  current,
+  done,
+  clickableExtra,
+  onJumpToStep,
+  onAbandonSession,
+}: Props) {
   return (
     <aside
       aria-label="Setup steps"
@@ -118,7 +133,14 @@ export function WizardRail({ current, done, onJumpToStep, onAbandonSession }: Pr
         {WIZARD_STEPS.map((s) => {
           const isCurrent = s.id === current;
           const isDone = done.has(s.id);
-          const isClickable = Boolean(onJumpToStep) && (isDone || isCurrent);
+          // Clickability is "done OR current OR forward-reachable
+          // extras". Completion (✓ glyph) is "done" alone — separating
+          // these lets the parent expose a forward-reachable step
+          // (e.g. step 6 from step 5 when launch gates are met)
+          // without lying about whether the user has visited it.
+          const isExtraClickable = clickableExtra?.has(s.id) ?? false;
+          const isClickable =
+            Boolean(onJumpToStep) && (isDone || isCurrent || isExtraClickable);
           const c = isDone
             ? "var(--ink-300)"
             : isCurrent

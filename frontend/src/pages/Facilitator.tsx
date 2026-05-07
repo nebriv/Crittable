@@ -1294,13 +1294,14 @@ export function Facilitator() {
   // 5 vs 6 distinction for the rail highlight; we just have to pick
   // the matching panel content here.
   if (phase === "setup" || phase === "ready") {
-    // Launch gates are met (plan finalized + ≥ 2 player roles), AND
-    // the creator hasn't pinned themselves back to the lobby via
-    // the "← BACK TO LOBBY" button on the review screen. Both
-    // Step 6 (Review & launch) renders only when the creator has
-    // explicitly advanced AND the launch gates are met. On the
-    // natural ready-phase landing we drop into step 5 (the lobby)
-    // so the creator can share join links first.
+    // Step 6 (Review & launch) renders only when the launch gates
+    // are met (plan finalized + ≥ 2 player roles) AND the creator
+    // has explicitly advanced via the rail or the lobby's
+    // "REVIEW & LAUNCH" affordance. On the natural ready-phase
+    // landing we drop into step 5 (the lobby) so the creator can
+    // share join links first; the lobby itself owns the primary
+    // START SESSION CTA so advancing to step 6 is optional, not
+    // required.
     const launchReady =
       phase === "ready" && Boolean(snapshot.plan) && playerCount >= 2;
     const wizardReadyForReview = launchReady && advancedToReview;
