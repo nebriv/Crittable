@@ -107,11 +107,8 @@ describe("RightSidebar — 3-tab system (chat-declutter polish)", () => {
     // <details> block and doesn't need this — collapsing the
     // <details> hides the entire surface.
     render(<RightSidebar messages={[]} roles={ROLES} workstreams={WORKSTREAMS} />);
-    const desktopTablist = document.querySelector(
-      "[role='tablist'][aria-label='Right sidebar']",
-    );
-    expect(desktopTablist?.className).toContain("sticky");
-    expect(desktopTablist?.className).toContain("top-0");
+    const desktopTablist = screen.getByRole("tablist", { name: "Right sidebar" });
+    expect(desktopTablist).toHaveClass("sticky", "top-0");
   });
 
   it("Action items tab surfaces address_role asks with status", () => {
