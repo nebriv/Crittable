@@ -1,4 +1,5 @@
 import { MessageView, RoleView, WorkstreamView } from "../api/client";
+import { SHARE_DATA_MIN_CHARS } from "../lib/shareDataPolicy";
 import { colorForWorkstream } from "../lib/workstreamPalette";
 
 interface Props {
@@ -17,11 +18,6 @@ interface ArtifactEntry {
   workstreamId: string | null;
   actor: string;
 }
-
-// Same threshold the backend's exports module uses — a share_data is
-// "pinworthy" only when it's ≥300 chars. Short shares clutter the
-// rail; substantial dumps deserve a pin.
-const SHARE_DATA_PIN_MIN_CHARS = 300;
 
 const PERSISTENCE_HINT_RE =
   /persist|persistence|reinfect|footh?old|backdoor/i;
@@ -57,7 +53,7 @@ export function ArtifactsRail({
   const items: ArtifactEntry[] = [];
   for (const m of messages) {
     if (m.tool_name === "share_data") {
-      if ((m.body?.length ?? 0) < SHARE_DATA_PIN_MIN_CHARS) continue;
+      if ((m.body?.length ?? 0) < SHARE_DATA_MIN_CHARS) continue;
       const label =
         typeof m.tool_args?.label === "string"
           ? (m.tool_args.label as string).trim()

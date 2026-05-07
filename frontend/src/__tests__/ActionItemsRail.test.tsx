@@ -59,7 +59,7 @@ describe("ActionItemsRail — status badge tones", () => {
         kind: "ai_text",
         body: "CISO — what's your call?",
         tool_name: "address_role",
-        tool_args: { role_id: "role-ciso", text: "what's your call?" },
+        tool_args: { role_id: "role-ciso", message: "what's your call?" },
         workstream_id: "main",
       }),
       msg({
@@ -98,7 +98,7 @@ describe("ActionItemsRail — status badge tones", () => {
         kind: "ai_text",
         body: "CISO — what's your call?",
         tool_name: "address_role",
-        tool_args: { role_id: "role-ciso", text: "what's your call?" },
+        tool_args: { role_id: "role-ciso", message: "what's your call?" },
         workstream_id: "main",
       }),
     ];

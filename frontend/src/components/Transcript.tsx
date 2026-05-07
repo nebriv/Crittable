@@ -3,6 +3,7 @@ import type { MouseEvent as ReactMouseEvent, ReactNode } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { MessageView, RoleView, WorkstreamView } from "../api/client";
+import { SHARE_DATA_MIN_CHARS } from "../lib/shareDataPolicy";
 import { colorForWorkstream } from "../lib/workstreamPalette";
 import { ChatIndicator } from "./ChatIndicator";
 import { TableScroll } from "./TableScroll";
@@ -108,20 +109,15 @@ interface Props {
   viewerIsCreator?: boolean;
 }
 
-/**
- * Substantial ``share_data`` calls (logs, IOC tables, telemetry
- * dumps) collapse to a one-line summary card by default — clicking
- * "View details" unfurls the full markdown body. The threshold
- * matches Timeline's `SHARE_DATA_MIN_CHARS` so the same dump that
- * earns a "Data brief" rail pin also earns the chat-collapse: if it's
- * substantial enough to want a re-find affordance, it's substantial
- * enough to clutter the chat firehose at 4-person scale. User
- * feedback: "the transcript moves very quickly when the AI dumps
- * big chunks." Smaller share_data calls (a single telemetry line, a
- * tiny config snippet) render inline as before — collapsing those
- * adds friction without saving real-estate.
- */
-const SHARE_DATA_COLLAPSE_CHARS = 300;
+// Substantial ``share_data`` calls collapse to a one-line summary
+// card by default — clicking "Show N lines" unfurls the full
+// markdown body. The threshold is shared with Timeline (rail
+// pinning) and ArtifactsRail (artifact cards) via
+// ``SHARE_DATA_MIN_CHARS`` so the three behaviors stay in lockstep.
+// User feedback: "the transcript moves very quickly when the AI
+// dumps big chunks." Smaller share_data calls render inline as
+// before — collapsing those adds friction without saving
+// real-estate.
 
 /**
  * Derive the short uppercase badge text for a role. The brand mock uses
@@ -643,7 +639,7 @@ export function Transcript({
                     // (full MarkdownBody).
                     const isLargeShareData =
                       m.tool_name === "share_data" &&
-                      (m.body?.length ?? 0) >= SHARE_DATA_COLLAPSE_CHARS;
+                      (m.body?.length ?? 0) >= SHARE_DATA_MIN_CHARS;
                     const isShareDataExpanded = expandedShareData.has(m.id);
                     const shareDataLabel =
                       m.tool_name === "share_data" &&

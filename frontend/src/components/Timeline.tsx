@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { MessageView, RoleView } from "../api/client";
+import { SHARE_DATA_MIN_CHARS } from "../lib/shareDataPolicy";
 
 interface Props {
   messages: MessageView[];
@@ -24,11 +25,6 @@ interface TimelineEntry {
   body: string;
   tone: string;
 }
-
-// Lower bound for ``share_data`` body length (in chars, post-label) to be
-// pin-worthy. Short data shares (a single line of telemetry) would clutter
-// the rail; only substantial dumps — log tables, IOC lists — get pinned.
-const SHARE_DATA_MIN_CHARS = 300;
 
 // Beat detector: matches the AI naming a phase / beat / stage in a broadcast.
 // Examples it should catch:
