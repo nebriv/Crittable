@@ -1,8 +1,8 @@
 """Pure-function tests for the turn validator.
 
 The validator is intentionally I/O-free; these tests cover its
-behaviour at the unit level without spinning a TestClient. End-to-end
-behaviour (recovery LLM calls actually firing) is covered in
+behavior at the unit level without spinning a TestClient. End-to-end
+behavior (recovery LLM calls actually firing) is covered in
 ``test_e2e_session.py``.
 """
 

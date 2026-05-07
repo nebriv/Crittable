@@ -127,7 +127,7 @@ class ToolDispatcher:
         self._max_critical = max_critical_injects_per_5_turns
         # Phase A chat-declutter (docs/plans/chat-decluttering.md §6.8).
         # When False, ``declare_workstreams`` is rejected at dispatch
-        # (defence in depth — the tool is also absent from the
+        # (defense in depth — the tool is also absent from the
         # ``setup_tools_for`` payload, so the model shouldn't be able
         # to emit the call in the first place) and ``address_role``'s
         # ``workstream_id`` is dropped to ``None`` instead of being
@@ -480,7 +480,7 @@ class ToolDispatcher:
         # like the other three. Listed here as well so the SETUP /
         # non-SETUP gates treat it consistently regardless of the
         # ``workstreams_enabled`` flag (which gates *exposure*, not
-        # *handling* — defence in depth if a misconfigured extension
+        # *handling* — defense in depth if a misconfigured extension
         # somehow surfaces the name).
         _SETUP_ONLY_TOOLS = {
             "ask_setup_question",
@@ -995,7 +995,7 @@ class ToolDispatcher:
 
         # Direct invocation of an extension tool name — Claude *should* go via
         # ``use_extension_tool``, but if it inlines the extension we still
-        # honour it.
+        # honor it.
         if name in self._registry.tools:
             try:
                 return self._extensions.invoke(
@@ -1201,7 +1201,7 @@ def _handle_declare_workstreams(
     ``{"workstreams": [{"id": "...", "label": "...",
     "lead_role_id": "..."}]}``. We:
 
-    * Reject the call cleanly if the feature flag is off (defence in
+    * Reject the call cleanly if the feature flag is off (defense in
       depth — the tool also isn't exposed in that case).
     * Validate each entry through the ``Workstream`` Pydantic model
       (id regex, length caps, etc).
@@ -1290,7 +1290,7 @@ def _handle_declare_workstreams(
 
 
 def _validate_plan_completeness(plan: ScenarioPlan) -> None:
-    """Defence-in-depth check that the plan structurally drives an
+    """Defense-in-depth check that the plan structurally drives an
     exercise. Pydantic ``min_length=1`` on the model fields is the
     primary gate; this catches the case where someone bypassed the
     model (e.g. constructed a ``ScenarioPlan`` with ``model_construct``
@@ -1440,7 +1440,7 @@ def _normalize_plan(args: dict[str, Any]) -> dict[str, Any]:
     # ``narrative_arc``, ``key_objectives``, ``injects`` are NOT
     # defaulted here — see the docstring. Pydantic ``min_length=1`` on
     # the model rejects empty arrays, and ``_validate_plan_completeness``
-    # is a defence-in-depth backstop.
+    # is a defense-in-depth backstop.
     _ = ScenarioBeat
     _ = ScenarioInject
     return plan

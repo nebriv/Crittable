@@ -311,7 +311,7 @@ async def test_event_only_injects_plan_does_not_invent_critical(
         "(see `docs/turn-lifecycle.md` § strict-retry).\n\n"
         "Marked xfail (non-strict) so an XPASS is informative if a "
         "future prompt edit or model upgrade fixes the first-pass "
-        "behaviour. Tracked alongside the existing "
+        "behavior. Tracked alongside the existing "
         "`test_workstreams_setup_routing.py::test_multi_track_setup_"
         "fires_declare_workstreams` xfail. **Open follow-up:** a "
         "turn-driver-routed variant of this test (calling through the "

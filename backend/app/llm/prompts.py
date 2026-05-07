@@ -498,7 +498,7 @@ _AAR_SYSTEM = (
     "in terms of the exercise's stated success criteria.\n\n"
     "Scoring rubric (1–5 across decision_quality / communication / speed):\n"
     "  - 1 = critically off (wrong or absent action with material consequence)\n"
-    "  - 2 = below bar (recognised the issue but slow, partial, or unclear)\n"
+    "  - 2 = below bar (recognized the issue but slow, partial, or unclear)\n"
     "  - 3 = at bar (timely, correct enough, communicated)\n"
     "  - 4 = above bar (notably crisp; raised the room's quality)\n"
     "  - 5 = exemplary (textbook, would teach this turn to peers)\n"

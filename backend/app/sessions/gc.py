@@ -11,7 +11,7 @@ Background reaper that evicts ``ENDED`` sessions whose retention window
   than the misleading 404 the missing-key path would otherwise produce.
 
 The reaper itself is a single ``asyncio.Task`` owned by the FastAPI
-lifespan; cancelling it on shutdown is the only stop signal it needs.
+lifespan; canceling it on shutdown is the only stop signal it needs.
 """
 
 from __future__ import annotations

@@ -211,7 +211,7 @@ describe("RolesPanel — issue #82 (no on-screen tokens)", () => {
     );
   });
 
-  it("renders tri-state status dot per role: blue (active), yellow (joined+idle), grey (not joined)", () => {
+  it("renders tri-state status dot per role: blue (active), yellow (joined+idle), gray (not joined)", () => {
     const roles: RoleView[] = [
       {
         id: "role-creator",
@@ -260,7 +260,7 @@ describe("RolesPanel — issue #82 (no on-screen tokens)", () => {
     );
 
     // Title attribute carries the human-readable status; it's the
-    // most stable selector since the colour class lives on the dot
+    // most stable selector since the color class lives on the dot
     // span sibling and Testing Library doesn't expose accessible
     // names for ``aria-hidden`` elements.
     expect(screen.getAllByTitle("Active").length).toBe(2); // creator + active
@@ -274,7 +274,7 @@ describe("RolesPanel — issue #82 (no on-screen tokens)", () => {
 
     // The per-role lowercase "not joined" caption that appeared
     // inline with the role name pre-redesign is now gone — the
-    // colour-coded dot already conveys it. We do still emit the
+    // color-coded dot already conveys it. We do still emit the
     // capital-N "Not joined" string into a screen-reader-only span
     // so AT users get the same signal, so the assertion is
     // case-sensitive on the visible-style lowercase form.

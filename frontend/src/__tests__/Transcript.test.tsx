@@ -22,7 +22,7 @@ describe("Transcript", () => {
     ).toBeInTheDocument();
   });
 
-  it("renders the labelled status when aiStatusLabel is provided", () => {
+  it("renders the labeled status when aiStatusLabel is provided", () => {
     // Issue #63: the operator must be able to tell "thinking" from
     // "stuck" during the play-tier strict-retry loop. The label is
     // appended to the indicator so a recovery pass shows up as

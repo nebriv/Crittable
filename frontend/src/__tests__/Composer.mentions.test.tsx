@@ -51,7 +51,7 @@ function setup(opts: { roster?: MentionRosterEntry[] } = {}) {
 function type(textarea: HTMLTextAreaElement, value: string) {
   fireEvent.change(textarea, { target: { value } });
   // After React commits the new value the caret needs to move to
-  // the end so a subsequent ``@`` keystroke is recognised as a
+  // the end so a subsequent ``@`` keystroke is recognized as a
   // mention trigger. The next ``type()`` call will fire change
   // again and onChange reads ``e.target.selectionStart`` from the
   // actual DOM, so this set-and-forget is enough.

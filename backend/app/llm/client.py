@@ -353,7 +353,7 @@ class LLMClient:
         ``tool_choice`` maps directly to Anthropic's parameter — pass
         ``{"type": "any"}`` to force the model to emit at least one tool
         call (used by the strict-retry path), or omit it for the default
-        ``"auto"`` behaviour.
+        ``"auto"`` behavior.
 
         ``max_tokens`` defaults to the per-tier value resolved from
         ``settings.max_tokens_for(tier)``; an explicit caller value

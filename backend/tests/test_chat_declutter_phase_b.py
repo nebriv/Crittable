@@ -306,7 +306,7 @@ class TestInjectCriticalEventWorkstreamDispatch:
     """Workstream-id field tests on ``inject_critical_event`` always
     pair the inject with a same-batch ``broadcast`` so issue #151 fix
     A doesn't reject the call as an unpaired chain. The pairing
-    behaviour itself is exercised in ``test_dispatch_tools.py``; here
+    behavior itself is exercised in ``test_dispatch_tools.py``; here
     we want the inject to land so we can assert on the message's
     workstream_id."""
 
@@ -384,7 +384,7 @@ class TestInjectCriticalEventWorkstreamDispatch:
 
     @pytest.mark.asyncio
     async def test_flag_off_silently_drops_workstream_id(self) -> None:
-        # Defence in depth — an upgraded model emitting the field
+        # Defense in depth — an upgraded model emitting the field
         # against a flag-off backend MUST NOT error the inject.
         dispatcher = _make_dispatcher(workstreams_enabled=False)
         session = _build_play_session()

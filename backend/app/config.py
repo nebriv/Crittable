@@ -218,7 +218,7 @@ class Settings(BaseSettings):
     # (``broadcast`` / ``address_role``) on every yielding play turn,
     # spawning a recovery LLM call narrowed to ``broadcast`` if missing.
     # Set False to revert to the pre-validator "yield-only" semantics —
-    # an emergency kill-switch if the new behaviour regresses in
+    # an emergency kill-switch if the new behavior regresses in
     # production. Lifting this flag does NOT disable the briefing-turn
     # drive guard or the strict-yield path; those run regardless.
     llm_recovery_drive_required: bool = Field(
@@ -254,7 +254,7 @@ class Settings(BaseSettings):
     # Wave 1 (issue #134) security review H2: cap how many submissions a
     # single role can post on a single turn. ``can_submit`` was relaxed to
     # support discussion follow-ups (multiple discuss-intent messages
-    # before signalling ready), which removed the implicit one-and-done
+    # before signaling ready), which removed the implicit one-and-done
     # backstop. This cap is the new ceiling — defense against a buggy
     # client looping ``submit_response`` or a griefing player flooding
     # the transcript. The existing 30-second body-dedupe still applies
@@ -384,7 +384,7 @@ class Settings(BaseSettings):
 
         A non-empty operator override is returned as-is (still
         ``Path.resolve()``-d at use time by the loader so symlink
-        defences fire).
+        defenses fire).
         """
 
         from pathlib import Path

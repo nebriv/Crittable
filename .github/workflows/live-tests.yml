@@ -3,7 +3,7 @@ name: Live tests
 # Two-tier CI per issue #74. The free unit suite (``ci.yml``) runs on
 # every push and PR; this workflow runs the live-API tests in
 # ``backend/tests/live/`` only when there's a real chance a model-
-# behaviour regression slipped in.
+# behavior regression slipped in.
 #
 # Triggers
 # --------
@@ -144,7 +144,7 @@ jobs:
       - name: Run live-API suite (with dollar cap)
         # ``ANTHROPIC_API_KEY`` is the standard SDK env var; pytest
         # picks it up via ``Settings.require_anthropic_key()`` exactly
-        # as production does. ``LIVE_TEST_COST_CAP_USD`` is honoured
+        # as production does. ``LIVE_TEST_COST_CAP_USD`` is honored
         # by ``backend/tests/live/cost_cap.py``.
         #
         # ``--maxfail=5`` bails after 5 failures — past that we're

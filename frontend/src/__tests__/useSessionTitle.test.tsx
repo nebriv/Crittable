@@ -157,7 +157,7 @@ describe("useSessionTitle (hook integration)", () => {
 // ``pending``. Test the helper directly + integration through the hook.
 
 function installFaviconLink(initialHref: string): HTMLLinkElement {
-  // jsdom doesn't honour index.html — every test installs its own
+  // jsdom doesn't honor index.html — every test installs its own
   // fake link so the helper has something to query.
   const existing = document.querySelector<HTMLLinkElement>(
     'link[rel="icon"][type="image/svg+xml"]',

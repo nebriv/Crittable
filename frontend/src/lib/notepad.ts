@@ -125,7 +125,7 @@ export async function pinToNotepad(
 
 /**
  * Mirror of ``backend/app/sessions/notepad.py::sanitize_pin_text``. The
- * server runs this on every ``/notepad/pin`` POST as defence in depth,
+ * server runs this on every ``/notepad/pin`` POST as defense in depth,
  * but the editor inserts the snippet locally (via the
  * ``crittable:notepad-pin`` window event) and then pushes its full
  * markdown snapshot back to the server — so without client-side

@@ -12,7 +12,7 @@ the failure mode is:
 
 These tests lock the contract in. There used to be a ``test_mode``
 toggle on ``configure_logging`` (driven by ``Settings.test_mode``);
-the unified config we ship today applies the test-friendly behaviour
+the unified config we ship today applies the test-friendly behavior
 unconditionally so tests don't need a flag to opt in.
 """
 

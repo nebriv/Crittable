@@ -615,7 +615,7 @@ def test_ws_tab_focus_event_emits_presence_with_focused_field(
     frame whose ``focused`` field reflects the role-level aggregate.
     The frame is broadcast to all session connections, so the sender
     sees its own update arrive too — that's the cheapest way to assert
-    server behaviour without juggling nested ``websocket_connect``
+    server behavior without juggling nested ``websocket_connect``
     contexts (which serialize on TestClient's portal thread).
 
     We don't drain initial frames — that would risk blocking on an
@@ -959,7 +959,7 @@ def test_strict_retry_recovers_when_ai_skips_yield(
     the tool list to {set_active_roles, end_session} and forcing
     ``tool_choice={"type": "any"}``.
 
-    Pre-fix behaviour observed in production:
+    Pre-fix behavior observed in production:
       Turn 1 attempt 1: AI emits broadcast only → no yield.
       Turn 1 attempt 2 (strict retry): AI emits broadcast again → no yield.
       → Turn marked errored. Two near-duplicate broadcasts in transcript.
@@ -1441,7 +1441,7 @@ def test_drive_required_on_mid_exercise_yield(client: TestClient) -> None:
     """Mid-exercise turn (state != BRIEFING) where the AI yields with
     ONLY ``inject_event`` — no broadcast. The validator must spawn a
     drive recovery LLM call and the recovered broadcast must land in
-    the chat. This is the core behaviour change from the validator
+    the chat. This is the core behavior change from the validator
     refactor: the briefing-only guard was extended across the whole
     exercise."""
 
@@ -1549,7 +1549,7 @@ def test_drive_required_kill_switch_drops_drive_from_contract() -> None:
     required set so a yield-only turn validates as ok. Tested at the
     contract layer; the e2e wiring is exercised in
     ``test_compound_violation_runs_drive_then_yield_sequentially``
-    which asserts the on-by-default behaviour."""
+    which asserts the on-by-default behavior."""
 
     from app.sessions.models import Session, SessionState
     from app.sessions.slots import Slot
@@ -1829,7 +1829,7 @@ def test_compound_violation_runs_drive_then_yield_sequentially(client: TestClien
 
 
 def test_finalize_setup_rejects_empty_arrays(client: TestClient) -> None:
-    """Defence-in-depth: ``finalize_setup`` with empty narrative_arc /
+    """Defense-in-depth: ``finalize_setup`` with empty narrative_arc /
     key_objectives / injects raises a Pydantic ``ValidationError`` at
     the model boundary, surfaced via the dispatcher as
     ``is_error=True`` on the next tool_result. The setup loop in
@@ -1903,7 +1903,7 @@ def test_finalize_setup_rejects_empty_arrays(client: TestClient) -> None:
 def test_scenario_plan_model_rejects_empty_arrays() -> None:
     """The Pydantic ``ScenarioPlan`` itself rejects empty arrays. This
     is the foundational invariant that downstream gates rely on — if
-    this check loosens, the whole defence-in-depth chain breaks."""
+    this check loosens, the whole defense-in-depth chain breaks."""
 
     import pytest
     from pydantic import ValidationError
@@ -2919,7 +2919,7 @@ def test_setup_dedupe_rejects_repeat_of_unanswered_question(client: TestClient) 
     ``tool_use_rejected`` audit event so the operator can see the hint.
 
     Tests the dispatcher directly to avoid fighting the setup loop's
-    retry-on-no-yield behaviour."""
+    retry-on-no-yield behavior."""
 
     import asyncio
 
@@ -3568,7 +3568,7 @@ def test_active_role_can_post_followup_after_submitting(
     client: TestClient,
 ) -> None:
     """Issue #78 + Wave 1 (issue #134): an active role on an awaiting
-    turn may post any number of follow-ups before signalling ready.
+    turn may post any number of follow-ups before signaling ready.
     Pre-Wave-1 the second submit was treated as an out-of-turn
     interjection; under the ready-quorum model, every submission from
     an active role on an awaiting turn is a turn submission, with
@@ -4206,7 +4206,7 @@ def test_strict_retry_feeds_dispatcher_rejection_back_to_model(client: TestClien
 def test_strict_retry_max_two_runs_three_attempts(monkeypatch) -> None:
     """``LLM_STRICT_RETRY_MAX=2`` should run 3 play-tier attempts (1
     non-strict + 2 strict) before marking the turn errored. Locks the
-    multi-pass strict-retry behaviour the prompt-expert review flagged
+    multi-pass strict-retry behavior the prompt-expert review flagged
     as untested."""
 
     from app.config import reset_settings_cache

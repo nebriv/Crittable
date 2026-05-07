@@ -11,7 +11,7 @@ Three load-bearing pieces of the contract are pinned here:
 1. **Column shape.** The seated table is now a 5-column markdown table
    (was 4). Every seated role gets one of three enum values:
    ``joined_focused``, ``joined_away``, ``not_joined``.
-2. **Default behaviour.** When the caller passes no presence sets
+2. **Default behavior.** When the caller passes no presence sets
    (e.g. unit tests built before this signal existed), the prompt
    labels every seat ``joined_focused`` AND prepends a "presence
    unknown" hint so the model doesn't silently treat the absent
@@ -24,7 +24,7 @@ Three load-bearing pieces of the contract are pinned here:
 
 Failure modes the tests catch:
 - A future refactor drops the column entirely → every model regresses
-  to "ask the empty seat" behaviour.
+  to "ask the empty seat" behavior.
 - Someone narrows the rules block to just ``address_role`` and forgets
   ``set_active_roles`` → turn wedges because the empty seat is yielded
   to and never submits.
@@ -176,7 +176,7 @@ def test_presence_directive_names_each_enum_value() -> None:
     """The model needs the enum values in the rules block too, not
     just the column. Otherwise it'd see ``not_joined`` once in the
     table and infer the rules from context — which is exactly the
-    pre-fix behaviour ("address them anyway, the column is just
+    pre-fix behavior ("address them anyway, the column is just
     decorative").
     """
 

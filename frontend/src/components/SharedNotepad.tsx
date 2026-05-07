@@ -62,11 +62,11 @@ interface Props {
   selfDisplayName: string;
 }
 
-/** Stable hashed colour for a role id, drawn from the brand palette so
- * role names + carets render in consistent colours across tabs. */
+/** Stable hashed color for a role id, drawn from the brand palette so
+ * role names + carets render in consistent colors across tabs. */
 function roleColor(roleId: string): string {
   // 5 deliberate ink-tinted accents — brand-safe; no neon. Hash the
-  // role id so the same role always renders the same colour.
+  // role id so the same role always renders the same color.
   const palette = [
     "#7CC4FF", // signal
     "#E59B00", // warn
@@ -147,7 +147,7 @@ export function SharedNotepad({
         TaskItem.configure({ nested: true }),
         Collaboration.configure({ fragment: xmlFragment }),
         // Live cursor presence (issue #98 follow-up): renders other
-        // editors' carets with their role colour + display name. The
+        // editors' carets with their role color + display name. The
         // y-protocols Awareness object is bridged to the existing WS
         // channel via WsYjsProvider — no separate y-websocket server.
         CollaborationCaret.configure({
@@ -381,7 +381,7 @@ export function SharedNotepad({
       >
         {/* Visually-hidden heading — the parent ``CollapsibleRailPanel``
             renders the visible "TEAM NOTEPAD" chrome, but screen readers
-            still benefit from the section being labelled inside the
+            still benefit from the section being labeled inside the
             accordion body (matches Timeline's pattern). */}
         <h3 id="notepad-heading" className="sr-only">
           Team notepad

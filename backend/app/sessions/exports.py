@@ -14,10 +14,10 @@ Two complementary surfaces, both creator-only and both AAR-independent:
   raw transcript dump.
 
 These are NOT the AAR. The AAR pipeline stays workstream-blind per
-plan §6.9; these exports are the live-exercise companion artefacts
+plan §6.9; these exports are the live-exercise companion artifacts
 the iter-4 mockup added to the creator's management column.
 
-Visibility rules (defence in depth — the route also enforces creator-
+Visibility rules (defense in depth — the route also enforces creator-
 only): when rendering for a non-creator caller we still respect each
 message's ``visibility`` list. Both call sites currently pass the
 creator role id, so the visibility filter is a cheap belt-and-braces
@@ -128,7 +128,7 @@ def render_timeline_markdown(session: Session, *, viewer_role_id: str) -> str:
          label + role + body preview.
 
     Visibility-respecting (only includes messages the viewer would have
-    seen — for the creator that's everything; defence in depth against
+    seen — for the creator that's everything; defense in depth against
     a future non-creator caller).
     """
 

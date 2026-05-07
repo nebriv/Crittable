@@ -13,7 +13,7 @@ import type { ScenarioPlan, SessionSnapshot } from "../api/client";
  *
  * These tests guard the two structural branches (no-plan, with-plan)
  * and the load-bearing copy / aria-label / placeholder details. They
- * don't exercise sticky-positioning behaviour (jsdom has no layout)
+ * don't exercise sticky-positioning behavior (jsdom has no layout)
  * — that piece is covered by manual smoke at xl viewports per the
  * CLAUDE.md "for UI changes, drive the dev server in a browser" rule.
  */
@@ -93,7 +93,7 @@ describe("SetupView — no plan branch", () => {
 
   it("uses neutral helper copy that doesn't reference the absent panel", () => {
     render(<SetupView snapshot={fakeSnapshot(null)} {...baseProps()} />);
-    // Pre-plan copy: the helper paragraph emphasises the LOOKS READY
+    // Pre-plan copy: the helper paragraph emphasizes the LOOKS READY
     // action via an <em> tag (matching the conditional branch in
     // SetupView). This selector pins it to the paragraph copy, not
     // the button label, which would also match the regex.
@@ -114,7 +114,7 @@ describe("SetupView — no plan branch", () => {
 });
 
 describe("SetupView — with-plan branch", () => {
-  it("renders the plan inside an aside labelled 'Proposed plan'", () => {
+  it("renders the plan inside an aside labeled 'Proposed plan'", () => {
     render(<SetupView snapshot={fakeSnapshot(fakePlan())} {...baseProps()} />);
     const aside = screen.getByRole("complementary", { name: /Proposed plan/i });
     expect(aside).toBeInTheDocument();

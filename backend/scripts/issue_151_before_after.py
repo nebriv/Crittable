@@ -462,7 +462,7 @@ async def probe_2_dispatch_layer(*, verbose: bool) -> Probe2Result:
         carries ``is_error=True`` with the chain-shape hint; the
         message does NOT land; ``critical_inject_fired`` is False.
 
-    No live API call — pure dispatcher behaviour.
+    No live API call — pure dispatcher behavior.
     """
 
     _progress("\n[probe 2/3] dispatch-layer rejection (fix A) — no live API call")
@@ -565,9 +565,9 @@ async def _simulate_pre_fix_dispatch(
 ) -> Any:
     """Run a single tool through the dispatcher with the fix-A pairing
     scan effectively bypassed. Calls ``_dispatch_one`` directly with
-    ``inject_pairing_violation=False``, which mirrors the behaviour
+    ``inject_pairing_violation=False``, which mirrors the behavior
     before fix A landed (the public ``dispatch()`` method computes the
-    flag, but ``_dispatch_one`` honours whatever value its caller
+    flag, but ``_dispatch_one`` honors whatever value its caller
     passes — defaulting to False for backwards-compatibility with
     callers that haven't been updated yet).
     """
@@ -576,7 +576,7 @@ async def _simulate_pre_fix_dispatch(
 
     outcome = DispatchOutcome()
     # Capture the args (fix B already lives in DispatchOutcome — mirror
-    # the public dispatch()'s behaviour so the comparison is apples-to-
+    # the public dispatch()'s behavior so the comparison is apples-to-
     # apples on Probe 3's grounding payload). The pre-fix path also
     # would not have populated this field (the field didn't exist), but
     # because Probe 3 needs it as a function argument (not a dispatcher
@@ -612,7 +612,7 @@ class RecoveryRunResult:
     # containment broadcasts hit "comms" / "regulator" / "statement"
     # without ever announcing the inject. Leading with the inject is
     # what tells players "the new event matters more than continuing
-    # the prior beat" — the production behaviour Fix B exists to
+    # the prior beat" — the production behavior Fix B exists to
     # enforce.
     leads_with_inject: bool
 
@@ -714,7 +714,7 @@ async def probe_3_recovery_grounding(
         )
 
     # PR #170 Copilot review Comment 5: vary BOTH state AND directive
-    # so the comparison actually models legacy-vs-current behaviour.
+    # so the comparison actually models legacy-vs-current behavior.
     # The pre-fix branch builds a session whose transcript carries
     # the CRITICAL_INJECT bubble (the inject landed pre-Fix-A) and
     # splices a SUCCESS tool_result; the post-fix branch leaves the
@@ -928,7 +928,7 @@ def _leads_with_inject(text: str) -> bool:
     containment broadcasts hit grounding keywords later in the body
     ("we'll have Comms draft a statement once containment lands…")
     without ever announcing the inject as the lead. Leading with the
-    inject is the production behaviour the directive aims to
+    inject is the production behavior the directive aims to
     enforce."""
 
     head = text[:100].lower().lstrip()

@@ -168,7 +168,7 @@ class WorkstreamOverrideBody(BaseModel):
     in ``manager.override_message_workstream``: creator OR the
     message-of-record's role only.
 
-    Security review LOW #2: ``""`` is normalised to ``None`` at the
+    Security review LOW #2: ``""`` is normalized to ``None`` at the
     boundary so a JS caller that defaults to an empty string for
     "unset" doesn't trip the "not declared" branch and surface a
     confusing 400 to the operator.
@@ -367,6 +367,19 @@ def register_api_routes(app: FastAPI) -> None:
         seen_labels: set[str] = {creator_label_lower}
         invitee_role_ids: list[str] = []
         failed_invitees: list[dict[str, str]] = []
+        # ``add_role`` re-verifies the acting creator inside its session lock;
+        # the bulk-invitee path runs as the just-minted creator, whose
+        # token_version is whatever ``create_session`` set on the role.
+        creator_role = (
+            session.role_by_id(session.creator_role_id)
+            if session.creator_role_id is not None
+            else None
+        )
+        if creator_role is None:
+            raise HTTPException(
+                status.HTTP_500_INTERNAL_SERVER_ERROR,
+                "creator role missing after session create",
+            )
         for spec in body.invitee_roles:
             label_clean = sanitize_role_text(spec.label)
             if label_clean is None:
@@ -388,6 +401,8 @@ def register_api_routes(app: FastAPI) -> None:
                     label=label_clean,
                     display_name=spec.display_name,
                     kind="player",
+                    acting_role_id=creator_role.id,
+                    acting_token_version=creator_role.token_version,
                 )
                 invitee_role_ids.append(role.id)
             except (RuntimeError, ValueError, IllegalTransitionError) as exc:
@@ -470,6 +485,8 @@ def register_api_routes(app: FastAPI) -> None:
                 label=body.label,
                 display_name=body.display_name,
                 kind=body.kind,
+                acting_role_id=token["role_id"],
+                acting_token_version=int(token.get("v", 0)),
             )
         except AuthorizationError as exc:
             raise HTTPException(status.HTTP_403_FORBIDDEN, str(exc)) from exc
@@ -794,7 +811,12 @@ def register_api_routes(app: FastAPI) -> None:
             require_creator(token)
             try:
                 body = await request.json()
-            except Exception:
+            except Exception as exc:
+                get_logger("api").warning(
+                    "proxy_respond_json_parse_failed",
+                    session_id=session_id,
+                    error=str(exc),
+                )
                 body = {}
             if not isinstance(body, dict):
                 raise HTTPException(status.HTTP_400_BAD_REQUEST, "json body required")
@@ -956,8 +978,12 @@ def register_api_routes(app: FastAPI) -> None:
                 body = await request.json()
                 if isinstance(body, dict) and isinstance(body.get("content"), str):
                     content = body["content"][:500]  # cap length
-            except Exception:
-                pass
+            except Exception as exc:
+                get_logger("api").warning(
+                    "proxy_submit_json_parse_failed",
+                    session_id=session_id,
+                    error=str(exc),
+                )
             filled = await manager.proxy_submit_pending(
                 session_id=session_id,
                 by_role_id=token["role_id"],
@@ -1626,7 +1652,7 @@ def register_api_routes(app: FastAPI) -> None:
         # Tombstone check runs before token binding so an evicted session id
         # never falls through to the generic SessionNotFoundError → 404 path.
         # Token validation isn't possible after eviction (the role data is
-        # gone), but signalling 410 reveals only what a participant who
+        # gone), but signaling 410 reveals only what a participant who
         # already had the link could observe by polling normally.
         gc = getattr(request.app.state, "session_gc", None)
         if gc is not None and gc.is_evicted(session_id):
@@ -1852,7 +1878,7 @@ def register_api_routes(app: FastAPI) -> None:
     # --------------------- chat-declutter operator-facing markdown exports
     # These two surfaces are the live-exercise companion to the AAR. The
     # AAR pipeline stays workstream-blind per plan §6.9; these are the
-    # workstream-aware artefacts the iter-4 mockup added to the creator's
+    # workstream-aware artifacts the iter-4 mockup added to the creator's
     # management column. Creator-only — they include every visible
     # message regardless of per-role visibility lists, which would leak
     # sidebar conversations to a non-creator caller.

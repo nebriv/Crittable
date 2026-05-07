@@ -54,7 +54,7 @@ ANTHROPIC_MODEL_PLAY=claude-sonnet-4-6
 ANTHROPIC_MODEL_AAR=claude-opus-4-7
 ```
 
-LiteLLM normalises tool-use blocks across providers so Anthropic-style
+LiteLLM normalizes tool-use blocks across providers so Anthropic-style
 tool calls keep working when the underlying model is, say, OpenAI. The
 guardrail tier is the easiest to test against an alternate provider —
 short prompt, deterministic output.
@@ -132,7 +132,7 @@ Caveats:
   re-tokenised every turn — cost rises linearly with turn count.
   Consider lowering `MAX_TURNS_PER_SESSION`.
 * The strict-retry path expects `tool_choice` enforcement; not every
-  model implementation honours it. If you see force-advance loops on a
+  model implementation honors it. If you see force-advance loops on a
   local model, that's almost always why.
 
 ## Verifying a swap

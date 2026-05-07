@@ -89,9 +89,14 @@ async def manager_with_session() -> Any:
         )
         sid = session.id
         creator_id = session.roles[0].id
+        creator_role = session.roles[0]
         # Add a second role.
         soc_role, _ = await manager.add_role(
-            session_id=sid, label="SOC", display_name="Bo"
+            session_id=sid,
+            label="SOC",
+            display_name="Bo",
+            acting_role_id=creator_id,
+            acting_token_version=creator_role.token_version,
         )
         soc_id = soc_role.id
         yield {
@@ -381,7 +386,7 @@ async def test_notepad_update_oversized_via_service_error(
     manager_with_session: dict[str, Any],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Defence-in-depth: the handler also catches NotepadOversizedError
+    """Defense-in-depth: the handler also catches NotepadOversizedError
     from the service (in case the cap is checked there before our
     handler-level cap)."""
 

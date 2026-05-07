@@ -72,18 +72,18 @@ export function ScenarioPanel({
   const [scenariosPath, setScenariosPath] = useState<string | null>(null);
 
   useEffect(() => {
-    let cancelled = false;
+    let canceled = false;
     (async () => {
       try {
         const body = await api.listScenarios();
-        if (!cancelled) {
+        if (!canceled) {
           setScenarios(body.scenarios);
           setDisabled(body.disabled);
           setScenariosPath(body.path ?? null);
           setLoading(false);
         }
       } catch (err) {
-        if (!cancelled) {
+        if (!canceled) {
           setError(err instanceof Error ? err.message : String(err));
           setLoading(false);
           console.warn("[scenarios] list failed", err);
@@ -91,7 +91,7 @@ export function ScenarioPanel({
       }
     })();
     return () => {
-      cancelled = true;
+      canceled = true;
     };
   }, []);
 

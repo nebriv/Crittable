@@ -139,7 +139,7 @@ async def test_recorder_captures_ai_messages_for_deterministic_replay(
 ) -> None:
     """Recording must capture every AI / system / critical_inject
     message so a deterministic replay can reproduce the exact transcript
-    that drove the original UI (highlights, colours, tool icons,
+    that drove the original UI (highlights, colors, tool icons,
     filtering all key off ``Message.kind`` + ``Message.tool_name``).
 
     Drive a scenario through the engine, record it, replay it

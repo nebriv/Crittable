@@ -1,6 +1,6 @@
 # Chat-declutter — design plan
 
-**Status:** **Delivered** (Phase A → iter-4 polish, 2026-05-03 → 2026-05-04). Kept as the design rationale; the live behaviour is reflected in `WORKSTREAMS_ENABLED` ([`configuration.md`](../configuration.md)), the `declare_workstreams` setup tool ([`backend/app/llm/tools.py`](../../backend/app/llm/tools.py)), and the transcript/composer chrome in [`frontend/src/`](../../frontend/src/).
+**Status:** **Delivered** (Phase A → iter-4 polish, 2026-05-03 → 2026-05-04). Kept as the design rationale; the live behavior is reflected in `WORKSTREAMS_ENABLED` ([`configuration.md`](../configuration.md)), the `declare_workstreams` setup tool ([`backend/app/llm/tools.py`](../../backend/app/llm/tools.py)), and the transcript/composer chrome in [`frontend/src/`](../../frontend/src/).
 
 **Original status:** Draft · 2026-05-02 · feeds Phase 3 (milestone #3)
 **Owner:** unassigned

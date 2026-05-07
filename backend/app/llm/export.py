@@ -386,7 +386,7 @@ def _extract_report(
     (``aar_report`` storage, ``/export.md`` markdown render,
     ``/export.json`` API) reads the result of this function as
     ground truth and does no further coercion. Two classes of model
-    misbehaviour are corrected here so the rest of the system stays
+    misbehavior are corrected here so the rest of the system stays
     monkey-patch-free:
 
     1. **Schema-shape drift.** The tool schema declares

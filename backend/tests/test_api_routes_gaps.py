@@ -108,7 +108,7 @@ def test_retry_aar_rejects_unknown_session(client: TestClient) -> None:
     )
     # The token-binding step rejects mismatched session_id with 403
     # (token is bound to a different session). That's the existing
-    # behaviour we lock in here.
+    # behavior we lock in here.
     assert r.status_code in (403, 404)
 
 

@@ -20,7 +20,7 @@ from .models import (
 # adds the role to ``Turn.ready_role_ids`` and may flip the state to
 # ``AI_PROCESSING`` once the quorum is met; a "discuss" submission
 # leaves space for further team discussion (and removes the role from
-# the quorum if they had previously signalled ready).
+# the quorum if they had previously signaled ready).
 SubmissionIntent = Literal["ready", "discuss"]
 
 
@@ -59,7 +59,7 @@ def can_submit(turn: Turn, role_id: str) -> bool:
     Wave 1 (issue #134): we no longer cap submissions at one per role
     per turn. The ready-quorum gate replaces "submitted once" as the
     advance signal — a role can post multiple discussion messages
-    before signalling ``intent="ready"``, and all of them count as
+    before signaling ``intent="ready"``, and all of them count as
     turn submissions (each updates ``ready_role_ids`` based on the
     submission's intent). Non-active roles (or active roles on a
     non-awaiting turn) still land as out-of-turn interjections.
@@ -79,7 +79,7 @@ def all_submitted(turn: Turn) -> bool:
 
 
 def all_ready(turn: Turn) -> bool:
-    """Have *all* active roles signalled ``intent="ready"`` on their most
+    """Have *all* active roles signaled ``intent="ready"`` on their most
     recent submission this turn?
 
     This is the Wave-1 (issue #134) replacement for ``all_submitted`` as

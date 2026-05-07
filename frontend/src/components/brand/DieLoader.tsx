@@ -14,7 +14,7 @@ import type { CSSProperties } from "react";
  *      JoinIntro waiting room, AAR generation popup. ``size`` 96+,
  *      centered.
  *
- *   2. **Named in-chat wait state** — a labelled banner inside an
+ *   2. **Named in-chat wait state** — a labeled banner inside an
  *      otherwise interactive surface (chat group, sidebar) that
  *      claims attention for a specific, ephemeral wait. ``size`` 64,
  *      bordered + tinted background. The banner replaces (rather

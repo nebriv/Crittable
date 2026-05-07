@@ -203,7 +203,7 @@ def test_walk_back_ready_with_discuss(client: TestClient) -> None:
 
 
 def test_force_advance_bypasses_ready_quorum(client: TestClient) -> None:
-    """Force-advance still advances even when nobody has signalled
+    """Force-advance still advances even when nobody has signaled
     ready. The escape hatch must keep working."""
 
     seats = _seat_session(client, role_count=3)
@@ -337,7 +337,7 @@ def test_interjection_intent_is_none(client: TestClient) -> None:
 
 def test_active_role_can_submit_multiple_messages(client: TestClient) -> None:
     """Wave 1 changes ``can_submit``: an active role on an awaiting
-    turn can post multiple turn-submissions before signalling ready.
+    turn can post multiple turn-submissions before signaling ready.
     Each one updates ``ready_role_ids`` based on its intent (latest
     intent wins for that role)."""
 
