@@ -1289,10 +1289,10 @@ export function Facilitator() {
   // ``isCurrentlyReady`` so the creator can walk it back if needed.
   const isMyTurn = iAmActive && !iAmReady;
   // Lifted from the composer IIFE so the "Awaiting your response"
-  // banner can include the role-label suffix that ``Play.tsx:1388``
-  // ships. Without the suffix the creator-as-impersonator can't tell
-  // which of their hats the AI is waiting on (UI/UX + User Agent
-  // review HIGH).
+  // banner can include the role-label suffix the player-side
+  // awaiting-response banner in ``Play.tsx`` ships. Without the
+  // suffix the creator-as-impersonator can't tell which of their
+  // hats the AI is waiting on (UI/UX + User Agent review HIGH).
   const selfRole = snapshot.roles.find((r) => r.id === state.creatorRoleId);
   const playerCount = snapshot.roles.filter((r) => r.kind === "player").length;
 

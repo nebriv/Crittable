@@ -271,6 +271,15 @@ export function Composer({
     // we'd rather not rely on it for correctness.
     if (!enabled || isCurrentlyReady) return;
     const fallback = "Nothing to add.";
+    // Clear the rollback ref BEFORE forwarding the submit. The
+    // textarea was empty when the user clicked, so the recovery
+    // contract for this path is "leave it empty on rejection" — the
+    // user re-clicks the button to retry. Without this clear, an
+    // unrelated prior message left in ``lastAttemptedRef.current``
+    // (from a successful earlier ``submit()`` call) would be
+    // restored into the textarea on a Nothing-to-add rejection,
+    // which is worse than a no-op restore.
+    lastAttemptedRef.current = "";
     onSubmit(fallback, "ready", [], asRoleId || undefined);
     setText("");
     setMarks([]);
