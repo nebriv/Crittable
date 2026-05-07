@@ -1754,13 +1754,22 @@ export function JoinIntro({
     }
   }
 
-  // Hide the brief panel entirely when the AI-generated plan hasn't
-  // landed yet (early CONFIGURING). ``plan.title`` and
-  // ``plan.executive_summary`` are the only plan fields safe to show
-  // every participant — the rest stays creator-only.
-  const briefVisible = planTitle !== null || planSummary !== null;
-
+  // Render strategy for the SCENARIO BRIEF panel:
+  //   * brief data present → show title + summary
+  //   * brief absent + still pre-play → show "being prepared" placeholder
+  //     so the join-page doesn't read as "did I get the wrong link?"
+  //   * brief absent + ENDED → hide
+  // Truthy check (not ``!== null``) so empty strings — which Pydantic
+  // defaults ``executive_summary`` to and the model can emit — collapse
+  // the panel cleanly instead of rendering an empty SCENARIO BRIEF
+  // chrome. ``plan.title`` and ``plan.executive_summary`` are the only
+  // plan fields safe to show every participant; the rest stays
+  // creator-only.
+  const briefHasContent = Boolean(planTitle) || Boolean(planSummary);
   const sessionEnded = sessionState === "ENDED";
+  const briefPending = !briefHasContent && !sessionEnded;
+  const briefVisible = briefHasContent || briefPending;
+
   const isSpectator = roleKind === "spectator";
 
   // Snapshot-error branch: the snapshot fetch failed (network blip,
@@ -1860,19 +1869,36 @@ export function JoinIntro({
               : "Join the tabletop exercise"}
           </h1>
           {briefVisible ? (
-            <div className="mt-2 rounded-r-2 border-l-2 border-signal bg-ink-800 p-3 text-sm leading-relaxed text-ink-100">
-              <span className="block mono text-[10px] font-bold uppercase tracking-[0.20em] text-signal mb-1">
+            <section
+              aria-labelledby="brief-heading"
+              className="mt-2 rounded-r-2 border-l-2 border-signal bg-ink-800 p-3 leading-relaxed"
+            >
+              <h2
+                id="brief-heading"
+                className="mono text-[10px] font-bold uppercase tracking-[0.20em] text-signal mb-1"
+              >
                 SCENARIO BRIEF
-              </span>
+              </h2>
+              {briefPending ? (
+                <p className="text-[13px] italic text-ink-300">
+                  The facilitator is still preparing the scenario brief.
+                </p>
+              ) : null}
               {planTitle ? (
-                <p className="font-semibold text-ink-050">{planTitle}</p>
+                <p className="text-base font-semibold text-ink-050">{planTitle}</p>
               ) : null}
               {planSummary ? (
-                <p className={planTitle ? "mt-1 text-ink-100" : "text-ink-100"}>
+                <p
+                  className={
+                    planTitle
+                      ? "mt-1 text-[13px] text-ink-200"
+                      : "text-[13px] text-ink-200"
+                  }
+                >
                   {planSummary}
                 </p>
               ) : null}
-            </div>
+            </section>
           ) : null}
         </header>
 
