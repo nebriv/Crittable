@@ -45,7 +45,6 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from ..logging_setup import get_logger
-from .turn_engine import SubmissionIntent
 
 if TYPE_CHECKING:
     from .manager import SessionManager
@@ -173,7 +172,6 @@ async def prepare_and_submit_player_response(
     session_id: str,
     role_id: str,
     content: str,
-    intent: SubmissionIntent = "ready",
     expected_token_version: int | None = None,
     mentions: list[str] | None = None,
 ) -> SubmissionOutcome:
@@ -184,13 +182,9 @@ async def prepare_and_submit_player_response(
     browser-tab submission would. See module docstring for what's
     NOT included.
 
-    ``intent`` (Wave 1, issue #134): "ready" signals the player is done
-    talking and the AI may advance once every active role has signaled
-    ready; "discuss" leaves the player in the turn so the team can
-    keep talking. Defaults to "ready" so legacy callers (test fixtures,
-    pre-Wave-1 scenarios) get the historical "submit-and-advance"
-    behavior. The WS handler must always pass an explicit value
-    parsed from the wire payload.
+    Submissions never advance the turn — ``manager.submit_response``
+    always returns ``False`` in the new model. To flip the ready
+    quorum, call ``manager.set_role_ready`` separately.
 
     ``mentions`` (Wave 2): structural mention targets from the
     composer. Each entry is either (a) a current ``role_id`` in the
@@ -258,7 +252,6 @@ async def prepare_and_submit_player_response(
         session_id=session_id,
         role_id=role_id,
         content=content,
-        intent=intent,
         expected_token_version=expected_token_version,
         mentions=cleaned_mentions,
     )

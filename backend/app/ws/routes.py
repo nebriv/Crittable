@@ -639,24 +639,6 @@ async def _client_pump(
                 )
 
                 content = str(payload.get("content", ""))
-                # Wave 1 (issue #134): per-submission intent gates the
-                # ready-quorum advance. Composer always sends one of
-                # ``ready`` / ``discuss``; the handler rejects anything
-                # else so a stale-client mismatch surfaces as a clean
-                # error frame rather than silently coercing to a wrong
-                # default.
-                intent_raw = payload.get("intent")
-                if intent_raw not in ("ready", "discuss"):
-                    await websocket.send_json(
-                        {
-                            "type": "error",
-                            "scope": "submit_response",
-                            "message": (
-                                "intent must be 'ready' or 'discuss'"
-                            ),
-                        }
-                    )
-                    continue
                 # Wave 2: the composer ships ``mentions`` as a structural
                 # list of mention targets (real ``role_id`` values + the
                 # literal ``"facilitator"`` token). The pipeline
@@ -693,7 +675,6 @@ async def _client_pump(
                         session_id=session_id,
                         role_id=role_id,
                         content=content,
-                        intent=intent_raw,
                         expected_token_version=token_version,
                         mentions=mentions_in,
                     )
@@ -736,14 +717,13 @@ async def _client_pump(
                         }
                     )
                     continue
-                if outcome.advanced:
-                    session = await manager.get_session(session_id)
-                    turn = session.current_turn
-                    if turn is not None:
-                        await TurnDriver(manager=manager).run_play_turn(
-                            session=session, turn=turn
-                        )
-                elif FACILITATOR_MENTION_TOKEN in outcome.mentions:
+                # Submissions never advance the turn — only ``set_ready``
+                # closes the quorum (handled in its own event branch
+                # below). The remaining post-submission side effect is
+                # the ``@facilitator`` interject mini-turn, which fires
+                # on the same outcome regardless of whether the role
+                # later marks ready.
+                if FACILITATOR_MENTION_TOKEN in outcome.mentions:
                     # Wave 2: the composer is the single source of
                     # facilitator-routing intent. ``@facilitator`` (and
                     # the client-side aliases ``@ai`` / ``@gm`` resolved
@@ -792,6 +772,66 @@ async def _client_pump(
                     await websocket.send_json(
                         {"type": "error", "scope": "force_advance", "message": str(exc)}
                     )
+            elif event_type == "set_ready":
+                # Decoupled-ready model: the composer no longer carries
+                # an ``intent`` field. Players (or the creator on behalf
+                # of an absent player) toggle ready via this event. The
+                # quorum closes when every active role has ``ready=True``
+                # in the snapshot — at which point we drive the next AI
+                # turn here, mirroring the old submit-and-advance path.
+                ready_raw = payload.get("ready")
+                client_seq_raw = payload.get("client_seq")
+                if not isinstance(ready_raw, bool) or not isinstance(
+                    client_seq_raw, int
+                ):
+                    await websocket.send_json(
+                        {
+                            "type": "error",
+                            "scope": "set_ready",
+                            "message": (
+                                "set_ready requires { ready: bool, "
+                                "client_seq: int }"
+                            ),
+                        }
+                    )
+                    continue
+                # Subject defaults to actor (player toggles own state).
+                # When the actor is the creator, an explicit
+                # ``subject_role_id`` may be supplied to impersonate
+                # another role's toggle (mirrors ``proxy_submit_as``).
+                subject_role_id = (
+                    str(payload.get("subject_role_id") or role_id)
+                )
+                outcome = await manager.set_role_ready(
+                    session_id=session_id,
+                    actor_role_id=role_id,
+                    subject_role_id=subject_role_id,
+                    ready=ready_raw,
+                    client_seq=client_seq_raw,
+                )
+                if not outcome.accepted:
+                    # Directed rejection frame — the actor's optimistic
+                    # UI reverts and announces the reason. Other clients
+                    # see no ``ready_changed`` so their state is
+                    # unaffected.
+                    await websocket.send_json(
+                        {
+                            "type": "set_ready_rejected",
+                            "scope": "set_ready",
+                            "reason": outcome.reason,
+                            "client_seq": outcome.client_seq,
+                        }
+                    )
+                    continue
+                # Quorum closed → drive the next AI turn. Mirrors the
+                # old submit-and-advance dispatch site.
+                if outcome.ready_to_advance:
+                    session = await manager.get_session(session_id)
+                    turn = session.current_turn
+                    if turn is not None:
+                        await TurnDriver(manager=manager).run_play_turn(
+                            session=session, turn=turn
+                        )
             elif event_type == "request_end_session":
                 try:
                     await manager.end_session(

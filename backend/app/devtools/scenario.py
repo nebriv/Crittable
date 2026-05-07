@@ -80,16 +80,14 @@ class PlayStep(BaseModel):
     role_label: str = Field(min_length=1)
     content: str = Field(min_length=1, max_length=4000)
     ts: str | None = None
-    # Wave 1 (issue #134): per-submission intent for the ready-quorum
-    # gate. Defaults to ``"ready"`` so legacy hand-authored scenarios
-    # (and recordings captured before the field was added) replay with
-    # the historical "submit-and-advance" semantics. Hand-authored
-    # scenarios that exercise discussion flows should set
-    # ``intent="discuss"`` on the early submissions and
-    # ``intent="ready"`` on the closing one. The runner threads this
-    # field through ``prepare_and_submit_player_response`` in both
-    # engine and deterministic modes.
-    intent: Literal["ready", "discuss"] = "ready"
+    # Whether this submission also signals the role ready on the same
+    # turn. ``True`` (default) preserves the legacy submit-and-advance
+    # cadence for hand-authored scenarios — the runner submits the
+    # message, then immediately fires ``set_ready{ready: True}`` on
+    # the role's behalf. ``False`` leaves the role un-ready (a pure
+    # discussion turn that doesn't close the quorum); the next step
+    # in the same turn carries ``ready_after=True`` to close it.
+    ready_after: bool = True
 
 
 class RecordedMessage(BaseModel):

@@ -144,15 +144,14 @@ class SessionRecorder:
                         role_label=label,
                         content=msg.body or "",
                         ts=msg.ts.isoformat() if msg.ts else None,
-                        # Wave 1 (issue #134): preserve per-submission
-                        # intent so deterministic replay reproduces the
-                        # ready-vs-discuss flow that drove the recording.
-                        # Pre-Wave-1 messages have ``intent=None`` (the
-                        # default in ``Message``); the recorder maps
-                        # those onto ``PlayStep``'s default of "ready"
-                        # so the legacy "submit-and-advance" semantics
-                        # round-trip without change.
-                        intent=msg.intent if msg.intent is not None else "ready",
+                        # In the decoupled-ready model the recorder
+                        # captures ``ready_after=True`` for every
+                        # submission so deterministic replay reproduces
+                        # the original turn cadence (submit + mark
+                        # ready). Recordings that exercise multi-message
+                        # discussion turns set ``ready_after=False`` on
+                        # all but the last submission of each turn.
+                        ready_after=True,
                     )
                 )
             elif msg.kind == MessageKind.PLAYER and msg.is_interjection:
