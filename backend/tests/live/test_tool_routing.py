@@ -192,11 +192,18 @@ async def test_briefing_does_not_address_or_yield_to_unjoined_seats(
     )
 
     # Hard-fail: yield includes the empty seat (turn would wedge —
-    # the empty seat never submits).
+    # the empty seat never submits). Issue #168 reshaped the yield
+    # input from ``role_ids: list[str]`` to ``role_groups:
+    # list[list[str]]``; flatten across groups for the membership
+    # check.
+    def _flatten_groups(input_blob: dict) -> list[str]:
+        groups = input_blob.get("role_groups") or []
+        return [rid for group in groups for rid in group]
+
     yielded_unjoined = [
         u for u in uses
         if u.name == "set_active_roles"
-        and "role-ic" in (u.input.get("role_ids") or [])
+        and "role-ic" in _flatten_groups(u.input)
     ]
     assert not yielded_unjoined, (
         "model yielded the turn to the unjoined Incident Commander "
@@ -207,14 +214,14 @@ async def test_briefing_does_not_address_or_yield_to_unjoined_seats(
     # Positive assertion (QA review HIGH#1): if the model emitted a
     # ``set_active_roles`` (the engine's recovery path will add one
     # if missing — we don't fail the test for a missing-yield first
-    # attempt since the validator handles it), its role_ids MUST be
-    # a subset of the joined seats. Without this the test could
+    # attempt since the validator handles it), its yielded ids MUST
+    # be a subset of the joined seats. Without this the test could
     # pass when the model addresses only CISO/SOC by coincidence
     # rather than because of the new rule.
     yields = [u for u in uses if u.name == "set_active_roles"]
     joined_seats = {"role-ciso", "role-soc"}
     for y in yields:
-        ids = set(y.input.get("role_ids") or [])
+        ids = set(_flatten_groups(y.input))
         assert ids <= joined_seats, (
             "set_active_roles yielded to a role outside the joined set "
             "(should only yield to role-ciso / role-soc since IC is "
@@ -365,10 +372,12 @@ async def test_yield_recovery_pinned_set_active_roles_works(
     assert names == ["set_active_roles"], (
         f"yield recovery must produce exactly one set_active_roles; got {names}"
     )
-    role_ids = tool_uses(resp)[0].input.get("role_ids", [])
+    yield_input = tool_uses(resp)[0].input
+    role_groups = yield_input.get("role_groups") or []
+    role_ids = [rid for group in role_groups for rid in group]
     valid = {"role-ciso", "role-soc"}
     assert role_ids and all(rid in valid for rid in role_ids), (
-        f"yield recovery returned invalid role_ids={role_ids}; "
+        f"yield recovery returned invalid role_groups={role_groups}; "
         f"valid set = {valid}"
     )
 
@@ -541,12 +550,15 @@ async def test_single_addressee_yields_narrowly_or_engine_narrows(
             "strict-retry recovery should have produced set_active_roles; "
             f"got {tool_names(recovery)}"
         )
-    ai_set: list[str] = list(set_active_calls[-1].input.get("role_ids", []))
+    ai_groups: list[list[str]] = [
+        list(g)
+        for g in (set_active_calls[-1].input.get("role_groups") or [])
+    ]
 
-    result = narrow_active_roles(
+    result = narrow_active_role_groups(
         roles=session_with_doctrine_fork.roles,
         appended_messages=appended,
-        ai_set=ai_set,
+        ai_groups=ai_groups,
     )
 
     # The CISO is the role being asked the question (per the player
@@ -558,7 +570,7 @@ async def test_single_addressee_yields_narrowly_or_engine_narrows(
         "addressed. Either the model emitted text that matched the "
         "narrower's clause-start pattern for SOC, or the matcher has "
         "a bug. "
-        f"AI yield: {ai_set}\n"
+        f"AI groups: {ai_groups}\n"
         f"narrower kept: {result.kept}\n"
         f"narrower dropped: {result.dropped}\n"
         f"narrower reason: {result.reason}\n"

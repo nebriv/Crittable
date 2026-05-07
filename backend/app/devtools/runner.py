@@ -619,6 +619,7 @@ class ScenarioRunner:
 
         if getattr(turn, "active_role_label_groups", None):
             resolved: list[list[str]] = []
+            unresolved_labels: list[str] = []
             for group_labels in turn.active_role_label_groups:
                 group_ids: list[str] = []
                 seen: set[str] = set()
@@ -627,8 +628,21 @@ class ScenarioRunner:
                     if rid and rid not in seen:
                         seen.add(rid)
                         group_ids.append(rid)
+                    elif not rid:
+                        unresolved_labels.append(label)
                 if group_ids:
                     resolved.append(group_ids)
+            # Security review LOW-3: a typo'd label or a role removed
+            # mid-recording silently shrinks (or empties) the group on
+            # replay. Without a log line, the operator sees a stalled
+            # replay and no signal as to why. Warn so the breadcrumb is
+            # in the audit stream.
+            if unresolved_labels:
+                self._log(
+                    "scenario unresolved role labels in active_role_label_groups: "
+                    f"{unresolved_labels} — known labels: "
+                    f"{sorted(self._role_ids)}"
+                )
             if resolved:
                 return resolved
 

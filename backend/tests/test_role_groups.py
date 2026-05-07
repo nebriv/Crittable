@@ -378,6 +378,189 @@ class TestNarrowActiveRoleGroups:
         assert result.kept_groups == [["a"], ["b", "c"]]
         assert result.kept == ["a", "b", "c"]
 
+    def test_share_data_body_does_not_contribute(self) -> None:
+        # QA review H2: share_data is intentionally excluded from
+        # _PLAYER_FACING_TOOLS. A share_data body that mentions Paul in
+        # a column header / log line should NOT contribute to the
+        # addressed-text set; only the paired broadcast counts.
+        roles = [_role("paul", "Paul"), _role("law", "Lawrence")]
+        msgs = [
+            Message(
+                kind=MessageKind.AI_TEXT,
+                body="| user | host |\n| Paul | host-01 |",
+                tool_name="share_data",
+                tool_args={"label": "Auth log", "data": "..."},
+            ),
+            _broadcast("Lawrence — file the ticket?"),
+        ]
+        result = narrow_active_role_groups(
+            roles=roles,
+            appended_messages=msgs,
+            ai_groups=[["paul", "law"]],
+        )
+        # Lawrence is addressed; Paul is only in share_data so he drops.
+        assert result.kept_groups == [["law"]]
+        assert "paul" in result.dropped
+
+    def test_two_broadcasts_both_contribute(self) -> None:
+        # Both broadcast bodies are joined with \n before pattern
+        # matching; an address that lands in the second one should
+        # still be picked up.
+        roles = [_role("paul", "Paul"), _role("law", "Lawrence")]
+        msgs = [
+            _broadcast("Paul — confirm scope."),
+            _broadcast("Lawrence — file the ticket."),
+        ]
+        result = narrow_active_role_groups(
+            roles=roles,
+            appended_messages=msgs,
+            ai_groups=[["paul"], ["law"]],
+        )
+        assert result.kept_groups == [["paul"], ["law"]]
+        assert result.narrowed is False
+
+    def test_chain_with_leading_subordinate_clause_is_conservative(
+        self,
+    ) -> None:
+        # QA review H1: a leading subordinate clause ("Talk to Paul,
+        # then Lawrence — quickly.") should NOT spuriously address
+        # either role — the chain's pieces ("talk to paul", "then
+        # lawrence") don't equal a canonical name. Pin the conservative
+        # behavior so a future regex tweak doesn't accidentally start
+        # over-keeping these prose-laden chains.
+        roles = [_role("paul", "Paul"), _role("law", "Lawrence")]
+        msgs = [_broadcast("Talk to Paul, then Lawrence — quickly.")]
+        result = narrow_active_role_groups(
+            roles=roles,
+            appended_messages=msgs,
+            ai_groups=[["paul", "law"]],
+        )
+        # Neither is at clause-start; neither chain piece matches a
+        # canonical name. Either of the two safety branches
+        # ("no_addressed_roles_no_narrowing" / "would_narrow_to_empty_
+        # kept_original") is acceptable — both keep the AI's groups
+        # intact and never narrow the prose-laden chain to empty.
+        assert result.kept_groups == [["paul", "law"]]
+        assert result.narrowed is False
+        assert result.reason in {
+            "no_addressed_roles_no_narrowing",
+            "would_narrow_to_empty_kept_original",
+        }
+
+    def test_chain_after_clause_break_addresses_trailing_pair(
+        self,
+    ) -> None:
+        # The trailing chain after a sentence break should address the
+        # pair, even when an earlier reference exists. Reads as: "After
+        # a temporal-clause use of Paul, the actual ASK addresses both
+        # at the clause-start chain."
+        roles = [_role("paul", "Paul"), _role("law", "Lawrence")]
+        msgs = [_broadcast("After Paul confirms, Paul or Lawrence — file.")]
+        result = narrow_active_role_groups(
+            roles=roles,
+            appended_messages=msgs,
+            ai_groups=[["paul", "law"]],
+        )
+        # Chain pieces include "paul" and "lawrence" exactly once
+        # the splitter strips out "after paul confirms" via the
+        # "or" boundary.
+        assert result.kept_groups == [["paul", "law"]]
+
+
+class TestKickedRoleScrubbing:
+    """QA review M3 — kicking a role in the middle of a turn must
+    keep ``active_role_groups`` consistent with ``ready_role_ids``."""
+
+    def test_kick_drops_role_from_every_group(self) -> None:
+        # Direct unit-level pin: simulate the manager's scrub by
+        # walking every group and removing the kicked role; groups
+        # that empty out are dropped entirely.
+        groups = [["ben"], ["paul", "law"]]
+        kicked = "paul"
+        trimmed = []
+        for group in groups:
+            pruned = [rid for rid in group if rid != kicked]
+            if pruned:
+                trimmed.append(pruned)
+        assert trimmed == [["ben"], ["law"]]
+
+    def test_kick_elides_singleton_group_entirely(self) -> None:
+        # If a singleton group's only member is kicked, the group
+        # disappears — the gate stops waiting on that ASK.
+        groups = [["ben"], ["paul"]]
+        kicked = "paul"
+        trimmed = []
+        for group in groups:
+            pruned = [rid for rid in group if rid != kicked]
+            if pruned:
+                trimmed.append(pruned)
+        assert trimmed == [["ben"]]
+
+    def test_gate_after_kick_with_mixed_shape(self) -> None:
+        # End-to-end: turn opens with [[ben], [paul, lawrence]]; Paul
+        # readies first; then Paul gets kicked. The post-kick state
+        # should be groups=[[ben], [lawrence]], ready=[lawrence] (Paul
+        # scrubbed). Lawrence ready closes group 2; Ben must still
+        # ready to close group 1.
+        kicked = "paul"
+        groups = [["ben"], ["paul", "lawrence"]]
+        ready = ["paul"]
+        trimmed_groups = [
+            [rid for rid in g if rid != kicked] for g in groups
+        ]
+        trimmed_groups = [g for g in trimmed_groups if g]
+        trimmed_ready = [rid for rid in ready if rid != kicked]
+        turn = _awaiting_turn(groups=trimmed_groups, ready=trimmed_ready)
+        # Lawrence still has to ready (ready_role_ids is empty
+        # post-scrub); Ben hasn't either. Gate stays open.
+        assert groups_quorum_met(turn) is False
+        # Now Lawrence and Ben both ready → both groups close.
+        turn2 = _awaiting_turn(
+            groups=trimmed_groups, ready=["ben", "lawrence"]
+        )
+        assert groups_quorum_met(turn2) is True
+
+
+class TestSubmittedVsReadyDecouple:
+    """QA review M2 — gate counts ready, not submitted."""
+
+    def test_submitted_role_doesnt_close_a_group_without_ready(
+        self,
+    ) -> None:
+        # Lawrence posted a discuss-intent submission but didn't
+        # ready. submitted_role_ids includes him; ready_role_ids
+        # doesn't. Gate stays open.
+        turn = _awaiting_turn(
+            groups=[["ben", "lawrence"]],
+            ready=[],
+            submitted=["lawrence"],
+        )
+        assert groups_quorum_met(turn) is False
+
+    def test_submitted_lags_ready_no_effect(self) -> None:
+        # Edge: ready_role_ids contains Paul but submitted_role_ids
+        # doesn't (theoretically should be a superset; defensively
+        # we still trust ready). Gate fires.
+        turn = _awaiting_turn(
+            groups=[["paul"]],
+            ready=["paul"],
+            submitted=[],
+        )
+        assert groups_quorum_met(turn) is True
+
+
+def test_active_role_ids_property_is_read_only() -> None:
+    # QA review M4: ``active_role_ids`` is a Pydantic computed_field;
+    # writes must raise. Pin the read-only contract so a future
+    # regression that adds a setter is caught.
+    turn = Turn(
+        index=0,
+        active_role_groups=[["ben"]],
+        status="awaiting",
+    )
+    with pytest.raises(AttributeError):
+        turn.active_role_ids = ["other"]  # type: ignore[misc]
+
 
 # ---------------------------------------------------------------------
 # Dispatcher validation
@@ -702,23 +885,6 @@ def test_set_active_roles_tool_uses_role_groups_schema() -> None:
     assert role_groups["minItems"] == 1
 
 
-def test_set_active_roles_description_documents_groups_semantic() -> None:
-    """The tool description must explain the per-group quorum so the
-    model picks the right group shape. Without this the model defaults
-    to one big group (any-of for everyone) or back to flat ids."""
-
-    from app.llm.tools import PLAY_TOOLS
-
-    by_name = {t["name"]: t for t in PLAY_TOOLS}
-    desc = by_name["set_active_roles"]["description"]
-    # Core semantic.
-    assert "ANY ONE of its members" in desc
-    assert "every group" in desc.lower() or "EVERY group" in desc
-    # Worked-example shape — the model needs to see both group flavors.
-    assert "[ben_id]" in desc  # singleton
-    assert "[paul_id, lawrence_id]" in desc  # multi-role any-of
-
-
 # ---------------------------------------------------------------------
 # Promise-keeping: the Block 6 prompt mentions the new shape
 # ---------------------------------------------------------------------
@@ -739,6 +905,78 @@ def test_play_prompt_block_documents_role_groups() -> None:
     assert "[paul.id, lawrence.id]" in _TOOL_USE_PROTOCOL
     # Mixed example (Ben + Paul-or-Lawrence).
     assert "[[ben.id], [paul.id, lawrence.id]]" in _TOOL_USE_PROTOCOL
+    # Two-singleton-groups example (the most common shape — both
+    # required, each in own group).
+    assert "[[ciso.id], [soc.id]]" in _TOOL_USE_PROTOCOL
+    # No-legacy-shape invariant: a regression that re-introduced the
+    # flat ``role_ids=[…]`` shape in the worked examples would silently
+    # coach the model toward a yield the dispatcher now rejects.
+    assert "role_ids=[" not in _TOOL_USE_PROTOCOL
+
+
+def test_set_active_roles_description_documents_groups_semantic() -> None:
+    """The tool description must explain the per-group quorum so the
+    model picks the right group shape AND explicitly names the
+    behavioral split between singleton and multi-role groups."""
+
+    from app.llm.tools import PLAY_TOOLS
+
+    by_name = {t["name"]: t for t in PLAY_TOOLS}
+    desc = by_name["set_active_roles"]["description"]
+    # Core semantic.
+    assert "ANY ONE of its members" in desc
+    assert "every group" in desc.lower() or "EVERY group" in desc
+    # Worked-example shape — the model needs to see both group flavors.
+    assert "[ben_id]" in desc  # singleton
+    assert "[paul_id, lawrence_id]" in desc  # multi-role any-of
+    # Behavioral split — assert the description names BOTH the "must
+    # respond" side (singleton) AND the "first vote wins" side (multi).
+    assert "must respond" in desc.lower()
+    assert "first ready vote" in desc.lower() or "any of you" in desc.lower()
+    # Strict-subset rule survives the rename.
+    assert "Strict subset rule" in desc
+
+
+def test_address_role_and_broadcast_descriptions_use_role_groups() -> None:
+    """Issue #168 prompt-expert C1+C2: ``address_role`` and ``broadcast``
+    descriptions both reference how to pair with ``set_active_roles``.
+    They must use the new ``role_groups=[[...]]`` shape, not the legacy
+    flat ``[that_role_id]`` form. A regression here teaches the model
+    to emit a yield the dispatcher rejects."""
+
+    from app.llm.tools import PLAY_TOOLS
+
+    by_name = {t["name"]: t for t in PLAY_TOOLS}
+    addr_desc = by_name["address_role"]["description"]
+    bcast_desc = by_name["broadcast"]["description"]
+    # Both must mention role_groups when describing how to pair the
+    # yield. The legacy "[that_role_id]" form (single brackets) is the
+    # dispatcher-rejected shape.
+    assert "role_groups" in addr_desc
+    assert "role_groups" in bcast_desc
+    # The legacy "exactly that one role_id" / "exactly two ids"
+    # phrasing must not survive — they coach the flat shape.
+    assert "exactly that one role_id" not in bcast_desc
+    assert "exactly those two ids" not in bcast_desc
+
+
+def test_strict_yield_recovery_directive_uses_role_groups() -> None:
+    """Issue #168 prompt-expert H2: the strict-yield recovery note +
+    user-nudge are read by the model when ``tool_choice`` pins to
+    ``set_active_roles``. They must teach the new ``role_groups``
+    shape — coaching ``role_ids`` here means the recovery itself
+    fails (dispatcher rejects, model gets stuck)."""
+
+    from app.sessions.turn_validator import (
+        _STRICT_YIELD_NOTE,
+        _STRICT_YIELD_USER_NUDGE,
+    )
+
+    assert "role_groups" in _STRICT_YIELD_NOTE
+    assert "role_groups" in _STRICT_YIELD_USER_NUDGE
+    # No legacy phrasing.
+    assert "with the role_ids" not in _STRICT_YIELD_NOTE
+    assert "with the role_ids" not in _STRICT_YIELD_USER_NUDGE
 
 
 # ---------------------------------------------------------------------

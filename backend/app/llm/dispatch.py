@@ -937,6 +937,8 @@ class ToolDispatcher:
             resolved_groups: list[list[str]] = []
             unresolved_total: list[str] = []
             seen_in_groups: set[str] = set()
+            dropped_dupes: list[str] = []
+            elided_groups: list[list[str]] = []
             for raw_group in raw_groups:
                 if not isinstance(raw_group, list) or not raw_group:
                     raise _DispatchError(
@@ -954,17 +956,40 @@ class ToolDispatcher:
                 deduped: list[str] = []
                 for rid in resolved_ids:
                     if rid in seen_in_groups:
+                        dropped_dupes.append(rid)
                         continue
                     seen_in_groups.add(rid)
                     deduped.append(rid)
                 if deduped:
                     resolved_groups.append(deduped)
+                else:
+                    # Every member of this group was either unknown or a
+                    # cross-group duplicate; the entire group elides.
+                    # Surface for diagnosability — the AI's stated yield
+                    # shape changed in a way the audit reader has to be
+                    # able to reconstruct.
+                    elided_groups.append(list(resolved_ids))
             if not resolved_groups:
                 raise _DispatchError(
                     f"unknown role_ids in every group: {unresolved_total} — "
                     "only the roles in Block 10 exist; pass their opaque "
                     "role_id (column 1)."
                 )
+            # QA review H3 / Security review LOW-1: emit a structured log
+            # of the dispatched yield shape so a post-hoc audit can spot
+            # the case where the AI's stated groups silently collapsed
+            # via dedup. Without this, "AI yielded [[ben], [ben, paul]]"
+            # arriving as ``[[ben], [paul]]`` is invisible.
+            _logger.info(
+                "set_active_roles_dispatched",
+                session_id=session.id,
+                turn_id=turn_id,
+                raw_groups=[list(g) if isinstance(g, list) else g for g in raw_groups],
+                resolved_groups=resolved_groups,
+                unresolved=unresolved_total,
+                dropped_dupes=dropped_dupes,
+                elided_groups=elided_groups,
+            )
             outcome.set_active_role_groups = resolved_groups
             outcome.had_yielding_call = True
             if unresolved_total:
@@ -1094,6 +1119,7 @@ def _resolve_role_refs(
     }
     resolved: list[str] = []
     unresolved: list[str] = []
+    fallback_hits: list[tuple[str, str, str]] = []
     for raw in refs:
         if not isinstance(raw, str):
             unresolved.append(repr(raw))
@@ -1105,11 +1131,27 @@ def _resolve_role_refs(
         lowered = ref.lower()
         if lowered in by_label_lower:
             resolved.append(by_label_lower[lowered])
+            fallback_hits.append((ref, by_label_lower[lowered], "label"))
             continue
         if lowered in by_display_lower:
             resolved.append(by_display_lower[lowered])
+            fallback_hits.append((ref, by_display_lower[lowered], "display_name"))
             continue
         unresolved.append(ref)
+    # Security review MEDIUM-1: surface the label/display-name fallback.
+    # The dispatcher accepts a non-id ref for AI ergonomics, but a
+    # silent fallback masks a slow drift where the AI starts emitting
+    # labels instead of opaque ids. Log every hit so an operator can
+    # see "the AI is calling roles by label" in the audit stream.
+    if fallback_hits:
+        _logger.info(
+            "role_ref_label_fallback",
+            session_id=session.id,
+            fallback_hits=[
+                {"raw_ref": raw, "resolved_id": rid, "matched_via": via}
+                for raw, rid, via in fallback_hits
+            ],
+        )
     # De-dupe while preserving order.
     seen: set[str] = set()
     deduped: list[str] = []
