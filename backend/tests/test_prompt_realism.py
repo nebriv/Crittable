@@ -86,6 +86,37 @@ def test_play_prompt_forbids_physical_inspection() -> None:
     assert "physically inspect" in text
 
 
+def test_play_prompt_forbids_data_extract_asks() -> None:
+    """Regression net for the user-reported "Joe — what does Sentinel
+    show on info-uapp-003?" failure mode. The AI is the source of
+    ground truth for telemetry — players don't have a real Sentinel /
+    SIEM / EDR. The DM-style narration rule (Block 5b) and the
+    Concrete-handoff rule (Block 6) both forbid the AI from posing
+    "what does <tool> show?" as a question to players. If this
+    assertion fails, audit any diff that touched ``_REALISM`` or
+    ``_TOOL_USE_PROTOCOL`` — both rules need to stay aligned or the
+    model regresses to asking players to fabricate telemetry.
+
+    The phrase pins are deliberate: a refactor that re-derives the
+    blocks but drops the user-facing example phrasings would still
+    break the regression net even though the constant-equality check
+    in :func:`test_realism_block_wired_into_play_system_blocks`
+    survives.
+    """
+
+    text = _flatten_blocks(
+        build_play_system_blocks(_minimal_session(), registry=_empty_registry())
+    )
+    # Block 5b — DM-style narration rule
+    assert "DM-style narration" in text
+    assert "where to look" in text
+    assert "what to do" in text
+    # Both blocks — the canonical antipattern phrasings the user complained about
+    assert "what does Sentinel show" in text
+    # Block 6 — concrete-handoff rule prescribing the right reframe
+    assert "direction-of-investigation fork" in text
+
+
 def test_realism_block_absent_from_aar_prompt() -> None:
     """The AAR pipeline uses the trust-boundary contract documented in
     CLAUDE.md (canonical-IDs block, drop-don't-repair) — it does not
