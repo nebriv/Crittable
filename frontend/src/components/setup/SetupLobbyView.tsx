@@ -38,17 +38,23 @@ interface Props {
   onRoleChanged: () => void;
   onError: (msg: string) => void;
   /**
-   * When the launch gates are met (plan finalized + ≥ 2 player
-   * roles), the wizard normally auto-advances to step 6 and renders
-   * ``SetupReviewView`` instead of this lobby. The creator can hop
-   * back here via the "← Back to lobby" button on the review screen
-   * — and once they're back, they need a one-click way to launch
-   * without rail-clicking step 6 (which is a wizard-internals
-   * affordance most users won't notice). When supplied, this prop
-   * triggers a launch directly; the lobby renders a primary CTA in
-   * the sidecar when both gates are met.
+   * Lobby-side launch handler. Step 5 is the natural landing for
+   * the ready phase (we don't auto-advance to step 6) so the lobby
+   * owns the primary launch CTA. The parent supplies this handler
+   * once the launch gates are met (plan finalized + ≥ 2 player
+   * roles); when not supplied, the sidecar's status copy explains
+   * which gate is still pending.
    */
   onLaunchSession?: () => void;
+  /**
+   * Advance to step 6 (Review & launch). Optional secondary
+   * affordance — most creators will launch directly from the lobby
+   * via ``onLaunchSession`` once they've shared invite links, but
+   * the review screen exists for creators who want a final
+   * presence-aware confirmation before pulling the trigger.
+   * Suppressed when the launch gates aren't met.
+   */
+  onAdvanceToReview?: () => void;
 }
 
 export function SetupLobbyView(props: Props) {
@@ -277,6 +283,17 @@ export function SetupLobbyView(props: Props) {
           display: "flex",
           flexDirection: "column",
           gap: 12,
+          // Scroll fallback for tall content on short viewports.
+          // The sticky aside follows the page scroll up to its
+          // content's max height — without an internal scroll, on a
+          // 600px-tall window (or zoom 150%) the secondary "REVIEW &
+          // LAUNCH" CTA can clip below the fold with no recovery.
+          // ``maxHeight`` minus ~32px of outer ``p-5`` / ``lg:p-8``
+          // padding keeps the aside fully reachable; the outer
+          // wizard ``<section>`` still owns the page-level scroll on
+          // shorter content. (UI/UX review HIGH; May 2026.)
+          maxHeight: "calc(100vh - 32px)",
+          overflowY: "auto",
         }}
       >
         <Eyebrow color="var(--signal)">
@@ -319,17 +336,14 @@ export function SetupLobbyView(props: Props) {
             ? "Plan not finalized yet — finish setup in step 04."
             : needPlayers
               ? `Need at least 2 player roles before launch (currently ${props.playerCount}).`
-              : props.onLaunchSession
-                ? "Ready — launch now or share remaining join links first."
-                : "Ready — advance to step 06 to review and launch."}
+              : "Ready — share invite links and launch when the room's set."}
         </div>
-        {/* Primary launch CTA inside the lobby sidecar. Renders only
-            when (a) launch gates are met AND (b) the parent wired
-            the handler — covers the path where the creator hopped
-            back here from the review screen and now wants to launch
-            without round-tripping through the rail (User Agent
-            HIGH#2). The button matches the SetupReviewView CTA so
-            the action feels identical from either entry point. */}
+        {/* Primary launch CTA inside the lobby sidecar. Step 5 is the
+            natural landing for the ready phase, so the lobby owns the
+            launch action — the creator never has to advance to step 6
+            unless they want a presence-aware confirmation screen.
+            Renders only when (a) launch gates are met AND (b) the
+            parent wired the handler. */}
         {!needPlan && !needPlayers && props.onLaunchSession ? (
           <button
             type="button"
@@ -351,6 +365,34 @@ export function SetupLobbyView(props: Props) {
             }}
           >
             {props.busy ? "STARTING…" : "START SESSION →"}
+          </button>
+        ) : null}
+        {/* Secondary affordance: advance to the review screen for a
+            presence-aware confirmation before launch. Subtle styling
+            so it doesn't compete with the primary START SESSION CTA.
+            Renders only when (a) launch gates are met AND (b) the
+            parent wired the handler. */}
+        {!needPlan && !needPlayers && props.onAdvanceToReview ? (
+          <button
+            type="button"
+            onClick={props.onAdvanceToReview}
+            disabled={props.busy}
+            className="mono"
+            aria-label="Advance to Step 6: Review & launch"
+            style={{
+              background: "transparent",
+              color: "var(--ink-300)",
+              border: "1px dashed var(--ink-500)",
+              padding: "8px",
+              borderRadius: 2,
+              fontSize: 10,
+              fontWeight: 600,
+              letterSpacing: "0.16em",
+              cursor: props.busy ? "not-allowed" : "pointer",
+              opacity: props.busy ? 0.5 : 1,
+            }}
+          >
+            REVIEW &amp; LAUNCH →
           </button>
         ) : null}
       </aside>

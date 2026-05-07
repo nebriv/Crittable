@@ -82,6 +82,33 @@ describe("JoinIntro — issue #76 (joined, waiting for session start)", () => {
     ).toBeNull();
   });
 
+  it("hasName=true, sessionState=READY → 'finalising the lobby' copy variant", () => {
+    // Plan is finalised, creator is gathering players in the lobby.
+    // Pre-fix this state fell through to the chat view (sessionState
+    // was not in the waiting list), so a player who joined here saw
+    // a blank transcript with a disabled composer, then got yanked
+    // BACK to the waiting screen the moment the creator hit Start
+    // (state went READY → BRIEFING). Now we hold them on JoinIntro
+    // for the full SETUP → READY → BRIEFING arc.
+    render(
+      <JoinIntro
+        {...COMMON_PROPS}
+        sessionState="READY"
+        hasName
+        joinedDisplayName="Bridget"
+      />,
+    );
+    expect(screen.getByTestId("join-intro-waiting")).toBeInTheDocument();
+    expect(
+      screen.getByText(/finalising the lobby/i),
+    ).toBeInTheDocument();
+    // BRIEFING-specific copy must NOT appear — the AI hasn't started
+    // a brief yet during READY.
+    expect(
+      screen.queryByText(/AI is preparing the scenario brief/i),
+    ).toBeNull();
+  });
+
   it("tip carousel rotates after the configured interval", () => {
     render(
       <JoinIntro

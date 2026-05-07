@@ -1,3 +1,4 @@
+import { useLayoutEffect, useRef } from "react";
 import { SetupNoteView } from "../api/client";
 import { ChatIndicator } from "./ChatIndicator";
 
@@ -27,6 +28,45 @@ interface Props {
  * buttons that send the option text as the next reply.
  */
 export function SetupChat({ notes, busy, aiTyping, onPickOption }: Props) {
+  // Auto-scroll the chat region to the bottom whenever a new note
+  // arrives or the typing indicator flips on — but only when the
+  // operator is already near the bottom. Without the near-bottom
+  // gate, an operator who scrolls up to re-read a clarifying
+  // question gets yanked back to the bottom on every WS event
+  // (canonical chat anti-pattern).
+  //
+  // The gate's threshold (80px) lines up with the standard
+  // "auto-pin if within ~one message of the bottom" pattern used
+  // in Slack / Discord. ``wasNearBottomRef`` is updated by the
+  // ``onScroll`` handler so the next layout-effect knows whether
+  // the user was near the bottom *before* the new content was
+  // appended.
+  //
+  // ``useLayoutEffect`` is load-bearing: scroll positioning needs
+  // to happen synchronously *after* React commits the new node and
+  // *before* the browser paints, otherwise the user sees a
+  // one-frame flash where the new note appears below the fold then
+  // jumps to the bottom. (Copilot review on PR #199 flagged the
+  // prior comment claiming "before browser repaints" while using
+  // ``useEffect`` — wrong about the timing; switched to
+  // ``useLayoutEffect`` to make the comment honest.)
+  const NEAR_BOTTOM_PX = 80;
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const wasNearBottomRef = useRef(true);
+  useLayoutEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    if (wasNearBottomRef.current) {
+      el.scrollTop = el.scrollHeight;
+    }
+  }, [notes.length, aiTyping]);
+  const handleScroll = () => {
+    const el = containerRef.current;
+    if (!el) return;
+    wasNearBottomRef.current =
+      el.scrollHeight - el.scrollTop - el.clientHeight <= NEAR_BOTTOM_PX;
+  };
+
   if (notes.length === 0) {
     return (
       <div className="mono rounded-r-3 border border-ink-600 bg-ink-850 p-3 text-[11px] uppercase tracking-[0.06em] text-ink-400">
@@ -39,6 +79,8 @@ export function SetupChat({ notes, busy, aiTyping, onPickOption }: Props) {
 
   return (
     <div
+      ref={containerRef}
+      onScroll={handleScroll}
       className="flex max-h-[60vh] flex-col gap-2 overflow-y-auto rounded-r-3 border border-ink-600 bg-ink-850 p-3"
       role="log"
       aria-live="polite"

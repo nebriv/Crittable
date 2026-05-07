@@ -211,6 +211,24 @@ describe("Play page e2e — state transitions", () => {
     ).toBeInTheDocument();
   });
 
+  it("READY: surfaces the lobby-finalising waiting variant (no chat shell)", async () => {
+    // Pre-fix the player jumped straight into the chat shell when
+    // state hit READY (creator approved plan, lobby open) and then
+    // got yanked BACK to a waiting screen the moment the creator
+    // hit Start. Now the player stays on JoinIntro for the full
+    // SETUP → READY → BRIEFING arc.
+    const ready = _setupSnapshot();
+    ready.state = "READY";
+    vi.spyOn(api, "getSession").mockImplementation(async () => ready);
+    render(<Play sessionId="s-test" token={_socToken()} />);
+    await waitFor(() => {
+      expect(screen.getByTestId("join-intro-waiting")).toBeInTheDocument();
+    });
+    expect(screen.getByText(/finalising the lobby/i)).toBeInTheDocument();
+    // Composer must NOT render — the player can't act in READY.
+    expect(screen.queryByPlaceholderText(/type your response/i)).toBeNull();
+  });
+
   it("PLAY (AWAITING_PLAYERS): shows the chat layout and a reachable Composer", async () => {
     vi.spyOn(api, "getSession").mockImplementation(async () => _playSnapshot());
     render(<Play sessionId="s-test" token={_socToken()} />);

@@ -218,8 +218,8 @@ describe("isMidSessionJoiner — issue #80 bonus chip predicate", () => {
     ).toBe(true);
   });
 
-  it("false during SETUP / BRIEFING (handled by JoinIntro waiting variant)", () => {
-    for (const state of ["SETUP", "BRIEFING"]) {
+  it("false during SETUP / READY / BRIEFING (handled by JoinIntro waiting variant)", () => {
+    for (const state of ["SETUP", "READY", "BRIEFING"]) {
       expect(
         isMidSessionJoiner({
           sessionState: state,

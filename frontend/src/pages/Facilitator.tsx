@@ -214,17 +214,18 @@ export function Facilitator() {
   const [features, setFeatures] = useState<SessionFeatures>(() => ({
     ...DEFAULT_SESSION_FEATURES,
   }));
-  // Lobby-override toggle for the post-creation wizard. When true,
-  // the wizard pins step 5 (Invite players) even after the launch
-  // gates are met (plan finalized + ≥ 2 player roles). Lets the
-  // creator hop back from the launch screen to share an invite
-  // link without losing the auto-advanced review state. Cleared
-  // automatically when the snapshot leaves READY (because the
-  // override only matters during the lobby — once we're in BRIEFING
-  // / play, the wizard is gone). Lifted out of ``SetupWizard`` so
-  // ``SetupReviewView`` (rendered into the wizard's slot here) can
-  // request the hop without a complex prop chain.
-  const [lobbyOverride, setLobbyOverride] = useState(false);
+  // Step 5 → 6 advance flag for the post-creation wizard. Default
+  // ``false``: after the plan is finalised the wizard lands on step
+  // 5 (Invite players) so the creator can share join links and watch
+  // the lobby fill up before reviewing. Flipped to ``true`` only when
+  // the creator explicitly advances (rail click on step 6, or the
+  // "ADVANCE TO REVIEW" affordance in the lobby's sidecar). Cleared
+  // automatically when the snapshot leaves READY so a "abandon → new
+  // session" flow doesn't carry stale advance state into the next
+  // session. Lifted out of ``SetupWizard`` so ``SetupReviewView``
+  // (rendered into the wizard's slot here) can request a hop back
+  // without a complex prop chain.
+  const [advancedToReview, setAdvancedToReview] = useState(false);
   // Dev-mode toggle on the intro page: prefills a known scenario + creator
   // identity, and on submit auto-skips the AI setup dialogue so testers
   // bypass the 5–30 s setup loop. Use only for local QA.
@@ -443,15 +444,14 @@ export function Facilitator() {
     }
   }, [phase, snapshot]);
 
-  // Drop the lobby-override flag whenever we leave the "ready"
-  // wizard phase. Without this, a creator who hopped back to the
-  // lobby and then started fresh (abandon → new session) would land
-  // back in the lobby step on the new session even after its launch
-  // gates were met. Cheap reset; runs at most once per phase
-  // transition.
+  // Drop the advance flag whenever we leave the "ready" wizard
+  // phase. Without this, a creator who clicked through to step 6
+  // and then started fresh (abandon → new session) would land back
+  // on step 6 of the new session before the next plan was even
+  // drafted. Cheap reset; runs at most once per phase transition.
   useEffect(() => {
-    if (phase !== "ready" && lobbyOverride) setLobbyOverride(false);
-  }, [phase, lobbyOverride]);
+    if (phase !== "ready" && advancedToReview) setAdvancedToReview(false);
+  }, [phase, advancedToReview]);
 
   useEffect(() => {
     if (error) console.warn("[facilitator] error surfaced", error);
@@ -1294,16 +1294,17 @@ export function Facilitator() {
   // 5 vs 6 distinction for the rail highlight; we just have to pick
   // the matching panel content here.
   if (phase === "setup" || phase === "ready") {
-    // Launch gates are met (plan finalized + ≥ 2 player roles), AND
-    // the creator hasn't pinned themselves back to the lobby via
-    // the "← BACK TO LOBBY" button on the review screen. Both
-    // conditions must hold to render step 6 (Review & launch);
-    // otherwise we drop into step 5 (the lobby).
-    const wizardReadyForReview =
-      phase === "ready" &&
-      Boolean(snapshot.plan) &&
-      playerCount >= 2 &&
-      !lobbyOverride;
+    // Step 6 (Review & launch) renders only when the launch gates
+    // are met (plan finalized + ≥ 2 player roles) AND the creator
+    // has explicitly advanced via the rail or the lobby's
+    // "REVIEW & LAUNCH" affordance. On the natural ready-phase
+    // landing we drop into step 5 (the lobby) so the creator can
+    // share join links first; the lobby itself owns the primary
+    // START SESSION CTA so advancing to step 6 is optional, not
+    // required.
+    const launchReady =
+      phase === "ready" && Boolean(snapshot.plan) && playerCount >= 2;
+    const wizardReadyForReview = launchReady && advancedToReview;
     let postCreationContent;
     if (phase === "setup") {
       postCreationContent = (
@@ -1332,17 +1333,21 @@ export function Facilitator() {
           connectedRoleIds={presence}
           busy={busy}
           onStart={handleStart}
-          onBackToLobby={() => setLobbyOverride(true)}
+          onBackToLobby={() => setAdvancedToReview(false)}
         />
       );
     } else {
-      // Wire the launch handler ONLY when the creator landed back
-      // here via the "← BACK TO LOBBY" affordance (lobbyOverride =
-      // true) — that's the path where they need a one-click way out
-      // of the lobby. On the natural lobby visit (gates not yet met),
-      // the launch CTA inside SetupLobbyView is suppressed (needPlan
-      // / needPlayers branches in the sidecar copy still fire).
-      const lobbyLaunchHandler = lobbyOverride ? handleStart : undefined;
+      // Always wire the launch handler on the lobby once gates are
+      // met — the lobby is the natural launch surface (advancing to
+      // step 6 is optional). When gates aren't met the lobby's own
+      // sidecar copy reads "Plan not finalized" / "Need at least 2
+      // player roles" and the CTA stays suppressed. Also wire the
+      // forward-advance handler so the lobby's sidecar can offer an
+      // explicit "ADVANCE TO REVIEW" affordance once gates clear.
+      const lobbyLaunchHandler = launchReady ? handleStart : undefined;
+      const advanceToReviewHandler = launchReady
+        ? () => setAdvancedToReview(true)
+        : undefined;
       postCreationContent = (
         <SetupLobbyView
           sessionId={state.sessionId}
@@ -1356,6 +1361,7 @@ export function Facilitator() {
           onRoleChanged={refreshSnapshot}
           onError={setError}
           onLaunchSession={lobbyLaunchHandler}
+          onAdvanceToReview={advanceToReviewHandler}
         />
       );
     }
@@ -1402,8 +1408,8 @@ export function Facilitator() {
           playerCount={playerCount}
           postCreationContent={postCreationContent}
           onAbandonSession={handleNewSession}
-          lobbyOverride={lobbyOverride}
-          setLobbyOverride={setLobbyOverride}
+          advancedToReview={advancedToReview}
+          setAdvancedToReview={setAdvancedToReview}
         />
       </>
     );

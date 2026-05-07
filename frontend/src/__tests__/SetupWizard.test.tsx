@@ -158,13 +158,35 @@ describe("SetupWizard — phase routing (issue #113)", () => {
     expect(screen.queryByText(/step 06/i)).not.toBeInTheDocument();
   });
 
-  it("ready + plan + ≥2 players: highlights step 06 (Review & launch)", () => {
+  it("ready + plan + ≥2 players (default): lands on step 05 — review only via explicit advance", () => {
+    // After plan finalisation we land on step 5 (Invite players) so
+    // the creator can share join links and confirm the lobby BEFORE
+    // reviewing. Step 6 is only reached when ``advancedToReview`` is
+    // explicitly true (rail click on step 6, or the lobby's "REVIEW
+    // & LAUNCH" affordance).
     render(
       <SetupWizard
         phase="ready"
         {...baseProps()}
         snapshot={fakeSnapshot({ state: "READY", plan: fakePlan() })}
         playerCount={2}
+        postCreationContent={<div data-testid="lobby-slot">lobby</div>}
+      />,
+    );
+    expect(screen.getByText(/step 05 · invite players/i)).toBeInTheDocument();
+    expect(screen.queryByText(/step 06 · review/i)).not.toBeInTheDocument();
+    expect(screen.getByTestId("lobby-slot")).toBeInTheDocument();
+  });
+
+  it("ready + plan + ≥2 players + advancedToReview=true: highlights step 06 (Review & launch)", () => {
+    render(
+      <SetupWizard
+        phase="ready"
+        {...baseProps()}
+        snapshot={fakeSnapshot({ state: "READY", plan: fakePlan() })}
+        playerCount={2}
+        advancedToReview={true}
+        setAdvancedToReview={vi.fn()}
         postCreationContent={<div data-testid="review-slot">review</div>}
       />,
     );
@@ -210,20 +232,21 @@ describe("SetupWizard — rail back-nav (User HIGH#2)", () => {
   });
 });
 
-describe("SetupWizard — lobby ↔ review back-nav (presence-aware launch)", () => {
-  it("ready + lobbyOverride=true: pins step 5 even when launch gates are met", () => {
-    // Plan finalized + 3 player roles → step 6 normally. Setting
-    // lobbyOverride=true must drop the user back to step 5 so they
-    // can manage the lobby (e.g. share an invite link with a missing
-    // role) without abandoning the launch screen.
+describe("SetupWizard — lobby ↔ review nav (advancedToReview flag)", () => {
+  it("ready + advancedToReview=false (default): pins step 5 even when launch gates are met", () => {
+    // Plan finalized + 3 player roles. After plan finalisation the
+    // wizard lands on step 5 by default so the creator can share
+    // invite links before reviewing — they advance to step 6
+    // explicitly via the rail or the lobby's "REVIEW & LAUNCH"
+    // affordance.
     render(
       <SetupWizard
         phase="ready"
         {...baseProps()}
         snapshot={fakeSnapshot({ state: "READY", plan: fakePlan() })}
         playerCount={3}
-        lobbyOverride={true}
-        setLobbyOverride={vi.fn()}
+        advancedToReview={false}
+        setAdvancedToReview={vi.fn()}
         postCreationContent={<div data-testid="lobby-slot">lobby</div>}
       />,
     );
@@ -231,38 +254,32 @@ describe("SetupWizard — lobby ↔ review back-nav (presence-aware launch)", ()
     expect(screen.getByTestId("lobby-slot")).toBeInTheDocument();
   });
 
-  it("ready: clicking step 5 in the rail sets the lobby override", () => {
-    const setLobbyOverride = vi.fn();
+  it("ready + advancedToReview=true: rail shows step 6 (Review & launch)", () => {
     render(
       <SetupWizard
         phase="ready"
         {...baseProps()}
         snapshot={fakeSnapshot({ state: "READY", plan: fakePlan() })}
         playerCount={2}
-        lobbyOverride={false}
-        setLobbyOverride={setLobbyOverride}
+        advancedToReview={true}
+        setAdvancedToReview={vi.fn()}
         postCreationContent={<div data-testid="review-slot">review</div>}
       />,
     );
-    // Step 5 is in the "done" set when launch gates are met, so the
-    // rail renders it as a button.
-    const step5 = screen.getByRole("button", {
-      name: /Step 5: Invite players/i,
-    });
-    fireEvent.click(step5);
-    expect(setLobbyOverride).toHaveBeenCalledWith(true);
+    expect(screen.getByText(/step 06 · review & launch/i)).toBeInTheDocument();
+    expect(screen.getByTestId("review-slot")).toBeInTheDocument();
   });
 
-  it("ready (override on): clicking step 6 in the rail clears the override", () => {
-    const setLobbyOverride = vi.fn();
+  it("ready (current=5, advancedToReview=false): clicking step 6 advances when gates are met", () => {
+    const setAdvancedToReview = vi.fn();
     render(
       <SetupWizard
         phase="ready"
         {...baseProps()}
         snapshot={fakeSnapshot({ state: "READY", plan: fakePlan() })}
         playerCount={2}
-        lobbyOverride={true}
-        setLobbyOverride={setLobbyOverride}
+        advancedToReview={false}
+        setAdvancedToReview={setAdvancedToReview}
         postCreationContent={<div data-testid="lobby-slot">lobby</div>}
       />,
     );
@@ -270,54 +287,42 @@ describe("SetupWizard — lobby ↔ review back-nav (presence-aware launch)", ()
       name: /Step 6: Review & launch/i,
     });
     fireEvent.click(step6);
-    expect(setLobbyOverride).toHaveBeenCalledWith(false);
+    expect(setAdvancedToReview).toHaveBeenCalledWith(true);
   });
 
-  it("ready (override off, current=5, gates not met): clicking step 5 is a no-op", () => {
-    // Copilot review on PR #187: clicking the *current* step rail
-    // item used to fire ``setLobbyOverride(true)`` even when launch
-    // gates weren't met yet. That accidentally pinned the wizard to
-    // the lobby once gates DID get met and silently suppressed the
-    // auto-advance to step 6. The handler now ignores clicks where
-    // ``id === current``.
-    const setLobbyOverride = vi.fn();
-    render(
-      <SetupWizard
-        phase="ready"
-        {...baseProps()}
-        snapshot={fakeSnapshot({ state: "READY", plan: null })}
-        playerCount={1}
-        lobbyOverride={false}
-        setLobbyOverride={setLobbyOverride}
-        postCreationContent={<div data-testid="lobby-slot">lobby</div>}
-      />,
-    );
-    // Step 5 is current here — it renders as a button (because
-    // ``isCurrent`` makes it clickable per WizardRail), but the
-    // click handler must short-circuit.
-    const step5 = screen.getByRole("button", {
-      name: /Step 5: Invite players/i,
-    });
-    fireEvent.click(step5);
-    expect(setLobbyOverride).not.toHaveBeenCalled();
-  });
-
-  it("ready (no setLobbyOverride wired): rail steps are NOT clickable", () => {
-    // Copilot review on PR #187: when the parent forgets to plumb
-    // ``setLobbyOverride``, the rail used to render steps as
-    // clickable buttons whose handlers were silent no-ops. Now we
-    // skip wiring ``onJumpToStep`` in that case so the rail
-    // renders the inert <div> branch — no dead-affordance clicks
-    // in Storybook / isolated tests.
+  it("ready (current=6, advancedToReview=true): clicking step 5 hops back to lobby", () => {
+    const setAdvancedToReview = vi.fn();
     render(
       <SetupWizard
         phase="ready"
         {...baseProps()}
         snapshot={fakeSnapshot({ state: "READY", plan: fakePlan() })}
         playerCount={2}
-        lobbyOverride={false}
-        // setLobbyOverride intentionally omitted
+        advancedToReview={true}
+        setAdvancedToReview={setAdvancedToReview}
         postCreationContent={<div data-testid="review-slot">review</div>}
+      />,
+    );
+    const step5 = screen.getByRole("button", {
+      name: /Step 5: Invite players/i,
+    });
+    fireEvent.click(step5);
+    expect(setAdvancedToReview).toHaveBeenCalledWith(false);
+  });
+
+  it("ready (no setAdvancedToReview wired): rail steps are NOT clickable", () => {
+    // When the parent forgets to plumb ``setAdvancedToReview``, the
+    // rail's onJumpToStep is undefined and the rail renders the
+    // inert <div> branch — no dead-affordance clicks in Storybook
+    // / isolated tests.
+    render(
+      <SetupWizard
+        phase="ready"
+        {...baseProps()}
+        snapshot={fakeSnapshot({ state: "READY", plan: fakePlan() })}
+        playerCount={2}
+        // setAdvancedToReview intentionally omitted
+        postCreationContent={<div data-testid="lobby-slot">lobby</div>}
       />,
     );
     expect(
@@ -328,22 +333,20 @@ describe("SetupWizard — lobby ↔ review back-nav (presence-aware launch)", ()
     ).not.toBeInTheDocument();
   });
 
-  it("ready (gates not met): step 6 is NOT clickable from the lobby override view", () => {
-    // Even with override on, if the launch gates aren't met (e.g. only
-    // 1 player role), step 6 stays inert — clicking it would land the
-    // user on a half-rendered review screen they can't actually launch
-    // from. Step 5 stays current (and ineligible to click → not a
-    // button), step 6 stays inert (also not a button).
-    const setLobbyOverride = vi.fn();
+  it("ready (gates not met): step 6 is NOT clickable", () => {
+    // If the launch gates aren't met (e.g. only 1 player role),
+    // step 6 stays inert — clicking it would land the user on a
+    // half-rendered review screen they can't actually launch from.
+    const setAdvancedToReview = vi.fn();
     render(
       <SetupWizard
         phase="ready"
         {...baseProps()}
         snapshot={fakeSnapshot({ state: "READY", plan: fakePlan() })}
         playerCount={1}
-        lobbyOverride={true}
-        setLobbyOverride={setLobbyOverride}
-        postCreationContent={null}
+        advancedToReview={false}
+        setAdvancedToReview={setAdvancedToReview}
+        postCreationContent={<div data-testid="lobby-slot">lobby</div>}
       />,
     );
     expect(
