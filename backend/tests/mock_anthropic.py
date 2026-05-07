@@ -210,7 +210,7 @@ def setup_then_play_script(
         response(
             text_block("Initial detection — alarms on the vendor portal."),
             tool_block("broadcast", {"message": "Detection at 03:14"}),
-            tool_block("set_active_roles", {"role_ids": [role_ids[0]]}),
+            tool_block("set_active_roles", {"role_groups": [[r] for r in [role_ids[0]]]}),
         )
     )
     for i in range(8):
@@ -222,7 +222,7 @@ def setup_then_play_script(
                         "use_extension_tool",
                         {"name": extension_tool or "lookup_threat_intel", "args": {"ioc": "1.2.3.4"}},
                     ),
-                    tool_block("set_active_roles", {"role_ids": active}),
+                    tool_block("set_active_roles", {"role_groups": [[r] for r in active]}),
                 )
             )
             continue
@@ -237,14 +237,14 @@ def setup_then_play_script(
                             "body": "External breach of customer data confirmed.",
                         },
                     ),
-                    tool_block("set_active_roles", {"role_ids": active}),
+                    tool_block("set_active_roles", {"role_groups": [[r] for r in active]}),
                 )
             )
             continue
         play.append(
             response(
                 text_block(f"Turn {i + 2}: continue exercise."),
-                tool_block("set_active_roles", {"role_ids": active}),
+                tool_block("set_active_roles", {"role_groups": [[r] for r in active]}),
             )
         )
     play.append(

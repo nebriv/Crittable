@@ -36,7 +36,7 @@ from ..llm.prompts import (
 from ..llm.protocol import LLMResult
 from ..llm.tools import PLAY_TOOLS, setup_tools_for
 from ..logging_setup import get_logger
-from .active_roles import narrow_active_roles
+from .active_roles import narrow_active_role_groups
 from .manager import SessionManager
 from .models import (
     DecisionLogEntry,
@@ -1233,46 +1233,47 @@ class TurnDriver:
             await self._manager.trigger_aar_generation(session.id)
             return
 
-        if outcome.set_active_role_ids is not None:
+        if outcome.set_active_role_groups is not None:
             # Server-side audience-vs-yield safety net. The play-tier
             # model habitually yields wider than its actual audience
             # (broadcasts "Ben — your call?" and yields to [Ben, Eng]
-            # even though Eng wasn't asked anything), which stalls the
-            # turn until force-advance. The narrower drops role_ids
-            # whose canonical name isn't addressed in the same-turn
-            # player-facing text. See ``active_roles.py`` for the
-            # heuristic + edge-case coverage in
+            # even though Eng wasn't asked anything), which used to
+            # stall the turn under the all-must-ready gate. Issue #168
+            # moved to the role-groups model; the narrower now drops
+            # un-addressed role_ids from each group AND elides any
+            # group that empties out, so a fake "[Eng]" group simply
+            # disappears from the yield instead of becoming a stuck
+            # quorum slot. Edge-case coverage:
             # ``tests/test_active_roles_narrowing.py``.
-            narrow_result = narrow_active_roles(
+            narrow_result = narrow_active_role_groups(
                 roles=session.roles,
                 appended_messages=outcome.appended_messages,
-                ai_set=list(outcome.set_active_role_ids),
+                ai_groups=[list(g) for g in outcome.set_active_role_groups],
             )
-            final_active_role_ids = narrow_result.kept
+            final_active_role_groups = narrow_result.kept_groups
             if narrow_result.narrowed:
-                # Build human-readable label list for the audit + decision
-                # log so the creator can see what the engine did. We
-                # intentionally use ``label`` here (not display_name)
-                # because the AI Decision Log surface is operator-
-                # focused.
+                # Build human-readable label lists for the audit +
+                # decision log so the creator can see what the engine
+                # did. We intentionally use ``label`` here (not
+                # display_name) because the AI Decision Log surface is
+                # operator-focused.
                 role_by_id = {r.id: r for r in session.roles}
                 dropped_labels = [
                     role_by_id[rid].label
                     for rid in narrow_result.dropped
                     if rid in role_by_id
                 ]
-                kept_labels = [
-                    role_by_id[rid].label
-                    for rid in narrow_result.kept
-                    if rid in role_by_id
+                kept_group_labels = [
+                    [role_by_id[rid].label for rid in g if rid in role_by_id]
+                    for g in narrow_result.kept_groups
                 ]
                 _logger.info(
                     "active_roles_narrowed",
                     session_id=session.id,
                     turn_id=turn.id,
                     turn_index=turn.index,
-                    ai_set=list(outcome.set_active_role_ids),
-                    kept=narrow_result.kept,
+                    ai_groups=[list(g) for g in outcome.set_active_role_groups],
+                    kept_groups=narrow_result.kept_groups,
                     dropped=narrow_result.dropped,
                     dropped_labels=dropped_labels,
                     # The full set of roles the matcher considered
@@ -1290,7 +1291,7 @@ class TurnDriver:
                 # is confusing. The structlog line above is the
                 # canonical audit record.
                 rationale = (
-                    f"Narrowed active roles: kept {kept_labels}, "
+                    f"Narrowed active groups: kept {kept_group_labels}, "
                     f"dropped {dropped_labels} — not addressed in this "
                     f"turn's message."
                 )
@@ -1332,7 +1333,7 @@ class TurnDriver:
             new_index = len(session.turns)
             new_turn = Turn(
                 index=new_index,
-                active_role_ids=final_active_role_ids,
+                active_role_groups=final_active_role_groups,
                 status="awaiting",
             )
             session.turns.append(new_turn)
@@ -1344,6 +1345,9 @@ class TurnDriver:
                     "type": "turn_changed",
                     "turn_index": new_turn.index,
                     "active_role_ids": new_turn.active_role_ids,
+                    # Issue #168: groups shape for frontend "either X
+                    # or Y" copy on multi-role any-of yields.
+                    "active_role_groups": new_turn.active_role_groups,
                     # Issue #111: fresh AWAITING_PLAYERS turn — bar
                     # resets to 0 / N (no submissions yet).
                     "progress_pct": compute_progress_pct(session),
@@ -1355,6 +1359,7 @@ class TurnDriver:
                     "type": "state_changed",
                     "state": session.state.value,
                     "active_role_ids": new_turn.active_role_ids,
+                    "active_role_groups": new_turn.active_role_groups,
                     "turn_index": new_turn.index,
                     "progress_pct": compute_progress_pct(session),
                 },
@@ -1562,16 +1567,17 @@ def _merge_outcomes(target: DispatchOutcome, src: DispatchOutcome) -> None:
     Message / tool_result semantics: append in order so the chat
     timeline reflects the order things actually happened.
 
-    State-singleton fields (``set_active_role_ids``, ``end_session_reason``,
-    plan fields): last-write-wins. The driver runs DRIVE before YIELD,
-    so the YIELD attempt's ``set_active_role_ids`` correctly wins.
+    State-singleton fields (``set_active_role_groups``,
+    ``end_session_reason``, plan fields): last-write-wins. The driver
+    runs DRIVE before YIELD, so the YIELD attempt's
+    ``set_active_role_groups`` correctly wins.
     """
 
     target.tool_results.extend(src.tool_results)
     target.appended_messages.extend(src.appended_messages)
     target.slots |= src.slots
-    if src.set_active_role_ids is not None:
-        target.set_active_role_ids = src.set_active_role_ids
+    if src.set_active_role_groups is not None:
+        target.set_active_role_groups = src.set_active_role_groups
     if src.end_session_reason is not None:
         target.end_session_reason = src.end_session_reason
     if src.proposed_plan is not None:

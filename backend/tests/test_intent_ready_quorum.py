@@ -19,7 +19,7 @@ from fastapi.testclient import TestClient
 from app.config import reset_settings_cache
 from app.main import create_app
 from app.sessions.models import MessageKind, SessionState, Turn
-from app.sessions.turn_engine import all_ready, all_submitted
+from app.sessions.turn_engine import all_submitted, groups_quorum_met
 from tests.conftest import default_settings_body
 
 
@@ -77,8 +77,15 @@ def _seat_session(client: TestClient, *, role_count: int) -> dict[str, Any]:
     async def _open_awaiting() -> None:
         manager = client.app.state.manager
         session = await manager.get_session(session_id)
+        # Issue #168: each role in its own group preserves the legacy
+        # "all-must-respond" semantic this test suite was written
+        # against.
         session.turns.append(
-            Turn(index=0, active_role_ids=role_ids, status="awaiting")
+            Turn(
+                index=0,
+                active_role_groups=[[rid] for rid in role_ids],
+                status="awaiting",
+            )
         )
         session.state = SessionState.AWAITING_PLAYERS
         await manager._repo.save(session)
@@ -121,7 +128,7 @@ def test_discuss_intent_does_not_advance(client: TestClient) -> None:
     assert set(turn.ready_role_ids) == set()
     assert session.state == SessionState.AWAITING_PLAYERS
     assert all_submitted(turn) is True
-    assert all_ready(turn) is False
+    assert groups_quorum_met(turn) is False
 
 
 def test_ready_quorum_advances_only_when_everyone_ready(
@@ -312,7 +319,7 @@ def test_interjection_intent_is_none(client: TestClient) -> None:
     async def _open_with_only_a_active() -> None:
         s = await manager.get_session(sid)
         s.turns.append(
-            Turn(index=0, active_role_ids=[a], status="awaiting")
+            Turn(index=0, active_role_groups=[[a]], status="awaiting")
         )
         s.state = SessionState.AWAITING_PLAYERS
         await manager._repo.save(s)

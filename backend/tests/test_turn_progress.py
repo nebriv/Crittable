@@ -50,7 +50,7 @@ def test_progress_awaiting_players_submitted_over_active() -> None:
 
     turn = Turn(
         index=0,
-        active_role_ids=["a", "b", "c", "d"],
+        active_role_groups=[["a"], ["b"], ["c"], ["d"]],
         submitted_role_ids=["a", "b"],
         ready_role_ids=["a"],
     )
@@ -63,7 +63,7 @@ def test_progress_awaiting_players_zero_active_returns_none() -> None:
     the active set on yield) — surface as ``None`` rather than divide
     by zero."""
 
-    turn = Turn(index=0, active_role_ids=[], submitted_role_ids=[])
+    turn = Turn(index=0, active_role_groups=[], submitted_role_ids=[])
     sess = _session_at(SessionState.AWAITING_PLAYERS, turn=turn)
     assert compute_progress_pct(sess) is None
 
@@ -74,7 +74,7 @@ def test_progress_awaiting_players_clamped_to_one() -> None:
 
     turn = Turn(
         index=0,
-        active_role_ids=["a"],
+        active_role_groups=[["a"]],
         submitted_role_ids=["a", "b"],
     )
     sess = _session_at(SessionState.AWAITING_PLAYERS, turn=turn)
@@ -87,7 +87,7 @@ def test_progress_ai_processing_reads_turn_field() -> None:
     sweep."""
 
     turn_with_progress = Turn(
-        index=0, active_role_ids=["a"], ai_progress_pct=0.66
+        index=0, active_role_groups=[["a"]], ai_progress_pct=0.66
     )
     sess = _session_at(SessionState.AI_PROCESSING, turn=turn_with_progress)
     assert compute_progress_pct(sess) == 0.66
@@ -95,7 +95,7 @@ def test_progress_ai_processing_reads_turn_field() -> None:
     sess_briefing = _session_at(SessionState.BRIEFING, turn=turn_with_progress)
     assert compute_progress_pct(sess_briefing) == 0.66
 
-    turn_unset = Turn(index=0, active_role_ids=["a"])
+    turn_unset = Turn(index=0, active_role_groups=[["a"]])
     assert compute_progress_pct(_session_at(SessionState.AI_PROCESSING, turn=turn_unset)) is None
 
 
@@ -324,7 +324,7 @@ def test_set_progress_monotonic_clamp() -> None:
 
     mgr = _StubManager()
     driver = TurnDriver(manager=mgr)  # type: ignore[arg-type]
-    turn = Turn(index=0, active_role_ids=["a"])
+    turn = Turn(index=0, active_role_groups=[["a"]])
     sess = _session_at(SessionState.AI_PROCESSING, turn=turn)
 
     async def run() -> None:

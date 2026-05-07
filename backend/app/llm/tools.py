@@ -100,8 +100,16 @@ PLAY_TOOLS: list[dict[str, Any]] = [
             "`set_active_roles`. "
             "**Single-addressee rule:** if this is the only player-facing "
             "tool on the turn and you're not asking any other role anything, "
-            "`set_active_roles` MUST be exactly `[that_role_id]`. Adding "
-            "other roles makes the engine wait on people you didn't address."
+            "`set_active_roles` MUST be exactly `role_groups=[[that_role_id]]` "
+            "— one singleton group containing only that role. Adding extra "
+            "singleton groups for un-addressed roles waits on people you "
+            "never spoke to (the narrower may rescue you by elide-ing those "
+            "groups, but don't rely on it). Merging the addressee into a "
+            "multi-role any-of group with someone you didn't ask is worse: "
+            "any-of groups close on the FIRST ready vote, so an un-addressed "
+            "role in the same group can short-circuit your ask before the "
+            "intended addressee replies — you get a wrong respondent, not a "
+            "stalled turn."
         ),
         "input_schema": {
             "type": "object",
@@ -126,14 +134,23 @@ PLAY_TOOLS: list[dict[str, Any]] = [
             "audience is the whole roster. Does NOT yield the turn — "
             "pair with `set_active_roles`. "
             "**Audience matches yield.** If the body of your broadcast "
-            "only asks ONE role a question (e.g. \"Ben — what's your "
-            "call?\"), `set_active_roles` MUST be exactly that one "
-            "role_id. If two roles are asked, exactly those two ids. "
-            "Including roles you didn't actually ask anything of stalls "
-            "the turn — the engine waits for replies that aren't coming. "
-            "When you genuinely want a single-addressee turn, prefer "
-            "`address_role` over `broadcast` to make the audience "
-            "explicit."
+            "asks ONE role a question (\"Ben — your call?\"), "
+            "`set_active_roles` MUST be `role_groups=[[that_role_id]]` "
+            "— one singleton group. Two roles asked independently "
+            "(\"X — do A. Y — do B.\") = two singleton groups: "
+            "`role_groups=[[x.id], [y.id]]` (BOTH must answer). One ask "
+            "with two eligible answerers (\"X or Y — who owns this?\") "
+            "= one multi-role group: `role_groups=[[x.id, y.id]]` "
+            "(EITHER answers; first ready vote advances). Yielding roles "
+            "you didn't address creates incorrect group semantics — an "
+            "extra singleton group makes the engine wait on someone you "
+            "never spoke to (the narrower will usually elide such "
+            "groups, but it's a fragile rescue), and including an "
+            "un-addressed role in a multi-role any-of group lets the "
+            "wrong respondent close the ask before the intended "
+            "addressee even sees it. When you genuinely want a "
+            "single-addressee turn, prefer `address_role` over "
+            "`broadcast` to make the audience explicit."
         ),
         "input_schema": {
             "type": "object",
@@ -301,27 +318,55 @@ PLAY_TOOLS: list[dict[str, Any]] = [
     {
         "name": "set_active_roles",
         "description": (
-            "Yield the turn to one or more roles. Engine waits for all "
-            "named submissions before advancing (or a force-advance from "
-            "any participant). MUST be the LAST tool call of the turn "
-            "and MUST be paired with a `broadcast` or `address_role` in "
-            "the same response (the player-facing message that tells the "
-            "named roles what to do). "
-            "**Strict subset rule.** `role_ids` must contain ONLY the "
-            "roles you actually asked something of in this same turn's "
-            "player-facing message. If you used `address_role(Ben, …)` "
-            "and asked nothing of the engineer, do NOT include the "
-            "engineer here. If your `broadcast` body asks only Ben, do "
-            "NOT include other roles. Every extra id in this list creates "
-            "a wait gate on a reply the model never requested — the turn "
-            "stalls until force-advanced. When in doubt, yield narrower."
+            "Yield the turn to one or more *groups* of roles. Each group is "
+            "an independent ASK; a group is closed when ANY ONE of its "
+            "members signals ready, and the turn advances when EVERY "
+            "group is closed. MUST be the LAST tool call of the turn and "
+            "MUST be paired with a `broadcast` or `address_role` in the "
+            "same response (the player-facing message that tells each "
+            "group what to do).\n\n"
+            "**Group-shape rules.**\n"
+            "  • Single-role group `[ben_id]` = \"Ben must respond\". "
+            "Use this for direct asks to a specific role: "
+            "`address_role(Ben)`, `pose_choice(Ben, …)`, or a clause-"
+            "start `Ben — …` in your broadcast body.\n"
+            "  • Multi-role group `[paul_id, lawrence_id]` = \"either of "
+            "you can answer\". Use this when your same-turn message "
+            "phrases the ask as one-of-several (\"Paul or Lawrence — "
+            "who's filing this?\", \"one of you owns the ticket\"). "
+            "The first ready vote in a multi-role group closes it; "
+            "the other roles can still chime in with `intent=\"discuss\"` "
+            "but their absence won't stall the turn.\n"
+            "  • Multiple groups in the same yield = each group is a "
+            "separate ask. `[[ben_id], [paul_id, lawrence_id]]` means "
+            "Ben must respond AND one of Paul/Lawrence must respond.\n\n"
+            "**Strict subset rule.** Every role_id you list must be a "
+            "role you actually asked something of in this same turn's "
+            "player-facing message. The engine runs a clause-start "
+            "name matcher after each turn and DROPS unaddressed "
+            "role_ids from your groups; if a group becomes empty after "
+            "narrowing, the engine drops the group entirely. When in "
+            "doubt, yield narrower.\n\n"
+            "**No duplicates across groups.** A role can only belong to "
+            "one group — otherwise its single ready vote would close "
+            "two asks at once, which is almost never what you want. "
+            "The dispatcher silently drops repeated role_ids past the "
+            "first group they appear in."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
-                "role_ids": {"type": "array", "items": {"type": "string"}},
+                "role_groups": {
+                    "type": "array",
+                    "items": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "minItems": 1,
+                    },
+                    "minItems": 1,
+                },
             },
-            "required": ["role_ids"],
+            "required": ["role_groups"],
         },
     },
     {

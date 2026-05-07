@@ -59,7 +59,11 @@ class DispatchOutcome:
     def __init__(self) -> None:
         self.tool_results: list[dict[str, Any]] = []
         self.appended_messages: list[Message] = []
-        self.set_active_role_ids: list[str] | None = None
+        # Issue #168 (role-groups): the AI yields with a list of
+        # *groups*. Each group closes on the first ready vote from any
+        # of its members; the turn advances when every group is closed.
+        # ``None`` means the turn didn't yield this dispatch batch.
+        self.set_active_role_groups: list[list[str]] | None = None
         self.end_session_reason: str | None = None
         self.proposed_plan: ScenarioPlan | None = None
         self.finalized_plan: ScenarioPlan | None = None
@@ -916,25 +920,84 @@ class ToolDispatcher:
             return "critical event surfaced"
 
         if name == "set_active_roles":
-            raw_ids = list(args.get("role_ids") or [])
-            role_ids, unresolved = _resolve_role_refs(session, raw_ids)
-            if not role_ids:
-                # Nothing usable. Tell the model to retry with seated ids.
+            # Issue #168 (role-groups): the tool now takes a list of
+            # *groups*. Each group is itself a list of role_ids and
+            # represents one ASK; the turn advances when every group
+            # has at least one ready respondent. Single-role group =
+            # "this role must respond"; multi-role group = "any of
+            # you can answer".
+            raw_groups = args.get("role_groups")
+            if not isinstance(raw_groups, list) or not raw_groups:
                 raise _DispatchError(
-                    f"unknown role_ids: {unresolved} — only the roles in "
-                    "Block 10 exist; pass their opaque role_id (column 1)."
+                    "set_active_roles requires `role_groups` — a non-empty "
+                    "list of groups, e.g. [[ben_id]] for a single ask or "
+                    "[[ben_id], [paul_id, lawrence_id]] for 'Ben + (Paul "
+                    "or Lawrence)'."
                 )
-            outcome.set_active_role_ids = role_ids
+            resolved_groups: list[list[str]] = []
+            unresolved_total: list[str] = []
+            seen_in_groups: set[str] = set()
+            dropped_dupes: list[str] = []
+            elided_groups: list[list[str]] = []
+            for raw_group in raw_groups:
+                if not isinstance(raw_group, list) or not raw_group:
+                    raise _DispatchError(
+                        "every entry in role_groups must be a non-empty list "
+                        "of role_ids — empty groups would never close the "
+                        "quorum gate."
+                    )
+                resolved_ids, unresolved = _resolve_role_refs(session, raw_group)
+                if unresolved:
+                    unresolved_total.extend(unresolved)
+                # Strip duplicates within the group AND across groups: a
+                # role can only belong to one group (otherwise its
+                # single ready vote would close two groups at once,
+                # which the AI almost certainly didn't intend).
+                deduped: list[str] = []
+                for rid in resolved_ids:
+                    if rid in seen_in_groups:
+                        dropped_dupes.append(rid)
+                        continue
+                    seen_in_groups.add(rid)
+                    deduped.append(rid)
+                if deduped:
+                    resolved_groups.append(deduped)
+                else:
+                    # Every member of this group was either unknown or a
+                    # cross-group duplicate; the entire group elides.
+                    # Surface for diagnosability — the AI's stated yield
+                    # shape changed in a way the audit reader has to be
+                    # able to reconstruct.
+                    elided_groups.append(list(resolved_ids))
+            if not resolved_groups:
+                raise _DispatchError(
+                    f"unknown role_ids in every group: {unresolved_total} — "
+                    "only the roles in Block 10 exist; pass their opaque "
+                    "role_id (column 1)."
+                )
+            # QA review H3 / Security review LOW-1: emit a structured log
+            # of the dispatched yield shape so a post-hoc audit can spot
+            # the case where the AI's stated groups silently collapsed
+            # via dedup. Without this, "AI yielded [[ben], [ben, paul]]"
+            # arriving as ``[[ben], [paul]]`` is invisible.
+            _logger.info(
+                "set_active_roles_dispatched",
+                session_id=session.id,
+                turn_id=turn_id,
+                raw_groups=[list(g) if isinstance(g, list) else g for g in raw_groups],
+                resolved_groups=resolved_groups,
+                unresolved=unresolved_total,
+                dropped_dupes=dropped_dupes,
+                elided_groups=elided_groups,
+            )
+            outcome.set_active_role_groups = resolved_groups
             outcome.had_yielding_call = True
-            if unresolved:
-                # Soft-success: the turn yields to the resolved roles, but
-                # we surface a warning so the model corrects on the next
-                # turn instead of repeating the same hallucinated label.
+            if unresolved_total:
                 return (
-                    f"yielded to {role_ids}; ignored unknown role_ids "
-                    f"{unresolved} (not in Block 10 roster)"
+                    f"yielded to groups {resolved_groups}; ignored unknown "
+                    f"role_ids {unresolved_total} (not in Block 10 roster)"
                 )
-            return f"yielded to {role_ids}"
+            return f"yielded to groups {resolved_groups}"
 
         if name == "request_artifact":
             resolved, unresolved = _resolve_role_refs(session, [args.get("role_id")])
@@ -1056,6 +1119,7 @@ def _resolve_role_refs(
     }
     resolved: list[str] = []
     unresolved: list[str] = []
+    fallback_hits: list[tuple[str, str, str]] = []
     for raw in refs:
         if not isinstance(raw, str):
             unresolved.append(repr(raw))
@@ -1067,11 +1131,27 @@ def _resolve_role_refs(
         lowered = ref.lower()
         if lowered in by_label_lower:
             resolved.append(by_label_lower[lowered])
+            fallback_hits.append((ref, by_label_lower[lowered], "label"))
             continue
         if lowered in by_display_lower:
             resolved.append(by_display_lower[lowered])
+            fallback_hits.append((ref, by_display_lower[lowered], "display_name"))
             continue
         unresolved.append(ref)
+    # Security review MEDIUM-1: surface the label/display-name fallback.
+    # The dispatcher accepts a non-id ref for AI ergonomics, but a
+    # silent fallback masks a slow drift where the AI starts emitting
+    # labels instead of opaque ids. Log every hit so an operator can
+    # see "the AI is calling roles by label" in the audit stream.
+    if fallback_hits:
+        _logger.info(
+            "role_ref_label_fallback",
+            session_id=session.id,
+            fallback_hits=[
+                {"raw_ref": raw, "resolved_id": rid, "matched_via": via}
+                for raw, rid, via in fallback_hits
+            ],
+        )
     # De-dupe while preserving order.
     seen: set[str] = set()
     deduped: list[str] = []
