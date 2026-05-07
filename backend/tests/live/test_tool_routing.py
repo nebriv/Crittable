@@ -482,7 +482,7 @@ async def test_single_addressee_yields_narrowly_or_engine_narrows(
       (final set still has SOC).
     """
 
-    from app.sessions.active_roles import narrow_active_roles
+    from app.sessions.active_roles import narrow_active_role_groups
     from app.sessions.models import Message, MessageKind
 
     resp = await call_play(
