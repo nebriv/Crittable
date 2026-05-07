@@ -1853,8 +1853,6 @@ export function Facilitator() {
         <aside className="flex flex-col gap-3 lg:min-h-0 lg:overflow-y-auto lg:pr-1">
           <CollapsibleRailPanel
             title="HUD"
-            subtitle="placeholder"
-            subtitleTone="warn"
             persistKey="crittable.rail.hud.collapsed"
             defaultCollapsed
           >

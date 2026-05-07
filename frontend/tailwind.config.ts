@@ -103,6 +103,24 @@ const config: Config = {
               "0 0 0 10px rgb(94 166 234 / 0), 0 10px 15px -3px rgb(0 0 0 / 0.25)",
           },
         },
+        // The "awaiting your response" chip above the composer in
+        // Play.tsx — yellow ring that pulses outward to flag your-turn
+        // in peripheral vision while the user reads the room. Mirrors
+        // the structure of `chip-pulse` (outer ripple) but keyed off
+        // the warn token so it harmonizes with the chip border. The
+        // motion-reduce override is wired into the index.css media
+        // query so screen-reader and reduced-motion users get a
+        // static chip with the same border weight.
+        "warn-chip-pulse": {
+          "0%, 100%": {
+            boxShadow:
+              "0 0 0 0 color-mix(in oklch, oklch(0.82 0.16 75) 45%, transparent)",
+          },
+          "50%": {
+            boxShadow:
+              "0 0 0 8px color-mix(in oklch, oklch(0.82 0.16 75) 0%, transparent)",
+          },
+        },
         // Brand keyframes — kept on the Tailwind side so utility classes
         // can compose them. The CSS-side definitions in tokens.css are
         // the source of truth; these mirrors let `animate-tt-*` work.
@@ -128,6 +146,7 @@ const config: Config = {
       },
       animation: {
         "chip-pulse": "chip-pulse 2.2s ease-in-out infinite",
+        "warn-chip-pulse": "warn-chip-pulse 2.2s ease-in-out infinite",
         "tt-blink": "tt-blink 1s steps(2) infinite",
         "tt-pulse": "tt-pulse 1.6s ease-in-out infinite",
         "tt-sweep": "tt-sweep 8s linear infinite",

@@ -115,6 +115,27 @@ describe("TranscriptFilters", () => {
     ).toHaveAttribute("aria-pressed", "false");
   });
 
+  it("@Me pill renders in the signal-blue identity tone, not warn", () => {
+    // Color-cleanup PR (QA review HIGH): the @Me pill used to wear
+    // ``tone="warn"`` (yellow). With @YOU badges, @-mention bubble
+    // borders, and the · YOU self suffix all in signal-blue, having
+    // the matching FILTER stay yellow read as "noise" — yellow no
+    // longer correlated with anything coherent. Pill now wears the
+    // ``default`` tone so its active state is signal-blue,
+    // matching the rest of the identity surface. Yellow is reserved
+    // for the awaiting-response chip (``● YOUR TURN`` near the
+    // composer). This test pins the new tone so a future revert
+    // can't slip back.
+    render(<Harness initialState={{ quality: "me", tracks: new Set() }} />);
+    const me = screen.getByRole("button", { name: /Mentions of you/ });
+    expect(me).toHaveAttribute("aria-pressed", "true");
+    expect(me.className).not.toContain("border-warn");
+    expect(me.className).not.toContain("bg-warn");
+    expect(me.className).not.toContain("text-warn");
+    // Active default tone uses signal tokens.
+    expect(me.className).toMatch(/border-signal/);
+  });
+
   it("track pills toggle independently and accumulate", () => {
     render(<Harness />);
     const cont = screen.getByRole("button", { name: /^Containment / });

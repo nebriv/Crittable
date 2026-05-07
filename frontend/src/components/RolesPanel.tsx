@@ -18,9 +18,13 @@ interface Props {
   connectedRoleIds: ReadonlySet<string>;
   /**
    * Subset of ``connectedRoleIds`` whose tabs are currently focused /
-   * visible. Drives the blue (active) vs yellow (joined but tabbed
-   * away) color of the status dot. A role in ``connectedRoleIds`` but
-   * not in this set is shown as joined-but-idle.
+   * visible. Drives the blue (active) vs muted-ink (joined but
+   * tabbed away) color of the status dot. A role in
+   * ``connectedRoleIds`` but not in this set is shown as
+   * joined-but-idle. Idle used to render in warn (amber) but was
+   * demoted to a muted ink tone — "tab not focused" is a status, not
+   * a warning, and yellow is reserved for the awaiting-response cue
+   * to keep "your turn" the only amber signal on screen.
    */
   focusedRoleIds: ReadonlySet<string>;
 }
@@ -40,7 +44,7 @@ function computeStatus(
 const STATUS_DOT_CLASS: Record<RoleStatus, string> = {
   not_joined: "bg-ink-500",
   joined_active: "bg-signal",
-  joined_idle: "bg-warn",
+  joined_idle: "bg-ink-300",
 };
 
 const STATUS_LABEL: Record<RoleStatus, string> = {
@@ -272,7 +276,7 @@ export function RolesPanel({
         <span className="inline-flex items-center gap-1">
           <span
             aria-hidden="true"
-            className="inline-block h-2 w-2 rounded-full bg-warn"
+            className="inline-block h-2 w-2 rounded-full bg-ink-300"
           />
           tab not active
         </span>
@@ -314,7 +318,7 @@ export function RolesPanel({
                   </span>
                 ) : null}
                 {r.is_creator ? (
-                  <span className="text-xs text-warn" title="Creator">
+                  <span className="text-xs text-signal" title="Creator">
                     ★
                   </span>
                 ) : null}

@@ -1,7 +1,9 @@
+import { useState } from "react";
 import type { MouseEvent as ReactMouseEvent, ReactNode } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { MessageView, RoleView, WorkstreamView } from "../api/client";
+import { SHARE_DATA_MIN_CHARS } from "../lib/shareDataPolicy";
 import { colorForWorkstream } from "../lib/workstreamPalette";
 import { ChatIndicator } from "./ChatIndicator";
 import { TableScroll } from "./TableScroll";
@@ -71,7 +73,9 @@ interface Props {
    * need to respond to without scrolling. Pairs with the
    * "Awaiting your response" chip near the composer; the two cues
    * together mean a non-addressed-but-still-active role can't miss
-   * that they're being waited on.
+   * that they're being waited on. Yellow is reserved for THIS signal —
+   * "you owe a turn answer" — so it stays distinct from the
+   * signal-blue self/@-mention identity treatment.
    */
   highlightLastAi?: boolean;
   /**
@@ -105,6 +109,16 @@ interface Props {
   viewerIsCreator?: boolean;
 }
 
+// Substantial ``share_data`` calls collapse to a one-line summary
+// card by default — clicking "Show N lines" unfurls the full
+// markdown body. The threshold is shared with Timeline (rail
+// pinning) and ArtifactsRail (artifact cards) via
+// ``SHARE_DATA_MIN_CHARS`` so the three behaviors stay in lockstep.
+// User feedback: "the transcript moves very quickly when the AI
+// dumps big chunks." Smaller share_data calls render inline as
+// before — collapsing those adds friction without saving
+// real-estate.
+
 /**
  * Derive the short uppercase badge text for a role. The brand mock uses
  * 3-4 char codes (CSM, CSE, IC, COM); this app stores arbitrary role
@@ -117,6 +131,44 @@ interface Props {
 function roleCode(label: string): string {
   const first = label.trim().split(/\s+/)[0] ?? "";
   return first.toUpperCase().slice(0, 4) || "—";
+}
+
+/**
+ * Pick a short preview line for a collapsed share_data card.
+ * Walks the body line-by-line, strips leading markdown chrome
+ * (heading hashes, bullet markers, surrounding ``**bold**``), skips
+ * empty lines, and skips a line that's just the label restated
+ * (the AI often emits ``**Label**\n\n…data…`` and the collapsed
+ * card already shows the label prominently — re-rendering it as
+ * preview is wasted real-estate). Returns the first substantive
+ * line, clamped to 140 chars.
+ */
+function derivePreview(body: string, label: string): string {
+  const labelNorm = label.trim().toLowerCase();
+  const lines = body.split(/\r?\n/);
+  for (const raw of lines) {
+    // Strip-order matters. The surrounding-bold pattern
+    // (``**…**``) must run BEFORE the leading-marker chrome strip,
+    // because ``*`` is in the marker character class — running the
+    // marker strip first eats the leading ``**`` and leaves the
+    // trailing ``**`` orphaned, giving previews like
+    // ``Defender telemetry — 03:14 UTC**`` (visible cruft + the
+    // label-skip dedupe fails because the lowercased forms no
+    // longer match). Belt-and-braces: a final trailing-``**`` strip
+    // catches asymmetric markdown the first pass missed
+    // (e.g. ``# **header**`` where the ``#`` and ``**`` arrive in
+    // separate strip rounds).
+    const stripped = raw
+      .trim()
+      .replace(/^\*\*(.+?)\*\*$/, "$1")
+      .replace(/^[#>\-*•]+\s*/, "")
+      .replace(/\*\*$/, "")
+      .trim();
+    if (stripped.length === 0) continue;
+    if (stripped.toLowerCase() === labelNorm) continue;
+    return stripped.length > 140 ? stripped.slice(0, 140).trimEnd() + "…" : stripped;
+  }
+  return "";
 }
 
 /**
@@ -231,6 +283,50 @@ export function Transcript({
   selfAuthoredRoleIds,
   viewerIsCreator,
 }: Props) {
+  // Tracks which substantial ``share_data`` messages have been
+  // expanded by the viewer. Pure render state — not synced to the
+  // server, not shared across tabs. Resetting on tab refresh is
+  // intentional: the collapse default is the firehose mitigation, so
+  // re-loading the page should reset to "all collapsed" and let the
+  // viewer choose what to read again. (If we ever want sticky
+  // expansion we can persist into localStorage keyed by message id;
+  // not worth it until someone asks.)
+  const [expandedShareData, setExpandedShareData] = useState<Set<string>>(
+    () => new Set(),
+  );
+  function toggleShareDataExpansion(messageId: string): void {
+    let isExpanding = false;
+    setExpandedShareData((prev) => {
+      const next = new Set(prev);
+      if (next.has(messageId)) {
+        next.delete(messageId);
+        isExpanding = false;
+      } else {
+        next.add(messageId);
+        isExpanding = true;
+      }
+      return next;
+    });
+    // CLAUDE.md "Log state transitions in pages — modal open/close."
+    // The collapse toggle is functionally a modal-like state change;
+    // a console line is the only artifact a future operator will
+    // have if a "the card won't expand" report comes in.
+    console.debug("[transcript] share-data toggle", {
+      messageId,
+      action: isExpanding ? "expand" : "collapse",
+    });
+    // UI/UX review HIGH H2: without an explicit scroll-into-view,
+    // useStickyScroll's ResizeObserver can re-pin the user to the
+    // bottom on the layout shift and bury the just-expanded card
+    // mid-transcript. ``block: "nearest"`` is a no-op when the
+    // target is already in the viewport — only nudges when the
+    // newly-expanded body would otherwise scroll out of frame. We
+    // wait one frame so the DOM has the post-toggle height.
+    requestAnimationFrame(() => {
+      const el = document.getElementById(`msg-${messageId}`);
+      el?.scrollIntoView({ block: "nearest" });
+    });
+  }
   // Build a once-per-render predicate so each bubble can ask "may I
   // open the menu on right-click?" in O(1). Creator can re-tag any
   // message; non-creator only their own. ``onMessageContextMenu``
@@ -366,13 +462,22 @@ export function Transcript({
         // @-highlight. The stripe is 3 px on the left edge of the
         // bubble; ``colorForWorkstream`` falls back to slate gray
         // for ``#main`` / unknown ids. The mention-flag drives the
-        // amber outline + ``(@you)`` badge ONLY from the structural
+        // signal-blue ``@YOU`` badge ONLY from the structural
         // ``mentions[]`` list — we never regex the body, per plan
         // §5.1.
+        //
+        // Two distinct semantic states, two distinct colors:
+        //   - ``isFocusHit`` = your-turn-now → amber (warn). The
+        //     loudest "you owe a response" signal; matches the
+        //     awaiting-response chip above the composer.
+        //   - ``isMentioned`` = you-are-tagged → signal blue. Same
+        //     hue family as the ``· YOU`` self suffix on player
+        //     bubbles, so identity reads as one consistent color.
+        // Yellow used to do both jobs, which was the user-reported
+        // "too many yellow things vying for attention" problem.
         const stripeColor = colorForWorkstream(m.workstream_id, declaredOrder);
         const isMentioned =
           selfRoleId != null && (m.mentions ?? []).includes(selfRoleId);
-        const isHighlighted = (isFocusHit || isMentioned) && !isCritical;
         const landmarks = landmarksByMessageId.get(m.id) ?? [];
 
         if (isSystem) {
@@ -417,30 +522,41 @@ export function Transcript({
           // sits OUTSIDE that border on a dedicated rail so the two
           // signals don't collide (UI/UX review specifically asked we
           // avoid recoloring the critical-inject red).
-          // Header chrome — dot + label color. Critical injects keep
-          // their crit-red emphasis; highlighted bubbles (your turn or
-          // @-mentioned) shift to warn so the dot, label, border, and
-          // @YOU badge all read as one amber focus signal.
+          // Header chrome — dot + label color. Three priority levels:
+          //   1. Critical inject → crit (red), always wins.
+          //   2. Your-turn focus (``isFocusHit``) → warn (amber).
+          //      Reserved for "you owe a response on this turn".
+          //   3. @-mention only → signal (blue). Identity, not alarm.
+          //   4. Default → signal (blue). The standard AI bubble.
+          // Yellow being two-job (turn + mention) was the
+          // user-reported "yellow noise" problem; mention drops to
+          // blue to align with the ``· YOU`` self suffix on player
+          // bubbles.
           const dotColor = isCritical
             ? "bg-crit"
-            : isHighlighted
+            : isFocusHit && !isCritical
               ? "bg-warn"
               : "bg-signal";
           const labelColor = isCritical
             ? "text-crit"
-            : isHighlighted
+            : isFocusHit && !isCritical
               ? "text-warn"
               : "text-signal";
-          // Bubble border. Critical injects keep their crit-red
-          // emphasis. Otherwise, when the viewer owes a response on
-          // this turn (focus) OR this message @-mentions them, swap
-          // the default ink-600 border for warn — same amber color
-          // signal as the @YOU badge.
+          // Bubble border priority mirrors the dot/label rules above.
+          // Your-turn bubbles get the amber border; mention-only
+          // bubbles get a brighter signal border (not signal-deep,
+          // which is barely distinguishable from the default ink-600
+          // chrome at peripheral-vision distance — UI/UX review HIGH).
+          // The brighter signal stays clearly distinct from the warn
+          // amber so "you owe a response" and "you're tagged" remain
+          // separate visual signals.
           const borderClass = isCritical
             ? "border border-crit border-l-2 bg-crit-bg"
-            : isHighlighted
+            : isFocusHit
               ? "border border-warn bg-ink-800"
-              : "border border-ink-600 bg-ink-800";
+              : isMentioned
+                ? "border border-signal bg-ink-800"
+                : "border border-ink-600 bg-ink-800";
           return (
             <Landmarks
               key={`grp-${m.id}`}
@@ -491,7 +607,7 @@ export function Transcript({
                     </span>
                     {isMentioned ? (
                       <span
-                        className="rounded-r-1 border border-warn bg-warn-bg px-1.5 py-0.5 text-[9px] font-bold uppercase leading-none tracking-[0.10em] text-warn"
+                        className="rounded-r-1 border border-signal bg-ink-900 px-1.5 py-0.5 text-[9px] font-bold uppercase leading-none tracking-[0.10em] text-signal"
                         title="This message mentions you"
                       >
                         @YOU
@@ -511,22 +627,75 @@ export function Transcript({
                       />
                     ) : null}
                   </header>
-                  <div
-                    className={`min-w-0 break-words rounded-r-2 px-4 py-3 text-ink-100 ${borderClass}`}
-                    // Issue #98: AI / inject bubbles must be highlight-pinnable
-                    // — they're the artifact users most want to capture into
-                    // their notepad timeline.
-                    data-highlightable="true"
-                    data-message-id={m.id}
-                    data-message-kind="ai"
-                  >
-                    <MarkdownBody body={m.body} />
-                    {m.tool_name ? (
-                      <p className="mono mt-2 text-[10px] uppercase tracking-[0.10em] text-ink-400">
-                        tool · {m.tool_name}
-                      </p>
-                    ) : null}
-                  </div>
+                  {(() => {
+                    // Substantial ``share_data`` calls collapse to a
+                    // one-line "Data brief" summary by default; the
+                    // viewer expands inline via "View details". The
+                    // bubble wrapper, header, @YOU badge, and
+                    // workstream stripe stay identical between the two
+                    // states — only the body content + the toggle
+                    // affordance changes. Non-share_data tools and
+                    // small share_data dumps render exactly as before
+                    // (full MarkdownBody).
+                    const isLargeShareData =
+                      m.tool_name === "share_data" &&
+                      (m.body?.length ?? 0) >= SHARE_DATA_MIN_CHARS;
+                    const isShareDataExpanded = expandedShareData.has(m.id);
+                    const shareDataLabel =
+                      m.tool_name === "share_data" &&
+                      typeof m.tool_args?.label === "string"
+                        ? (m.tool_args.label as string).trim() || "Data shared"
+                        : "Data shared";
+                    // When the bubble already carries a focus or
+                    // mention border, demote the cyan card chrome
+                    // to neutral ink so we don't stack three accent
+                    // colors (UI/UX review HIGH H1).
+                    const cardAccent: "info" | "neutral" =
+                      isFocusHit || isMentioned ? "neutral" : "info";
+                    const hideButtonClasses =
+                      cardAccent === "info"
+                        ? "border-info bg-info-bg text-info hover:bg-info/30 focus-visible:outline-info"
+                        : "border-ink-500 bg-ink-700 text-ink-100 hover:border-ink-400 focus-visible:outline-signal";
+                    return (
+                      <div
+                        className={`min-w-0 break-words rounded-r-2 px-4 py-3 text-ink-100 ${borderClass}`}
+                        // Issue #98: AI / inject bubbles must be highlight-pinnable
+                        // — they're the artifact users most want to capture into
+                        // their notepad timeline.
+                        data-highlightable="true"
+                        data-message-id={m.id}
+                        data-message-kind="ai"
+                      >
+                        {isLargeShareData && !isShareDataExpanded ? (
+                          <ShareDataCollapsedBody
+                            label={shareDataLabel}
+                            body={m.body}
+                            onExpand={() => toggleShareDataExpansion(m.id)}
+                            accent={cardAccent}
+                          />
+                        ) : (
+                          <>
+                            <MarkdownBody body={m.body} />
+                            {isLargeShareData ? (
+                              <button
+                                type="button"
+                                onClick={() => toggleShareDataExpansion(m.id)}
+                                className={`mono mt-3 inline-flex items-center gap-1 rounded-r-1 border px-2 py-1 text-[10px] font-bold uppercase tracking-[0.12em] focus-visible:outline focus-visible:outline-2 ${hideButtonClasses}`}
+                                aria-expanded="true"
+                              >
+                                ▴ Hide details
+                              </button>
+                            ) : null}
+                            {m.tool_name && !isLargeShareData ? (
+                              <p className="mono mt-2 text-[10px] uppercase tracking-[0.10em] text-ink-400">
+                                tool · {m.tool_name}
+                              </p>
+                            ) : null}
+                          </>
+                        )}
+                      </div>
+                    );
+                  })()}
                 </div>
               </article>
             </Landmarks>
@@ -541,14 +710,19 @@ export function Transcript({
         const roleLabel = role?.label ?? "—";
         const code = roleCode(roleLabel);
         const displayName = role?.display_name ?? "";
-        // Player bubble border. Mention-of-self swaps to warn (same
-        // signal as AI bubbles); self-bubbles keep their signal-tinted
-        // background since the viewer rarely needs to be reminded
-        // they mentioned themselves.
+        // Player bubble border. Self-bubbles keep their signal-tinted
+        // background with a signal-deep edge; @-mentions of the
+        // viewer get a brighter signal border on the standard
+        // ink-800 (same brightness rule as the AI bubble path —
+        // signal-deep was too close to ink-600 to scan
+        // peripherally). Self + @-mention is rare and the self-tint
+        // already wins; we don't escalate that case to amber since
+        // amber is reserved for "you owe a turn answer" (the
+        // awaiting-response chip + your-turn AI bubble).
         const bubbleColour = isSelf
           ? "border border-signal-deep bg-signal-tint"
-          : isHighlighted
-            ? "border border-warn bg-ink-800"
+          : isMentioned
+            ? "border border-signal bg-ink-800"
             : "border border-ink-600 bg-ink-800";
         return (
           <Landmarks
@@ -589,7 +763,7 @@ export function Transcript({
                   ) : null}
                   {isMentioned ? (
                     <span
-                      className="rounded-r-1 border border-warn bg-warn-bg px-1.5 py-0.5 text-[9px] font-bold uppercase leading-none tracking-[0.10em] text-warn"
+                      className="rounded-r-1 border border-signal-deep bg-signal-tint px-1.5 py-0.5 text-[9px] font-bold uppercase leading-none tracking-[0.10em] text-signal"
                       title="This message mentions you"
                     >
                       @YOU
@@ -713,6 +887,90 @@ export function Transcript({
  * SOC at 14:33"); we just don't want it announced as a list item or
  * a heading. NVDA reads it as plain text.
  */
+/**
+ * Collapsed-by-default render for substantial ``share_data`` calls.
+ * Shows the AI-supplied label (the same string Timeline uses for the
+ * "Data brief" rail pin), a one-line preview from the body, and a
+ * size-stat (line count + char count) so the viewer can decide
+ * whether to expand. The "View details" button toggles the parent
+ * Transcript's `expandedShareData` set; once expanded, the bubble
+ * re-renders with the full MarkdownBody and a "Hide details" button.
+ *
+ * Tone is info-cyan, matching the Timeline rail's Data-brief pin
+ * color so a viewer who sees the rail entry and clicks through to
+ * the chat finds the same visual language. Yellow is intentionally
+ * avoided — that's reserved for "you owe a turn answer" (the
+ * awaiting-response chip).
+ */
+function ShareDataCollapsedBody({
+  label,
+  body,
+  onExpand,
+  accent,
+}: {
+  label: string;
+  body: string;
+  onExpand: () => void;
+  /**
+   * Card chrome tone. ``info`` (cyan) is the default — matches the
+   * Timeline rail's Data-brief pin so re-find lands in consistent
+   * visual language. ``neutral`` (ink tones) is used when the
+   * outer bubble already carries an accent border (focus-hit warn
+   * for your-turn, signal blue for @-mentions of the viewer); the
+   * outer border carries the semantic and the card chrome demotes
+   * to ink to avoid stacking three accent colors on one bubble
+   * (UI/UX review HIGH H1 on this PR — yellow-cleanup specifically
+   * aimed to keep amber unique to "you owe a turn answer", and a
+   * focus-hit share_data with cyan card chrome would re-introduce
+   * the same noise problem in a different color).
+   */
+  accent: "info" | "neutral";
+}) {
+  const preview = derivePreview(body, label);
+  const lineCount = body
+    .split(/\r?\n/)
+    .filter((l) => l.trim().length > 0).length;
+  const charCount = body.length;
+  const tagColor = accent === "info" ? "text-info" : "text-ink-300";
+  const buttonClasses =
+    accent === "info"
+      ? "border-info bg-info-bg text-info hover:bg-info/30 focus-visible:outline-info"
+      : "border-ink-500 bg-ink-700 text-ink-100 hover:border-ink-400 focus-visible:outline-signal";
+  return (
+    <div className="flex flex-col gap-2">
+      <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+        <span className={`mono text-[10px] font-bold uppercase tracking-[0.16em] ${tagColor}`}>
+          ▤ DATA BRIEF
+        </span>
+        <span className="text-sm font-semibold text-ink-050">{label}</span>
+        <span className="mono ml-auto text-[10px] tabular-nums text-ink-400">
+          {lineCount} {lineCount === 1 ? "line" : "lines"} ·{" "}
+          {charCount.toLocaleString()} chars
+        </span>
+      </div>
+      {preview ? (
+        <p className="line-clamp-1 text-xs text-ink-300">{preview}</p>
+      ) : null}
+      <button
+        type="button"
+        onClick={onExpand}
+        className={`mono self-start inline-flex items-center gap-1 rounded-r-1 border px-2 py-1 text-[10px] font-bold uppercase tracking-[0.12em] focus-visible:outline focus-visible:outline-2 ${buttonClasses}`}
+        aria-expanded="false"
+        aria-label={`Show ${lineCount} ${lineCount === 1 ? "line" : "lines"} of data — ${label}`}
+        title="Reveal the full data dump inline. The same content is also pinned in the Timeline rail."
+      >
+        {/* Operator-voice copy (User-persona review MEDIUM) — the
+            generic "View details" doesn't tell the viewer the cost
+            of clicking. "Show N lines" reads as the operator action
+            it is and previews the size before committing the
+            expand. The size stat above carries the char count for
+            full transparency. */}
+        ▾ Show {lineCount} {lineCount === 1 ? "line" : "lines"}
+      </button>
+    </div>
+  );
+}
+
 function KeyboardOverrideTrigger({
   onOpen,
 }: {

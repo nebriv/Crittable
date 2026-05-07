@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { MessageView, RoleView } from "../api/client";
+import { SHARE_DATA_MIN_CHARS } from "../lib/shareDataPolicy";
 
 interface Props {
   messages: MessageView[];
@@ -24,11 +25,6 @@ interface TimelineEntry {
   body: string;
   tone: string;
 }
-
-// Lower bound for ``share_data`` body length (in chars, post-label) to be
-// pin-worthy. Short data shares (a single line of telemetry) would clutter
-// the rail; only substantial dumps — log tables, IOC lists — get pinned.
-const SHARE_DATA_MIN_CHARS = 300;
 
 // Beat detector: matches the AI naming a phase / beat / stage in a broadcast.
 // Examples it should catch:
@@ -111,7 +107,10 @@ export function Timeline({
     if (m.tool_name === "pose_choice") {
       // Decision points — the AI surfaced a multi-choice fork. Always
       // pin: a tactical decision is exactly the kind of moment players
-      // will want to scroll back to during the AAR.
+      // will want to scroll back to during the AAR. Tone is info
+      // (cyan) — a decision is informational, not a warning. Yellow
+      // used to live here but was reclaimed for the awaiting-response
+      // chip so "your turn" stays the only amber thing on screen.
       const question = (m.tool_args?.question as string | undefined)?.trim();
       const role = _roles.find((r) => r.id === (m.tool_args?.role_id as string | undefined));
       const roleLabel = role ? `${role.label} — ` : "";
@@ -121,7 +120,7 @@ export function Timeline({
         tag: "Decision",
         title: roleLabel + (question || "Decision point"),
         body: m.body,
-        tone: "border-warn bg-warn-bg",
+        tone: "border-info bg-info-bg",
       });
       continue;
     }

@@ -62,7 +62,7 @@ export function RoleRoster({ roles, activeRoleIds, selfRoleId, connectedRoleIds 
                 ) : null}
                 {r.is_creator ? (
                   <span
-                    className="ml-1 text-warn"
+                    className="ml-1 text-signal"
                     title="Session creator"
                     aria-label="creator"
                   >
