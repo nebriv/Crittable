@@ -63,6 +63,29 @@ export function PlanView({
               ),
               strong: ({ children }) => <strong className="font-semibold">{children}</strong>,
               em: ({ children }) => <em className="italic">{children}</em>,
+              // AI-emitted prose may contain markdown links. Mirror
+              // ``Transcript.tsx``'s safe-link pattern so the operator's
+              // session isn't lost to a same-tab navigation, and reject
+              // any non-http(s) scheme defensively (react-markdown v10
+              // sanitises ``javascript:`` already; the guard is
+              // defence-in-depth against a future dep bump regression).
+              a: ({ href, children }) => {
+                const safe =
+                  typeof href === "string" &&
+                  /^https?:\/\//i.test(href) ? href : undefined;
+                return safe ? (
+                  <a
+                    href={safe}
+                    target="_blank"
+                    rel="noreferrer noopener"
+                    className="text-signal underline hover:text-signal-bright"
+                  >
+                    {children}
+                  </a>
+                ) : (
+                  <span className="text-ink-300">{children}</span>
+                );
+              },
             }}
           >
             {plan.executive_summary}
