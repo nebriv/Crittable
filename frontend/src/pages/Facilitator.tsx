@@ -1,6 +1,4 @@
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
 import {
   api,
   CostSnapshot,
@@ -39,6 +37,7 @@ import { TurnStateRail } from "../components/brand/TurnStateRail";
 import { SetupWizard, type SetupRoleSlot } from "../components/setup/SetupWizard";
 import { SetupLobbyView } from "../components/setup/SetupLobbyView";
 import { SetupReviewView } from "../components/setup/SetupReviewView";
+import { PlanView } from "../components/setup/PlanView";
 import {
   buildImpersonateOptions,
   countUnjoinedImpersonateOptions,
@@ -941,13 +940,21 @@ export function Facilitator() {
   }
 
   /**
-   * "Looks ready" button: force progress toward a finalized plan.
-   * - If a draft plan already exists → finalize directly (skip the AI loop).
-   * - Otherwise → nudge the AI to propose, then auto-finalize if it does.
+   * "Looks ready — propose the plan" button: nudge the AI to draft a
+   * plan so the operator can review it in the PlanPanel. Does NOT
+   * finalize — the operator commits the plan by clicking APPROVE &
+   * START LOBBY in the PlanPanel, which routes through
+   * ``handleApprovePlan`` → ``api.setupFinalize``. Auto-finalizing
+   * here would skip the panel render and dump the operator on step 5
+   * (the lobby) without ever seeing the plan, with no rail back-
+   * navigation to recover.
    */
   async function handleLooksReady() {
     if (!state || !snapshot) return;
     setError(null);
+    // Tab-background race: ``hasPlan`` hides the button in render, but
+    // a plan that lands between paint and click leaves a stale button
+    // reachable for one frame. Route to APPROVE in that case.
     if (snapshot.plan) {
       await handleApprovePlan();
       return;
@@ -956,20 +963,15 @@ export function Facilitator() {
     setDraftingPlan(true);
     console.debug("[facilitator] draftingPlan", { value: true, source: "looks-ready" });
     setBusyMessage("Drafting the scenario plan… typically 10–30 seconds.");
+    console.info("[facilitator] looks_ready_clicked nudging plan");
     try {
       const reply = await api.setupReply(state.sessionId, state.token, NUDGE_PROPOSE);
       const snap = await api.getSession(state.sessionId, state.token);
       setSnapshot(snap);
       if (snap.plan) {
-        // Plan landed — drop the prominent drafting banner so the
-        // operator's eye moves to the plan card; the smaller BusyChip
-        // continues to communicate the fast finalize step.
+        console.info("[facilitator] plan_proposed awaiting_approve");
         setDraftingPlan(false);
         console.debug("[facilitator] draftingPlan", { value: false, source: "looks-ready-plan-landed" });
-        setBusyMessage("Plan drafted — finalizing…");
-        await api.setupFinalize(state.sessionId, state.token);
-        const after = await api.getSession(state.sessionId, state.token);
-        setSnapshot(after);
       } else {
         // Disambiguate the failure mode using server-side diagnostics
         // so the operator knows whether to raise max_tokens, share more
@@ -993,7 +995,9 @@ export function Facilitator() {
         setError(message);
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn("[facilitator] looks_ready_failed", msg, err);
+      setError(msg);
     } finally {
       setBusy(false);
       setBusyMessage(null);
@@ -1008,12 +1012,15 @@ export function Facilitator() {
     setError(null);
     setBusy(true);
     setBusyMessage("Finalizing plan and moving to the lobby…");
+    console.info("[facilitator] approve_plan_clicked finalizing");
     try {
       await api.setupFinalize(state.sessionId, state.token);
       const snap = await api.getSession(state.sessionId, state.token);
       setSnapshot(snap);
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn("[facilitator] approve_plan_failed", msg, err);
+      setError(msg);
     } finally {
       setBusy(false);
       setBusyMessage(null);
@@ -2537,7 +2544,7 @@ export function SetupView({
             onClick={onLooksReady}
             disabled={busy}
             className="mono rounded-r-1 border border-signal-deep px-3 py-1.5 text-[11px] font-semibold uppercase tracking-[0.16em] text-signal hover:bg-signal-tint focus-visible:outline focus-visible:outline-2 focus-visible:outline-signal disabled:opacity-50"
-            title="Asks the AI to draft a plan; auto-finalizes it if one comes back."
+            title="Asks the AI to draft a plan you can review and approve."
           >
             LOOKS READY — PROPOSE THE PLAN
           </button>
@@ -2695,202 +2702,6 @@ function PlanPanel({
         </button>
       </div>
     </section>
-  );
-}
-
-/**
- * Readable structured plan view with optional spoiler-hide.
- *
- * The plan was previously dumped as ``JSON.stringify`` which (a) clipped on
- * narrow viewports and (b) spoiled every upcoming inject for the creator.
- * The creator is the only one who sees the plan in any case (it's
- * creator-only by ``visible_messages`` filtering), but as the operator
- * they may still want to play "fresh" alongside the team.
- *
- * Default: title, executive_summary, key_objectives, guardrails,
- * success_criteria, and out_of_scope are visible. ``narrative_arc`` and
- * ``injects`` are spoiler-hidden behind a Reveal toggle whose state is
- * persisted in localStorage so it carries across reloads.
- */
-function PlanView({
-  plan,
-  sessionId,
-}: {
-  plan: ScenarioPlan;
-  /**
-   * Optional session id used to scope the spoiler-reveal preference.
-   * Without this the preference would persist across sessions and a
-   * creator who screen-shares with their team after a previous solo
-   * test would silently spoil the next plan. Per-session scoping makes
-   * each new exercise reset to the safe (hidden) default while still
-   * respecting the user's choice within the current session.
-   */
-  sessionId?: string;
-}) {
-  const storageKey = sessionId
-    ? `atf-plan-reveal:${sessionId}`
-    : "atf-plan-reveal";
-  const [reveal, setReveal] = useState<boolean>(() => {
-    try {
-      return window.localStorage.getItem(storageKey) === "1";
-    } catch {
-      return false;
-    }
-  });
-  function toggleReveal() {
-    setReveal((cur) => {
-      const next = !cur;
-      try {
-        window.localStorage.setItem(storageKey, next ? "1" : "0");
-      } catch {
-        /* localStorage may be disabled; preference is best-effort. */
-      }
-      return next;
-    });
-  }
-  return (
-    <article className="flex flex-col gap-4 text-sm text-ink-100">
-      <header>
-        <h3 className="text-lg font-semibold text-signal-100">{plan.title}</h3>
-      </header>
-
-      {plan.executive_summary ? (
-        <section className="flex flex-col gap-1">
-          <h4 className="text-xs uppercase tracking-widest text-ink-400">
-            Executive summary
-          </h4>
-          <ReactMarkdown
-            skipHtml
-            remarkPlugins={[remarkGfm]}
-            components={{
-              p: ({ children }) => (
-                <p className="whitespace-pre-wrap leading-relaxed">{children}</p>
-              ),
-              strong: ({ children }) => <strong className="font-semibold">{children}</strong>,
-              em: ({ children }) => <em className="italic">{children}</em>,
-            }}
-          >
-            {plan.executive_summary}
-          </ReactMarkdown>
-        </section>
-      ) : null}
-
-      {plan.key_objectives.length > 0 ? (
-        <section className="flex flex-col gap-1">
-          <h4 className="text-xs uppercase tracking-widest text-ink-400">Key objectives</h4>
-          <ul className="ml-4 list-disc space-y-0.5">
-            {plan.key_objectives.map((o, i) => (
-              <li key={i}>{o}</li>
-            ))}
-          </ul>
-        </section>
-      ) : null}
-
-      {plan.guardrails.length > 0 ? (
-        <section className="flex flex-col gap-1">
-          <h4 className="text-xs uppercase tracking-widest text-ink-400">Guardrails</h4>
-          <ul className="ml-4 list-disc space-y-0.5">
-            {plan.guardrails.map((o, i) => (
-              <li key={i}>{o}</li>
-            ))}
-          </ul>
-        </section>
-      ) : null}
-
-      {plan.success_criteria.length > 0 ? (
-        <section className="flex flex-col gap-1">
-          <h4 className="text-xs uppercase tracking-widest text-ink-400">
-            Success criteria
-          </h4>
-          <ul className="ml-4 list-disc space-y-0.5">
-            {plan.success_criteria.map((o, i) => (
-              <li key={i}>{o}</li>
-            ))}
-          </ul>
-        </section>
-      ) : null}
-
-      {plan.out_of_scope.length > 0 ? (
-        <section className="flex flex-col gap-1">
-          <h4 className="text-xs uppercase tracking-widest text-ink-400">Out of scope</h4>
-          <ul className="ml-4 list-disc space-y-0.5">
-            {plan.out_of_scope.map((o, i) => (
-              <li key={i}>{o}</li>
-            ))}
-          </ul>
-        </section>
-      ) : null}
-
-      {plan.narrative_arc.length > 0 || plan.injects.length > 0 ? (
-        <section className="flex flex-col gap-2 rounded border border-warn bg-warn-bg p-2">
-          <header className="flex flex-wrap items-center justify-between gap-2">
-            <h4 className="text-xs uppercase tracking-widest text-warn">
-              Narrative arc &amp; injects
-            </h4>
-            <button
-              type="button"
-              onClick={toggleReveal}
-              className="rounded border border-warn px-2 py-0.5 text-xs font-semibold text-warn hover:bg-warn-bg"
-              aria-pressed={reveal}
-              title={
-                reveal
-                  ? "Switch to participant mode — hide upcoming injects so you can play fresh."
-                  : "Switch to facilitator mode — show upcoming injects so you can pace the meeting."
-              }
-            >
-              {reveal ? "Switch to participant mode" : "Switch to facilitator mode"}
-            </button>
-          </header>
-          {!reveal ? (
-            <p className="text-xs text-warn">
-              <span className="font-semibold">Participant mode.</span>{" "}
-              Hidden so you can play through fresh. {plan.narrative_arc.length}{" "}
-              beat{plan.narrative_arc.length === 1 ? "" : "s"}, {plan.injects.length}{" "}
-              inject{plan.injects.length === 1 ? "" : "s"} planned. Switch to
-              facilitator mode if you need to pace the meeting block.
-            </p>
-          ) : (
-            <>
-              {plan.narrative_arc.length > 0 ? (
-                <div className="flex flex-col gap-1">
-                  <p className="text-[11px] uppercase tracking-widest text-warn">
-                    Narrative arc
-                  </p>
-                  <ol className="ml-4 list-decimal space-y-1">
-                    {plan.narrative_arc.map((b) => (
-                      <li key={b.beat}>
-                        <span className="font-semibold">{b.label}</span>
-                        {b.expected_actors.length > 0 ? (
-                          <span className="ml-1 text-ink-400">
-                            — {b.expected_actors.join(", ")}
-                          </span>
-                        ) : null}
-                      </li>
-                    ))}
-                  </ol>
-                </div>
-              ) : null}
-              {plan.injects.length > 0 ? (
-                <div className="flex flex-col gap-1">
-                  <p className="text-[11px] uppercase tracking-widest text-warn">
-                    Injects
-                  </p>
-                  <ul className="ml-4 list-disc space-y-1">
-                    {plan.injects.map((inj, i) => (
-                      <li key={i}>
-                        <span className="text-ink-400">[{inj.trigger}]</span>{" "}
-                        <span className="text-ink-400">({inj.type})</span>{" "}
-                        {inj.summary}
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              ) : null}
-            </>
-          )}
-        </section>
-      ) : null}
-    </article>
   );
 }
 

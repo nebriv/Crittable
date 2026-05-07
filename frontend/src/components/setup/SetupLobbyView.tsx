@@ -1,6 +1,7 @@
 import { FormEvent, ReactNode, useState } from "react";
 import { RoleView, ScenarioPlan, api } from "../../api/client";
 import { Eyebrow } from "../brand/Eyebrow";
+import { PlanView } from "./PlanView";
 
 /**
  * Step 5 (Invite players) panel for the setup wizard. Brand mock
@@ -193,6 +194,19 @@ export function SetupLobbyView(props: Props) {
           briefing — they don't pick a seat from a list. Add or remove
           seats here too; the change is live for everyone in the lobby.
         </p>
+        {props.plan ? (
+          <details
+            className="rounded-r-3 border border-signal-deep bg-signal-tint"
+            data-testid="lobby-plan-recap"
+          >
+            <summary className="mono cursor-pointer px-3 py-2 text-[11px] font-bold uppercase tracking-[0.16em] text-signal hover:bg-signal/10">
+              ● VIEW APPROVED PLAN — {props.plan.title}
+            </summary>
+            <div className="border-t border-signal-deep/50 px-4 py-3">
+              <PlanView plan={props.plan} sessionId={props.sessionId} />
+            </div>
+          </details>
+        ) : null}
         <h2
           className="sans"
           style={{
