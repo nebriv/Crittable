@@ -349,12 +349,13 @@ describe("Transcript", () => {
     expect(selfBubble?.className).not.toContain("border-warn");
   });
 
-  it("substantial share_data renders collapsed with a 'View details' affordance", () => {
+  it("substantial share_data renders collapsed with a 'Show N lines' affordance", () => {
     // User feedback on the chat-firehose problem: "the transcript
     // moves very quickly when the AI dumps big chunks." Substantial
     // share_data calls (>= 300 chars, matching the Timeline rail-pin
     // threshold) collapse to a one-line summary by default. The
-    // viewer expands inline via "View details"; the same content is
+    // viewer expands via "Show N lines" — operator-voice, previews
+    // the cost (User-persona review MEDIUM); the same content is
     // also pinned in Timeline for re-find. This test pins the
     // collapse default so a future revert of the threshold or the
     // collapse logic can't silently re-flood the chat.
@@ -374,25 +375,28 @@ describe("Transcript", () => {
       },
     ];
     render(<Transcript messages={messages} roles={ROLES} />);
-    // Collapsed: the brief label + a "View details" button render,
+    // Collapsed: the brief label + a "Show N lines" button render,
     // but the bulk of the body (the repeated alert lines) does NOT.
     expect(screen.getByText("▤ DATA BRIEF")).toBeInTheDocument();
     expect(
       screen.getByText("Defender telemetry — 03:14 UTC"),
     ).toBeInTheDocument();
     expect(
-      screen.getByRole("button", { name: /view details/i }),
+      screen.getByRole("button", { name: /show \d+ lines/i }),
     ).toBeInTheDocument();
-    // The repeated body content should not be in the DOM yet.
-    // Match a phrase that only appears inside the collapsed payload —
-    // not the label or preview header.
-    expect(screen.queryAllByText(/alert line foo bar baz/i)).toHaveLength(0);
+    // QA review LOW L-1: lock the assertion to the count of repeated
+    // occurrences, not just absence — a future regression that
+    // accidentally puts ALL 40 lines into the preview would be caught
+    // (a single occurrence in the preview is acceptable; 40 is not).
+    expect(
+      screen.queryAllByText(/alert line foo bar baz/i).length,
+    ).toBeLessThan(5);
   });
 
-  it("'View details' click expands the share_data card; clicking again collapses it", () => {
+  it("'Show N lines' click expands the share_data card; 'Hide details' collapses it again", () => {
     // Round-trips the toggle so we know the state machine doesn't
     // get stuck open or stuck closed. The button label flips
-    // between "View details" and "Hide details" so the assertion
+    // between "Show N lines" and "Hide details" so the assertion
     // is the visible affordance, not an internal flag.
     const longBody =
       "**IOC dump**\n\n" +
@@ -412,7 +416,7 @@ describe("Transcript", () => {
     ];
     render(<Transcript messages={messages} roles={ROLES} />);
     // Collapsed initially.
-    const expandButton = screen.getByRole("button", { name: /view details/i });
+    const expandButton = screen.getByRole("button", { name: /show \d+ lines/i });
     expect(screen.queryByText(/203\.0\.113\.5 blocked/)).not.toBeInTheDocument();
     fireEvent.click(expandButton);
     // Expanded: full body in the DOM, button label flipped.
@@ -422,7 +426,7 @@ describe("Transcript", () => {
     // Round-trip: collapse again.
     fireEvent.click(collapseButton);
     expect(screen.queryByText(/203\.0\.113\.5 blocked/)).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /view details/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /show \d+ lines/i })).toBeInTheDocument();
   });
 
   it("a small share_data dump (under the threshold) renders inline without the collapse card", () => {
@@ -446,14 +450,125 @@ describe("Transcript", () => {
       },
     ];
     render(<Transcript messages={messages} roles={ROLES} />);
-    // No "Data brief" collapse chrome and no "View details"
+    // No "Data brief" collapse chrome and no "Show … lines"
     // button — the body just renders inline like any other AI
     // message.
     expect(screen.queryByText("▤ DATA BRIEF")).not.toBeInTheDocument();
     expect(
-      screen.queryByRole("button", { name: /view details/i }),
+      screen.queryByRole("button", { name: /show \d+ lines/i }),
     ).not.toBeInTheDocument();
     // Body content visible without expanding.
     expect(screen.getByText(/foo bar/)).toBeInTheDocument();
+  });
+
+  it("share_data preview strips surrounding ``**bold**`` cleanly (no orphan asterisks)", () => {
+    // QA review MEDIUM M-1: ``derivePreview`` used to apply the
+    // leading-marker strip BEFORE the surrounding-bold strip — the
+    // ``*`` in the marker character class ate the leading ``**``,
+    // leaving the trailing ``**`` orphaned. Result: previews
+    // rendered as ``Defender telemetry — 03:14 UTC**`` AND the
+    // label-skip dedupe failed (lowercased forms no longer matched
+    // the label). This test pins the fix so the regex order can't
+    // silently revert.
+    //
+    // The body's first line ``**Defender telemetry — 03:14 UTC**``
+    // matches the label exactly, so a correct preview routine skips
+    // it and lands on a later line. A buggy routine emits the line
+    // verbatim with trailing asterisks. Asserting NO ``**`` appears
+    // anywhere in the preview line catches the bug regardless of
+    // which line is chosen.
+    const body =
+      "**Defender telemetry — 03:14 UTC**\n\n" +
+      "Looking at 4h window; 12 alerts pulled. " +
+      "alert line foo bar baz\n".repeat(20);
+    const messages = [
+      {
+        id: "share-preview",
+        ts: new Date().toISOString(),
+        role_id: null,
+        kind: "ai_text",
+        body,
+        tool_name: "share_data",
+        tool_args: { label: "Defender telemetry — 03:14 UTC", data: "..." },
+        workstream_id: null,
+        mentions: [],
+      },
+    ];
+    const { container } = render(<Transcript messages={messages} roles={ROLES} />);
+    // The preview line lives in a ``line-clamp-1`` paragraph inside
+    // the collapsed card. Find it and check no ``**`` cruft.
+    const previews = container.querySelectorAll("p.line-clamp-1");
+    expect(previews.length).toBeGreaterThan(0);
+    for (const p of previews) {
+      expect(p.textContent).not.toContain("**");
+    }
+  });
+
+  it("share_data with missing tool_args.label falls back to 'Data shared'", () => {
+    // QA review LOW L-2: an AI emission with ``tool_name=share_data``
+    // but no ``tool_args.label`` (or ``tool_args=null``) is a
+    // realistic shape from a malformed call. The collapsed card
+    // should render with the fallback string instead of an empty
+    // header.
+    const longBody = "alert line foo bar baz\n".repeat(40);
+    const messages = [
+      {
+        id: "share-no-label",
+        ts: new Date().toISOString(),
+        role_id: null,
+        kind: "ai_text",
+        body: longBody,
+        tool_name: "share_data",
+        tool_args: null,
+        workstream_id: null,
+        mentions: [],
+      },
+    ];
+    render(<Transcript messages={messages} roles={ROLES} />);
+    expect(screen.getByText("▤ DATA BRIEF")).toBeInTheDocument();
+    expect(screen.getByText("Data shared")).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /show \d+ lines/i }),
+    ).toBeInTheDocument();
+  });
+
+  it("focus-hit share_data demotes card chrome to neutral (avoids amber + cyan stacking)", () => {
+    // UI/UX review HIGH H1: when a substantial share_data is also
+    // the latest AI bubble being awaited (focus-hit warn border)
+    // OR @-mentions the viewer (signal blue border), the bubble
+    // already carries an accent color. Stacking the cyan card
+    // chrome on top would re-introduce the same noise problem the
+    // yellow-cleanup commit specifically aimed to remove. The
+    // ``accent="neutral"`` branch demotes the DATA BRIEF tag to
+    // ink-300 and the button to a neutral ink palette so the outer
+    // bubble border alone carries the semantic.
+    const longBody = "**Big share**\n\n" + "data line\n".repeat(40);
+    const messages = [
+      {
+        id: "share-focus",
+        ts: new Date().toISOString(),
+        role_id: null,
+        kind: "ai_text",
+        body: longBody,
+        tool_name: "share_data",
+        tool_args: { label: "Big share", data: "..." },
+        workstream_id: null,
+        mentions: [],
+      },
+    ];
+    const { container } = render(
+      <Transcript messages={messages} roles={ROLES} highlightLastAi />,
+    );
+    // The DATA BRIEF tag should NOT carry text-info on a focus-hit
+    // bubble. ``getByText`` returns the span; check its className.
+    const tag = screen.getByText("▤ DATA BRIEF");
+    expect(tag.className).not.toContain("text-info");
+    expect(tag.className).toContain("text-ink-300");
+    // Confirm the outer bubble retained the warn border (the
+    // focus-hit semantic is intact — only the card chrome demoted).
+    const bubble = container
+      .querySelector("#msg-share-focus")
+      ?.querySelector('[data-message-kind="ai"]');
+    expect(bubble?.className).toContain("border-warn");
   });
 });

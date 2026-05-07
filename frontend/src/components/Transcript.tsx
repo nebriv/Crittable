@@ -151,10 +151,22 @@ function derivePreview(body: string, label: string): string {
   const labelNorm = label.trim().toLowerCase();
   const lines = body.split(/\r?\n/);
   for (const raw of lines) {
+    // Strip-order matters. The surrounding-bold pattern
+    // (``**…**``) must run BEFORE the leading-marker chrome strip,
+    // because ``*`` is in the marker character class — running the
+    // marker strip first eats the leading ``**`` and leaves the
+    // trailing ``**`` orphaned, giving previews like
+    // ``Defender telemetry — 03:14 UTC**`` (visible cruft + the
+    // label-skip dedupe fails because the lowercased forms no
+    // longer match). Belt-and-braces: a final trailing-``**`` strip
+    // catches asymmetric markdown the first pass missed
+    // (e.g. ``# **header**`` where the ``#`` and ``**`` arrive in
+    // separate strip rounds).
     const stripped = raw
       .trim()
-      .replace(/^[#>\-*•]+\s*/, "")
       .replace(/^\*\*(.+?)\*\*$/, "$1")
+      .replace(/^[#>\-*•]+\s*/, "")
+      .replace(/\*\*$/, "")
       .trim();
     if (stripped.length === 0) continue;
     if (stripped.toLowerCase() === labelNorm) continue;
@@ -287,11 +299,36 @@ export function Transcript({
     () => new Set(),
   );
   function toggleShareDataExpansion(messageId: string): void {
+    let isExpanding = false;
     setExpandedShareData((prev) => {
       const next = new Set(prev);
-      if (next.has(messageId)) next.delete(messageId);
-      else next.add(messageId);
+      if (next.has(messageId)) {
+        next.delete(messageId);
+        isExpanding = false;
+      } else {
+        next.add(messageId);
+        isExpanding = true;
+      }
       return next;
+    });
+    // CLAUDE.md "Log state transitions in pages — modal open/close."
+    // The collapse toggle is functionally a modal-like state change;
+    // a console line is the only artifact a future operator will
+    // have if a "the card won't expand" report comes in.
+    console.debug("[transcript] share-data toggle", {
+      messageId,
+      action: isExpanding ? "expand" : "collapse",
+    });
+    // UI/UX review HIGH H2: without an explicit scroll-into-view,
+    // useStickyScroll's ResizeObserver can re-pin the user to the
+    // bottom on the layout shift and bury the just-expanded card
+    // mid-transcript. ``block: "nearest"`` is a no-op when the
+    // target is already in the viewport — only nudges when the
+    // newly-expanded body would otherwise scroll out of frame. We
+    // wait one frame so the DOM has the post-toggle height.
+    requestAnimationFrame(() => {
+      const el = document.getElementById(`msg-${messageId}`);
+      el?.scrollIntoView({ block: "nearest" });
     });
   }
   // Build a once-per-render predicate so each bubble can ask "may I
@@ -613,6 +650,16 @@ export function Transcript({
                       typeof m.tool_args?.label === "string"
                         ? (m.tool_args.label as string).trim() || "Data shared"
                         : "Data shared";
+                    // When the bubble already carries a focus or
+                    // mention border, demote the cyan card chrome
+                    // to neutral ink so we don't stack three accent
+                    // colors (UI/UX review HIGH H1).
+                    const cardAccent: "info" | "neutral" =
+                      isFocusHit || isMentioned ? "neutral" : "info";
+                    const hideButtonClasses =
+                      cardAccent === "info"
+                        ? "border-info bg-info-bg text-info hover:bg-info/30 focus-visible:outline-info"
+                        : "border-ink-500 bg-ink-700 text-ink-100 hover:border-ink-400 focus-visible:outline-signal";
                     return (
                       <div
                         className={`min-w-0 break-words rounded-r-2 px-4 py-3 text-ink-100 ${borderClass}`}
@@ -628,6 +675,7 @@ export function Transcript({
                             label={shareDataLabel}
                             body={m.body}
                             onExpand={() => toggleShareDataExpansion(m.id)}
+                            accent={cardAccent}
                           />
                         ) : (
                           <>
@@ -636,7 +684,7 @@ export function Transcript({
                               <button
                                 type="button"
                                 onClick={() => toggleShareDataExpansion(m.id)}
-                                className="mono mt-3 inline-flex items-center gap-1 rounded-r-1 border border-info bg-info-bg px-2 py-1 text-[10px] font-bold uppercase tracking-[0.12em] text-info hover:bg-info/30 focus-visible:outline focus-visible:outline-2 focus-visible:outline-info"
+                                className={`mono mt-3 inline-flex items-center gap-1 rounded-r-1 border px-2 py-1 text-[10px] font-bold uppercase tracking-[0.12em] focus-visible:outline focus-visible:outline-2 ${hideButtonClasses}`}
                                 aria-expanded="true"
                               >
                                 ▴ Hide details
@@ -862,20 +910,40 @@ function ShareDataCollapsedBody({
   label,
   body,
   onExpand,
+  accent,
 }: {
   label: string;
   body: string;
   onExpand: () => void;
+  /**
+   * Card chrome tone. ``info`` (cyan) is the default — matches the
+   * Timeline rail's Data-brief pin so re-find lands in consistent
+   * visual language. ``neutral`` (ink tones) is used when the
+   * outer bubble already carries an accent border (focus-hit warn
+   * for your-turn, signal blue for @-mentions of the viewer); the
+   * outer border carries the semantic and the card chrome demotes
+   * to ink to avoid stacking three accent colors on one bubble
+   * (UI/UX review HIGH H1 on this PR — yellow-cleanup specifically
+   * aimed to keep amber unique to "you owe a turn answer", and a
+   * focus-hit share_data with cyan card chrome would re-introduce
+   * the same noise problem in a different color).
+   */
+  accent: "info" | "neutral";
 }) {
   const preview = derivePreview(body, label);
   const lineCount = body
     .split(/\r?\n/)
     .filter((l) => l.trim().length > 0).length;
   const charCount = body.length;
+  const tagColor = accent === "info" ? "text-info" : "text-ink-300";
+  const buttonClasses =
+    accent === "info"
+      ? "border-info bg-info-bg text-info hover:bg-info/30 focus-visible:outline-info"
+      : "border-ink-500 bg-ink-700 text-ink-100 hover:border-ink-400 focus-visible:outline-signal";
   return (
     <div className="flex flex-col gap-2">
       <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
-        <span className="mono text-[10px] font-bold uppercase tracking-[0.16em] text-info">
+        <span className={`mono text-[10px] font-bold uppercase tracking-[0.16em] ${tagColor}`}>
           ▤ DATA BRIEF
         </span>
         <span className="text-sm font-semibold text-ink-050">{label}</span>
@@ -890,11 +958,18 @@ function ShareDataCollapsedBody({
       <button
         type="button"
         onClick={onExpand}
-        className="mono self-start inline-flex items-center gap-1 rounded-r-1 border border-info bg-info-bg px-2 py-1 text-[10px] font-bold uppercase tracking-[0.12em] text-info hover:bg-info/30 focus-visible:outline focus-visible:outline-2 focus-visible:outline-info"
+        className={`mono self-start inline-flex items-center gap-1 rounded-r-1 border px-2 py-1 text-[10px] font-bold uppercase tracking-[0.12em] focus-visible:outline focus-visible:outline-2 ${buttonClasses}`}
         aria-expanded="false"
+        aria-label={`Show ${lineCount} ${lineCount === 1 ? "line" : "lines"} of data — ${label}`}
         title="Reveal the full data dump inline. The same content is also pinned in the Timeline rail."
       >
-        ▾ View details
+        {/* Operator-voice copy (User-persona review MEDIUM) — the
+            generic "View details" doesn't tell the viewer the cost
+            of clicking. "Show N lines" reads as the operator action
+            it is and previews the size before committing the
+            expand. The size stat above carries the char count for
+            full transparency. */}
+        ▾ Show {lineCount} {lineCount === 1 ? "line" : "lines"}
       </button>
     </div>
   );
