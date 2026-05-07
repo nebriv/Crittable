@@ -244,6 +244,7 @@ class SessionRecorder:
             scenario_prompt=session.scenario_prompt,
             creator_label=creator_label or "Creator",
             creator_display_name=creator_display or "Creator",
+            settings=session.settings.model_copy(deep=True),
             skip_setup=not setup_replies,
             roster=roster,
             setup_replies=setup_replies,

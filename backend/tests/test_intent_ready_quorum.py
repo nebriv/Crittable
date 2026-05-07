@@ -20,6 +20,7 @@ from app.config import reset_settings_cache
 from app.main import create_app
 from app.sessions.models import MessageKind, SessionState, Turn
 from app.sessions.turn_engine import all_ready, all_submitted
+from tests.conftest import default_settings_body
 
 
 @pytest.fixture(autouse=True)
@@ -55,6 +56,7 @@ def _seat_session(client: TestClient, *, role_count: int) -> dict[str, Any]:
             "scenario_prompt": "Ready-quorum drill",
             "creator_label": "CISO",
             "creator_display_name": "Alex",
+            **default_settings_body(),
         },
     )
     assert resp.status_code == 200, resp.text
@@ -292,6 +294,7 @@ def test_interjection_intent_is_none(client: TestClient) -> None:
             "scenario_prompt": "Interjection drill",
             "creator_label": "CISO",
             "creator_display_name": "Alex",
+            **default_settings_body(),
         },
     )
     body = resp.json()

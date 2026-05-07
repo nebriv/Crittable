@@ -169,6 +169,7 @@ class ScenarioRunner:
             scenario_prompt=s.scenario_prompt,
             creator_label=s.creator_label,
             creator_display_name=s.creator_display_name,
+            settings=s.settings,
         )
         # ``creator_role_id`` is typed ``str | None`` because session
         # creation could in theory predate role assignment, but a freshly

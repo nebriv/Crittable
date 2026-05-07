@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 
 from app.config import reset_settings_cache
 from app.main import create_app
+from tests.conftest import default_settings_body
 from tests.mock_anthropic import MockAnthropic, setup_then_play_script
 
 _TOOLS_JSON = """[{
@@ -94,6 +95,7 @@ def _create_and_seat(client: TestClient, *, role_count: int) -> dict[str, Any]:
             "scenario_prompt": "Ransomware via vendor portal",
             "creator_label": "CISO",
             "creator_display_name": "Alex",
+            **default_settings_body(),
         },
     )
     assert resp.status_code == 200, resp.text
@@ -420,6 +422,7 @@ def test_dev_fast_setup_env(monkeypatch) -> None:
                 "scenario_prompt": "Phishing-led credential theft.",
                 "creator_label": "CISO",
                 "creator_display_name": "Alex",
+                **default_settings_body(),
             },
         )
         body = resp.json()
@@ -1882,6 +1885,7 @@ def test_finalize_setup_rejects_empty_arrays(client: TestClient) -> None:
             "scenario_prompt": "x",
             "creator_label": "CISO",
             "creator_display_name": "Alex",
+            **default_settings_body(),
         },
     )
     assert r.status_code == 200, r.text
@@ -1923,7 +1927,7 @@ def test_scenario_plan_model_rejects_empty_arrays() -> None:
 
 def test_critical_inject_rate_limit_until_visible_to_model() -> None:
     """When the rate-limit window is at cap, the play system prompt
-    must surface a ``Block 12 — Critical-event budget`` mini-block so
+    must surface a ``Block 13 — Critical-event budget`` mini-block so
     the AI knows not to retry. Pre-fix the AI was observed retrying
     ``inject_critical_event`` on three consecutive turns after the
     first attempt was rate-limited; the strict-retry feedback only
@@ -1960,17 +1964,21 @@ def test_critical_inject_rate_limit_until_visible_to_model() -> None:
         s, registry=FrozenRegistry(tools={}, resources={}, prompts={})
     )
     # build_play_system_blocks splits stable + volatile content across
-    # multiple text blocks for prompt-cache placement; Block 12 lives
-    # in the volatile suffix so an active rate limit doesn't invalidate
-    # the cached prefix.
+    # multiple text blocks for prompt-cache placement; the conditional
+    # Block 13 lives in the volatile suffix so an active rate limit
+    # doesn't invalidate the cached prefix.
     text = "\n\n".join(b["text"] for b in blocks)
-    assert "Block 12" in text, "rate-limited turn must include Block 12"
+    assert (
+        "Block 13 — Critical-event budget" in text
+    ), "rate-limited turn must include the conditional Block 13"
     assert "until turn 7" in text
 
 
-def test_critical_inject_block_12_omitted_when_no_rate_limit() -> None:
-    """Healthy turns must NOT include Block 12 — the cached system
-    block stays stable when there's no rate limit active."""
+def test_critical_inject_block_13_omitted_when_no_rate_limit() -> None:
+    """Healthy turns must NOT include the conditional Block 13 — the
+    cached system block stays stable when there's no rate limit
+    active. (Block 12 is the unconditional ``Session settings``
+    block; it ships on every turn.)"""
 
     from app.extensions.registry import FrozenRegistry
     from app.llm.prompts import build_play_system_blocks
@@ -2003,7 +2011,7 @@ def test_critical_inject_block_12_omitted_when_no_rate_limit() -> None:
         s, registry=FrozenRegistry(tools={}, resources={}, prompts={})
     )
     text = "\n\n".join(b["text"] for b in blocks)
-    assert "Block 12" not in text
+    assert "Block 13 — Critical-event budget" not in text
 
 
 def test_tool_choice_does_not_leak_to_setup_or_aar(client: TestClient) -> None:
@@ -2168,6 +2176,7 @@ def test_play_after_auto_greet_then_skip_does_not_400(client: TestClient) -> Non
             "scenario_prompt": "Ransomware via vendor portal at a mid-size bank",
             "creator_label": "CISO",
             "creator_display_name": "Alex",
+            **default_settings_body(),
         },
     )
     assert resp.status_code == 200, resp.text
@@ -2808,6 +2817,7 @@ def test_setup_dedupe_drops_duplicate_questions_in_same_turn(
             "scenario_prompt": "Ransomware via vendor portal",
             "creator_label": "CISO",
             "creator_display_name": "Alex",
+            **default_settings_body(),
         },
     )
     assert resp.status_code == 200
@@ -3994,6 +4004,7 @@ def test_skip_setup_flag_avoids_auto_greet(client: TestClient) -> None:
             "creator_label": "CISO",
             "creator_display_name": "Alex",
             "skip_setup": True,
+            **default_settings_body(),
         },
     )
     assert r.status_code == 200, r.text
@@ -4036,6 +4047,7 @@ def test_setup_bare_text_is_discarded(client: TestClient) -> None:
             "scenario_prompt": "Ransomware via vendor portal",
             "creator_label": "CISO",
             "creator_display_name": "Alex",
+            **default_settings_body(),
         },
     )
     assert r.status_code == 200
@@ -4101,6 +4113,7 @@ def test_max_setup_turns_caps_chained_calls(monkeypatch) -> None:
                 "scenario_prompt": "Ransomware",
                 "creator_label": "CISO",
                 "creator_display_name": "Alex",
+                **default_settings_body(),
             },
         )
         assert r.status_code == 200

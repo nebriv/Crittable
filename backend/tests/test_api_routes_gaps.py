@@ -20,6 +20,7 @@ from fastapi.testclient import TestClient
 from app.config import reset_settings_cache
 from app.main import create_app
 from app.sessions.models import SessionState
+from tests.conftest import default_settings_body
 from tests.mock_anthropic import MockAnthropic
 
 
@@ -53,6 +54,7 @@ def _seat(client: TestClient) -> dict[str, str]:
             "scenario_prompt": "Ransomware",
             "creator_label": "CISO",
             "creator_display_name": "Alex",
+            **default_settings_body(),
         },
     )
     assert r.status_code == 200, r.text

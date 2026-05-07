@@ -1,5 +1,19 @@
-import { FormEvent, ReactNode, useEffect, useMemo, useState } from "react";
-import { api, type SessionSnapshot } from "../../api/client";
+import {
+  type Dispatch,
+  type FormEvent,
+  type KeyboardEvent,
+  type ReactNode,
+  type SetStateAction,
+  useEffect,
+  useMemo,
+  useState,
+} from "react";
+import {
+  api,
+  type Difficulty,
+  type SessionFeatures,
+  type SessionSnapshot,
+} from "../../api/client";
 import { Eyebrow } from "../brand/Eyebrow";
 import { StatusChip } from "../brand/StatusChip";
 import { WizardRail } from "./WizardRail";
@@ -83,6 +97,20 @@ interface Props {
   busyMessage: string | null;
   error: string | null;
   onSubmit: (e: FormEvent) => void;
+  // Issue #33-lite: creator-selected scenario tuning. Picked on the
+  // wizard's Step 2 ("TUNING" panel), frozen on session creation,
+  // surfaced into the AI's setup + play system blocks. ``setFeatures``
+  // is the React ``useState`` setter type so callers can use the
+  // functional updater form (``setFeatures(prev => ({...prev, x:
+  // true}))``) without the wider ``SessionFeatures | (prev =>
+  // SessionFeatures) | void`` shape that previously let "blew away
+  // other toggles" bugs through.
+  difficulty: Difficulty;
+  setDifficulty: Dispatch<SetStateAction<Difficulty>>;
+  durationMinutes: number;
+  setDurationMinutes: Dispatch<SetStateAction<number>>;
+  features: SessionFeatures;
+  setFeatures: Dispatch<SetStateAction<SessionFeatures>>;
   // Post-creation slot — what to render in the main panel for steps
   // 4 (setup), 5 (ready / lobby), 6 (review). Provided by Facilitator.
   postCreationContent?: ReactNode;
@@ -393,9 +421,9 @@ function IntroStepBody(props: IntroBodyProps) {
       sub: "What happened, when, at what severity. Pre-fill the brief and the AI will pick up the rest in conversation.",
     },
     2: {
-      eyebrow: "step 02 · environment",
-      title: "What does the environment look like?",
-      sub: "The AI uses this to ground injects. Concrete vendor names + crown jewels make the simulation feel less generic.",
+      eyebrow: "step 02 · scope",
+      title: "Shape the exercise",
+      sub: "Lock the AI's facilitation knobs, then describe the environment the injects ride on top of.",
     },
     3: {
       eyebrow: "step 03 · roles",
@@ -527,8 +555,24 @@ function NavRow({
             : "ROLL SESSION →";
   return (
     <div
+      // Sticky to the bottom of the scrolling section so the primary
+      // CTA stays in view no matter how tall the form grows. The
+      // tuning panel pushed Step 2 past 1080p reachability at common
+      // viewport sizes (UI/UX H1) — sticky positioning keeps NEXT
+      // visible without forcing the operator to scroll past the
+      // textareas. The 1px top divider + ink-900 background keep the
+      // bar visually distinct from the form content scrolling under
+      // it. ``z-index: 1`` so the bar wins against any nested fieldset
+      // shadows.
       style={{
+        position: "sticky",
+        bottom: 0,
         marginTop: 12,
+        marginInline: "-8px",
+        padding: "10px 8px",
+        background: "var(--ink-900)",
+        borderTop: "1px solid var(--ink-700)",
+        zIndex: 1,
         display: "flex",
         alignItems: "center",
         gap: 12,
@@ -658,6 +702,20 @@ function Step1Body(props: IntroBodyProps) {
 function Step2Body(props: IntroBodyProps) {
   return (
     <>
+      {/* TuningPanel renders FIRST on Step 2 so an operator who lands
+          here sees the facilitation knobs immediately — rather than
+          scrolling past two textareas to discover them. The panel's
+          defaults work click-through, but burying it below the env
+          textareas hid the affordance from first-time creators
+          (per app-owner / user-agent review). */}
+      <TuningPanel
+        difficulty={props.difficulty}
+        setDifficulty={props.setDifficulty}
+        durationMinutes={props.durationMinutes}
+        setDurationMinutes={props.setDurationMinutes}
+        features={props.features}
+        setFeatures={props.setFeatures}
+      />
       <BriefField
         label="ABOUT YOUR ENVIRONMENT"
         value={props.setupParts.environment}
@@ -675,6 +733,395 @@ function Step2Body(props: IntroBodyProps) {
         placeholder="Hard NOs, learning objectives, things to skip."
       />
     </>
+  );
+}
+
+const DIFFICULTY_OPTIONS: { value: Difficulty; label: string; sub: string }[] = [
+  {
+    value: "easy",
+    label: "EASY",
+    sub: "Coaching mode. AI fills gaps and hints. Adversary stays passive.",
+  },
+  {
+    value: "standard",
+    label: "STANDARD",
+    sub: "Balanced. Reasonable assumptions allowed; injects fire on plan triggers.",
+  },
+  {
+    value: "hard",
+    label: "HARD",
+    sub: "Literal execution. AI does only what was ordered; adversary exploits gaps.",
+  },
+];
+
+const FEATURE_OPTIONS: {
+  key: keyof SessionFeatures;
+  label: string;
+  on: string;
+  off: string;
+}[] = [
+  {
+    key: "active_adversary",
+    label: "Active adversary",
+    on: "Red side counters moves and probes for re-entry paths.",
+    off: "Adversary is static — injects fire on schedule but red doesn't react.",
+  },
+  {
+    key: "time_pressure",
+    label: "Time pressure",
+    on: "Critical injects fire on deadlines; urgency escalates over the session.",
+    off: "No deadline framing on injects; players deliberate without an artificial timer.",
+  },
+  {
+    key: "executive_escalation",
+    label: "Executive escalation",
+    on: "C-suite / board demands updates and forces reprioritization.",
+    off: "Exec layer stays off-stage; no unsolicited C-suite asks.",
+  },
+  {
+    key: "media_pressure",
+    label: "Media / PR pressure",
+    on: "Press inquiries, social-media leaks, reputational injects.",
+    off: "Internal-facing only; customer disclosure framed as policy, not a media crisis.",
+  },
+];
+
+/**
+ * Step 2 tuning panel — difficulty chips, duration slider, feature
+ * checkboxes. Submitted as ``settings`` on ``createSession`` and frozen
+ * server-side; the setup + play system prompts read off these values
+ * so the AI tunes facilitation without re-asking the creator.
+ *
+ * Defaults (matching ``DEFAULT_SESSION_FEATURES``) are a balanced
+ * standard tabletop — an operator who clicks straight through still
+ * gets a sensible exercise.
+ */
+function TuningPanel({
+  difficulty,
+  setDifficulty,
+  durationMinutes,
+  setDurationMinutes,
+  features,
+  setFeatures,
+}: {
+  difficulty: Difficulty;
+  setDifficulty: Dispatch<SetStateAction<Difficulty>>;
+  durationMinutes: number;
+  setDurationMinutes: Dispatch<SetStateAction<number>>;
+  features: SessionFeatures;
+  setFeatures: Dispatch<SetStateAction<SessionFeatures>>;
+}) {
+  const activeDiff = DIFFICULTY_OPTIONS.find((o) => o.value === difficulty);
+
+  // ARIA radiogroup contract: declare ←/→/↑/↓ to move selection across
+  // the chips (with roving tabIndex). Without this, screen readers
+  // and power-keyboard users cannot navigate per the role's
+  // documented behaviour — UI/UX review B1.
+  function onChipKeyDown(e: KeyboardEvent<HTMLButtonElement>) {
+    const dir =
+      e.key === "ArrowRight" || e.key === "ArrowDown"
+        ? 1
+        : e.key === "ArrowLeft" || e.key === "ArrowUp"
+          ? -1
+          : 0;
+    if (dir === 0) return;
+    e.preventDefault();
+    const idx = DIFFICULTY_OPTIONS.findIndex((o) => o.value === difficulty);
+    const next =
+      DIFFICULTY_OPTIONS[
+        (idx + dir + DIFFICULTY_OPTIONS.length) % DIFFICULTY_OPTIONS.length
+      ];
+    setDifficulty(next.value);
+    // Move focus to the newly selected chip so the user sees + the
+    // screen-reader announces the change.
+    const root = e.currentTarget.parentElement;
+    const btn = root?.querySelector<HTMLButtonElement>(
+      `button[data-diff="${next.value}"]`,
+    );
+    btn?.focus();
+  }
+
+  return (
+    <fieldset
+      aria-label="Session tuning"
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        gap: 14,
+        padding: 14,
+        border: "1px solid var(--ink-600)",
+        borderRadius: 4,
+        background: "var(--ink-850)",
+      }}
+    >
+      <legend
+        className="mono"
+        style={{
+          padding: "0 6px",
+          fontSize: 10,
+          color: "var(--signal)",
+          letterSpacing: "0.20em",
+          fontWeight: 700,
+          display: "inline-flex",
+          alignItems: "center",
+          gap: 8,
+        }}
+      >
+        <span>Tuning</span>
+        {/* "Frozen on roll" indicator — once you click ROLL SESSION,
+            settings can't be changed. Without this banner first-time
+            creators read "I'll fix this later" (user-agent H1). */}
+        <span
+          className="mono"
+          aria-label="Tuning settings are frozen at session creation"
+          style={{
+            padding: "2px 6px",
+            border: "1px solid var(--warn)",
+            color: "var(--warn)",
+            background: "transparent",
+            borderRadius: 2,
+            fontSize: 9,
+            fontWeight: 700,
+            letterSpacing: "0.14em",
+          }}
+        >
+          FROZEN ON ROLL
+        </span>
+      </legend>
+      <p
+        className="sans"
+        style={{
+          margin: 0,
+          fontSize: 12,
+          color: "var(--ink-300)",
+          lineHeight: 1.45,
+        }}
+      >
+        Locked at session creation. The AI reads these from its system
+        block on every turn. Defaults are a balanced standard tabletop —
+        click through and they'll work.
+      </p>
+
+      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+        <Eyebrow>difficulty</Eyebrow>
+        <div
+          role="radiogroup"
+          aria-label="Difficulty"
+          style={{ display: "flex", flexWrap: "wrap", gap: 8 }}
+        >
+          {DIFFICULTY_OPTIONS.map((opt) => {
+            const selected = opt.value === difficulty;
+            return (
+              <button
+                key={opt.value}
+                data-diff={opt.value}
+                type="button"
+                role="radio"
+                aria-checked={selected}
+                // Roving tabindex: only the selected chip is in the
+                // tab order; arrow keys cycle within the group.
+                tabIndex={selected ? 0 : -1}
+                onClick={() => setDifficulty(opt.value)}
+                onKeyDown={onChipKeyDown}
+                className="mono tuning-chip"
+                style={{
+                  padding: "8px 14px",
+                  borderRadius: 2,
+                  fontSize: 11,
+                  fontWeight: 700,
+                  letterSpacing: "0.18em",
+                  cursor: "pointer",
+                  border: selected
+                    ? "1px solid var(--signal)"
+                    : "1px solid var(--ink-500)",
+                  background: selected ? "var(--signal-tint)" : "transparent",
+                  color: selected ? "var(--signal)" : "var(--ink-300)",
+                  // Inline base; :hover/:focus-visible polish lives
+                  // in index.css under the .tuning-chip selector so
+                  // we don't need a fragile ::after pseudo here.
+                }}
+              >
+                {opt.label}
+              </button>
+            );
+          })}
+        </div>
+        {activeDiff ? (
+          <p
+            className="sans"
+            style={{
+              margin: 0,
+              fontSize: 12,
+              color: "var(--ink-400)",
+              lineHeight: 1.45,
+            }}
+          >
+            {activeDiff.sub}
+          </p>
+        ) : null}
+      </div>
+
+      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+        <div
+          style={{
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "baseline",
+            gap: 8,
+          }}
+        >
+          <Eyebrow>target duration</Eyebrow>
+          <span
+            className="mono"
+            style={{
+              fontSize: 12,
+              color: "var(--signal)",
+              fontWeight: 700,
+              letterSpacing: "0.04em",
+              fontVariantNumeric: "tabular-nums",
+            }}
+          >
+            {durationMinutes} MIN
+          </span>
+        </div>
+        <input
+          type="range"
+          aria-label="Target duration in minutes"
+          min={15}
+          max={180}
+          step={5}
+          value={durationMinutes}
+          list="tuning-duration-ticks"
+          onChange={(e) => setDurationMinutes(Number(e.target.value))}
+          className="tuning-slider"
+          style={{ width: "100%", accentColor: "var(--signal)" }}
+        />
+        {/* Native datalist renders ticks at common tabletop lengths
+            in modern browsers (UI/UX M2). */}
+        <datalist id="tuning-duration-ticks">
+          <option value="15" />
+          <option value="30" />
+          <option value="60" />
+          <option value="90" />
+          <option value="120" />
+          <option value="180" />
+        </datalist>
+        <div
+          className="mono"
+          aria-hidden
+          style={{
+            display: "flex",
+            justifyContent: "space-between",
+            fontSize: 10,
+            color: "var(--ink-500)",
+            letterSpacing: "0.10em",
+          }}
+        >
+          <span>15</span>
+          <span>60</span>
+          <span>120</span>
+          <span>180</span>
+        </div>
+      </div>
+
+      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+        <Eyebrow>features</Eyebrow>
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))",
+            gap: 8,
+          }}
+        >
+          {FEATURE_OPTIONS.map((opt) => {
+            const checked = features[opt.key];
+            return (
+              <label
+                key={opt.key}
+                className="tuning-feature"
+                data-checked={checked ? "on" : "off"}
+                style={{
+                  display: "flex",
+                  alignItems: "flex-start",
+                  gap: 10,
+                  padding: 10,
+                  border: checked
+                    ? "1px solid var(--signal-deep)"
+                    : "1px solid var(--ink-600)",
+                  borderRadius: 2,
+                  background: checked ? "var(--signal-tint)" : "transparent",
+                  cursor: "pointer",
+                }}
+              >
+                <input
+                  type="checkbox"
+                  checked={checked}
+                  onChange={(e) =>
+                    setFeatures((prev) => ({
+                      ...prev,
+                      [opt.key]: e.target.checked,
+                    }))
+                  }
+                  style={{
+                    marginTop: 3,
+                    accentColor: "var(--signal)",
+                  }}
+                />
+                <span style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                  <span
+                    style={{
+                      display: "inline-flex",
+                      alignItems: "center",
+                      gap: 6,
+                    }}
+                  >
+                    <span
+                      className="mono"
+                      style={{
+                        fontSize: 11,
+                        fontWeight: 700,
+                        letterSpacing: "0.12em",
+                        color: checked ? "var(--signal)" : "var(--ink-200)",
+                        textTransform: "uppercase",
+                      }}
+                    >
+                      {opt.label}
+                    </span>
+                    <span
+                      className="mono"
+                      aria-hidden
+                      style={{
+                        fontSize: 9,
+                        fontWeight: 700,
+                        letterSpacing: "0.14em",
+                        color: checked ? "var(--signal)" : "var(--ink-500)",
+                        border: `1px solid ${
+                          checked ? "var(--signal-deep)" : "var(--ink-500)"
+                        }`,
+                        padding: "1px 4px",
+                        borderRadius: 2,
+                      }}
+                    >
+                      {checked ? "ON" : "OFF"}
+                    </span>
+                  </span>
+                  <span
+                    className="sans"
+                    style={{
+                      fontSize: 11,
+                      color: "var(--ink-400)",
+                      lineHeight: 1.4,
+                    }}
+                  >
+                    {checked ? opt.on : opt.off}
+                  </span>
+                </span>
+              </label>
+            );
+          })}
+        </div>
+      </div>
+    </fieldset>
   );
 }
 

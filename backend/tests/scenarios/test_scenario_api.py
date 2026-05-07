@@ -14,6 +14,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.config import reset_settings_cache
+from tests.conftest import default_settings_body
 from tests.mock_anthropic import MockAnthropic
 
 _FIXTURE_DIR = Path(__file__).parent / "_fixture_scenarios"
@@ -75,6 +76,7 @@ def _bootstrap_token(client: TestClient) -> str:
             "creator_label": "Bootstrap",
             "creator_display_name": "Bootstrap",
             "skip_setup": True,
+            **default_settings_body(),
         },
     )
     assert resp.status_code == 200, resp.text

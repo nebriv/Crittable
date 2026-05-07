@@ -5,8 +5,11 @@ import {
   api,
   CostSnapshot,
   DecisionLogEntry,
+  DEFAULT_SESSION_FEATURES,
+  Difficulty,
   RoleView,
   ScenarioPlan,
+  SessionFeatures,
   SessionSnapshot,
 } from "../api/client";
 import { confirmLeaveSession } from "../lib/leaveGuard";
@@ -200,6 +203,17 @@ export function Facilitator() {
     SETUP_ROLE_BUILTINS.map((s) => ({ ...s })),
   );
   const [setupRoleDraft, setSetupRoleDraft] = useState("");
+  // Creator-selected scenario tuning (issue #33). Picked on the
+  // wizard's step 2 alongside environment / constraints — the UI
+  // calls them "TUNING" — and frozen at session creation. Defaults
+  // mirror the backend's ``SessionSettings`` (standard, 60min,
+  // adversary + time + executive ON, media OFF) so an operator who
+  // ignores the panel still gets a sensible balanced tabletop.
+  const [difficulty, setDifficulty] = useState<Difficulty>("standard");
+  const [durationMinutes, setDurationMinutes] = useState<number>(60);
+  const [features, setFeatures] = useState<SessionFeatures>(() => ({
+    ...DEFAULT_SESSION_FEATURES,
+  }));
   // Lobby-override toggle for the post-creation wizard. When true,
   // the wizard pins step 5 (Invite players) even after the launch
   // gates are met (plan finalized + ≥ 2 player roles). Lets the
@@ -545,6 +559,17 @@ export function Facilitator() {
         // bare-text-leak failure mode that pollutes the play
         // transcript with setup-style assistant prose.
         skip_setup: devMode,
+        // Creator-selected scenario tuning chosen on Step 2 of the
+        // wizard (the "TUNING" panel). The backend freezes these on
+        // ``Session.settings`` and surfaces them into the setup +
+        // play system prompts so the AI tunes facilitation without
+        // re-asking — see ``_build_session_settings_block`` in
+        // ``backend/app/llm/prompts.py``.
+        settings: {
+          difficulty,
+          duration_minutes: durationMinutes,
+          features,
+        },
       });
       // Don't log the response object — it carries the creator token in
       // ``creator_token`` and ``creator_join_url``. Log only non-secret IDs.
@@ -1240,6 +1265,12 @@ export function Facilitator() {
         busyMessage={busyMessage}
         error={error}
         onSubmit={handleCreate}
+        difficulty={difficulty}
+        setDifficulty={setDifficulty}
+        durationMinutes={durationMinutes}
+        setDurationMinutes={setDurationMinutes}
+        features={features}
+        setFeatures={setFeatures}
       />
     );
   }
@@ -1361,6 +1392,12 @@ export function Facilitator() {
           busyMessage={busyMessage}
           error={error}
           onSubmit={handleCreate}
+          difficulty={difficulty}
+          setDifficulty={setDifficulty}
+          durationMinutes={durationMinutes}
+          setDurationMinutes={setDurationMinutes}
+          features={features}
+          setFeatures={setFeatures}
           snapshot={snapshot}
           playerCount={playerCount}
           postCreationContent={postCreationContent}
@@ -1867,6 +1904,13 @@ export function Facilitator() {
             : null
         }
         turnErrored={snapshot.current_turn?.status === "errored"}
+        // Creator-frozen tuning chip — readable to every participant
+        // (the field is part of the all-participants snapshot;
+        // ``features`` is creator-only and intentionally not shown
+        // here). Surfaces what the AI is calibrated against so a
+        // creator who set HARD doesn't have to remember mid-session.
+        difficulty={snapshot.settings.difficulty}
+        durationMinutes={snapshot.settings.duration_minutes}
         buildSha={__ATF_GIT_SHA__}
         buildTs={__ATF_BUILD_TS__}
       />

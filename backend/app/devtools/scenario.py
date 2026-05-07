@@ -8,6 +8,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from ..sessions.models import SessionSettings
+
 # All ``MessageKind`` values that the recorder may serialise verbatim.
 # Mirrors ``app.sessions.models.MessageKind`` but kept as a Literal so a
 # scenario JSON file is decoupled from the engine's own enum imports.
@@ -249,6 +251,13 @@ class Scenario(BaseModel):
     scenario_prompt: str = Field(min_length=1, max_length=8000)
     creator_label: str = Field(min_length=1, max_length=64)
     creator_display_name: str = Field(min_length=1, max_length=64)
+    # Creator-selected scenario tuning (frozen on the live ``Session``
+    # at creation). Captured here so a recorded scenario replays with
+    # the same difficulty / target duration / feature toggles the
+    # original session ran under — without this, every replay would
+    # silently reset to the backend defaults regardless of the
+    # recording's actual settings.
+    settings: SessionSettings = Field(default_factory=SessionSettings)
     skip_setup: bool = False
     roster: list[RoleSpec] = Field(default_factory=list)
     setup_replies: list[SetupReply] = Field(default_factory=list)

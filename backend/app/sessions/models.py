@@ -88,6 +88,52 @@ ParticipantKind = Literal["player", "spectator"]
 TurnStatus = Literal["awaiting", "processing", "complete", "errored"]
 RosterSize = Literal["small", "medium", "large"]
 AARStatus = Literal["pending", "generating", "ready", "failed"]
+Difficulty = Literal["easy", "standard", "hard"]
+
+
+class SessionFeatures(BaseModel):
+    """Creator-selected feature toggles that shape AI facilitation.
+
+    Picked on the new-session wizard alongside difficulty and target
+    duration, frozen at creation time. Surfaced into the setup AND
+    play system prompts so the model tunes pacing, adversary
+    aggression, and inject themes without re-asking the creator.
+
+    Default skew is "balanced standard tabletop": three pressure
+    sources on, media off because press inquiries land cleanly only
+    when the seed prompt explicitly invites them.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    active_adversary: bool = True
+    """Red side actively counters player moves, probes for re-entry."""
+
+    time_pressure: bool = True
+    """Critical injects fire on deadlines; urgency escalates over the session."""
+
+    executive_escalation: bool = True
+    """C-suite / board demands updates and forces reprioritization mid-beat."""
+
+    media_pressure: bool = False
+    """Press inquiries, social-media leaks, reputational injects."""
+
+
+class SessionSettings(BaseModel):
+    """Creator-selected scenario tuning, frozen at session creation.
+
+    Lives on ``Session.settings``. Read by the prompt builders
+    (``_build_session_settings_block``) and surfaced verbatim into
+    the setup + play system blocks. The setup AI is instructed NOT
+    to re-ask difficulty / duration / features — they're decided in
+    the wizard before the first LLM call.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    difficulty: Difficulty = "standard"
+    duration_minutes: int = Field(default=60, ge=15, le=180)
+    features: SessionFeatures = Field(default_factory=SessionFeatures)
 
 
 class Role(BaseModel):
@@ -366,6 +412,7 @@ class Session(BaseModel):
     ended_at: datetime | None = None
 
     scenario_prompt: str
+    settings: SessionSettings = Field(default_factory=SessionSettings)
     plan: ScenarioPlan | None = None
     active_extension_prompts: list[str] = Field(default_factory=list)
 

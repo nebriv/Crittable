@@ -1,7 +1,11 @@
 import { fireEvent, render, screen, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { SetupView } from "../pages/Facilitator";
-import type { ScenarioPlan, SessionSnapshot } from "../api/client";
+import {
+  DEFAULT_SESSION_FEATURES,
+  type ScenarioPlan,
+  type SessionSnapshot,
+} from "../api/client";
 
 /**
  * Coverage for the plan-panel side-rail refactor (this PR). The user's
@@ -24,6 +28,11 @@ function fakeSnapshot(plan: ScenarioPlan | null): SessionSnapshot {
     state: plan ? "SETUP" : "SETUP",
     created_at: "2026-05-05T00:00:00Z",
     scenario_prompt: "test scenario",
+    settings: {
+      difficulty: "standard",
+      duration_minutes: 60,
+      features: { ...DEFAULT_SESSION_FEATURES },
+    },
     plan,
     roles: [],
     current_turn: null,

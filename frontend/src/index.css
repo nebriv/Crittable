@@ -415,3 +415,29 @@ html, body {
 [data-notepad-editor] .ProseMirror-yjs-selection {
   border-radius: 1px;
 }
+
+/*
+ * Tuning panel (SetupWizard step 2) — hover + focus-visible polish.
+ * Inline styles set the base; these selectors add interactive states
+ * the inline form can't express. UI/UX review B1/H2/H3.
+ */
+.tuning-chip:hover:not([aria-checked="true"]) {
+  border-color: var(--signal-deep) !important;
+  color: var(--ink-100) !important;
+}
+.tuning-chip:focus-visible {
+  outline: 2px solid var(--signal);
+  outline-offset: 2px;
+}
+.tuning-feature:hover {
+  border-color: var(--signal-deep) !important;
+}
+.tuning-feature:focus-within {
+  outline: 2px solid var(--signal);
+  outline-offset: 2px;
+}
+.tuning-slider:focus-visible {
+  outline: 2px solid var(--signal);
+  outline-offset: 4px;
+  border-radius: 2px;
+}

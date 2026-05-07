@@ -649,6 +649,19 @@ def _render_markdown(
     lines.append(f"- Session ID: `{session.id}`")
     lines.append(f"- Created: {session.created_at.isoformat()}")
     lines.append(f"- Ended: {session.ended_at.isoformat() if session.ended_at else 'n/a'}")
+    # Self-describe the calibration the per-role rubric was scored
+    # against — a 4 at ``hard`` is not the same achievement as a 4
+    # at ``easy``, and reviewers reading the AAR weeks later need to
+    # know which knobs were live.
+    settings = session.settings
+    on_features = sorted(
+        name for name, on in settings.features.model_dump().items() if on
+    )
+    features_str = ", ".join(on_features) if on_features else "none"
+    lines.append(
+        f"- Played at: **{settings.difficulty}** · "
+        f"target {settings.duration_minutes} min · features: {features_str}"
+    )
     lines.append("- Roster:")
     for role in session.roles:
         creator_tag = " *(creator)*" if role.is_creator else ""

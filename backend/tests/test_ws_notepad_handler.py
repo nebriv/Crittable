@@ -22,6 +22,7 @@ import pytest
 
 from app.config import reset_settings_cache
 from app.main import create_app
+from app.sessions.models import SessionSettings
 from app.sessions.notepad import (
     NotepadOversizedError,
     NotepadRateLimitedError,
@@ -86,6 +87,7 @@ async def manager_with_session() -> Any:
             scenario_prompt="Ransomware",
             creator_label="CISO",
             creator_display_name="Alex",
+            settings=SessionSettings(),
         )
         sid = session.id
         creator_id = session.roles[0].id

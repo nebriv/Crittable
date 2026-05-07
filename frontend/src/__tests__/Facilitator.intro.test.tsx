@@ -269,6 +269,12 @@ const baseProps = {
   aiPaused: false,
   recoveryStatus: null as { kind: string; attempt?: number; budget?: number } | null,
   turnErrored: false,
+  // Issue #33-lite: tuning chip surfaces creator-frozen difficulty
+  // + duration. ``null`` while the snapshot hasn't loaded; here we
+  // pass concrete values so the chip renders in tests that exercise
+  // the rest of the bar.
+  difficulty: "standard" as const,
+  durationMinutes: 60,
   buildSha: "abcdef0",
   buildTs: "2026-05-01T00:00:00Z",
 };

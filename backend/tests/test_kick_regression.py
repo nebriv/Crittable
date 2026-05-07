@@ -34,6 +34,7 @@ from app.auth.authz import AuthorizationError
 from app.config import reset_settings_cache
 from app.main import create_app
 from app.sessions.turn_engine import IllegalTransitionError
+from tests.conftest import default_settings_body
 from tests.mock_anthropic import MockAnthropic, setup_then_play_script
 
 
@@ -74,6 +75,7 @@ def _create_and_seat(client: TestClient, *, role_count: int) -> dict[str, Any]:
             "scenario_prompt": "Ransomware via vendor portal",
             "creator_label": "CISO",
             "creator_display_name": "Alex",
+            **default_settings_body(),
         },
     )
     assert resp.status_code == 200, resp.text

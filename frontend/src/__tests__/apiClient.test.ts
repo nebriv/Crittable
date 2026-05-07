@@ -67,6 +67,16 @@ describe("api/client — request wrapper", () => {
       scenario_prompt: "x",
       creator_label: "CISO",
       creator_display_name: "Alex",
+      settings: {
+        difficulty: "standard",
+        duration_minutes: 60,
+        features: {
+          active_adversary: true,
+          time_pressure: true,
+          executive_escalation: true,
+          media_pressure: false,
+        },
+      },
     });
     expect(res.session_id).toBe("s1");
     expect(res.creator_token).toBe("tok");

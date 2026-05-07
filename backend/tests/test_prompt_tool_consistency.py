@@ -218,6 +218,13 @@ _NON_TOOL_ALLOWLIST = frozenset(
         "narrative",
         "flagged_for_review",
         "score",
+        # Session-settings feature-toggle keys (Block 12 / setup
+        # ``Session settings`` block lists each toggle by its
+        # snake_case key — they're not tools).
+        "active_adversary",
+        "time_pressure",
+        "executive_escalation",
+        "media_pressure",
         # AAR per-role-scores entry sub-fields (the AAR system block
         # now calls these out by name when explaining the JSON-array-
         # of-objects contract for ``per_role_scores``).
