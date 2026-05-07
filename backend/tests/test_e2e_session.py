@@ -2162,7 +2162,9 @@ def test_play_after_auto_greet_then_skip_does_not_400(client: TestClient) -> Non
     # session — we recreate after the mock is installed so the auto-greet
     # actually goes through the scripted SETUP burst.
     seats = _create_and_seat(client, role_count=2)
-    play_yield.content[1].input = {"role_ids": [seats["role_ids"][1]]}
+    play_yield.content[1].input = {
+        "role_groups": [[seats["role_ids"][1]]]
+    }
 
     client.app.state.llm.set_transport(
         MockAnthropic({"setup": [setup_burst], "play": [play_yield]}).messages
@@ -2189,7 +2191,9 @@ def test_play_after_auto_greet_then_skip_does_not_400(client: TestClient) -> Non
         json={"label": "SOC Analyst", "display_name": "Sam"},
     )
     assert r.status_code == 200
-    play_yield.content[1].input = {"role_ids": [r.json()["role_id"]]}
+    play_yield.content[1].input = {
+        "role_groups": [[r.json()["role_id"]]]
+    }
 
     r = client.post(f"/api/sessions/{new_sid}/setup/skip?token={new_cr}")
     assert r.status_code == 200, r.text

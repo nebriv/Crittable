@@ -161,12 +161,18 @@ def narrow_active_role_groups(
     #
     # Issue #168: extend the matcher so a chain like "Paul and
     # Lawrence — who's filing?" / "CISO, IR Lead — your call?" /
-    # "Paul, Lawrence, do X" addresses *every* name in the chain,
-    # not just the first one at clause-start. Pre-#168 the matcher
-    # only fired on each name's own clause-start match, so chained
-    # asks shrank to either the head (single-name regex hit on the
-    # first name + comma) or a tail member (its own clause-start
-    # match never matched mid-string), losing the others.
+    # "Paul or Lawrence: respond" addresses *every* name in the chain,
+    # not just the first one at clause-start. Chains MUST terminate
+    # in an em-dash or colon (the chain pass deliberately rejects a
+    # bare-comma terminator like "Paul, Lawrence, do X" — the
+    # last "Lawrence," has no addressing separator after it, so it
+    # reads as an enumeration, not an ask). The single-name pass
+    # below still picks up "Paul, do X" (single addressee, comma-
+    # terminated). Pre-#168 the matcher only fired on each name's
+    # own clause-start match, so chained asks shrank to either the
+    # head (single-name regex hit on the first name + comma) or a
+    # tail member (its own clause-start match never matched mid-
+    # string), losing the others.
     #
     # Two passes:
     #
@@ -237,15 +243,6 @@ def narrow_active_role_groups(
                     break
 
     addressed = explicit_targets | addressed_in_text
-
-    # Flatten the AI's groups for the diagnostic dropped list.
-    flat_ai_set: list[str] = []
-    seen_flat: set[str] = set()
-    for group in ai_groups:
-        for rid in group:
-            if rid not in seen_flat:
-                seen_flat.add(rid)
-                flat_ai_set.append(rid)
 
     # Phase 3: decide. If the AI's set has no overlap with the addressed
     # set AND the addressed set is empty (no names at clause-start, no

@@ -261,6 +261,12 @@ class Turn(BaseModel):
     # ``submitted_role_ids / active_role_ids`` at snapshot time.
     ai_progress_pct: float | None = None
 
+    # mypy doesn't recognize ``@computed_field`` stacked on top of
+    # ``@property`` (https://github.com/pydantic/pydantic/issues/9417)
+    # — Pydantic v2's recommended pattern for a serialized derived
+    # field, but typed as if the decorator order were illegal. The
+    # ignore is the documented workaround until pydantic-stubs lands
+    # the fix; revisit when bumping pydantic past 2.7.
     @computed_field  # type: ignore[prop-decorator]
     @property
     def active_role_ids(self) -> list[str]:

@@ -101,9 +101,15 @@ PLAY_TOOLS: list[dict[str, Any]] = [
             "**Single-addressee rule:** if this is the only player-facing "
             "tool on the turn and you're not asking any other role anything, "
             "`set_active_roles` MUST be exactly `role_groups=[[that_role_id]]` "
-            "— one singleton group containing only that role. Adding other "
-            "roles or merging into a multi-role group makes the engine wait "
-            "on people you didn't address."
+            "— one singleton group containing only that role. Adding extra "
+            "singleton groups for un-addressed roles waits on people you "
+            "never spoke to (the narrower may rescue you by elide-ing those "
+            "groups, but don't rely on it). Merging the addressee into a "
+            "multi-role any-of group with someone you didn't ask is worse: "
+            "any-of groups close on the FIRST ready vote, so an un-addressed "
+            "role in the same group can short-circuit your ask before the "
+            "intended addressee replies — you get a wrong respondent, not a "
+            "stalled turn."
         ),
         "input_schema": {
             "type": "object",
@@ -135,11 +141,16 @@ PLAY_TOOLS: list[dict[str, Any]] = [
             "`role_groups=[[x.id], [y.id]]` (BOTH must answer). One ask "
             "with two eligible answerers (\"X or Y — who owns this?\") "
             "= one multi-role group: `role_groups=[[x.id, y.id]]` "
-            "(EITHER answers; first ready vote advances). Including "
-            "roles you didn't address stalls the turn. When you "
-            "genuinely want a single-addressee turn, prefer "
-            "`address_role` over `broadcast` to make the audience "
-            "explicit."
+            "(EITHER answers; first ready vote advances). Yielding roles "
+            "you didn't address creates incorrect group semantics — an "
+            "extra singleton group makes the engine wait on someone you "
+            "never spoke to (the narrower will usually elide such "
+            "groups, but it's a fragile rescue), and including an "
+            "un-addressed role in a multi-role any-of group lets the "
+            "wrong respondent close the ask before the intended "
+            "addressee even sees it. When you genuinely want a "
+            "single-addressee turn, prefer `address_role` over "
+            "`broadcast` to make the audience explicit."
         ),
         "input_schema": {
             "type": "object",
