@@ -123,9 +123,9 @@ export function MarkReadyButton({
   const stateLabel = (() => {
     // ``disabledLabel`` overrides the default state copy whenever the
     // button isn't interactive AND the parent supplied one. Lets the
-    // rail say "STAND BY" while the viewer is off-turn instead of a
-    // greyed "MARK READY →" that reads as broken. The default still
-    // wins when the parent hasn't opted in (legacy call sites).
+    // rail say "NOT YOUR TURN" while the viewer is off-turn instead
+    // of a greyed "MARK READY →" that reads as broken. The default
+    // still wins when the parent hasn't opted in (legacy call sites).
     if (!enabled && disabledLabel) return disabledLabel;
     if (variant === "impersonate") {
       const target = trunc((subjectLabel ?? "role").toUpperCase());
