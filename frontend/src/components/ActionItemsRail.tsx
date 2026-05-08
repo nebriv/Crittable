@@ -30,11 +30,12 @@ interface ActionEntry {
  *   - ``address_role`` calls — the AI explicitly asked role X to do Y.
  *     Status = ``open`` until role X has posted a player message AFTER
  *     the ask in the same workstream (``in_progress``); marked
- *     ``done`` only if the role's response carries an ``intent="ready"``
- *     submission AND the AI has since broadcast a non-question
- *     follow-up. We can't see ``intent`` on snapshot messages directly
- *     yet (tracked) — so MVP heuristic: "open" until the addressed
- *     role replies once, then "in_progress".
+ *     We never mark anything ``done`` from this rail — the shared
+ *     notepad's checkbox flow is the authoritative completion surface.
+ *     Heuristic: "open" until the addressed role replies once, then
+ *     "in_progress". (PR #209 follow-up: the ``intent`` field is
+ *     gone, so the previous "ready"-derived done-path no longer
+ *     applies regardless.)
  *   - ``pose_choice`` calls — same lifecycle as address_role; the
  *     question is the action.
  *
