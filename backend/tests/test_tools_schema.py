@@ -83,3 +83,21 @@ def test_propose_scenario_plan_nested_shapes_match_pydantic() -> None:
         inject_items = props["injects"]["items"]
         assert inject_items["type"] == "object"
         assert set(inject_items["required"]) >= {"trigger", "type", "summary"}
+
+
+def test_setup_tools_require_executive_summary() -> None:
+    """``executive_summary`` is shown verbatim on every participant's
+    join page (see prompts.py:550-558 and the tool descriptions).
+    Schema drift that drops it from ``required`` produces a missing
+    summary on the join page even though the prompt promises it. Pin
+    the requirement on both setup-tier tools."""
+
+    propose = next(t for t in SETUP_TOOLS if t["name"] == "propose_scenario_plan")
+    finalize = next(t for t in SETUP_TOOLS if t["name"] == "finalize_setup")
+    for tool in (propose, finalize):
+        required = tool["input_schema"]["required"]
+        assert "executive_summary" in required, (
+            f"{tool['name']}: executive_summary must be required — the prompt "
+            "tells the model it's the spoiler-free copy on every join page; "
+            "an absent field produces a blank summary."
+        )

@@ -336,3 +336,26 @@ def test_with_cache_recovery_shape_marks_only_first_block() -> None:
     assert out[0]["cache_control"] == {"type": "ephemeral"}
     assert "cache_control" not in out[1]
     assert "cache_control" not in out[2]
+
+
+def test_llmclient_init_calls_harden_litellm_globals() -> None:
+    """Anthropic-direct LLMClient constructor must run the litellm
+    callback-zeroing routine for symmetry with LiteLLMChatClient. The
+    _shared module runs it once at import time, but a third party
+    that imported litellm and re-populated a callback list between
+    that import and our boot would slip past the import-time guard.
+    Re-running the (idempotent) call from each backend's __init__
+    closes that window.
+    """
+
+    from unittest.mock import patch
+
+    from app.config import Settings
+    from app.llm.client import LLMClient
+
+    with patch("app.llm.client.harden_litellm_globals") as spy:
+        LLMClient(settings=Settings(llm_api_key="dummy-test-key"))
+        assert spy.call_count == 1, (
+            "LLMClient.__init__ must call harden_litellm_globals() once "
+            "(symmetry with LiteLLMChatClient)"
+        )

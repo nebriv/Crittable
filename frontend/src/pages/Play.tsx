@@ -490,6 +490,7 @@ export function Play({ sessionId, token }: Props) {
         setWsStatus("session-gone");
         return;
       }
+      console.warn("[play] refresh_snapshot_failed", msg, err);
       setError(msg);
     }
   }

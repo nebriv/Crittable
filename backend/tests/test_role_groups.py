@@ -980,6 +980,44 @@ def test_strict_yield_recovery_directive_uses_role_groups() -> None:
     assert "with the role_ids" not in _STRICT_YIELD_USER_NUDGE
 
 
+def test_drive_recovery_note_doesnt_enumerate_bookkeeping_tools_as_exhaustive() -> None:
+    """Bug-scrub H5: an earlier _DRIVE_RECOVERY_NOTE listed five
+    bookkeeping tools by name in a parenthetical that read as
+    exhaustive. The model on a missing-DRIVE recovery occasionally
+    inferred 'set_active_roles isn't in the bookkeeping list, so a
+    second yield must be the bookkeeping move' and yielded twice
+    instead of broadcasting. The runtime gate caught it, but the
+    prose was misleading.
+
+    Pin two things:
+      * the directive doesn't enumerate the old bookkeeping list
+        (track_role_followup, resolve_role_followup, request_artifact,
+        lookup_resource, use_extension_tool) all together — that
+        exact pattern is what reads as exhaustive,
+      * it tells the model that broadcast/address_role/pose_choice/
+        share_data ARE the player-facing tools (positive list, not
+        a negative-by-omission list).
+    """
+
+    from app.sessions.turn_validator import _DRIVE_RECOVERY_NOTE
+
+    # Old enumeration is gone (5-tool parenthetical that misled the
+    # model). Test for the exact substring that was the regression.
+    assert "track_role_followup`, `resolve_role_followup`, `request_artifact`, `lookup_resource`, `use_extension_tool" not in _DRIVE_RECOVERY_NOTE, (
+        "Drive-recovery directive shouldn't enumerate bookkeeping "
+        "tools as an exhaustive list — it reads as 'these are the "
+        "non-player-facing tools, everything else (incl. set_active_roles) "
+        "is fine'."
+    )
+    # New positive-list framing must mention the four player-facing
+    # tools so the model knows which one to reach for.
+    for tool in ("broadcast", "address_role", "pose_choice", "share_data"):
+        assert tool in _DRIVE_RECOVERY_NOTE, (
+            f"Drive-recovery directive must name the player-facing "
+            f"tools (positive list); missing '{tool}'."
+        )
+
+
 # ---------------------------------------------------------------------
 # Suppress the unused-import warning for ``json`` if the file shrinks.
 # ---------------------------------------------------------------------

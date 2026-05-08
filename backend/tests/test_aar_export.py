@@ -1191,3 +1191,116 @@ def test_render_markdown_hides_flagged_for_review_section_when_empty() -> None:
     }
     md = _render_markdown(session, report, audit_events=[])
     assert "### Flagged for review" not in md
+
+
+# ---------------------------------------------------------------- prompt ↔ renderer
+
+
+def test_aar_prompt_documents_section_order_matching_renderer() -> None:
+    """The AAR system prompt tells the model "the markdown export
+    renders these in a fixed order: ..." so the model can plan flow
+    and transitions correctly. If the prompt's order drifts from the
+    renderer's actual order (or omits a section), the model writes
+    against a stale mental model — the May 2026 bug-scrub caught
+    `flagged_for_review` missing from the documented order even
+    though the renderer placed it between gaps and recommendations.
+    """
+
+    from app.llm.export import _render_markdown
+    from app.llm.prompts import _AAR_SYSTEM
+
+    # Sections the prompt documents in its order line, in canonical
+    # markdown-header form. Anchored to the snake_case field names
+    # the prompt uses; map each to the heading the renderer emits.
+    prompt_to_header = {
+        "executive_summary": "## Executive summary",
+        "narrative": "## After-action narrative",
+        "what_went_well": "### What went well",
+        "gaps": "### Gaps",
+        "flagged_for_review": "### Flagged for review",
+        "recommendations": "### Recommendations",
+        "per_role_scores": "## Per-role scores",
+        "overall_score": "## Overall session score",
+    }
+
+    # Verify the prompt actually mentions the order line and every
+    # field appears in it. A regression that drops one of these from
+    # the prompt copy fails this assertion.
+    order_line = None
+    for line in _AAR_SYSTEM.splitlines():
+        if "fixed order" in line:
+            order_line = line
+            break
+    assert order_line is not None, "AAR prompt must document section order"
+    for field in prompt_to_header:
+        assert field in order_line, (
+            f"AAR prompt order line is missing '{field}': {order_line!r}"
+        )
+
+    # Now verify the prompt's order matches the renderer's order.
+    # Build a session + report with every section populated so the
+    # renderer emits each header.
+    session = _two_role_session()
+    report = {
+        "executive_summary": "exec",
+        "narrative": "narr",
+        "what_went_well": ["item"],
+        "gaps": ["item"],
+        "flagged_for_review": ["item"],
+        "recommendations": ["item"],
+        "per_role_scores": [],
+        "overall_score": 3,
+        "overall_rationale": "ovr",
+    }
+    md = _render_markdown(session, report, audit_events=[])
+
+    # Prompt order → rendered header positions. Each must be > the prior.
+    rendered_positions = []
+    for field, header in prompt_to_header.items():
+        if field == "overall_score":
+            # Renderer header includes the digit; just check the prefix.
+            idx = md.index("## Overall session score")
+        else:
+            assert header in md, f"renderer didn't emit {header!r}"
+            idx = md.index(header)
+        rendered_positions.append((field, idx))
+
+    sorted_positions = sorted(rendered_positions, key=lambda p: p[1])
+    assert rendered_positions == sorted_positions, (
+        "AAR prompt's documented order disagrees with renderer order. "
+        f"prompt order: {[f for f, _ in rendered_positions]}; "
+        f"actual order: {[f for f, _ in sorted_positions]}. "
+        "Update _AAR_SYSTEM (the line with 'fixed order') to match "
+        "_render_markdown."
+    )
+
+
+def test_aar_prompt_documents_zero_as_skipped_in_rubric() -> None:
+    """PR #204 introduced the skip-zero feature: a sub-score of 0
+    renders as a dash, and ``compute_avg_subscore`` skips zeros when
+    averaging. The prompt's rubric must tell the model that 0 is the
+    correct emit when it has no observable evidence — otherwise the
+    model defaults to 3 ('at bar') to fill the slot, defeating the
+    feature and making the report read as evasive (the bunching anti-
+    pattern the rubric explicitly warns against)."""
+
+    from app.llm.prompts import _AAR_SYSTEM
+
+    rubric_block = _AAR_SYSTEM
+    # Must mention 0 in the score range (rubric is "0–5" not "1–5").
+    assert "0–5" in rubric_block or "0-5" in rubric_block, (
+        "AAR rubric must declare scores as 0–5 (not 1–5) — the "
+        "extractor accepts 0 and the renderer treats 0 as 'skipped'."
+    )
+    # Must explicitly tell the model what 0 means.
+    assert "0 = no observable evidence" in rubric_block, (
+        "AAR rubric must tell the model 0 = no observable evidence "
+        "and not to default to 3."
+    )
+    # Must explicitly tell the model NOT to default to 3.
+    lowered = rubric_block.lower()
+    assert "do not default to 3" in lowered or "never default to 3" in lowered, (
+        "AAR rubric must tell the model not to default to 3 when "
+        "evidence is absent — the bunching pattern is the failure "
+        "mode the skip-zero feature exists to fix."
+    )

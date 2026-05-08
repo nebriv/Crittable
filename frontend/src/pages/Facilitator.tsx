@@ -998,6 +998,7 @@ export function Facilitator() {
           message =
             "The AI didn't propose a plan yet. Try once more, or share a bit more context first.";
         }
+        console.warn("[facilitator] looks_ready_no_plan", message, { diagnostics: diags });
         setError(message);
       }
     } catch (err) {

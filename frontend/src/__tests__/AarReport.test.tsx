@@ -520,6 +520,67 @@ describe("AarReportView", () => {
     // falls back to 0; gradeForScore renders "—" in neutral ink.
     const toggle = screen.getByText("ABSENT").closest("button")!;
     expect(toggle.getAttribute("aria-label")).toMatch(/overall —/);
+
+    // Bug-scrub M3: a sub-score of 0 must NOT render in crit (red)
+    // tone. The previous toneForScore(0) returned "crit"; ScoreCard
+    // had an isEmpty override that papered over it. Now toneForScore
+    // returns "neutral" directly, mapped to ink-500 / ink-600. With
+    // the prompt now intentionally telling the model 0 = "no
+    // observable evidence", a skipped sub-score appearing in red
+    // would make the report look harsh on roles that simply weren't
+    // active in that dimension. Pin the tone class.
+    const headlineSpan = within(toggle).getByText("—");
+    // Headline span carries either text-* or border-* classes from
+    // toneClass. With a "neutral" tone these must be ink-500 (text)
+    // — never text-crit.
+    expect(headlineSpan.className).not.toMatch(/text-crit/);
+    expect(headlineSpan.className).toMatch(/text-ink-500/);
+  });
+
+  it("a 0 sub-score renders the DECISION cell in neutral ink, not crit (red)", async () => {
+    // Bug-scrub M3 regression: with skip-zero mainstreamed in the
+    // prompt rubric, the per-cell tone for a 0 sub-score must be
+    // neutral. Previously the cell used toneForScore(0) → crit, then
+    // an isEmpty override at the call site swapped to ink-500. The
+    // override is gone; toneForScore now returns "neutral" directly.
+    _mockFetch(
+      200,
+      _report([
+        {
+          role_id: "role-partial-tone",
+          decision_quality: 0,
+          communication: 5,
+          speed: 5,
+          decisions: 2,
+          rationale: "Skipped decision dimension.",
+          label: "PTONE",
+          display_name: "T",
+        },
+      ]),
+    );
+    render(
+      <AarReportView
+        sessionId="s1"
+        token="tok"
+        downloadMdHref="/x.md"
+        downloadJsonHref="/x.json"
+      />,
+    );
+    await waitFor(() =>
+      expect(screen.getByText("PTONE")).toBeInTheDocument(),
+    );
+    const toggle = screen.getByText("PTONE").closest("button")!;
+    fireEvent.click(toggle);
+    // The DECISION cell label sits next to a value span. With value=0
+    // the value span shows "—" and must carry text-ink-500 / not
+    // text-crit. Two "—" can appear (headline + cell); scope to the
+    // expanded breakdown via the parent <li>.
+    const row = within(toggle.closest("li")!);
+    const dashes = row.getAllByText("—");
+    // Every "—" we render in this row must be neutral ink, never crit.
+    for (const node of dashes) {
+      expect(node.className).not.toMatch(/text-crit/);
+    }
   });
 
   it("expanded row without a rationale falls back to a placeholder line", async () => {
