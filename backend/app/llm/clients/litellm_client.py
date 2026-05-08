@@ -911,6 +911,20 @@ class LiteLLMChatClient(ChatClient):
         chunks: list[Any] = []
         text_buffer: list[str] = []
         chunk_warn_logged = False
+        # Best-effort ``tool_use_start`` emission. OpenAI-shaped streams
+        # surface the function name in the first chunk that introduces a
+        # given ``tool_calls[i]`` index (subsequent chunks carry only
+        # incremental ``arguments`` deltas). We dedupe by ``(index, id)``
+        # — NOT by tool name — so a model that calls the same tool twice
+        # in one stream emits two ``tool_use_start`` events, matching
+        # the Anthropic-direct path (which fires once per
+        # ``content_block_start``). Any provider that doesn't emit the
+        # name in chunk-form simply produces no event — callers treat
+        # the absence as "no early signal," not "no tool call," and the
+        # final assembled response still carries the tool_use.
+        # Wrapped in try/except per chunk so a misshapen delta never
+        # breaks the stream itself.
+        seen_tool_calls: set[tuple[int | None, str | None]] = set()
         try:
             try:
                 stream = await litellm.acompletion(**kwargs)
@@ -933,6 +947,45 @@ class LiteLLMChatClient(ChatClient):
                             ),
                         )
                         chunk_warn_logged = True
+                    try:
+                        for choice in getattr(chunk, "choices", None) or []:
+                            delta = getattr(choice, "delta", None)
+                            tool_calls = (
+                                getattr(delta, "tool_calls", None)
+                                if delta is not None
+                                else None
+                            )
+                            for tc in tool_calls or []:
+                                fn = getattr(tc, "function", None)
+                                name = (
+                                    getattr(fn, "name", None)
+                                    if fn is not None
+                                    else None
+                                )
+                                if not name:
+                                    continue
+                                # Per-call identity: ``index`` is the
+                                # OpenAI-shaped per-stream tool-call slot
+                                # (``0``, ``1``, ...); ``id`` is the
+                                # provider-issued call id. Either alone
+                                # is enough to distinguish two calls of
+                                # the same tool; we key on the tuple so
+                                # providers that emit only one of them
+                                # still dedupe correctly within a stream.
+                                tc_index = getattr(tc, "index", None)
+                                tc_id = getattr(tc, "id", None)
+                                key = (tc_index, tc_id)
+                                if key in seen_tool_calls:
+                                    continue
+                                seen_tool_calls.add(key)
+                                yield {"type": "tool_use_start", "name": name}
+                    except Exception as exc:
+                        _logger.debug(
+                            "litellm_tool_use_start_detect_failed",
+                            tier=tier,
+                            model=wire_model,
+                            error=str(exc),
+                        )
                     delta_text = _delta_content(chunk)
                     if delta_text:
                         text_buffer.append(delta_text)

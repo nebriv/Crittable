@@ -267,6 +267,128 @@ backends. Without this normalization, warm-cache calls would show
 ~10× higher cost on the LiteLLM path — verified post-Phase-3 and locked
 by `tests/test_litellm_translators.py::test_from_response_warm_cache_subtracts_cache_read_from_input`.
 
+## Streaming caveats (read before adding a new `astream` call site)
+
+Both backends expose the same `ChatClient.astream(...) -> AsyncIterator[dict]`
+contract. The events callers can observe mid-stream are:
+
+| event | Anthropic-direct | LiteLLM | what it carries |
+|---|---|---|---|
+| `text_delta` | ✓ reliable | ✓ reliable (content fidelity not contracted — see below) | `text` chunk |
+| `tool_use_start` | ✓ reliable, full block metadata at start | ✓ best-effort, function name only | tool `name` |
+| `complete` | ✓ terminal, carries `LLMResult` | ✓ terminal, carries `LLMResult` | final assembled result |
+
+The terminal `complete` event is the durable contract on both backends.
+Mid-stream events are useful as **early signals** (e.g. fanning out a
+"setup is drafting the plan" indicator before the 10–30 s call returns)
+but are **not safe sources of content**.
+
+### The `input_json_delta` minefield
+
+When a model streams a `tool_use` block, the JSON arguments arrive as
+fragmented deltas. Hand-accumulating these is known to break — lost
+characters across chunk boundaries, malformed JSON, encoding edge
+cases, partial-codepoint splits — and **the LiteLLM translator
+deliberately does not attempt it**. Tool-call deltas are dropped
+mid-stream; the partial JSON accumulates inside LiteLLM via
+`stream_chunk_builder` which we call at end-of-stream, and the
+assembled `ModelResponse` runs through the same `_from_litellm_response`
+translator as `acomplete`. Net result: a streamed response and a
+non-streamed response produce **identical `LLMResult` shapes
+downstream**.
+
+Consequence: **tool args / IDs / inputs are unavailable until the
+`complete` event fires** on the LiteLLM path. If you need the args
+mid-stream, use the Anthropic-direct backend (which exposes the full
+`content_block_start` block) or rethink whether you really need them
+mid-stream.
+
+### Streaming is a typing pulse, not a content channel
+
+`Play.tsx` and `Facilitator.tsx` explicitly **ignore `text_delta`
+content** — they're used purely as a "model is still alive" signal
+that flips `setStreamingActive(true)`. The actual text gets rendered
+from the snapshot refresh after `message_complete`. This is
+load-bearing: it lets the LiteLLM translator skip mid-stream text
+fidelity (which would otherwise diverge across providers) and still
+land identical UI output. **Do not add a frontend code path that
+treats mid-stream `text_delta` content as ground truth.**
+
+### What's safe to use mid-stream on each backend
+
+| Use case | Anthropic-direct | LiteLLM | Notes |
+|---|---|---|---|
+| "Is the model still alive?" pulse | ✓ | ✓ | Text or tool deltas, count is the signal. |
+| "Has the model committed to tool X?" early signal | ✓ reliable | ✓ best-effort | LiteLLM degrades to "no early signal" on providers that don't surface the function name in chunk-form (Bedrock variants, some self-hosted). |
+| Reading a tool call's `input` (args) | ✗ — wait for `complete` | ✗ — wait for `complete` | Even Anthropic-direct doesn't surface assembled args mid-stream; you'd be parsing partial JSON yourself. |
+| Reading a tool call's `id` | ✗ — wait for `complete` | ✗ — wait for `complete` | Same. |
+| Streaming chat text to the user | use `complete`'s text | use `complete`'s text | The frontend re-renders from the snapshot after `message_complete`; mid-stream text is discarded. |
+| Distinguishing "tool A vs tool B" mid-stream | ✓ at `tool_use_start` | ✓ best-effort at `tool_use_start` | The two backends emit identically-shaped `tool_use_start` events; LiteLLM may simply not fire one. |
+| Counting tool calls mid-stream | ✓ | best-effort | Same caveat as above. |
+
+### `tool_use_start` event details
+
+Mid-stream, both backends emit `{"type": "tool_use_start", "name": <str>}`
+the first time a given tool block is observed in the stream:
+
+- **Anthropic-direct**: derived from `content_block_start` events.
+  Anthropic streams the full block metadata at the start of each
+  block, before any input deltas, so the name is available
+  immediately and reliably.
+- **LiteLLM**: derived best-effort from the first chunk that surfaces
+  a non-empty `function.name` for a given `tool_calls[i]` index.
+  - Wrapped in `try/except` per chunk so a misshapen delta never
+    breaks the stream itself.
+  - Deduped via `seen_tool_names` in case a provider re-emits the
+    same name across chunks.
+  - **Provider variability**: OpenAI, Anthropic-via-LiteLLM, and most
+    OpenAI-compat gateways emit the function name in the first
+    chunk for a tool call. Some Bedrock model variants and a few
+    self-hosted endpoints assemble the entire tool call only in
+    `stream_chunk_builder` at end-of-stream — those produce **no
+    `tool_use_start` event mid-stream**, just the terminal
+    `complete`. Callers must treat the absence as "no early signal,"
+    not "no tool call."
+
+### Engine-side rule of thumb for new astream call sites
+
+1. **The `complete` event is the contract.** Anything that affects
+   correctness — tool args, IDs, the dispatcher tool_uses list, the
+   `LLMResult` shape — must read from `complete`, not from mid-stream
+   events.
+2. **Mid-stream events are for UX, not state.** OK to fan out a "what
+   is the AI doing?" indicator from `tool_use_start`. Not OK to
+   advance session state from one.
+3. **Plan for the LiteLLM "no event" path.** If your feature *needs*
+   `tool_use_start` to fire on every tool call, you've coupled to the
+   Anthropic-direct backend. Either pin to Anthropic-direct
+   explicitly, or have a fallback that reaches the same UX outcome
+   when no early signal arrives (typically: a generic "AI is
+   thinking" indicator that escalates after some elapsed time).
+4. **Don't accumulate `input_json_delta` yourself.** Read
+   `_from_litellm_response` first; the translator already has the
+   bug-free path. If you genuinely need streamed args, the answer is
+   probably "switch this code path to non-streaming `acomplete`," not
+   "DIY the delta accumulation."
+
+### Latency overhead
+
+LiteLLM streaming sits within ~110 ms TTFT (~16% overhead) of
+Anthropic-direct streaming on the same wire model. For setup tier
+(non-streaming pre-2026-05-08, now streaming for the
+`tool_use_start` early signal), that overhead is paid once per setup
+turn. For play tier, it's paid per turn — generally swamped by the
+multi-second LLM call itself.
+
+### Current astream call sites
+
+| Call site | Backend dependency | Failure mode if `tool_use_start` doesn't fire |
+|---|---|---|
+| `TurnDriver.run_play_turn` | Either backend | N/A — doesn't read `tool_use_start`. |
+| `TurnDriver.run_setup_turn` (since 2026-05-08) | Either backend | Banner falls back to small "AI is typing" dots — same UX as before this change, no functional regression. |
+
+If you add a new astream call site, add a row here.
+
 ## Why this matters
 
 Operators have varying constraints — air-gapped networks, regional

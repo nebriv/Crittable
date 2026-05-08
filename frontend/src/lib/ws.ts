@@ -114,6 +114,17 @@ export type ServerEvent =
       turn_index?: number | null;
       for_role_id?: string | null;
     }
+  // The setup tier streams its first LLM call so the engine can fire
+  // this event the moment the model commits to ``propose_scenario_plan``
+  // (rather than waiting for the full 10-30 s non-streamed call to
+  // return). The creator UI mounts the prominent "Drafting scenario
+  // plan" banner on ``active=true`` and tears it down on ``active=false``
+  // (fired in the setup-driver's ``finally``, including on exception).
+  // Regular back-and-forth ``ask_setup_question`` calls never produce
+  // this event — the small "AI is typing" dots remain the only
+  // indicator there. ``record=False`` server-side so the event does
+  // NOT replay on reconnect.
+  | { type: "setup_drafting_plan"; active: boolean }
   | { type: "typing"; role_id: string; typing: boolean }
   | {
       type: "presence";
@@ -420,6 +431,12 @@ export class WsClient {
             safe.attempt = parsed.attempt;
             safe.budget = parsed.budget;
             safe.recovery = parsed.recovery;
+            break;
+          case "setup_drafting_plan":
+            // ``active`` is the load-bearing field — without it console
+            // dumps only show the event type and a reconnect-ordering
+            // bug (banner stuck on / off) is undebuggable from logs.
+            safe.active = parsed.active;
             break;
           case "typing":
             safe.role_id = parsed.role_id;

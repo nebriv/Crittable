@@ -159,6 +159,37 @@ class TurnDriver:
                 error=str(exc),
             )
 
+    async def _broadcast_setup_drafting_plan(
+        self, session_id: str, *, active: bool
+    ) -> None:
+        """Broadcast a ``setup_drafting_plan`` event so the creator UI
+        can mount the prominent "Drafting scenario plan" banner the
+        moment the model commits to the plan tool, rather than waiting
+        for the whole non-streaming call to return.
+
+        Fired only when the streaming setup call surfaces a
+        ``tool_use_start`` event whose ``name`` is
+        ``propose_scenario_plan``. Regular back-and-forth questions
+        (``ask_setup_question``) never trigger this — only the small
+        "AI is typing" dots. ``record=False`` because the event is
+        stale on reconnect; the snapshot's ``plan`` field is the
+        durable source of truth once the call lands.
+        """
+
+        try:
+            await self._manager.connections().broadcast(
+                session_id,
+                {"type": "setup_drafting_plan", "active": active},
+                record=False,
+            )
+        except Exception as exc:
+            _logger.warning(
+                "setup_drafting_plan_broadcast_failed",
+                session_id=session_id,
+                active=active,
+                error=str(exc),
+            )
+
     def _check_truncation(
         self,
         *,
@@ -229,6 +260,12 @@ class TurnDriver:
         # binary "is something running" signal.
         await self._emit_ai_status(session.id, phase="setup")
 
+        # ``saw_plan_tool`` latches across the whole setup turn (the
+        # model may chain ``propose_scenario_plan`` → ``finalize_setup``
+        # in a single ``run_setup_turn`` invocation; we want the
+        # banner up for the entire wait, not flickering between
+        # iterations). Cleared in the outer ``finally``.
+        saw_plan_tool = False
         try:
             # Safety cap on chained setup tool calls — operator-tunable via
             # ``MAX_SETUP_TURNS``. Lifting it lets a model that wants to
@@ -236,25 +273,62 @@ class TurnDriver:
             # ``finalize_setup`` in one cycle do so without a premature break.
             for _ in range(self._manager.settings().max_setup_turns):
                 messages = _setup_messages(session)
-                result = await llm.acomplete(
+                # Setup uses ``astream`` (not ``acomplete``) specifically
+                # so the ``tool_use_start`` event can fire as soon as the
+                # model commits to ``propose_scenario_plan``. Pre-fix the
+                # creator only saw the small "AI is typing" dots during
+                # the 10–30 s plan-drafting wait — felt stuck. The
+                # iterator's terminal ``complete`` event carries the
+                # final ``LLMResult``, identical in shape to what
+                # ``acomplete`` would have returned. ``tool_choice="any"``
+                # is passed through unchanged so the bare-text guard
+                # below still applies.
+                result: LLMResult | None = None
+                async for evt in llm.astream(
                     tier="setup",
                     system_blocks=build_setup_system_blocks(
                         session,
                         workstreams_enabled=self._manager.settings().workstreams_enabled,
                     ),
                     messages=messages,
-                    # Pin ``tool_choice`` to "any" so the model MUST emit a
-                    # setup tool call. Eliminates the bare-text leak path
-                    # entirely — the only way the setup tier can produce
-                    # text without a tool is if the SDK contract is
-                    # violated, in which case we discard below.
                     tool_choice=tool_choice_for("setup"),
                     tools=setup_tools_for(
                         workstreams_enabled=self._manager.settings().workstreams_enabled
                     ),
                     # Per-tier default from settings.max_tokens_for(tier) — call passes None.
                     session_id=session.id,
-                )
+                ):
+                    etype = evt.get("type")
+                    if etype == "tool_use_start":
+                        if (
+                            not saw_plan_tool
+                            and evt.get("name") == "propose_scenario_plan"
+                        ):
+                            saw_plan_tool = True
+                            await self._broadcast_setup_drafting_plan(
+                                session.id, active=True
+                            )
+                    elif etype == "complete":
+                        result = evt.get("result")
+                if result is None:
+                    # ``astream`` is contracted to emit a terminal
+                    # ``complete`` event carrying the LLMResult. Absent
+                    # here means a bug in the LLM client (or a test mock
+                    # that doesn't honor the contract). Returning the
+                    # session silently makes ``/setup/reply`` answer
+                    # ``200 ok`` with no plan progress — looks like a
+                    # passing call from the UI but is actually a no-op.
+                    # Raise so the request handler returns 500 and the
+                    # creator sees the failure in the same place every
+                    # other broken setup call surfaces.
+                    _logger.error(
+                        "setup_stream_no_complete_event",
+                        session_id=session.id,
+                    )
+                    raise RuntimeError(
+                        "setup_stream_no_complete_event: LLM astream did "
+                        "not emit a terminal 'complete' event"
+                    )
                 await self._apply_cost(session.id, result)
                 self._check_truncation(session_id=session.id, tier="setup", result=result)
 
@@ -291,6 +365,13 @@ class TurnDriver:
                     return session
             return session
         finally:
+            if saw_plan_tool:
+                # Banner-down is symmetric with banner-up. Fire even on
+                # exception so the creator UI never gets stuck with the
+                # banner mounted after a failed setup turn.
+                await self._broadcast_setup_drafting_plan(
+                    session.id, active=False
+                )
             await self._emit_ai_status(session.id, phase=None)
 
     async def run_play_turn(self, *, session: Session, turn: Turn) -> Session:

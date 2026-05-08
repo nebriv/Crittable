@@ -122,11 +122,15 @@ async def test_astream_emits_text_delta_then_complete() -> None:
 
 
 @pytest.mark.asyncio
-async def test_astream_tool_call_response_emits_no_text_deltas() -> None:
-    """When the scripted response is a pure tool call (no text), only
-    the terminal ``complete`` event fires — same as the LiteLLM and
-    Anthropic-direct paths emitting just one ``complete`` for a
-    tool-only turn.
+async def test_astream_tool_call_response_emits_tool_use_start_and_complete() -> None:
+    """When the scripted response is a pure tool call (no text), the
+    mock emits a ``tool_use_start`` event at the head of the tool_use
+    block followed by the terminal ``complete`` event. ``tool_use_start``
+    is what the setup-tier driver listens for to broadcast
+    ``setup_drafting_plan`` the moment the model commits to
+    ``propose_scenario_plan`` — the mock mirrors Anthropic-direct's
+    ``content_block_start`` shape so that contract is exercised in
+    unit tests rather than only in live-API tests.
     """
 
     expected = llm_result(
@@ -141,9 +145,9 @@ async def test_astream_tool_call_response_emits_no_text_deltas() -> None:
         messages=[{"role": "user", "content": "hi"}],
     ):
         events.append(event)
-    assert len(events) == 1
-    assert events[0]["type"] == "complete"
-    assert events[0]["result"] is expected
+    assert [e["type"] for e in events] == ["tool_use_start", "complete"]
+    assert events[0]["name"] == "broadcast"
+    assert events[1]["result"] is expected
 
 
 @pytest.mark.asyncio
