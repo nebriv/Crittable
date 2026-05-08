@@ -404,8 +404,7 @@ _TOOL_USE_PROTOCOL = (
     "on every turn — yield to one role for a Legal-only call, two for a "
     "joint IR+SOC decision, etc. \"Subset\" means *fewer than the full "
     "roster*, NOT *include collaterally interested roles*. Other roles "
-    "keep reading and rejoin when their function is needed. (See Block 9 "
-    "for roster-size-aware pacing.)\n\n"
+    "keep reading and rejoin when their function is needed.\n\n"
     "**Concrete-handoff rule (load-bearing on the briefing turn).** Every "
     "`broadcast` / `address_role` / `pose_choice` ask must give the active "
     "role(s) a concrete first move or a specific question requiring a "
@@ -490,12 +489,10 @@ _ROSTER_STRATEGY: dict[RosterSize, str] = {
     ),
     "medium": (
         "**Medium roster (5–10 roles).** Group related roles for joint "
-        "beats (IR + SOC together, Legal + Comms together). When a beat "
-        "spans two functions and BOTH must answer, use two singleton "
-        "groups: `role_groups=[[ir.id], [soc.id]]`. When a beat spans "
-        "two roles and EITHER can own it (the 'one-of-you' case), use "
-        "one multi-role group: `role_groups=[[ir.id, soc.id]]`. "
-        "Broadcast a short situation summary between major beats."
+        "beats (IR + SOC together, Legal + Comms together). Block 6's "
+        "group-shape rule applies as written; pick the singleton-vs-"
+        "multi-role shape from there. Broadcast a short situation "
+        "summary between major beats."
     ),
     "large": (
         "**Large roster (11+ roles).** EMIT BOTH TOOLS in every "
@@ -1009,7 +1006,12 @@ def build_play_system_blocks(
     )
 
     roster_rules = (
-        "\n\nWhen a tool needs ``role_id`` you MUST use the "
+        "\n\n**Note on roster format.** This play-tier roster is rendered "
+        "as a markdown table; the setup-tier roster used a "
+        "``<<<label>>>`` fence to defend against label-injection. Those "
+        "fence tokens do NOT carry over here — never use ``<<<...>>>`` "
+        "in a `broadcast` body or any other player-facing tool call.\n\n"
+        "When a tool needs ``role_id`` you MUST use the "
         "opaque id from the first column of the seated roster above (e.g. "
         "``16380a40e4f1``), NOT the label, NOT the display name. Tool calls "
         "with labels or unseated roles will be rejected and the turn will "

@@ -53,6 +53,19 @@ class InputGuardrail:
             for block in result.content
             if block.get("type") == "text"
         ).strip().lower()
+        # The prompt asks for "exactly one word"; some models hedge
+        # with a brief justification anyway. The substring match
+        # below still works, but a verbose verdict wastes tokens at
+        # the per-message classifier rate and signals that a model
+        # swap or prompt drift is taking us off the constrained
+        # surface. Log so the drift is visible in the audit stream.
+        word_count = len(text.split())
+        if word_count > 3:
+            _logger.warning(
+                "guardrail_verdict_verbose",
+                word_count=word_count,
+                preview=text[:120],
+            )
         # Only flag the unambiguous attack signal. Everything else —
         # including the legacy "off_topic" verdict — is treated as
         # on_topic because tabletop participants legitimately produce
