@@ -584,6 +584,12 @@ async def _client_pump(
             # high-volume broadcaster against the session's connections.
             if event_type in (
                 "submit_response",
+                # ``set_ready`` is a mutating event — must run through
+                # the same participant gate so spectators / stale
+                # tokens can't reach ``manager.set_role_ready`` (where
+                # they would otherwise receive stateful rejection
+                # frames). Copilot review on PR #209.
+                "set_ready",
                 "request_force_advance",
                 "request_end_session",
                 "typing_start",
@@ -781,8 +787,13 @@ async def _client_pump(
                 # turn here, mirroring the old submit-and-advance path.
                 ready_raw = payload.get("ready")
                 client_seq_raw = payload.get("client_seq")
-                if not isinstance(ready_raw, bool) or not isinstance(
-                    client_seq_raw, int
+                # ``isinstance(x, int)`` accepts ``True``/``False`` since
+                # bool is a subclass of int in Python; reject those
+                # explicitly so the server never echoes a nonsensical
+                # seq back. Copilot review on PR #209.
+                if (
+                    not isinstance(ready_raw, bool)
+                    or type(client_seq_raw) is not int
                 ):
                     await websocket.send_json(
                         {
@@ -823,6 +834,22 @@ async def _client_pump(
                         }
                     )
                     continue
+                # Directed ack frame — sent on EVERY accepted toggle
+                # regardless of whether the manager broadcast a
+                # ``ready_changed`` event (the idempotent re-mark and
+                # the 250ms debounce drop the broadcast silently).
+                # Without this the client can't reconcile its
+                # ``client_seq`` against an ack on those silent-accept
+                # paths and the optimistic flip never resolves.
+                # Copilot review on PR #209.
+                await websocket.send_json(
+                    {
+                        "type": "set_ready_ack",
+                        "scope": "set_ready",
+                        "client_seq": outcome.client_seq,
+                        "ready_to_advance": outcome.ready_to_advance,
+                    }
+                )
                 # Quorum closed → drive the next AI turn. Mirrors the
                 # old submit-and-advance dispatch site.
                 if outcome.ready_to_advance:

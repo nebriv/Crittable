@@ -942,14 +942,13 @@ def register_api_routes(app: FastAPI) -> None:
             raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
 
         session = await manager.get_session(session_id)
+        # Decoupled-ready model: ``proxy_submit_as`` never advances the
+        # turn (the caller fires ``set_ready`` separately to mark the
+        # proxied role ready). The pre-rebase dispatch here would
+        # double-fire ``run_play_turn`` whenever this route landed
+        # while the session was already in AI_PROCESSING — racing the
+        # in-flight LLM call. Copilot review on PR #209.
         if (
-            session.current_turn is not None
-            and session.state == SessionState.AI_PROCESSING
-        ):
-            await TurnDriver(manager=manager).run_play_turn(
-                session=session, turn=session.current_turn
-            )
-        elif (
             session.current_turn is not None
             and session.state == SessionState.AWAITING_PLAYERS
             and FACILITATOR_MENTION_TOKEN in cleaned_mentions
