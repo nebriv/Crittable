@@ -274,11 +274,9 @@ export function Facilitator() {
   // the plan lands or an error surfaces. Distinct from ``busy``
   // because the chat-region DieLoader's *plan-specific* label is
   // honest only when we know a plan is imminent — i.e. the operator
-  // explicitly asked for one. The implicit "AI is thinking" indicator
-  // for regular pre-plan replies is owned by SetupView itself
-  // (debounced; soft label) so quick chip-pick turns under ~1.5 s
-  // never mount the heavy banner. See SetupView's
-  // ``showImplicitThinkingBanner`` state for that branch.
+  // explicitly asked for one. Regular setup back-and-forth keeps
+  // only the small "AI is typing" dots inside <SetupChat> — the
+  // heavy banner is reserved for the explicit plan-drafting step.
   const [draftingPlan, setDraftingPlan] = useState(false);
   const [wsStatus, setWsStatus] = useState<"connecting" | "open" | "closed" | "error" | "kicked" | "rejected" | "session-gone">("connecting");
 
@@ -908,10 +906,9 @@ export function Facilitator() {
     setBusyMessage(busyText);
     // Note: this path does NOT set ``draftingPlan`` — that flag is
     // reserved for the LOOKS READY click where we know a plan is
-    // imminent. The implicit-thinking banner (debounced, with a
-    // softer "AI is thinking" label) is owned by SetupView itself
-    // based on ``busy && !hasPlan && !draftingPlan``. See
-    // ``SetupView``'s ``showImplicitThinkingBanner`` state.
+    // imminent. Regular back-and-forth replies surface only the
+    // small "AI is typing" dots inside <SetupChat>; the prominent
+    // DieLoader banner stays parked until plan-drafting time.
     try {
       await api.setupReply(state.sessionId, state.token, content.trim());
       await refreshSnapshot();
@@ -2334,11 +2331,10 @@ export function SetupView({
    *  THE PLAN until either the plan arrives or an error surfaces.
    *  Drives a prominent in-chat banner with the plan-specific label
    *  "Drafting scenario plan · typically 10–30 sec" so the operator
-   *  has unambiguous feedback during the 10–30 s wait. The implicit
-   *  branch — AI is thinking during a regular reply / option pick —
-   *  is owned by SetupView's internal ``showImplicitThinkingBanner``
-   *  state (debounced, neutral label) so quick turns don't mount the
-   *  heavy banner. Required, not optional — every call site already
+   *  has unambiguous feedback during the 10–30 s wait. Regular
+   *  back-and-forth replies use the small in-chat typing dots only;
+   *  the prominent banner is reserved for the explicit "drafting the
+   *  plan" step. Required, not optional — every call site already
    *  passes it explicitly and a default would silently hide the
    *  indicator if a future site forgets. */
   draftingPlan: boolean;
@@ -2346,67 +2342,14 @@ export function SetupView({
   const hasPlan = Boolean(snapshot.plan);
   const notes = snapshot.setup_notes ?? [];
 
-  // Implicit-thinking banner: shown during a regular reply / option
-  // pick (not LOOKS READY) when the AI is processing pre-plan and the
-  // wait crosses ~1.5 s. Two design choices, both from
-  // user-persona + UI/UX review:
-  //   1. **Debounce** — fast turns (chip pick → 5 s question) keep
-  //      the small typing dots; only slow turns (≳1.5 s) escalate to
-  //      the banner. Without this the banner would mount/unmount on
-  //      every routine Q&A round, training the operator to ignore it
-  //      and undermining its signal value when LOOKS-READY actually
-  //      runs.
-  //   2. **Neutral label** — "AI is thinking · typically 5–30 sec"
-  //      rather than the LOOKS-READY-specific "Drafting scenario
-  //      plan". The setup tier is non-streaming so we can't tell
-  //      mid-call whether the AI is producing another question or
-  //      the actual plan; a neutral label is honest in either case.
-  //      The plan-specific label is reserved for ``draftingPlan``
-  //      (the explicit operator-clicked-LOOKS-READY path) where a
-  //      plan IS the documented next step.
-  // The 1500 ms threshold matches the perceptual "barely noticed"
-  // → "definitely waiting" boundary; tune if user feedback diverges.
-  const [showImplicitThinkingBanner, setShowImplicitThinkingBanner] =
-    useState(false);
-  useEffect(() => {
-    // The implicit banner only applies pre-plan and only when the
-    // explicit LOOKS-READY banner isn't already up.
-    if (busy && !hasPlan && !draftingPlan) {
-      const timer = window.setTimeout(() => {
-        setShowImplicitThinkingBanner(true);
-        console.debug("[facilitator] implicit-thinking banner mounted");
-      }, 1500);
-      return () => {
-        window.clearTimeout(timer);
-        // The cleanup runs both on unmount and on dep change. If the
-        // banner had mounted, ensure it clears so a transition from
-        // "busy without plan" → "plan exists" / "LOOKS-READY took
-        // over" / "request finished" doesn't leave a stale banner.
-        setShowImplicitThinkingBanner(false);
-      };
-    }
-    // Defensive reset for the ``busy=false`` / ``hasPlan=true`` /
-    // ``draftingPlan=true`` branches — the cleanup above only fires
-    // on dep change *from the previous truthy branch*, so a
-    // first-render with the banner already false has no effect here.
-    setShowImplicitThinkingBanner(false);
-    return undefined;
-  }, [busy, hasPlan, draftingPlan]);
-
-  // The prominent banner is shown when EITHER explicit signal
-  // (``draftingPlan``) or the debounced implicit signal is true and
-  // no plan exists yet. The implicit branch is also gated on
-  // ``busy`` directly (not just on the latched
-  // ``showImplicitThinkingBanner`` state) so a render commit where
-  // ``busy`` has just flipped false but the effect cleanup hasn't
-  // run yet doesn't paint a stale banner for one frame (Copilot
-  // PR #201 review). The state still drives the *delay* (banner only
-  // appears after the 1500 ms timer); the ``busy`` gate just makes
-  // the unmount synchronous with the request finishing.
-  const showLooksReadyBanner = draftingPlan && !hasPlan;
-  const showThinkingBanner =
-    showImplicitThinkingBanner && busy && !hasPlan && !draftingPlan;
-  const bannerVisible = showLooksReadyBanner || showThinkingBanner;
+  // The prominent in-chat banner is reserved for the explicit
+  // LOOKS-READY → PROPOSE-THE-PLAN path. Regular setup back-and-forth
+  // (busy && !draftingPlan) keeps only the small "AI is typing" dots
+  // inside <SetupChat> — escalating to a heavy DieLoader banner on
+  // every reply was reading as "the app is stuck" instead of "the AI
+  // is composing the next question". The plan-drafting wait is the
+  // one wait that genuinely deserves a named, prominent indicator.
+  const bannerVisible = draftingPlan && !hasPlan;
 
   // Layout intent (across both branches):
   //   - No plan: single column — chat → reply form, top to bottom.
@@ -2444,10 +2387,9 @@ export function SetupView({
           can't dispatch a second ``api.setupReply()`` while a
           LOOKS-READY draft is mid-air (PR #186 review block).
           ``aiTyping`` is the indicator-only flag: suppress the
-          small bouncing dots once a prominent banner takes over,
-          otherwise mirror ``busy``. Sub-debounce regular replies
-          (``busy=true``, banner not yet mounted) keep the dots so
-          quick turns get a light indicator. The two flags are
+          small bouncing dots once the plan-drafting banner takes
+          over, otherwise mirror ``busy`` so regular back-and-forth
+          replies show the small typing dots. The two flags are
           deliberately split — combining them would silently
           re-enable chip clicks during the draft. */}
       <SetupChat
@@ -2457,24 +2399,17 @@ export function SetupView({
         onPickOption={onPickOption}
       />
 
-      {/* Brand DieLoader as a named in-chat wait state. The DieLoader
-          itself supplies ``role="status"`` + ``aria-live="polite"``;
-          this wrapper deliberately does NOT add another live region
-          (UI/UX review: nested aria-live blocks let screen readers
-          drop the inner caption). The label carries the timing
+      {/* Brand DieLoader as a named in-chat wait state for the
+          plan-drafting step. The DieLoader itself supplies
+          ``role="status"`` + ``aria-live="polite"``; this wrapper
+          deliberately does NOT add another live region (UI/UX
+          review: nested aria-live blocks let screen readers drop
+          the inner caption). The label carries the timing
           expectation inline so screen readers announce the full
           message in one pass.
 
-          Two label branches share one banner element (single
-          ``data-testid`` so existing tests / observers find it):
-          ``draftingPlan`` (operator clicked LOOKS READY) → the
-          plan-specific label with the 10–30 s window we know
-          applies; the implicit/debounced branch → a neutral "AI is
-          thinking" label that's honest whether the AI ends up
-          drafting another question or the plan.
-
-          ``!hasPlan`` race guard on both branches: the Facilitator
-          clears ``draftingPlan`` as soon as the plan lands, but a
+          ``!hasPlan`` race guard: the Facilitator clears
+          ``draftingPlan`` as soon as the plan lands, but a
           render-cycle race could leave both true for a frame.
           Hiding the banner once a plan exists makes that race a
           no-op rather than a "drafting" caption flashing over the
@@ -2482,17 +2417,11 @@ export function SetupView({
       {bannerVisible ? (
         <div
           data-testid="drafting-plan-banner"
-          data-banner-variant={
-            showLooksReadyBanner ? "looks-ready" : "implicit-thinking"
-          }
+          data-banner-variant="looks-ready"
           className="flex flex-col items-center gap-3 rounded-r-3 border border-signal-deep bg-signal-tint p-6"
         >
           <DieLoader
-            label={
-              showLooksReadyBanner
-                ? "Drafting scenario plan · typically 10–30 sec"
-                : "AI is thinking · typically 5–30 sec"
-            }
+            label="Drafting scenario plan · typically 10–30 sec"
             size={64}
           />
         </div>
