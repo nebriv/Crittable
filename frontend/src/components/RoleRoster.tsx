@@ -27,6 +27,12 @@ interface Props {
   /** Reason the Mark Ready button is disabled (tooltip copy). */
   selfMarkReadyDisabledReason?: string;
   /**
+   * True while the local viewer's own ``set_ready`` is in flight —
+   * the subtle pulse hints "the server hasn't acked yet" so the user
+   * doesn't double-click and burn their flip-cap budget.
+   */
+  selfMarkReadyInFlight?: boolean;
+  /**
    * Server-reported set of role_ids whose tabs are currently connected
    * over WebSocket. ``undefined`` hides the online dot entirely (older
    * call sites that don't pipe presence through). See issue #52.
@@ -42,6 +48,7 @@ export function RoleRoster({
   readyRoleIds,
   onSelfMarkReady,
   selfMarkReadyDisabledReason,
+  selfMarkReadyInFlight = false,
 }: Props) {
   const isLarge = roles.length > 8;
   const active = new Set(activeRoleIds);
@@ -144,6 +151,7 @@ export function RoleRoster({
             isReady={selfIsReady}
             enabled={selfIsActive}
             onToggle={(next) => onSelfMarkReady?.(next)}
+            inFlight={selfMarkReadyInFlight}
             disabledReason={
               selfMarkReadyDisabledReason ??
               (!selfIsActive

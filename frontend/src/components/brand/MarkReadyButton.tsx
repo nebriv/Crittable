@@ -54,6 +54,17 @@ interface Props {
    *  by ``client_seq``. */
   onToggle: (next: boolean) => void;
   /**
+   * True while the parent has a pending optimistic flip for this
+   * subject — i.e. ``set_ready`` was sent but no ack/reject/broadcast
+   * has resolved it yet. The button reflects the optimistic state
+   * via ``isReady`` (so the label flips immediately), and adds a
+   * subtle pulse ring + ``aria-busy`` while the server round-trip
+   * is in flight. Without this, a slow round-trip leaves the button
+   * looking idle and users double-click thinking the first didn't
+   * take, eating their flip-cap budget. UI/UX review MEDIUM M2.
+   */
+  inFlight?: boolean;
+  /**
    * "self" → the local participant is toggling their own ready state
    *   (label: ``MARK READY`` / ``READY ✓``).
    * "impersonate" → the creator is toggling on behalf of another active
@@ -82,6 +93,7 @@ export function MarkReadyButton({
   variant = "self",
   subjectLabel,
   disabledReason,
+  inFlight = false,
 }: Props) {
   // Truncate long role labels with an ellipsis so the button face
   // doesn't wrap to 3 lines on a 220px-wide rail. UI/UX review
@@ -153,6 +165,15 @@ export function MarkReadyButton({
       ? "mono w-full rounded-r-1 border border-signal bg-signal-tint px-3 py-2 text-[11px] font-bold uppercase tracking-[0.18em] text-signal hover:bg-signal/30 focus-visible:outline focus-visible:outline-2 focus-visible:outline-signal disabled:cursor-not-allowed disabled:opacity-50"
       : "mono w-full rounded-r-1 border border-signal-deep bg-ink-800 px-3 py-2 text-[11px] font-bold uppercase tracking-[0.18em] text-signal-bright hover:bg-ink-700 hover:border-signal focus-visible:outline focus-visible:outline-2 focus-visible:outline-signal disabled:cursor-not-allowed disabled:opacity-50";
   })();
+  // ``animate-tt-pulse`` is the brand's existing subtle signal-blue
+  // ring keyframe (1.6s ease-in-out, see tailwind.config.ts:131).
+  // Using the existing animation keeps the visual language native to
+  // the rail and avoids introducing a new keyframe for a one-off.
+  // ``motion-reduce:animate-none`` honors the user's OS-level reduce-
+  // motion preference; ``aria-busy`` carries the same signal for AT.
+  const inFlightCls = inFlight
+    ? " animate-tt-pulse motion-reduce:animate-none"
+    : "";
 
   return (
     <button
@@ -160,6 +181,7 @@ export function MarkReadyButton({
       onClick={() => onToggle(!isReady)}
       disabled={!enabled}
       aria-pressed={ariaPressed}
+      aria-busy={inFlight || undefined}
       aria-label={
         variant === "self"
           ? isReady
@@ -172,10 +194,11 @@ export function MarkReadyButton({
       title={title}
       data-tone={tone}
       data-variant={variant}
+      data-in-flight={inFlight ? "true" : undefined}
       data-testid={
         variant === "impersonate" ? "mark-ready-impersonate" : "mark-ready"
       }
-      className={cls}
+      className={cls + inFlightCls}
     >
       <span className="flex flex-col items-center gap-0.5">
         <span className="break-words">{stateLabel}</span>

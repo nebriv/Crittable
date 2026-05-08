@@ -63,6 +63,15 @@ interface Props {
   markReadyEnabled: boolean;
   /** Tooltip surfaced when ``markReadyEnabled=false``. */
   markReadyDisabledReason?: string;
+  /**
+   * Set of role_ids whose ``set_ready`` is in-flight (parent has a
+   * pending optimistic-flip entry waiting on ack/reject/broadcast).
+   * Each row's ``<MarkReadyButton>`` gets ``inFlight=true`` while the
+   * subject is in this set — surfaces a subtle pulse + ``aria-busy``
+   * so a creator slamming the button knows the server hasn't acked
+   * yet. UI/UX review MEDIUM M2.
+   */
+  pendingMarkReadySubjects?: ReadonlySet<string>;
 }
 
 /**
@@ -137,6 +146,7 @@ export function RolesPanel({
   selfRoleId,
   markReadyEnabled,
   markReadyDisabledReason,
+  pendingMarkReadySubjects,
 }: Props) {
   // Inline 2-click confirm state. Keyed by ``${action}:${roleId}`` so a
   // creator can arm KICK on one row and REMOVE on another without the
@@ -518,6 +528,9 @@ export function RolesPanel({
                   variant={isSelfRole ? "self" : "impersonate"}
                   subjectLabel={r.label}
                   disabledReason={markReadyDisabledReason}
+                  inFlight={
+                    pendingMarkReadySubjects?.has(r.id) ?? false
+                  }
                 />
               </div>
             ) : null}

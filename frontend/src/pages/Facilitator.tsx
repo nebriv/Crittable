@@ -1459,6 +1459,18 @@ export function Facilitator() {
     }
     return out;
   })();
+  // Subjects with an in-flight ``set_ready`` (creator can have one
+  // per active role at a time — own seat plus any impersonated
+  // subjects). Drives the per-row pulse in ``<RolesPanel>``.
+  // UI/UX review MEDIUM M2.
+  const pendingMarkReadySubjects = (() => {
+    if (pendingReadyFlips.size === 0) return new Set<string>();
+    const out = new Set<string>();
+    for (const entry of pendingReadyFlips.values()) {
+      out.add(entry.subject_role_id);
+    }
+    return out;
+  })();
   const activeRoleIdsSet = new Set(activeRoleIds);
   const iAmActive = activeRoleIdsSet.has(state.creatorRoleId);
   // Decoupled-ready (PR #209 follow-up): "My turn" simplifies to "I
@@ -1690,6 +1702,7 @@ export function Facilitator() {
             selfRoleId={state.creatorRoleId}
             markReadyEnabled={markReadyEnabled}
             markReadyDisabledReason={markReadyDisabledReason}
+            pendingMarkReadySubjects={pendingMarkReadySubjects}
           />
           {readyRejectionNotice ? (
             // ``role="alert"`` + ``aria-live="assertive"`` so a

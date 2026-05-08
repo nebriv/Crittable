@@ -1211,6 +1211,19 @@ export function Play({ sessionId, token }: Props) {
     }
     return out;
   })();
+  // Set of subject_role_ids with at least one pending optimistic
+  // flip — drives the in-flight pulse on ``<MarkReadyButton>``.
+  // UI/UX review MEDIUM M2: a slow round-trip leaves the button
+  // looking idle and users double-click; the pulse hints the
+  // server hasn't acked yet.
+  const pendingMarkReadySubjects = (() => {
+    if (pendingReadyFlips.size === 0) return new Set<string>();
+    const out = new Set<string>();
+    for (const entry of pendingReadyFlips.values()) {
+      out.add(entry.subject_role_id);
+    }
+    return out;
+  })();
   const iAmActive = selfRoleId !== null && activeRoleIds.includes(selfRoleId);
   const iHaveSubmitted = selfRoleId !== null && submittedRoleIds.includes(selfRoleId);
   // Decoupled-ready (PR #209 follow-up): "My turn" simplifies to "I
@@ -1504,6 +1517,10 @@ export function Play({ sessionId, token }: Props) {
             selfRoleId={selfRoleId}
             connectedRoleIds={presence}
             readyRoleIds={displayedReadyRoleIds}
+            selfMarkReadyInFlight={
+              selfRoleId !== null &&
+              pendingMarkReadySubjects.has(selfRoleId)
+            }
             // UI/UX review HIGH H5: also gate on WS-open, mirroring
             // Facilitator.tsx's ``markReadyEnabled``. Without this
             // gate a click during a brief reconnect would silently

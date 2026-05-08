@@ -207,6 +207,75 @@ describe("<MarkReadyButton/>", () => {
     });
   });
 
+  describe("in-flight pulse (UI/UX review MEDIUM M2)", () => {
+    it("idle: no pulse, no aria-busy, no data-in-flight marker", () => {
+      render(
+        <MarkReadyButton
+          isReady={false}
+          enabled={true}
+          onToggle={vi.fn()}
+        />,
+      );
+      const btn = screen.getByTestId("mark-ready");
+      expect(btn.getAttribute("data-in-flight")).toBeNull();
+      // ``aria-busy`` should be absent (not "false") when idle so AT
+      // doesn't announce the busy state on every flip.
+      expect(btn.hasAttribute("aria-busy")).toBe(false);
+      expect(btn.className).not.toMatch(/animate-tt-pulse/);
+    });
+
+    it("inFlight=true: applies pulse animation + aria-busy + motion-reduce fallback", () => {
+      render(
+        <MarkReadyButton
+          isReady={false}
+          enabled={true}
+          onToggle={vi.fn()}
+          inFlight={true}
+        />,
+      );
+      const btn = screen.getByTestId("mark-ready");
+      expect(btn.getAttribute("data-in-flight")).toBe("true");
+      expect(btn.getAttribute("aria-busy")).toBe("true");
+      expect(btn.className).toMatch(/animate-tt-pulse/);
+      expect(btn.className).toMatch(/motion-reduce:animate-none/);
+    });
+
+    it("inFlight pulse works on impersonate variant too", () => {
+      render(
+        <MarkReadyButton
+          isReady={true}
+          enabled={true}
+          onToggle={vi.fn()}
+          variant="impersonate"
+          subjectLabel="SOC"
+          inFlight={true}
+        />,
+      );
+      const btn = screen.getByTestId("mark-ready-impersonate");
+      expect(btn.getAttribute("aria-busy")).toBe("true");
+      expect(btn.className).toMatch(/animate-tt-pulse/);
+    });
+
+    it("inFlight remains clickable (server hasn't acked yet, but the button isn't disabled — that's by design)", () => {
+      // The pulse is a hint, not a disable. A second click while
+      // in-flight is allowed: the optimistic state already flipped
+      // and the parent's flip-cap check will catch any abuse.
+      const onToggle = vi.fn();
+      render(
+        <MarkReadyButton
+          isReady={false}
+          enabled={true}
+          onToggle={onToggle}
+          inFlight={true}
+        />,
+      );
+      const btn = screen.getByTestId("mark-ready");
+      expect(btn).not.toBeDisabled();
+      fireEvent.click(btn);
+      expect(onToggle).toHaveBeenCalledWith(true);
+    });
+  });
+
   describe("variant differentiation", () => {
     it("renders distinct data-variant attributes so the rail's two roles are visually distinguishable", () => {
       const { rerender } = render(
