@@ -314,13 +314,21 @@ class TurnDriver:
                     # ``astream`` is contracted to emit a terminal
                     # ``complete`` event carrying the LLMResult. Absent
                     # here means a bug in the LLM client (or a test mock
-                    # that doesn't honor the contract). Surface loudly
-                    # rather than swallow into a stuck setup state.
+                    # that doesn't honor the contract). Returning the
+                    # session silently makes ``/setup/reply`` answer
+                    # ``200 ok`` with no plan progress — looks like a
+                    # passing call from the UI but is actually a no-op.
+                    # Raise so the request handler returns 500 and the
+                    # creator sees the failure in the same place every
+                    # other broken setup call surfaces.
                     _logger.error(
                         "setup_stream_no_complete_event",
                         session_id=session.id,
                     )
-                    return session
+                    raise RuntimeError(
+                        "setup_stream_no_complete_event: LLM astream did "
+                        "not emit a terminal 'complete' event"
+                    )
                 await self._apply_cost(session.id, result)
                 self._check_truncation(session_id=session.id, tier="setup", result=result)
 

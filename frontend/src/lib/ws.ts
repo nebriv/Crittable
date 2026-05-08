@@ -432,6 +432,12 @@ export class WsClient {
             safe.budget = parsed.budget;
             safe.recovery = parsed.recovery;
             break;
+          case "setup_drafting_plan":
+            // ``active`` is the load-bearing field — without it console
+            // dumps only show the event type and a reconnect-ordering
+            // bug (banner stuck on / off) is undebuggable from logs.
+            safe.active = parsed.active;
+            break;
           case "typing":
             safe.role_id = parsed.role_id;
             safe.typing = parsed.typing;

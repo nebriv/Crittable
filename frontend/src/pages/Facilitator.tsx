@@ -456,6 +456,17 @@ export function Facilitator() {
     if (phase !== "ready" && advancedToReview) setAdvancedToReview(false);
   }, [phase, advancedToReview]);
 
+  // Stuck-banner safety net for ``aiDraftingPlan``. The
+  // ``setup_drafting_plan active=false`` event is ``record=False`` so
+  // it can be missed on a flaky reconnect, but a plan landing in the
+  // snapshot is a hard signal that the draft completed (the only way
+  // ``snapshot.plan`` becomes truthy is via a successful
+  // ``propose_scenario_plan`` dispatch). Clearing here makes the
+  // success path self-healing even if the closing WS frame was lost.
+  useEffect(() => {
+    if (snapshot?.plan && aiDraftingPlan) setAiDraftingPlan(false);
+  }, [snapshot?.plan, aiDraftingPlan]);
+
   useEffect(() => {
     if (error) console.warn("[facilitator] error surfaced", error);
   }, [error]);
@@ -658,6 +669,16 @@ export function Facilitator() {
         // has to wait for a fresh ``presence_snapshot`` before the
         // tip can fire again.
         if (s !== "open") setPresenceReady(false);
+        // Reconnect-safety net for the plan-drafting banner.
+        // ``setup_drafting_plan`` is broadcast with ``record=False``
+        // (stale on reconnect, won't replay), so a dropped WS frame
+        // between ``active=true`` and ``active=false`` would otherwise
+        // latch the banner forever. Clearing on every "leave open"
+        // transition trades a possible momentary banner-down during a
+        // glitchy reconnect (the next iteration's ``active=true`` will
+        // re-mount it if a draft is genuinely still in flight) for a
+        // hard guarantee that the banner can't get permanently stuck.
+        if (s !== "open") setAiDraftingPlan(false);
       },
     });
     ws.connect();
@@ -941,6 +962,14 @@ export function Facilitator() {
     } finally {
       setBusy(false);
       setBusyMessage(null);
+      // Last-line safety net: ``api.setupReply`` only resolves once
+      // the engine's setup turn has finished, which means the
+      // ``setup_drafting_plan active=false`` WS event should already
+      // have fired. If the frame was dropped (record=False, no
+      // replay), the request resolution is the next best signal that
+      // the draft is no longer in flight — clear so the banner can't
+      // outlive its own LLM call.
+      setAiDraftingPlan(false);
     }
   }
 
