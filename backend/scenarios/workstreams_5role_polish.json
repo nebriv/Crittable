@@ -38,13 +38,13 @@
         {
           "role_label": "IR Lead",
           "content": "On it. Spinning up the war room. Defender on EDR, Okta on identity, Splunk for logs. SOC, give me a 5-minute scope read.",
-          "intent": "ready",
+          "ready_after": true,
           "ts": "2026-05-04T17:00:30+00:00"
         },
         {
           "role_label": "SOC Analyst",
           "content": "Initial signal: EA token used to enumerate the M365 directory at 02:14, then a Cobalt-Strike-style beacon from finance-laptop-7 at 02:48. Pulling Defender + Okta logs now.",
-          "intent": "ready",
+          "ready_after": true,
           "ts": "2026-05-04T17:00:55+00:00"
         }
       ],
@@ -113,13 +113,13 @@
         {
           "role_label": "IR Lead",
           "content": "Containment plan: revoke the EA's tokens via Okta, rotate svc_billingportal credentials, and isolate finance-laptop-7 plus any host that authed with the EA token in the last 12 hours. SOC, confirm Defender quarantine on each as you go.",
-          "intent": "ready",
+          "ready_after": true,
           "ts": "2026-05-04T17:02:30+00:00"
         },
         {
           "role_label": "Legal",
           "content": "Confirm the regulator clock starts at first reasonable belief — that's now. I'll draft the 24-hr notification template. Need scope confirmation from SOC before we file.",
-          "intent": "ready",
+          "ready_after": true,
           "ts": "2026-05-04T17:02:50+00:00"
         }
       ],
@@ -205,19 +205,19 @@
         {
           "role_label": "CISO",
           "content": "Decision: notify regulator at hour 4 with preliminary scope, full filing at hour 20. Brief board chair now. Comms — internal-only memo first, no external statement until Legal signs off. Engage law enforcement via outside counsel.",
-          "intent": "ready",
+          "ready_after": true,
           "ts": "2026-05-04T17:04:30+00:00"
         },
         {
           "role_label": "Comms",
           "content": "Internal memo released to all-staff at hour 3. Holding statement ready for press; will not push without authorization.",
-          "intent": "ready",
+          "ready_after": true,
           "ts": "2026-05-04T17:04:50+00:00"
         },
         {
           "role_label": "Legal",
           "content": "Concur on the timeline. Drafting prelim filing with the scope SOC confirmed (6 laptops contained, 3 pending). Will hold until board chair brief is complete.",
-          "intent": "ready",
+          "ready_after": true,
           "ts": "2026-05-04T17:05:10+00:00"
         }
       ],
