@@ -285,7 +285,7 @@ class Turn(BaseModel):
     # field, but typed as if the decorator order were illegal. The
     # ignore is the documented workaround until pydantic-stubs lands
     # the fix; revisit when bumping pydantic past 2.7.
-    @computed_field  # type: ignore[prop-decorator]
+    @computed_field  # type: ignore[prop-decorator, untyped-decorator]
     @property
     def active_role_ids(self) -> list[str]:
         """Flat union of every role mentioned across ``active_role_groups``.

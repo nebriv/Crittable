@@ -813,14 +813,14 @@ async def _client_pump(
                 subject_role_id = (
                     str(payload.get("subject_role_id") or role_id)
                 )
-                outcome = await manager.set_role_ready(
+                ready_outcome = await manager.set_role_ready(
                     session_id=session_id,
                     actor_role_id=role_id,
                     subject_role_id=subject_role_id,
                     ready=ready_raw,
                     client_seq=client_seq_raw,
                 )
-                if not outcome.accepted:
+                if not ready_outcome.accepted:
                     # Directed rejection frame — the actor's optimistic
                     # UI reverts and announces the reason. Other clients
                     # see no ``ready_changed`` so their state is
@@ -829,8 +829,8 @@ async def _client_pump(
                         {
                             "type": "set_ready_rejected",
                             "scope": "set_ready",
-                            "reason": outcome.reason,
-                            "client_seq": outcome.client_seq,
+                            "reason": ready_outcome.reason,
+                            "client_seq": ready_outcome.client_seq,
                         }
                     )
                     continue
@@ -846,13 +846,13 @@ async def _client_pump(
                     {
                         "type": "set_ready_ack",
                         "scope": "set_ready",
-                        "client_seq": outcome.client_seq,
-                        "ready_to_advance": outcome.ready_to_advance,
+                        "client_seq": ready_outcome.client_seq,
+                        "ready_to_advance": ready_outcome.ready_to_advance,
                     }
                 )
                 # Quorum closed → drive the next AI turn. Mirrors the
                 # old submit-and-advance dispatch site.
-                if outcome.ready_to_advance:
+                if ready_outcome.ready_to_advance:
                     session = await manager.get_session(session_id)
                     turn = session.current_turn
                     if turn is not None:
