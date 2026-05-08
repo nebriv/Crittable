@@ -597,67 +597,53 @@ class ScenarioRunner:
             raise
 
     def _next_active_role_groups(self, turn: Any) -> list[list[str]]:
-        """Resolve a scripted PlayTurn's role-groups (or its
-        submissions, in legacy fixtures) to the role-id groups the
-        runner should mark active when opening the next turn.
+        """Resolve a scripted PlayTurn's role-groups to the role-id
+        groups the runner should mark active when opening the next
+        turn.
 
-        Two paths, in priority order:
-
-        1. **Explicit groups** (``active_role_label_groups``) — the
-           recorder captured the AI's actual yield-shape, so we
-           reproduce it exactly. This is the only way to faithfully
-           replay a multi-role any-of group; without this the legacy
-           inference would split it into two singleton "must-respond"
-           groups and the gate would stall.
-        2. **Legacy inference from submissions** — empty
-           ``active_role_label_groups`` means a pre-#168 fixture; we
-           open the turn with one singleton group per role that
-           appeared in the submissions list. This preserves the
-           original "all-must-ready" behavior so existing scenarios
-           round-trip without re-recording.
+        ``active_role_label_groups`` is required on every turn — the
+        recorder captures the AI's actual yield-shape so we reproduce
+        it exactly. Multi-role any-of groups round-trip faithfully;
+        attempting to infer groups from submissions would silently
+        split them into singleton "must-respond" groups and stall.
         """
 
-        if getattr(turn, "active_role_label_groups", None):
-            resolved: list[list[str]] = []
-            unresolved_labels: list[str] = []
-            for group_labels in turn.active_role_label_groups:
-                group_ids: list[str] = []
-                seen: set[str] = set()
-                for label in group_labels:
-                    rid = self._role_ids.get(label)
-                    if rid and rid not in seen:
-                        seen.add(rid)
-                        group_ids.append(rid)
-                    elif not rid:
-                        unresolved_labels.append(label)
-                if group_ids:
-                    resolved.append(group_ids)
-            # Security review LOW-3: a typo'd label or a role removed
-            # mid-recording silently shrinks (or empties) the group on
-            # replay. Without a log line, the operator sees a stalled
-            # replay and no signal as to why. Warn so the breadcrumb is
-            # in the audit stream.
-            if unresolved_labels:
-                self._log(
-                    "scenario unresolved role labels in active_role_label_groups: "
-                    f"{unresolved_labels} — known labels: "
-                    f"{sorted(self._role_ids)}"
-                )
-            if resolved:
-                return resolved
-
-        # Legacy path — derive a singleton-per-role group list from
-        # the recorded submissions. De-duplicates while preserving
-        # order so a turn that lists ``[creator, SOC, creator]`` opens
-        # as ``[[creator], [SOC]]``.
-        seen_ids: set[str] = set()
-        flat: list[str] = []
-        for step in turn.submissions:
-            role_id = self._role_ids.get(step.role_label)
-            if role_id and role_id not in seen_ids:
-                seen_ids.add(role_id)
-                flat.append(role_id)
-        return [[rid] for rid in flat]
+        if not getattr(turn, "active_role_label_groups", None):
+            raise ValueError(
+                "scenario turn missing active_role_label_groups; "
+                "re-record the scenario via the recorder"
+            )
+        resolved: list[list[str]] = []
+        unresolved_labels: list[str] = []
+        for group_labels in turn.active_role_label_groups:
+            group_ids: list[str] = []
+            seen: set[str] = set()
+            for label in group_labels:
+                rid = self._role_ids.get(label)
+                if rid and rid not in seen:
+                    seen.add(rid)
+                    group_ids.append(rid)
+                elif not rid:
+                    unresolved_labels.append(label)
+            if group_ids:
+                resolved.append(group_ids)
+        # Security review LOW-3: a typo'd label or a role removed
+        # mid-recording silently shrinks (or empties) the group on
+        # replay. Without a log line, the operator sees a stalled
+        # replay and no signal as to why. Warn so the breadcrumb is
+        # in the audit stream.
+        if unresolved_labels:
+            self._log(
+                "scenario unresolved role labels in active_role_label_groups: "
+                f"{unresolved_labels} — known labels: "
+                f"{sorted(self._role_ids)}"
+            )
+        if not resolved:
+            raise ValueError(
+                "scenario turn active_role_label_groups resolved to no "
+                "known roles; check the roster against the captured labels"
+            )
+        return resolved
 
     async def _inject_ai_messages(
         self, ai_messages: list[Any]

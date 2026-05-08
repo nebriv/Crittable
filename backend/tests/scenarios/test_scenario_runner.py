@@ -525,6 +525,7 @@ async def test_deterministic_replay_preserves_workstream_and_mentions(
                         mentions=[],
                     ),
                 ],
+                active_role_label_groups=[["IR Lead"], ["SOC Analyst"]],
             ),
         ],
         replay_mode="deterministic",

@@ -2,7 +2,13 @@
   "meta": {
     "name": "Discussion then ready (Wave 1, issue #134)",
     "description": "Exercises the per-submission intent + ready-quorum gate with two players. Turn 1: SOC opens with a discussion question (no advance), CISO answers ready, SOC closes ready — quorum met, AI fires. Turn 2: CISO posts ready first, SOC chimes in discuss (still no advance), then SOC closes ready. Demonstrates the load-bearing Wave 1 affordance: players can talk to each other before the AI moves on. Engine-mode scenario (no ai_messages captured); covered by tests/scenarios/test_scenario_runner.py::test_discussion_then_ready_scenario_runs which drives every submission through the live pipeline and asserts per-submission intent flows end-to-end.",
-    "tags": ["smoke", "wave1", "intent", "ready-quorum", "multi-role"]
+    "tags": [
+      "smoke",
+      "wave1",
+      "intent",
+      "ready-quorum",
+      "multi-role"
+    ]
   },
   "scenario_prompt": "Ransomware via vendor portal — finance laptops impacted at 03:14 Wed. Drill: confirm intent gating works.",
   "creator_label": "CISO",
@@ -34,6 +40,14 @@
           "content": "Acknowledged — disabling the vendor account, pulling Defender event timeline, scoping for lateral movement. Will report in 5.",
           "intent": "ready"
         }
+      ],
+      "active_role_label_groups": [
+        [
+          "SOC Analyst"
+        ],
+        [
+          "CISO"
+        ]
       ]
     },
     {
@@ -53,6 +67,14 @@
           "content": "Initial scope: 3 laptops in finance, all behind the vendor portal. No lateral movement seen yet. Exfil check: pulling proxy logs now, ETA 10 min.",
           "intent": "ready"
         }
+      ],
+      "active_role_label_groups": [
+        [
+          "CISO"
+        ],
+        [
+          "SOC Analyst"
+        ]
       ]
     }
   ],

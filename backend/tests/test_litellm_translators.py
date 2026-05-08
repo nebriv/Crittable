@@ -586,6 +586,46 @@ def test_from_response_input_clamped_at_zero() -> None:
     assert result.usage["input"] == 0
 
 
+def test_from_response_explicit_zero_cache_stops_fallback_chain() -> None:
+    """An explicit 0 on the first attribute means 'no cache hit on this
+    call' — it must stop the fallback chain. The previous truthy-`or`
+    chain treated 0 as falsy and would dig into private attributes,
+    risking a stale value from a different provider response shape.
+    """
+
+    class _UsageZeroCacheRead:
+        prompt_tokens = 1000
+        completion_tokens = 50
+        cache_creation_input_tokens = 0
+
+        # Explicit 0 on the public Anthropic-shape attribute — this
+        # MUST be respected; the underscore-private attribute is a
+        # fallback for older litellm versions that don't surface it
+        # publicly.
+        cache_read_input_tokens = 0
+        _cache_read_input_tokens = 9999  # would-be stale
+
+        prompt_tokens_details = None
+
+    class _Resp:
+        choices: list[Any] = [  # noqa: RUF012  (one-shot test stub)
+            _StubChoice(
+                message=_StubMessage(content="ok", tool_calls=None),
+                finish_reason="stop",
+            )
+        ]
+        usage = _UsageZeroCacheRead()
+
+    result = _from_litellm_response(_Resp(), model="claude-sonnet-4-6")
+    assert result.usage["cache_read"] == 0, (
+        "explicit 0 on cache_read_input_tokens must short-circuit; "
+        "the private attribute is a fallback only when the public "
+        "one is absent (None)"
+    )
+    # Sanity: input == prompt_tokens since cache_read+creation are 0.
+    assert result.usage["input"] == 1000
+
+
 def test_from_response_invalid_json_args_falls_back_to_empty_dict() -> None:
     """If LiteLLM emits malformed tool-call arguments JSON we fall back
     to ``{}`` rather than raising — the strict-retry path will catch

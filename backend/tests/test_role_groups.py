@@ -833,12 +833,13 @@ def test_runner_resolves_label_groups_back_to_id_groups(
     assert groups == [["ben_id"], ["paul_id", "law_id"]]
 
 
-def test_runner_falls_back_to_singleton_groups_for_legacy_fixtures(
+def test_runner_rejects_turn_missing_active_role_label_groups(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Pre-#168 fixtures lack ``active_role_label_groups``; the runner
-    infers singleton groups from the recorded submissions so the
-    legacy 'all must ready' semantic survives without re-recording."""
+    """``active_role_label_groups`` is required on every recorded turn.
+    Fixtures lacking it are pre-#168 and must be re-recorded; the runner
+    fails loud (rather than inferring singletons) so the operator
+    notices."""
 
     from app.devtools.runner import ScenarioRunner
     from app.devtools.scenario import PlayStep, PlayTurn
@@ -857,8 +858,8 @@ def test_runner_falls_back_to_singleton_groups_for_legacy_fixtures(
         ai_messages=[],
         active_role_label_groups=[],
     )
-    groups = runner._next_active_role_groups(turn)  # type: ignore[attr-defined]
-    assert groups == [["ben_id"], ["paul_id"]]
+    with pytest.raises(ValueError, match="active_role_label_groups"):
+        runner._next_active_role_groups(turn)  # type: ignore[attr-defined]
 
 
 # ---------------------------------------------------------------------

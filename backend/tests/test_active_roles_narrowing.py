@@ -1,4 +1,4 @@
-"""Coverage for ``app.sessions.active_roles.narrow_active_roles``.
+"""Coverage for ``app.sessions.active_roles.narrow_active_role_groups``.
 
 The narrower is the safety net for the play tier's "AI yields wider
 than its audience" failure mode (turn stalls until force-advance).

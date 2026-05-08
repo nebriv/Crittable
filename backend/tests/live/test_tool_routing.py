@@ -468,9 +468,9 @@ async def test_single_addressee_yields_narrowly_or_engine_narrows(
     1. Call live LLM with the session.
     2. If no ``set_active_roles`` came back, run strict-retry
        recovery (forced ``tool_choice``) to get the yield.
-    3. Run ``narrow_active_roles`` against the appended messages +
-       role_ids.
-    4. Assert the FINAL active set is ``[ciso]`` — never ``[ciso, soc]``.
+    3. Run ``narrow_active_role_groups`` against the appended messages +
+       role_groups.
+    4. Assert the FINAL active set is ``[[ciso]]`` — never ``[[ciso], [soc]]``.
 
     Failure modes this test catches:
     * The matcher misses an addressing pattern the model legitimately
