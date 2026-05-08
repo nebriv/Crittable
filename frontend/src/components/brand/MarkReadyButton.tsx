@@ -84,6 +84,16 @@ interface Props {
   /** Optional reason shown as a tooltip when ``enabled=false`` —
    *  e.g. "Not on the active turn", "WebSocket reconnecting". */
   disabledReason?: string;
+  /** Optional short label that replaces the default state label
+   *  ("MARK READY →" / "READY ✓") while the button is disabled.
+   *  e.g. ``"NOT YOUR TURN"`` when the viewer isn't on the active
+   *  turn — a greyed-out "MARK READY" reads as broken; a state label
+   *  that matches the actual situation reads as "this isn't your
+   *  beat, hold." Visible on the button face; the full reason still
+   *  surfaces in the tooltip via ``disabledReason`` and is mirrored
+   *  into ``aria-label`` for screen-reader users (touch users
+   *  can't hover, so the tooltip alone isn't enough). */
+  disabledLabel?: string;
 }
 
 export function MarkReadyButton({
@@ -93,6 +103,7 @@ export function MarkReadyButton({
   variant = "self",
   subjectLabel,
   disabledReason,
+  disabledLabel,
   inFlight = false,
 }: Props) {
   // Truncate long role labels with an ellipsis so the button face
@@ -110,6 +121,12 @@ export function MarkReadyButton({
   // wasn't sure whether it was confirming their ready or undoing it.
   // User-persona review HIGH H1: separate concerns visually.
   const stateLabel = (() => {
+    // ``disabledLabel`` overrides the default state copy whenever the
+    // button isn't interactive AND the parent supplied one. Lets the
+    // rail say "STAND BY" while the viewer is off-turn instead of a
+    // greyed "MARK READY →" that reads as broken. The default still
+    // wins when the parent hasn't opted in (legacy call sites).
+    if (!enabled && disabledLabel) return disabledLabel;
     if (variant === "impersonate") {
       const target = trunc((subjectLabel ?? "role").toUpperCase());
       return isReady ? `${target} READY ✓` : `MARK ${target} READY →`;
@@ -117,10 +134,12 @@ export function MarkReadyButton({
     return isReady ? "READY ✓" : "MARK READY →";
   })();
   // Secondary "tap to undo" hint — only rendered for the SELF variant
-  // when already ready. The impersonation variant uses the row label
-  // as its lead-in ("CISO READY ✓"), so an undo hint there would be
-  // ambiguous (whose ready are we undoing?).
-  const showUndoHint = variant === "self" && isReady;
+  // when already ready AND interactive. The impersonation variant uses
+  // the row label as its lead-in ("CISO READY ✓"), so an undo hint
+  // there would be ambiguous (whose ready are we undoing?). We also
+  // skip it when ``enabled=false`` because the button can't actually
+  // undo right now — the hint would lie.
+  const showUndoHint = variant === "self" && isReady && enabled;
   // ``aria-pressed`` is only meaningful on the self variant — it
   // describes the LOCAL participant's ready state. On the
   // impersonation variant the toggle reflects another role's state,
@@ -182,15 +201,26 @@ export function MarkReadyButton({
       disabled={!enabled}
       aria-pressed={ariaPressed}
       aria-busy={inFlight || undefined}
-      aria-label={
-        variant === "self"
-          ? isReady
-            ? "Walk back your ready signal"
-            : "Mark yourself ready"
-          : isReady
-            ? `Walk back ${subjectLabel ?? "this role"}'s ready signal`
-            : `Mark ${subjectLabel ?? "this role"} ready`
-      }
+      aria-label={(() => {
+        // When the parent has supplied a ``disabledLabel`` AND the
+        // button isn't interactive, mirror the disabled state into
+        // the accessible name. Touch users can't hover for the
+        // ``disabledReason`` tooltip and screen-reader users hearing
+        // only "Mark yourself ready, dimmed" miss the "this isn't
+        // your beat" signal sighted users get from the visible
+        // override label. UI/UX review LOW L1.
+        if (!enabled && disabledLabel) {
+          return disabledReason
+            ? `${disabledLabel} — ${disabledReason}`
+            : `${disabledLabel} — Mark Ready unavailable`;
+        }
+        if (variant === "self") {
+          return isReady ? "Walk back your ready signal" : "Mark yourself ready";
+        }
+        return isReady
+          ? `Walk back ${subjectLabel ?? "this role"}'s ready signal`
+          : `Mark ${subjectLabel ?? "this role"} ready`;
+      })()}
       title={title}
       data-tone={tone}
       data-variant={variant}

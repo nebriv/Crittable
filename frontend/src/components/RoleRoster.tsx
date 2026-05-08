@@ -190,6 +190,7 @@ export function RoleRoster({
                 ? "You aren't on the active turn — Mark Ready isn't your call this beat."
                 : undefined)
             }
+            disabledLabel={!selfIsActive ? "NOT YOUR TURN" : undefined}
           />
           {/* User-persona MEDIUM M2: "quorum" is operator-jargon for
               a first-time CISO. Plain copy reads sensibly and matches

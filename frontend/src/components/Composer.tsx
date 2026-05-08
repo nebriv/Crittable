@@ -44,10 +44,13 @@ export interface MentionMark {
 interface Props {
   enabled: boolean;
   placeholder: string;
-  /** Visible label above the textarea. Issue #78: parents render
-   * "Your turn" when ``isMyTurn`` and "Add a comment" / "Your message"
-   * otherwise so the at-a-glance signal isn't lost when the composer
-   * stays enabled for out-of-turn sidebar comments. */
+  /** Accessible-name suffix for the textarea. Parents pass
+   * "Your turn" / "Add a comment" / "Your message" so screen-reader
+   * users still get the at-a-glance turn signal. The visible
+   * "RESPONDING AS · X" label that previously consumed this prop was
+   * dropped — the at-a-glance signal lives in the rail (active row,
+   * Mark Ready button) and the textarea placeholder, not above the
+   * composer. */
   label?: string;
   /**
    * ``asRoleId`` is omitted for normal submissions (use the local
@@ -672,14 +675,8 @@ export function Composer({
       onSubmit={handle}
       className="flex flex-col gap-2 rounded-r-3 border-t border-ink-600 bg-ink-850 p-3"
     >
-      <div className="flex items-center justify-between gap-2">
-        <label
-          className="mono text-[10px] font-bold uppercase tracking-[0.20em] text-signal"
-          htmlFor="composer"
-        >
-          {label ? `RESPONDING AS · ${label.toUpperCase()}` : "RESPONDING AS · YOU"}
-        </label>
-        {hasImpersonate ? (
+      {hasImpersonate ? (
+        <div className="flex items-center justify-end gap-2">
           <label className="mono flex items-center gap-1 text-[10px] uppercase tracking-[0.10em] text-ink-300">
             Respond as
             <select
@@ -698,8 +695,8 @@ export function Composer({
               ))}
             </select>
           </label>
-        ) : null}
-      </div>
+        </div>
+      ) : null}
       {asRoleId ? (() => {
         const selected = (impersonateOptions ?? []).find(
           (o) => o.id === asRoleId,
@@ -755,6 +752,7 @@ export function Composer({
               : undefined
           }
           aria-autocomplete="list"
+          aria-label={label ? `Composer, ${label}` : "Composer"}
           className={`w-full rounded-r-1 border bg-ink-900 p-3 text-sm text-ink-100 sans focus-visible:outline focus-visible:outline-2 focus-visible:outline-signal-deep disabled:opacity-50 ${
             asRoleId ? "border-warn" : "border-signal-deep"
           }`}

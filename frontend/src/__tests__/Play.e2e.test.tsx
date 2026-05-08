@@ -251,6 +251,14 @@ describe("Play page e2e — state transitions", () => {
     expect(
       screen.getByText(/what does the alert queue actually show/i),
     ).toBeInTheDocument();
+    // ESCAPE HATCHES panel must NOT render for a non-creator player.
+    // The whole panel (including the heading) is creator-gated; a
+    // regression that re-shows force-advance / pause AI / end session
+    // to a non-creator gets caught here.
+    expect(screen.queryByText(/escape hatches/i)).toBeNull();
+    expect(screen.queryByText(/force-advance/i)).toBeNull();
+    expect(screen.queryByText(/pause ai/i)).toBeNull();
+    expect(screen.queryByText(/end session/i)).toBeNull();
   });
 
   it("AI_PROCESSING: composer stays enabled so a player can drop a sidebar / interjection", async () => {

@@ -166,4 +166,26 @@ describe("<RoleRoster/>", () => {
     // The other role's row carries the inline READY ✓ chip.
     expect(screen.getByText(/READY ✓/i)).toBeInTheDocument();
   });
+
+  it("shows NOT YOUR TURN on the disabled button when self isn't on the active set", () => {
+    // Pre-fix the off-active-set viewer saw a greyed-out
+    // "MARK READY →" face that read as broken. The plain-English
+    // override label tells them at a glance that the affordance
+    // isn't theirs to act on this beat — the tooltip still names
+    // the why, but touch users who can't hover get the signal too.
+    render(
+      <RoleRoster
+        roles={ROLES}
+        activeRoleIds={["role-other"]}
+        selfRoleId="role-self"
+        readyRoleIds={new Set()}
+        onSelfMarkReady={vi.fn()}
+        selfMarkReadyEnabled={false}
+      />,
+    );
+    const btn = screen.getByTestId("mark-ready");
+    expect(btn).toBeDisabled();
+    expect(btn.textContent).toMatch(/NOT YOUR TURN/);
+    expect(btn.textContent).not.toMatch(/MARK READY/);
+  });
 });
