@@ -14,6 +14,7 @@ from .models import (
     Turn,
 )
 
+
 class IllegalTransitionError(RuntimeError):
     """Raised when an action is rejected by the state machine."""
 
