@@ -335,8 +335,8 @@ PLAY_TOOLS: list[dict[str, Any]] = [
             "phrases the ask as one-of-several (\"Paul or Lawrence — "
             "who's filing this?\", \"one of you owns the ticket\"). "
             "The first ready vote in a multi-role group closes it; "
-            "the other roles can still chime in with `intent=\"discuss\"` "
-            "but their absence won't stall the turn.\n"
+            "the other roles can still chime in but their absence "
+            "won't stall the turn.\n"
             "  • Multiple groups in the same yield = each group is a "
             "separate ask. `[[ben_id], [paul_id, lawrence_id]]` means "
             "Ben must respond AND one of Paul/Lawrence must respond.\n\n"
@@ -589,6 +589,7 @@ SETUP_TOOLS: list[dict[str, Any]] = [
             },
             "required": [
                 "title",
+                "executive_summary",
                 "key_objectives",
                 "narrative_arc",
                 "injects",
@@ -633,6 +634,7 @@ SETUP_TOOLS: list[dict[str, Any]] = [
             },
             "required": [
                 "title",
+                "executive_summary",
                 "key_objectives",
                 "narrative_arc",
                 "injects",

@@ -118,6 +118,11 @@ class ValidationResult:
 # ----------------------------------------------------------------- directives
 
 
+# NOTE: this directive is the recovery path for a missed yield. The
+# silent-yield prohibition in Block 6 is intentionally overridden here —
+# the player-facing brief landed on a prior attempt, so emitting only
+# `set_active_roles` is the right move. Only the creator ends the exercise
+# (from the UI); never narrate a session-ending outcome here.
 _STRICT_YIELD_NOTE = (
     "STRICT RETRY: your previous attempt(s) on this turn did not yield. "
     "If you have seen this note already on this same turn, the prior "
@@ -128,14 +133,7 @@ _STRICT_YIELD_NOTE = (
     "narrative becomes one group (singleton group `[role_id]` = that "
     "role required; multi-role group `[a, b]` = either answers — pick "
     "the shape that matches your prior asks). The tool surface has been "
-    "narrowed and `tool_choice` forces a call to `set_active_roles`. "
-    "(Note: `set_active_roles` is the only yielding move available to "
-    "you on any play turn — only the creator can end the exercise, "
-    "from the UI; do not narrate a session-ending outcome here or "
-    "elsewhere.) (This is the one path where Block 6's silent-yield "
-    "prohibition is overridden — the player-facing brief landed on a "
-    "prior attempt and is already in the transcript, so emitting only "
-    "`set_active_roles` here is the right move.)"
+    "narrowed and `tool_choice` forces a call to `set_active_roles`."
 )
 _STRICT_YIELD_USER_NUDGE = (
     "[system] Your previous tool calls did not include a yielding tool. "
@@ -148,9 +146,9 @@ _STRICT_YIELD_USER_NUDGE = (
 _DRIVE_RECOVERY_NOTE = (
     "RECOVERY: you yielded to the active roles via `set_active_roles` "
     "(or are about to) but did not produce a player-facing message. "
-    "Bookkeeping tools (`track_role_followup`, `resolve_role_followup`, "
-    "`request_artifact`, `lookup_resource`, `use_extension_tool`) do "
-    "NOT give players anything to read. Issue a `broadcast` now (≤200 "
+    "Yielding and bookkeeping moves alone do NOT give players anything "
+    "to read — only `broadcast`, `address_role`, `pose_choice`, and "
+    "`share_data` are player-facing. Issue a `broadcast` now (≤200 "
     "words) that does BOTH of these in order: (1) if a recent player "
     "message tagged you with `@facilitator` (alias `@ai` / `@gm`) and "
     "is unanswered, answer it concretely first — do not skip the "
