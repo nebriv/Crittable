@@ -2688,7 +2688,7 @@ function PlanPanel({
   busy,
 }: {
   plan: ScenarioPlan;
-  sessionId?: string;
+  sessionId: string;
   onApprove: () => void;
   busy: boolean;
 }) {

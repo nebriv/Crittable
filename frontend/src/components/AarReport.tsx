@@ -401,7 +401,7 @@ function RightColumn({
         </p>
       </div>
       <ul className="flex flex-col gap-2">
-        {per_role_scores.map((s) => {
+        {per_role_scores.map((s, i) => {
           // Prefer the backend-resolved label/display_name (which
           // already handles AI emitting label-as-id, unknown ids,
           // etc.); fall back to a roster-side lookup for older AAR
@@ -427,7 +427,11 @@ function RightColumn({
           const detailId = `aar-role-detail-${s.role_id}`;
           return (
             <li
-              key={`${s.role_id}-${label}`}
+              // Two unknown-id rows (label resolves to "—") would collide
+              // on a label-only key. Index disambiguates without losing
+              // the role_id signal in the React key (useful when devtools
+              // inspecting the DOM after a re-render).
+              key={`${s.role_id}-${i}`}
               className="rounded-r-1 border border-ink-600 bg-ink-800"
             >
               <button
