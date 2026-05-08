@@ -195,20 +195,27 @@ describe("SetupView — with-plan branch", () => {
 });
 
 /**
- * The plan-drafting wait is 10–30 s of non-streaming LLM work; pre-fix,
- * the operator only saw the small typing dots inside the chat
- * transcript and the LOOKS READY button reading as "stuck." A
- * prominent in-chat banner with the brand DieLoader names the wait
- * as an explicit step.
+ * The plan-drafting wait is 10–30 s of LLM work; pre-fix, the operator
+ * only saw the small typing dots inside the chat transcript and the
+ * LOOKS READY button reading as "stuck." A prominent in-chat banner
+ * with the brand DieLoader names the wait as an explicit step.
  *
- * The banner is reserved for the explicit LOOKS-READY → PROPOSE-THE-PLAN
- * path (driven by the ``draftingPlan`` prop). Regular setup back-and-
- * forth replies keep only the small "AI is typing" dots inside
- * <SetupChat> — the operator's complaint that prompted hiding the
- * implicit variant was that the heavy banner read as "the app is
- * stuck" instead of "the AI is composing the next question". The
- * plan-drafting wait is the one wait that genuinely deserves a named,
- * prominent indicator.
+ * From SetupView's perspective the banner is gated on a single boolean
+ * (``draftingPlan``). The Facilitator merges TWO origins into that
+ * prop with ``draftingPlan || aiDraftingPlan``:
+ *
+ *  - Operator-initiated path — ``handleLooksReady`` flips local
+ *    ``draftingPlan`` state when the operator clicks LOOKS READY →
+ *    PROPOSE THE PLAN.
+ *  - AI-initiated path — the backend streams the setup-tier LLM call
+ *    and broadcasts ``setup_drafting_plan active=true`` the moment the
+ *    model commits to ``propose_scenario_plan`` (covering the case
+ *    where the AI decides on its own that it has enough background).
+ *    The Facilitator mirrors that into ``aiDraftingPlan``.
+ *
+ * Regular setup back-and-forth keeps only the small "AI is typing"
+ * dots inside <SetupChat> — neither origin fires for
+ * ``ask_setup_question``.
  *
  * The banner intentionally relies on ``<DieLoader>``'s own
  * ``role="status" aria-live="polite"`` rather than wrapping in a

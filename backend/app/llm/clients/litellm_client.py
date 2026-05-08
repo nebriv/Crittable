@@ -911,6 +911,17 @@ class LiteLLMChatClient(ChatClient):
         chunks: list[Any] = []
         text_buffer: list[str] = []
         chunk_warn_logged = False
+        # Best-effort ``tool_use_start`` emission. OpenAI-shaped streams
+        # surface the function name in the first chunk that introduces a
+        # given ``tool_calls[i]`` index (subsequent chunks carry only
+        # incremental ``arguments`` deltas). We dedupe by name so callers
+        # see one event per distinct tool. Any provider that doesn't
+        # emit the name in chunk-form simply produces no event — callers
+        # treat the absence as "no early signal," not "no tool call,"
+        # and the final assembled response still carries the tool_use.
+        # Wrapped in try/except per chunk so a misshapen delta never
+        # breaks the stream itself.
+        seen_tool_names: set[str] = set()
         try:
             try:
                 stream = await litellm.acompletion(**kwargs)
@@ -933,6 +944,31 @@ class LiteLLMChatClient(ChatClient):
                             ),
                         )
                         chunk_warn_logged = True
+                    try:
+                        for choice in getattr(chunk, "choices", None) or []:
+                            delta = getattr(choice, "delta", None)
+                            tool_calls = (
+                                getattr(delta, "tool_calls", None)
+                                if delta is not None
+                                else None
+                            )
+                            for tc in tool_calls or []:
+                                fn = getattr(tc, "function", None)
+                                name = (
+                                    getattr(fn, "name", None)
+                                    if fn is not None
+                                    else None
+                                )
+                                if name and name not in seen_tool_names:
+                                    seen_tool_names.add(name)
+                                    yield {"type": "tool_use_start", "name": name}
+                    except Exception as exc:
+                        _logger.debug(
+                            "litellm_tool_use_start_detect_failed",
+                            tier=tier,
+                            model=wire_model,
+                            error=str(exc),
+                        )
                     delta_text = _delta_content(chunk)
                     if delta_text:
                         text_buffer.append(delta_text)

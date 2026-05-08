@@ -116,12 +116,22 @@ class _StreamCtx:
         return self._iter()
 
     async def _iter(self) -> AsyncIterator[Any]:
-        # Yield text deltas for any text content blocks.
+        # Yield text deltas for any text content blocks; emit
+        # ``content_block_start`` at the head of each ``tool_use`` block
+        # so the Anthropic-direct ``astream`` translates it into the
+        # ``tool_use_start`` event the setup-tier driver listens for.
         for block in self._resp.content:
             if block.type == "text" and block.text:
                 yield _StreamEvent(
                     type="content_block_delta",
                     delta=_StreamDelta(type="text_delta", text=block.text),
+                    content_block=None,
+                )
+            elif block.type == "tool_use":
+                yield _StreamEvent(
+                    type="content_block_start",
+                    delta=None,
+                    content_block=_StreamBlock(type="tool_use", name=block.name),
                 )
 
     async def get_final_message(self) -> _Response:
@@ -132,12 +142,19 @@ class _StreamCtx:
 class _StreamEvent:
     type: str
     delta: Any
+    content_block: Any
 
 
 @dataclass
 class _StreamDelta:
     type: str
     text: str = ""
+
+
+@dataclass
+class _StreamBlock:
+    type: str
+    name: str | None = None
 
 
 class MockAnthropic:

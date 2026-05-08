@@ -402,11 +402,24 @@ class MockChatClient(ChatClient):
 
             text_chunks: list[str] = []
             for block in result.content:
-                if block.get("type") == "text":
+                btype = block.get("type")
+                if btype == "text":
                     text = block.get("text", "")
                     if text:
                         text_chunks.append(text)
                         yield {"type": "text_delta", "text": text}
+                elif btype == "tool_use":
+                    # Mirror Anthropic's ``content_block_start`` for
+                    # tool_use blocks so callers (e.g. the setup-tier
+                    # driver watching for ``propose_scenario_plan``)
+                    # see the same early-signal shape they see in
+                    # production. The real client emits this BEFORE any
+                    # input deltas; we have no deltas in the mock so
+                    # the event fires once per block in script order.
+                    yield {
+                        "type": "tool_use_start",
+                        "name": block.get("name"),
+                    }
             yield {
                 "type": "complete",
                 "result": result,

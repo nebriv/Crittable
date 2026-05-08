@@ -278,6 +278,17 @@ export function Facilitator() {
   // only the small "AI is typing" dots inside <SetupChat> — the
   // heavy banner is reserved for the explicit plan-drafting step.
   const [draftingPlan, setDraftingPlan] = useState(false);
+  // Mirror of ``draftingPlan`` driven by the backend ``setup_drafting_plan``
+  // WS event. The setup tier streams its first LLM call; when the model
+  // commits to ``propose_scenario_plan`` (regardless of whether the
+  // operator clicked LOOKS READY or the AI decided on its own that it
+  // had enough background), the engine fires ``active=true`` and the
+  // banner mounts immediately — closing the prior gap where an AI-
+  // initiated plan draft showed only the small "AI is typing" dots
+  // for the full 10-30 s wait. ``active=false`` fires in the setup-
+  // driver's ``finally`` (even on exception), so a failed call never
+  // leaves the banner stuck.
+  const [aiDraftingPlan, setAiDraftingPlan] = useState(false);
   const [wsStatus, setWsStatus] = useState<"connecting" | "open" | "closed" | "error" | "kicked" | "rejected" | "session-gone">("connecting");
 
   // Live AI text streaming was producing visible mid-flight rewrites:
@@ -758,6 +769,19 @@ export function Facilitator() {
         console.debug("[facilitator] ai_status", {
           phase: evt.phase,
           recovery: evt.recovery,
+        });
+        break;
+      case "setup_drafting_plan":
+        // The setup-tier driver fires this the moment the streaming
+        // model commits to ``propose_scenario_plan``. We mirror it
+        // into ``aiDraftingPlan`` and the banner gates on
+        // ``draftingPlan || aiDraftingPlan`` so both paths (operator
+        // clicked LOOKS READY → ``draftingPlan`` and AI-initiated
+        // draft → ``aiDraftingPlan``) mount the same banner without
+        // double-counting.
+        setAiDraftingPlan(evt.active);
+        console.info("[facilitator] setup_drafting_plan", {
+          active: evt.active,
         });
         break;
       case "critical_event":
@@ -1344,7 +1368,7 @@ export function Facilitator() {
           }
           busy={busy}
           busyMessage={busyMessage}
-          draftingPlan={draftingPlan}
+          draftingPlan={draftingPlan || aiDraftingPlan}
         />
       );
     } else if (wizardReadyForReview && snapshot.plan) {
@@ -2327,16 +2351,19 @@ export function SetupView({
   onPickOption: (option: string) => void;
   busy: boolean;
   busyMessage: string | null;
-  /** True from the moment the operator clicks LOOKS READY → PROPOSE
-   *  THE PLAN until either the plan arrives or an error surfaces.
+  /** True while the AI is drafting the scenario plan — driven by
+   *  EITHER (a) the operator clicking LOOKS READY → PROPOSE THE PLAN
+   *  (Facilitator's local ``draftingPlan`` state) OR (b) the
+   *  ``setup_drafting_plan`` WS event, which the backend fires the
+   *  moment the streaming setup-tier model commits to
+   *  ``propose_scenario_plan`` (covers the AI-initiated draft path
+   *  the user complained looked "stuck" with only the typing dots).
    *  Drives a prominent in-chat banner with the plan-specific label
-   *  "Drafting scenario plan · typically 10–30 sec" so the operator
-   *  has unambiguous feedback during the 10–30 s wait. Regular
-   *  back-and-forth replies use the small in-chat typing dots only;
-   *  the prominent banner is reserved for the explicit "drafting the
-   *  plan" step. Required, not optional — every call site already
-   *  passes it explicitly and a default would silently hide the
-   *  indicator if a future site forgets. */
+   *  "Drafting scenario plan · typically 10–30 sec". Regular
+   *  back-and-forth replies use only the small in-chat typing dots.
+   *  Required, not optional — every call site already passes it
+   *  explicitly and a default would silently hide the indicator if a
+   *  future site forgets. */
   draftingPlan: boolean;
 }) {
   const hasPlan = Boolean(snapshot.plan);
