@@ -171,14 +171,12 @@ class Message(BaseModel):
     # transcript UI uses the same flag to render a "sidebar" badge so
     # human players don't confuse an interjection with a turn answer.
     is_interjection: bool = False
-    # Wave 1 (issue #134): per-submission intent for player messages.
-    # ``"ready"`` means "I'm done; AI may advance once the quorum is
-    # met"; ``"discuss"`` means "I'm contributing to discussion, don't
-    # advance on my behalf yet". ``None`` for AI / system / interjection
-    # messages where the concept doesn't apply. The recorder reads this
-    # field to round-trip per-submission intent into ``PlayStep.intent``
-    # for deterministic replay.
-    intent: Literal["ready", "discuss"] | None = None
+    # When this PLAYER message was posted while the session was in
+    # ``AI_PROCESSING`` (the AI is generating its turn). Set on the
+    # message by ``submit_response`` so the audit log + AAR replay can
+    # distinguish "responded on turn" from "side-noted while AI was
+    # thinking". Always ``False`` for AI / system messages.
+    during_ai_processing: bool = False
     # Phase A chat-declutter (docs/plans/chat-decluttering.md §4.1):
     # ``workstream_id`` categorizes this message into one of the
     # session's declared workstreams (or ``None`` for the synthetic
@@ -234,16 +232,36 @@ class Turn(BaseModel):
     # ``active_role_groups`` so the gate stays in sync.
     active_role_groups: list[list[str]] = Field(default_factory=list)
     submitted_role_ids: list[str] = Field(default_factory=list)
-    # Ready-quorum gate (Wave 1, issue #134; reshaped by #168). A role
-    # lands here when its most recent submission on this turn carried
-    # ``intent="ready"``; a subsequent ``intent="discuss"`` submission
-    # removes it. The play engine advances ``AWAITING_PLAYERS →
-    # AI_PROCESSING`` when ``groups_quorum_met(turn)`` returns True —
-    # i.e. every group in ``active_role_groups`` has at least one role
-    # in ``ready_role_ids``. Force-advance bypasses this check entirely.
-    # Briefing turns never gate on it (they fire from ``/start``, not
-    # from ``submit_response``).
+    # Ready-quorum gate. A role lands here when it explicitly fired the
+    # ``set_ready`` WS event (handled by ``manager.set_role_ready``);
+    # walking back fires the same event with ``ready=False`` and removes
+    # the role. Submissions never touch this set — typing or sending
+    # messages does NOT mark a role ready.
+    #
+    # Issue #168 role-groups model: the play engine advances
+    # ``AWAITING_PLAYERS → AI_PROCESSING`` when
+    # ``groups_quorum_met(turn)`` returns True — i.e. every group in
+    # ``active_role_groups`` has at least one role in
+    # ``ready_role_ids`` (any-of-N per group). A single-role group
+    # reduces to the strict "that role must ready" case; a multi-role
+    # group is the "either of you can answer" case. Force-advance
+    # bypasses entirely. Briefing turns never gate on it. Resets every
+    # turn (each new active role starts not-ready).
     ready_role_ids: list[str] = Field(default_factory=list)
+    # Per-turn flip cap counter — ``manager.set_role_ready`` increments
+    # this for ``role_id`` on every accepted toggle (mark or walk-back).
+    # Once any role's count hits ``READY_FLIP_CAP_PER_TURN`` (5), further
+    # toggles for that role on this turn are rejected with
+    # ``reason="flip_cap_exceeded"``. Mirrors the per-turn submission cap
+    # — protects the audit log + WS broadcast surface from a buggy or
+    # malicious client flapping ready→not-ready 100x/sec.
+    ready_flip_count_by_role: dict[str, int] = Field(default_factory=dict)
+    # Debounce ledger: per-role timestamp of the most recent accepted
+    # ``ready_changed`` emit. ``manager.set_role_ready`` drops a toggle
+    # silently (no audit, no broadcast, no flip-cap increment) when the
+    # role's most recent emit was within ``READY_DEBOUNCE_MS`` (250ms).
+    # Smooths double-clicks without burning the flip cap.
+    last_ready_change_ts_by_role: dict[str, datetime] = Field(default_factory=dict)
     status: TurnStatus = "awaiting"
     started_at: datetime = Field(default_factory=_now)
     ended_at: datetime | None = None
