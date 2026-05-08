@@ -158,12 +158,12 @@ export function MarkReadyButton({
   const cls = (() => {
     if (variant === "impersonate") {
       return isReady
-        ? "mono w-full rounded-r-1 border border-info bg-info-bg px-3 py-2 text-[11px] font-bold uppercase tracking-[0.18em] text-info hover:bg-info/30 focus-visible:outline focus-visible:outline-2 focus-visible:outline-info disabled:cursor-not-allowed disabled:opacity-50"
-        : "mono w-full rounded-r-1 border border-info bg-ink-800 px-3 py-2 text-[11px] font-bold uppercase tracking-[0.18em] text-info hover:bg-ink-700 focus-visible:outline focus-visible:outline-2 focus-visible:outline-info disabled:cursor-not-allowed disabled:opacity-50";
+        ? "mono w-full rounded-r-1 border border-info bg-info-bg px-3 py-1.5 text-[11px] font-bold uppercase tracking-[0.18em] text-info hover:bg-info/30 focus-visible:outline focus-visible:outline-2 focus-visible:outline-info disabled:cursor-not-allowed disabled:opacity-50"
+        : "mono w-full rounded-r-1 border border-info bg-ink-800 px-3 py-1.5 text-[11px] font-bold uppercase tracking-[0.18em] text-info hover:bg-ink-700 focus-visible:outline focus-visible:outline-2 focus-visible:outline-info disabled:cursor-not-allowed disabled:opacity-50";
     }
     return isReady
-      ? "mono w-full rounded-r-1 border border-signal bg-signal-tint px-3 py-2 text-[11px] font-bold uppercase tracking-[0.18em] text-signal hover:bg-signal/30 focus-visible:outline focus-visible:outline-2 focus-visible:outline-signal disabled:cursor-not-allowed disabled:opacity-50"
-      : "mono w-full rounded-r-1 border border-signal-deep bg-ink-800 px-3 py-2 text-[11px] font-bold uppercase tracking-[0.18em] text-signal-bright hover:bg-ink-700 hover:border-signal focus-visible:outline focus-visible:outline-2 focus-visible:outline-signal disabled:cursor-not-allowed disabled:opacity-50";
+      ? "mono w-full rounded-r-1 border border-signal bg-signal-tint px-3 py-1.5 text-[11px] font-bold uppercase tracking-[0.18em] text-signal hover:bg-signal/30 focus-visible:outline focus-visible:outline-2 focus-visible:outline-signal disabled:cursor-not-allowed disabled:opacity-50"
+      : "mono w-full rounded-r-1 border border-signal-deep bg-ink-800 px-3 py-1.5 text-[11px] font-bold uppercase tracking-[0.18em] text-signal-bright hover:bg-ink-700 hover:border-signal focus-visible:outline focus-visible:outline-2 focus-visible:outline-signal disabled:cursor-not-allowed disabled:opacity-50";
   })();
   // ``animate-tt-pulse`` is the brand's existing subtle signal-blue
   // ring keyframe (1.6s ease-in-out, see tailwind.config.ts:131).

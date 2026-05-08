@@ -772,13 +772,13 @@ export function Composer({
           />
         ) : null}
       </div>
-      {/* User-persona HIGH H4: "Mark Ready in the rail" used to live
-          buried at the end of the keyboard-hints chiclet row, which a
-          first-time player skipped right past. Promote it to its own
-          line above the controls so the discovery moment lands. */}
+      {/* User-persona HIGH H4: surface the rail Mark Ready as its
+          own line above the keyboard-hints chiclet row. A
+          first-time player will hit Enter on the composer; this
+          line is the discovery moment for "who closes the quorum". */}
       <p className="mono flex items-center gap-1 text-[10px] uppercase tracking-[0.06em] text-ink-300">
         <span aria-hidden="true">←</span>
-        Done discussing? Mark Ready in the roster on the left.
+        Mark Ready in the roster when you're done.
       </p>
       <div className="flex flex-wrap items-center justify-between gap-2">
         <span className="mono text-[10px] uppercase tracking-[0.04em] text-ink-400">

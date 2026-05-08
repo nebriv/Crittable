@@ -389,6 +389,81 @@ describe("RolesPanel — issue #82 (no on-screen tokens)", () => {
     expect(revoke).not.toHaveBeenCalled();
   });
 
+  it("Mark Ready button shows the in-flight pulse when its subject is in pendingMarkReadySubjects", () => {
+    // PR #209 follow-up — UI/UX MEDIUM M2. The creator can have
+    // one pending flip per active role they impersonate plus
+    // their own seat. Each row's <MarkReadyButton> independently
+    // reads from the set and surfaces the pulse + aria-busy.
+    const onMarkReady = vi.fn();
+    render(
+      <RolesPanel
+        sessionId={SESSION_ID}
+        creatorToken={CREATOR_TOKEN}
+        roles={baseRoles}
+        busy={false}
+        onRoleAdded={vi.fn()}
+        onRoleChanged={vi.fn()}
+        onError={vi.fn()}
+        connectedRoleIds={new Set()}
+        focusedRoleIds={new Set()}
+        readyRoleIds={new Set()}
+        // SOC is on the active set so the impersonation row's
+        // <MarkReadyButton> renders.
+        activeRoleIds={new Set(["role-soc"])}
+        selfRoleId="role-creator"
+        markReadyEnabled={true}
+        onMarkReady={onMarkReady}
+        // SOC's set_ready is in flight; creator's own row is not.
+        pendingMarkReadySubjects={new Set(["role-soc"])}
+      />,
+    );
+
+    const socButton = screen.getByTestId("mark-ready-impersonate");
+    expect(socButton.getAttribute("data-in-flight")).toBe("true");
+    expect(socButton.getAttribute("aria-busy")).toBe("true");
+    expect(socButton.className).toMatch(/animate-tt-pulse/);
+  });
+
+  it("Mark Ready in-flight pulse is per-row (other roles' rows are idle)", () => {
+    const onMarkReady = vi.fn();
+    const roles: RoleView[] = [
+      ...baseRoles,
+      {
+        id: "role-legal",
+        label: "Legal",
+        kind: "player",
+        is_creator: false,
+        display_name: null,
+      } as RoleView,
+    ];
+    render(
+      <RolesPanel
+        sessionId={SESSION_ID}
+        creatorToken={CREATOR_TOKEN}
+        roles={roles}
+        busy={false}
+        onRoleAdded={vi.fn()}
+        onRoleChanged={vi.fn()}
+        onError={vi.fn()}
+        connectedRoleIds={new Set()}
+        focusedRoleIds={new Set()}
+        readyRoleIds={new Set()}
+        activeRoleIds={new Set(["role-soc", "role-legal"])}
+        selfRoleId="role-creator"
+        markReadyEnabled={true}
+        onMarkReady={onMarkReady}
+        // Only Legal's flip is pending; SOC's button stays idle.
+        pendingMarkReadySubjects={new Set(["role-legal"])}
+      />,
+    );
+
+    const buttons = screen.getAllByTestId("mark-ready-impersonate");
+    expect(buttons.length).toBe(2);
+    // Roles render in declaration order; SOC first (idx 0), Legal second (idx 1).
+    expect(buttons[0].getAttribute("data-in-flight")).toBeNull();
+    expect(buttons[1].getAttribute("data-in-flight")).toBe("true");
+  });
+
   it("a click outside the armed button disarms KICK without firing", () => {
     const revoke = vi.spyOn(api, "revokeRole");
 

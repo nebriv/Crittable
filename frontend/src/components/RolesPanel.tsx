@@ -507,45 +507,39 @@ export function RolesPanel({
               </span>
             </div>
             {/*
-              MARK READY row — own block, divider above the admin row.
-              Visual separation is load-bearing: a fat-finger that
-              would have hit KICK now hits the divider gap or the
-              Mark Ready button (a benign re-toggle) instead. Renders
-              for every active role; the creator can self-toggle and
-              also toggle on behalf of any other active role
-              (impersonation path — backend records ``actor_role_id``
-              ≠ ``subject_role_id`` so the audit log distinguishes).
-              Hidden for non-active roles (the backend would reject
-              with ``not_active_role``) and when ``onMarkReady`` is
-              absent (legacy callers without the wiring).
+              ACTIONS block — Mark Ready (when active) + Admin row
+              (Copy/Kick/Remove for non-creators). Single dashed
+              divider separates actions from the role-card header;
+              within the block, Mark Ready and the admin row share
+              ``gap-1.5`` instead of stacking another divider so the
+              card reads as one cohesive zone instead of three. The
+              fat-finger guard is now: (a) Mark Ready sits on its
+              own line at full width above the admin chiplets, and
+              (b) the admin chiplets themselves use the inline
+              2-click arm-and-confirm. Two dividers per card felt
+              busy; one feels load-bearing.
             */}
-            {isActiveRole && onMarkReady ? (
-              <div className="border-t border-dashed border-ink-600 pt-2">
-                <MarkReadyButton
-                  isReady={isReadyRole}
-                  enabled={markReadyEnabled}
-                  onToggle={(next) => onMarkReady(r.id, next)}
-                  variant={isSelfRole ? "self" : "impersonate"}
-                  subjectLabel={r.label}
-                  disabledReason={markReadyDisabledReason}
-                  inFlight={
-                    pendingMarkReadySubjects?.has(r.id) ?? false
-                  }
-                />
-              </div>
-            ) : null}
-            {!r.is_creator ? (
-              // Admin row — destructive operations sit BELOW the Mark
-              // Ready divider so a misclick on Kick doesn't bleed into
-              // a Ready toggle (or vice versa). KICK and REMOVE use a
-              // 2-click arm-and-confirm: first click flips the label
-              // and tints the row in the action's tone; second click
-              // (within 4s) actually fires; click elsewhere or wait
-              // out the timeout to disarm. Replaces the old browser
-              // ``confirm()`` dialog (Enter-key-dismissable, no
-              // in-document lead-in).
-              <div className="flex flex-wrap items-center justify-center gap-1 border-t border-dashed border-ink-600 pt-2">
-                <button
+            {(isActiveRole && onMarkReady) || !r.is_creator ? (
+              <div className="flex flex-col gap-1.5 border-t border-dashed border-ink-600 pt-2">
+                {isActiveRole && onMarkReady ? (
+                  <MarkReadyButton
+                    isReady={isReadyRole}
+                    enabled={markReadyEnabled}
+                    onToggle={(next) => onMarkReady(r.id, next)}
+                    variant={isSelfRole ? "self" : "impersonate"}
+                    subjectLabel={r.label}
+                    disabledReason={markReadyDisabledReason}
+                    inFlight={
+                      pendingMarkReadySubjects?.has(r.id) ?? false
+                    }
+                  />
+                ) : null}
+                {!r.is_creator ? (
+                  // Admin chiplets — KICK / REMOVE use the inline
+                  // 2-click arm-and-confirm; COPY LINK is one-click
+                  // (non-destructive, copies straight to clipboard).
+                  <div className="flex flex-wrap items-center justify-center gap-1">
+                    <button
                   type="button"
                   onClick={() => copyExistingLink(r.id, r.label)}
                   disabled={busy}
@@ -641,6 +635,8 @@ export function RolesPanel({
                     Click again within four seconds to confirm. Press
                     Escape or click outside to cancel.
                   </span>
+                ) : null}
+                  </div>
                 ) : null}
               </div>
             ) : null}
