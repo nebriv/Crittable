@@ -86,14 +86,17 @@ interface Props {
  * visual lead-in). Inline confirm keeps the cursor on the same row
  * the user was already aiming at, and the timeout means a creator
  * who clicked the wrong KICK doesn't have to do anything except
- * pause for two seconds to recover.
+ * pause for the ``ARM_TIMEOUT_MS`` window (currently 4 seconds) to
+ * recover. Don't quote the duration as a literal — it'll drift the
+ * moment the constant changes (Copilot review on PR #213 caught
+ * exactly this drift in an earlier comment that said "two seconds").
  *
  * The Mark Ready button sits on its own row above the destructive
  * row so a fat-finger on a kick can't bleed into a ready toggle (or
- * vice versa). Without the row break the buttons were physically
- * adjacent — one of the manual-test reports flagged "I clicked
- * Kick when I meant Mark Ready." This is the reason the user asked
- * for the guard.
+ * vice versa). The motivation for the visual separation is the
+ * user's explicit ask in PR #213 — the user requested guards on
+ * KICK / REMOVE because the new Mark Ready button would land
+ * physically adjacent to them.
  */
 const ARM_TIMEOUT_MS = 4000;
 
@@ -148,10 +151,18 @@ export function RolesPanel({
   markReadyDisabledReason,
   pendingMarkReadySubjects,
 }: Props) {
-  // Inline 2-click confirm state. Keyed by ``${action}:${roleId}`` so a
-  // creator can arm KICK on one row and REMOVE on another without the
-  // first armed state being clobbered. ``timer`` is held in a ref so
-  // re-renders mid-arm don't reset the countdown.
+  // Inline 2-click confirm state. ONE row may be armed at a time; a
+  // second ``arm()`` call replaces the first (the corresponding test
+  // ``arming KICK on row A and KICK on row B disarms row A`` pins
+  // this behavior). The string value is ``${action}:${roleId}`` so a
+  // single field encodes both "which row?" and "which action?",
+  // letting the per-button render branch on either ``armed === kickKey``
+  // or ``armed === removeKey``. The single-armed-at-a-time invariant
+  // is intentional: arming two destructive actions simultaneously
+  // would multiply the surface area of "what am I about to confirm?"
+  // for no real workflow benefit. ``timer`` is held in a ref so
+  // re-renders mid-arm don't reset the countdown. (Copilot review on
+  // PR #213 caught the prior comment that implied multi-arm support.)
   const [armed, setArmed] = useState<string | null>(null);
   const armTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   function arm(key: string) {

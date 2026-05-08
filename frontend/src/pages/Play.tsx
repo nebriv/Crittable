@@ -1187,12 +1187,17 @@ export function Play({ sessionId, token }: Props) {
   })();
   const activeRoleIds = snapshot.current_turn?.active_role_ids ?? [];
   const submittedRoleIds = snapshot.current_turn?.submitted_role_ids ?? [];
-  // Wave 1 (issue #134): per-role ready signal. The composer surfaces
-  // whether the local participant is currently marked ready; the HUD
-  // counts "N of M ready" off this list (distinct from
-  // ``submittedRoleIds`` which counts every message a role has spoken
-  // on the turn — including discussion contributions that don't yet
-  // flip the AI to advance).
+  // Decoupled-ready (PR #209): per-role ready signal. Roles enter
+  // this list via the dedicated ``set_ready`` WS event from the rail
+  // ``<MarkReadyButton>`` — the composer is no longer in the loop.
+  // The set is distinct from ``submittedRoleIds`` (every message a
+  // role has spoken on the turn, including discussion contributions
+  // that don't close the quorum). The displayed set rendered to the
+  // user is the canonical snapshot value overlaid with any pending
+  // optimistic flips (see ``displayedReadyRoleIds`` below); the
+  // inline "N of M ready" copy near the composer reads from that
+  // overlay so the display stays in lockstep with the rail button's
+  // optimistic state.
   const readyRoleIds = snapshot.current_turn?.ready_role_ids ?? [];
   // Decoupled-ready (PR #209 follow-up): the displayed ready set
   // overlays any pending optimistic flips on top of the canonical
@@ -1521,14 +1526,22 @@ export function Play({ sessionId, token }: Props) {
               selfRoleId !== null &&
               pendingMarkReadySubjects.has(selfRoleId)
             }
-            // UI/UX review HIGH H5: also gate on WS-open, mirroring
-            // Facilitator.tsx's ``markReadyEnabled``. Without this
-            // gate a click during a brief reconnect would silently
-            // drop in ``handleSelfMarkReady`` with no UI feedback.
-            onSelfMarkReady={
-              isPlayer && wsStatus === "open"
-                ? handleSelfMarkReady
-                : undefined
+            // PR #213 Copilot review: pass the handler on EVERY
+            // render so the button stays mounted (just disabled)
+            // during a brief WS reconnect. Pre-fix the button
+            // disappeared entirely while ``wsStatus !== "open"``,
+            // which read as "the app is broken." The interactivity
+            // gate moved into ``selfMarkReadyEnabled`` below.
+            onSelfMarkReady={isPlayer ? handleSelfMarkReady : undefined}
+            selfMarkReadyEnabled={
+              // Combines all the page-level gates the disabled
+              // tooltip names. Mirrors Facilitator.tsx's
+              // ``markReadyEnabled`` so the two pages stay in
+              // lockstep.
+              isPlayer &&
+              wsStatus === "open" &&
+              snapshot.state === "AWAITING_PLAYERS" &&
+              iAmActive
             }
             selfMarkReadyDisabledReason={(() => {
               // The button stays rendered but disabled when the local

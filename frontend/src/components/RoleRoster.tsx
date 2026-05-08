@@ -19,11 +19,28 @@ interface Props {
    * the ``client_seq`` counter and the ``set_ready`` WS dispatch —
    * keeping that one level up means a ``ready_changed`` broadcast for
    * an unrelated role doesn't have to touch this component's state.
-   * Omitted when the page can't currently toggle (spectator,
-   * non-active role, WS closed) — the button stays rendered but
-   * disabled with a tooltip explaining why.
+   *
+   * The handler should be passed on EVERY render — the button stays
+   * rendered (just disabled with the tooltip) when toggling isn't
+   * allowed. Hiding the control by omitting the callback was the
+   * pre-fix behavior and led to the button disappearing entirely
+   * during a brief WS reconnect, which read as "the app is broken"
+   * (Copilot review on PR #213). The handler itself does its own
+   * ``ws.send`` try/catch — passing it during a momentary disconnect
+   * is harmless because ``selfMarkReadyEnabled`` keeps the button
+   * disabled; if a click somehow leaks through (focus race), the
+   * handler logs + reverts the optimistic flip.
    */
   onSelfMarkReady?: (next: boolean) => void;
+  /**
+   * Whether the Mark Ready button is interactive. Combines the
+   * page-level gates (WS open, ``state === "AWAITING_PLAYERS"``) with
+   * the row-level gate (``selfIsActive``). When false, the button
+   * renders disabled with ``selfMarkReadyDisabledReason`` as the
+   * tooltip — the affordance stays visible so the user knows it
+   * exists and why they can't use it right now.
+   */
+  selfMarkReadyEnabled?: boolean;
   /** Reason the Mark Ready button is disabled (tooltip copy). */
   selfMarkReadyDisabledReason?: string;
   /**
@@ -47,6 +64,7 @@ export function RoleRoster({
   connectedRoleIds,
   readyRoleIds,
   onSelfMarkReady,
+  selfMarkReadyEnabled,
   selfMarkReadyDisabledReason,
   selfMarkReadyInFlight = false,
 }: Props) {
@@ -56,13 +74,27 @@ export function RoleRoster({
   const sorted = [...roles].sort((a, b) => Number(active.has(b.id)) - Number(active.has(a.id)));
   const selfIsActive = selfRoleId !== null && active.has(selfRoleId);
   const selfIsReady = selfRoleId !== null && ready.has(selfRoleId);
-  // The Mark Ready button shows for every active turn — even if the
-  // local viewer isn't on the active set, so they see why their seat
-  // is parked. The button itself is only ENABLED when the viewer IS
-  // active; a spectator or off-turn player gets the disabled state
-  // with a "Not on the active turn" tooltip.
-  const showMarkReady =
-    selfRoleId !== null && onSelfMarkReady !== undefined && active.size > 0;
+  // The Mark Ready button renders any time there's an active turn
+  // and the viewer has a seat in the session — even if the viewer
+  // isn't on the active set, so a parked role can SEE its own state
+  // and learn what the affordance is for. Interactivity is driven
+  // by ``selfMarkReadyEnabled`` (page-level gate combined with
+  // ``selfIsActive``); a disabled state reads as "Mark Ready isn't
+  // your call this beat" via the tooltip. Pre-fix the button was
+  // hidden when ``onSelfMarkReady`` was undefined (e.g. during a WS
+  // reconnect), which made the affordance appear/disappear in a way
+  // that read as a bug — Copilot review on PR #213.
+  const showMarkReady = selfRoleId !== null && active.size > 0;
+  // The handler is always provided by the parent; if it's somehow
+  // omitted (legacy caller), fall through to a no-op so the button
+  // can still render in a disabled state.
+  const handleSelfToggle = onSelfMarkReady ?? (() => undefined);
+  // Default ``enabled`` if the parent didn't pass an explicit flag:
+  // honor the row-level gate alone. A parent that wires the
+  // page-level gates (WS open, AWAITING_PLAYERS) should pass
+  // ``selfMarkReadyEnabled`` explicitly so the disabled-tooltip
+  // copy matches the cause.
+  const markReadyEnabledFinal = selfMarkReadyEnabled ?? selfIsActive;
   return (
     <aside
       aria-label="Role roster"
@@ -149,8 +181,8 @@ export function RoleRoster({
         <div className="flex flex-col gap-1.5 border-t border-dashed border-ink-600 pt-2">
           <MarkReadyButton
             isReady={selfIsReady}
-            enabled={selfIsActive}
-            onToggle={(next) => onSelfMarkReady?.(next)}
+            enabled={markReadyEnabledFinal}
+            onToggle={handleSelfToggle}
             inFlight={selfMarkReadyInFlight}
             disabledReason={
               selfMarkReadyDisabledReason ??
