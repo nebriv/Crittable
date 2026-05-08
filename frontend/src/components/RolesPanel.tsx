@@ -1,5 +1,6 @@
-import { FormEvent, useState } from "react";
+import { FormEvent, useEffect, useRef, useState } from "react";
 import { RoleView, api } from "../api/client";
+import { MarkReadyButton } from "./brand/MarkReadyButton";
 
 interface Props {
   sessionId: string;
@@ -27,7 +28,65 @@ interface Props {
    * to keep "your turn" the only amber signal on screen.
    */
   focusedRoleIds: ReadonlySet<string>;
+  /**
+   * Decoupled-ready (PR #209): the set of role_ids that have signaled
+   * ready on the current turn (snapshot value, overlaid with any
+   * pending optimistic flips at the page level). Roles outside this
+   * set show as not-yet-ready in the rail; roles inside it show a
+   * ``READY ✓`` tag. The Mark Ready toggle is rendered for every
+   * ACTIVE role so the creator can also toggle on behalf of an
+   * absent player (subject_role_id impersonation).
+   */
+  readyRoleIds: ReadonlySet<string>;
+  /**
+   * The set of role_ids on the current turn's active set. The Mark
+   * Ready button is rendered (and enabled) only for active roles —
+   * marking an off-turn role ready would be a no-op the backend
+   * rejects with ``not_active_role`` anyway.
+   */
+  activeRoleIds: ReadonlySet<string>;
+  /**
+   * Fired when the creator clicks any roster row's Mark Ready toggle.
+   * For their own row, ``subjectRoleId`` is the creator's role; for
+   * an active impersonation row, it's the targeted role. Parent owns
+   * the ``client_seq`` counter, the ``set_ready`` WS dispatch, and
+   * the optimistic-flip overlay.
+   */
+  onMarkReady?: (subjectRoleId: string, next: boolean) => void;
+  /**
+   * The creator's own role_id, used to render the self vs.
+   * impersonation variants of ``<MarkReadyButton>`` distinctly.
+   */
+  selfRoleId: string;
+  /** Disabled (with tooltip) when the WS is closed or the session
+   *  isn't ``AWAITING_PLAYERS``. Renders the buttons greyed out. */
+  markReadyEnabled: boolean;
+  /** Tooltip surfaced when ``markReadyEnabled=false``. */
+  markReadyDisabledReason?: string;
 }
+
+/**
+ * Two-click confirm pattern for destructive admin actions. First click
+ * arms the button (label flips to ``CONFIRM <ACTION>?`` and the row
+ * paints in the action's tone); second click within ``ARM_TIMEOUT_MS``
+ * actually fires. Click anywhere else, press Escape, or wait the
+ * timeout out and the row reverts.
+ *
+ * Replaces the previous ``confirm()`` browser dialog (which was easy
+ * to dismiss via Enter / Space muscle memory and had no in-document
+ * visual lead-in). Inline confirm keeps the cursor on the same row
+ * the user was already aiming at, and the timeout means a creator
+ * who clicked the wrong KICK doesn't have to do anything except
+ * pause for two seconds to recover.
+ *
+ * The Mark Ready button sits on its own row above the destructive
+ * row so a fat-finger on a kick can't bleed into a ready toggle (or
+ * vice versa). Without the row break the buttons were physically
+ * adjacent — one of the manual-test reports flagged "I clicked
+ * Kick when I meant Mark Ready." This is the reason the user asked
+ * for the guard.
+ */
+const ARM_TIMEOUT_MS = 4000;
 
 type RoleStatus = "not_joined" | "joined_active" | "joined_idle";
 
@@ -72,7 +131,80 @@ export function RolesPanel({
   onError,
   connectedRoleIds,
   focusedRoleIds,
+  readyRoleIds,
+  activeRoleIds,
+  onMarkReady,
+  selfRoleId,
+  markReadyEnabled,
+  markReadyDisabledReason,
 }: Props) {
+  // Inline 2-click confirm state. Keyed by ``${action}:${roleId}`` so a
+  // creator can arm KICK on one row and REMOVE on another without the
+  // first armed state being clobbered. ``timer`` is held in a ref so
+  // re-renders mid-arm don't reset the countdown.
+  const [armed, setArmed] = useState<string | null>(null);
+  const armTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  function arm(key: string) {
+    setArmed(key);
+    if (armTimer.current) clearTimeout(armTimer.current);
+    armTimer.current = setTimeout(() => {
+      setArmed((cur) => (cur === key ? null : cur));
+      armTimer.current = null;
+    }, ARM_TIMEOUT_MS);
+  }
+  function disarm() {
+    if (armTimer.current) {
+      clearTimeout(armTimer.current);
+      armTimer.current = null;
+    }
+    setArmed(null);
+  }
+  // Escape disarm + click-outside disarm — wired only while a row is
+  // armed so the listeners aren't a permanent allocation. Without
+  // these, a keyboard-only creator who armed KICK and changed their
+  // mind had no way to back out except waiting 4 s — UI/UX review
+  // BLOCK B1. The listeners attach at the document level so a click
+  // anywhere outside the panel disarms, mirroring the affordance the
+  // browser's native ``confirm()`` dialog provided (Esc / click-out).
+  useEffect(() => {
+    if (!armed) return;
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.key === "Escape") {
+        console.debug("[RolesPanel] disarmed via Escape", { armed });
+        disarm();
+      }
+    }
+    function onPointerDown(e: PointerEvent) {
+      // Don't disarm on clicks that landed on the armed button itself
+      // — that's the confirm path. ``data-armed-key`` is set on every
+      // armed button so the lookup is O(1) regardless of how many
+      // buttons render.
+      const target = e.target as HTMLElement | null;
+      const armedNode = target?.closest?.("[data-armed-key]") as
+        | HTMLElement
+        | null;
+      if (armedNode?.dataset.armedKey === armed) return;
+      console.debug("[RolesPanel] disarmed via outside click", { armed });
+      disarm();
+    }
+    document.addEventListener("keydown", onKeyDown);
+    document.addEventListener("pointerdown", onPointerDown, true);
+    return () => {
+      document.removeEventListener("keydown", onKeyDown);
+      document.removeEventListener("pointerdown", onPointerDown, true);
+    };
+  }, [armed]);
+  // Cleanup on unmount — without this the setTimeout would still fire
+  // after the component is gone (no observable effect, but a noisy
+  // React strict-mode warning during dev about state-on-unmounted).
+  useEffect(() => {
+    return () => {
+      if (armTimer.current) {
+        clearTimeout(armTimer.current);
+        armTimer.current = null;
+      }
+    };
+  }, []);
   const [newRole, setNewRole] = useState("");
   // Set of role_ids whose Copy/Add/Kick button is currently flashing
   // "Copied!". Holds no token data — copies happen inside the handler
@@ -206,13 +338,14 @@ export function RolesPanel({
   }
 
   async function kick(roleId: string, label: string) {
-    if (
-      !confirm(
-        `Kick the player using "${label}"? Their tab will be disconnected and a new join link will be generated.`,
-      )
-    ) {
-      return;
-    }
+    // Two-click guard: first click arms; this branch only fires on
+    // the second click (or a programmatic call from the keyboard
+    // path, which doesn't currently exist). The previous
+    // ``confirm()`` dialog was easy to dismiss-by-Enter and offered
+    // no in-document lead-in — replaced with an inline armed state
+    // (button label flips, row tints) so the creator's eye is
+    // already on the action they're about to confirm.
+    disarm();
     try {
       const r = await api.revokeRole(sessionId, creatorToken, roleId);
       const url = `${origin}/play/${sessionId}/${encodeURIComponent(r.token)}`;
@@ -232,7 +365,8 @@ export function RolesPanel({
   }
 
   async function remove(roleId: string, label: string) {
-    if (!confirm(`Remove the "${label}" role from this session?`)) return;
+    // Two-click guard — see ``kick`` above for the rationale.
+    disarm();
     try {
       await api.removeRole(sessionId, creatorToken, roleId);
       setCopiedRoleIds((prev) => {
@@ -294,6 +428,13 @@ export function RolesPanel({
           const status = computeStatus(r.id, connectedRoleIds, focusedRoleIds);
           const dotClass = STATUS_DOT_CLASS[status];
           const dotTitle = STATUS_LABEL[status];
+          const isActiveRole = activeRoleIds.has(r.id);
+          const isReadyRole = readyRoleIds.has(r.id);
+          const isSelfRole = r.id === selfRoleId;
+          const kickKey = `kick:${r.id}`;
+          const removeKey = `remove:${r.id}`;
+          const kickArmed = armed === kickKey;
+          const removeArmed = armed === removeKey;
           return (
           <li
             key={r.id}
@@ -322,6 +463,22 @@ export function RolesPanel({
                     ★
                   </span>
                 ) : null}
+                {/* User-persona review MEDIUM M3: drop the inline
+                    "READY ✓" tag for active roles — the
+                    ``<MarkReadyButton>`` directly below already
+                    surfaces the same state with its own checkmark.
+                    Two checkmarks an inch apart for the same fact
+                    just clutters the rail. The tag is kept for
+                    inactive roles that retain a pinned ready flag
+                    (rare; covered by the catch-all below). */}
+                {!isActiveRole && isReadyRole ? (
+                  <span
+                    className="mono shrink-0 rounded-r-1 border border-signal bg-signal-tint px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-[0.16em] text-signal"
+                    title="Marked ready"
+                  >
+                    READY ✓
+                  </span>
+                ) : null}
               </div>
               <span
                 aria-hidden="true"
@@ -335,10 +492,46 @@ export function RolesPanel({
                   reader's role-card walk; bare "Active" without the
                   ``Status:`` prefix collapsed into the role label
                   ("SOC Analyst Active") with no semantic separation. */}
-              <span className="sr-only">{`Status: ${dotTitle}`}</span>
+              <span className="sr-only">
+                {`Status: ${dotTitle}${isActiveRole && isReadyRole ? ", marked ready" : ""}${isActiveRole && !isReadyRole ? ", not yet ready" : ""}`}
+              </span>
             </div>
+            {/*
+              MARK READY row — own block, divider above the admin row.
+              Visual separation is load-bearing: a fat-finger that
+              would have hit KICK now hits the divider gap or the
+              Mark Ready button (a benign re-toggle) instead. Renders
+              for every active role; the creator can self-toggle and
+              also toggle on behalf of any other active role
+              (impersonation path — backend records ``actor_role_id``
+              ≠ ``subject_role_id`` so the audit log distinguishes).
+              Hidden for non-active roles (the backend would reject
+              with ``not_active_role``) and when ``onMarkReady`` is
+              absent (legacy callers without the wiring).
+            */}
+            {isActiveRole && onMarkReady ? (
+              <div className="border-t border-dashed border-ink-600 pt-2">
+                <MarkReadyButton
+                  isReady={isReadyRole}
+                  enabled={markReadyEnabled}
+                  onToggle={(next) => onMarkReady(r.id, next)}
+                  variant={isSelfRole ? "self" : "impersonate"}
+                  subjectLabel={r.label}
+                  disabledReason={markReadyDisabledReason}
+                />
+              </div>
+            ) : null}
             {!r.is_creator ? (
-              <div className="flex flex-wrap items-center justify-center gap-1">
+              // Admin row — destructive operations sit BELOW the Mark
+              // Ready divider so a misclick on Kick doesn't bleed into
+              // a Ready toggle (or vice versa). KICK and REMOVE use a
+              // 2-click arm-and-confirm: first click flips the label
+              // and tints the row in the action's tone; second click
+              // (within 4s) actually fires; click elsewhere or wait
+              // out the timeout to disarm. Replaces the old browser
+              // ``confirm()`` dialog (Enter-key-dismissable, no
+              // in-document lead-in).
+              <div className="flex flex-wrap items-center justify-center gap-1 border-t border-dashed border-ink-600 pt-2">
                 <button
                   type="button"
                   onClick={() => copyExistingLink(r.id, r.label)}
@@ -363,28 +556,107 @@ export function RolesPanel({
                 </button>
                 <button
                   type="button"
-                  onClick={() => kick(r.id, r.label)}
+                  onClick={() => {
+                    if (kickArmed) {
+                      void kick(r.id, r.label);
+                    } else {
+                      arm(kickKey);
+                    }
+                  }}
                   disabled={busy}
-                  className="mono rounded-r-1 border border-warn px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.10em] text-warn hover:bg-warn-bg focus-visible:outline focus-visible:outline-2 focus-visible:outline-warn disabled:opacity-50"
-                  title="Disconnect anyone using the current link and issue a new link."
+                  // ``data-armed-key`` lets the document-level
+                  // pointer-down listener identify the armed button
+                  // as the confirm target so its OWN click doesn't
+                  // disarm before the click handler fires. The
+                  // ``aria-pressed`` semantic was dropped here (UI/UX
+                  // review HIGH H2) — the armed state isn't a sticky
+                  // toggle, it's a 4 s confirm window. Description
+                  // moves to ``aria-describedby`` via an sr-only
+                  // span below the row.
+                  data-armed-key={kickArmed ? kickKey : undefined}
+                  aria-describedby={kickArmed ? `${kickKey}-help` : undefined}
+                  className={
+                    "mono rounded-r-1 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.10em] hover:bg-warn-bg focus-visible:outline focus-visible:outline-2 focus-visible:outline-warn disabled:opacity-50 " +
+                    (kickArmed
+                      ? "border border-warn bg-warn-bg text-warn"
+                      : "border border-warn text-warn")
+                  }
+                  title={
+                    kickArmed
+                      ? "Click again to confirm — disconnects the player and mints a fresh link. Esc or click outside to cancel."
+                      : "Disconnect anyone using the current link and issue a new link. Click to arm; click again to confirm."
+                  }
                 >
-                  KICK
+                  {kickArmed ? "CONFIRM KICK?" : "KICK"}
                 </button>
+                {kickArmed ? (
+                  <span id={`${kickKey}-help`} className="sr-only">
+                    Click again within four seconds to confirm. Press
+                    Escape or click outside to cancel.
+                  </span>
+                ) : null}
                 <button
                   type="button"
-                  onClick={() => remove(r.id, r.label)}
+                  onClick={() => {
+                    if (removeArmed) {
+                      void remove(r.id, r.label);
+                    } else {
+                      arm(removeKey);
+                    }
+                  }}
                   disabled={busy}
-                  className="mono rounded-r-1 border border-crit px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.10em] text-crit hover:bg-crit-bg focus-visible:outline focus-visible:outline-2 focus-visible:outline-crit disabled:opacity-50"
-                  title="Remove this role from the session."
+                  data-armed-key={removeArmed ? removeKey : undefined}
+                  aria-describedby={
+                    removeArmed ? `${removeKey}-help` : undefined
+                  }
+                  className={
+                    "mono rounded-r-1 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.10em] hover:bg-crit-bg focus-visible:outline focus-visible:outline-2 focus-visible:outline-crit disabled:opacity-50 " +
+                    (removeArmed
+                      ? "border border-crit bg-crit-bg text-crit"
+                      : "border border-crit text-crit")
+                  }
+                  title={
+                    removeArmed
+                      ? "Click again to confirm — removes this role from the session entirely. Esc or click outside to cancel."
+                      : "Remove this role from the session. Click to arm; click again to confirm."
+                  }
                 >
-                  REMOVE
+                  {removeArmed ? "CONFIRM REMOVE?" : "REMOVE"}
                 </button>
+                {removeArmed ? (
+                  <span id={`${removeKey}-help`} className="sr-only">
+                    Click again within four seconds to confirm. Press
+                    Escape or click outside to cancel.
+                  </span>
+                ) : null}
               </div>
             ) : null}
           </li>
           );
         })}
       </ul>
+      {/* Live region announces armed state to AT users so a
+          screen-reader operator hears "Kick armed — confirm within
+          four seconds" the moment they trigger it. UI/UX review
+          HIGH H3. ``key={armed}`` forces React to remount on each
+          arm so a same-key arm-then-disarm-then-arm announces every
+          time. We deliberately omit ``role="status"`` here — the
+          existing copy-link sr-only confirmation already owns that
+          role within this panel; ``aria-live="polite"`` on a plain
+          span still triggers the announcement and avoids
+          ``getByRole("status")`` collisions in tests. */}
+      {armed ? (
+        <span
+          key={armed}
+          aria-live="polite"
+          className="sr-only"
+          data-testid="armed-announcement"
+        >
+          {armed.startsWith("kick:")
+            ? "Kick armed. Click the kick button again within four seconds to confirm, or press Escape to cancel."
+            : "Remove armed. Click the remove button again within four seconds to confirm, or press Escape to cancel."}
+        </span>
+      ) : null}
 
       <form onSubmit={add} className="flex flex-col gap-2 border-t border-dashed border-ink-600 pt-3">
         <label className="mono text-[10px] font-bold uppercase tracking-[0.20em] text-signal">+ ADD ROLE</label>

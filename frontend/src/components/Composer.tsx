@@ -26,15 +26,6 @@ import {
 // See ``lib/proxy.ts`` for the field-by-field contract.
 
 /**
- * Wave 1 (issue #134): per-submission intent. ``"ready"`` means the
- * player is signaling "I'm done — AI may advance once everyone
- * else is ready"; ``"discuss"`` means "I'm contributing to discussion,
- * keep my seat open". The composer's two submit buttons map 1:1 onto
- * these values.
- */
-export type SubmissionIntent = "ready" | "discuss";
-
-/**
  * Wave 2 (composer mentions + facilitator routing).
  *
  * One mention occurrence in the composer's text. ``start`` and ``end``
@@ -64,20 +55,21 @@ interface Props {
    * the impersonate dropdown, that role's id is forwarded so the parent
    * can call the proxy endpoint.
    *
-   * ``intent`` (Wave 1): the player's per-submission ready signal.
-   * Always one of ``"ready"`` / ``"discuss"`` — never undefined, the
-   * composer always knows which button was pressed. The parent forwards
-   * this to the WS payload.
-   *
    * ``mentions`` (Wave 2): structural mention targets parsed from the
    * composer's marks. Order-preserving, de-duplicated. Plain
    * ``role_id`` entries surface the @-highlight to the addressed role;
    * the literal ``"facilitator"`` token (alias ``@ai`` / ``@gm``
    * resolved client-side) triggers the server-side AI interject.
+   *
+   * Decoupled-ready (PR #209 follow-up): no ``intent`` parameter. The
+   * composer is now a pure message channel; the ready quorum is
+   * handled by ``<MarkReadyButton>`` in the roster rail and a
+   * dedicated ``set_ready`` WS event. Submissions never advance the
+   * turn — they always land in the transcript. During
+   * ``AI_PROCESSING`` they're recorded as interjections.
    */
   onSubmit: (
     text: string,
-    intent: SubmissionIntent,
     mentions: string[],
     asRoleId?: string,
   ) => void;
@@ -90,22 +82,6 @@ interface Props {
    * entry alone keeps the popover functional).
    */
   mentionRoster?: MentionRosterEntry[];
-  /**
-   * When ``true``, the local participant has already signaled ready
-   * for the current turn. The composer surfaces this as a small
-   * "Currently ready ✓" hint and primes the secondary button to
-   * "Walk back ready" so the player can re-open discussion if needed.
-   * Wave 1 (issue #134).
-   */
-  isCurrentlyReady?: boolean;
-  /**
-   * When ``true``, the composer hides the "Submit, still discussing"
-   * button. Used for out-of-turn / interjection submissions where
-   * intent doesn't apply (the message lands in the transcript and is
-   * never part of the ready quorum). Defaults to ``false`` so a normal
-   * active-turn composer always shows both buttons.
-   */
-  hideDiscussButton?: boolean;
   /** Optional callback fired on debounced typing start/stop transitions. */
   onTypingChange?: (typing: boolean) => void;
   /**
@@ -135,8 +111,6 @@ export function Composer({
   impersonateOptions,
   selfLabel,
   submitErrorEpoch,
-  isCurrentlyReady = false,
-  hideDiscussButton = false,
   mentionRoster = [],
 }: Props) {
   const [text, setText] = useState("");
@@ -252,43 +226,7 @@ export function Composer({
   // on initial mount.
   const handledErrorEpochRef = useRef<number | undefined>(submitErrorEpoch);
 
-  // "Nothing to add" shortcut — the operator-voice equivalent of "I'm
-  // good, ship it." Posts a brief ``Nothing to add.`` to the transcript
-  // with ``intent="ready"`` so the role lands in
-  // ``turn.ready_role_ids`` without the user having to type filler.
-  // The transcript line keeps the rest of the team informed (vs. a
-  // silent ready-flag the others can't see), and the message body
-  // satisfies the backend's empty-content guard in
-  // ``submission_pipeline.py`` so this stays a pure client-side
-  // affordance — no new server endpoint, no new gate.
-  function submitNothingToAdd() {
-    // Defense-in-depth (security review MINOR): the visibility guard
-    // ``showNothingToAdd`` already includes ``!isCurrentlyReady``, so
-    // a user who has marked ready can't see the button to click it.
-    // If a future refactor drops that clause from the predicate, this
-    // guard keeps a re-affirmation submit from sneaking through —
-    // the backend's dedupe window would catch the duplicate body, but
-    // we'd rather not rely on it for correctness.
-    if (!enabled || isCurrentlyReady) return;
-    const fallback = "Nothing to add.";
-    // Clear the rollback ref BEFORE forwarding the submit. The
-    // textarea was empty when the user clicked, so the recovery
-    // contract for this path is "leave it empty on rejection" — the
-    // user re-clicks the button to retry. Without this clear, an
-    // unrelated prior message left in ``lastAttemptedRef.current``
-    // (from a successful earlier ``submit()`` call) would be
-    // restored into the textarea on a Nothing-to-add rejection,
-    // which is worse than a no-op restore.
-    lastAttemptedRef.current = "";
-    onSubmit(fallback, "ready", [], asRoleId || undefined);
-    setText("");
-    setMarks([]);
-    closeMentionPopover();
-    setAsRoleId("");
-    emitTypingStop("submit");
-  }
-
-  function submit(intent: SubmissionIntent) {
+  function submit() {
     if (!enabled || !text.trim()) return;
     const trimmed = text.trim();
     lastAttemptedRef.current = trimmed;
@@ -316,7 +254,7 @@ export function Composer({
       seen.add(target);
       submittedMentions.push(target);
     }
-    onSubmit(trimmed, intent, submittedMentions, asRoleId || undefined);
+    onSubmit(trimmed, submittedMentions, asRoleId || undefined);
     setText("");
     setMarks([]);
     closeMentionPopover();
@@ -420,12 +358,11 @@ export function Composer({
   }
 
   function handle(e: FormEvent) {
-    // Form-submit (Enter key in textarea, primary button click) maps
-    // to the "ready" intent — the standard "I'm done, AI may advance"
-    // signal. The "Submit, still discussing" button calls
-    // ``submit("discuss")`` directly and bypasses this handler.
+    // Decoupled-ready (PR #209 follow-up): Enter / form-submit posts
+    // the message into the transcript. The ready quorum is closed by
+    // the ``<MarkReadyButton>`` in the rail, not by this composer.
     e.preventDefault();
-    submit("ready");
+    submit();
   }
 
   // Restore the last-attempted text when the parent signals a submit
@@ -496,28 +433,15 @@ export function Composer({
       }
     }
 
-    // Enter submits as ready; Shift+Enter inserts a newline.
-    // Ctrl/Cmd+Enter submits as discuss (Wave 1 / issue #134 UI/UX
-    // review HIGH — gives keyboard-only operators a path to the
-    // secondary action; pre-fix the discuss button was mouse-only).
-    // IME composition events (Japanese / Chinese / Korean input)
-    // keep the default newline behavior so accepting a candidate
-    // doesn't accidentally send the message.
+    // Enter submits the message; Shift+Enter inserts a newline.
+    // Decoupled-ready (PR #209 follow-up): the Ctrl+Enter "discuss"
+    // shortcut is gone — there's no longer a discuss/ready dichotomy
+    // at the composer level. IME composition events (Japanese / Chinese
+    // / Korean input) keep the default newline behavior so accepting a
+    // candidate doesn't accidentally send the message.
     if (e.key !== "Enter" || e.shiftKey || e.nativeEvent.isComposing) return;
     if (!enabled || !text.trim()) return;
     e.preventDefault();
-    if (e.ctrlKey || e.metaKey) {
-      // Ctrl+Enter (Win/Linux) or Cmd+Enter (macOS) → discuss.
-      // Gated on ``showDiscussButton`` (not ``hideDiscussButton``)
-      // so the shortcut matches the button's visibility exactly —
-      // the discuss button is also hidden for off-turn proxy
-      // submissions (``proxyIsOffTurn``), and the keyboard path
-      // must not surface a hidden affordance.
-      if (showDiscussButton) {
-        submit("discuss");
-      }
-      return;
-    }
     handle(e as unknown as FormEvent);
   }
 
@@ -732,31 +656,16 @@ export function Composer({
   }, [enabled]);
 
   const hasImpersonate = (impersonateOptions?.length ?? 0) > 0;
-  // Wave 1 (issue #134) UI/UX review HIGH: when the creator
-  // impersonates an off-turn role via the proxy dropdown, that
-  // role is not part of the ready quorum — hide the discuss button
-  // so the creator can't accidentally mark an off-turn role
-  // "discussing" (the backend would record ``intent=None`` for an
-  // interjection regardless, but the UI shouldn't offer a button
-  // that won't move any visible quorum).
+  // Decoupled-ready (PR #209 follow-up): the discuss/ready intent
+  // dichotomy is gone, so the off-turn-proxy carve-out that used to
+  // hide the discuss button no longer applies. Every submission lands
+  // in the transcript regardless of whether the (impersonated)
+  // subject role is on the active set; ready is a separate stance
+  // closed via ``<MarkReadyButton>`` in the rail.
   const proxyOptionSelected = asRoleId
     ? (impersonateOptions ?? []).find((o) => o.id === asRoleId)
     : undefined;
   const proxyIsOffTurn = Boolean(proxyOptionSelected?.offTurn);
-  const showDiscussButton = !hideDiscussButton && !proxyIsOffTurn;
-  // "Nothing to add" appears only when there's a real ready/discuss
-  // quorum to participate in (so ``hideDiscussButton`` hides it on
-  // sidebar / off-turn submissions), the role hasn't already readied,
-  // the user isn't impersonating someone else (proxying a "Nothing to
-  // add." for another role would be a footgun), and the textarea is
-  // empty — the moment they start typing, the regular SUBMIT & READY
-  // path is the right affordance.
-  const showNothingToAdd =
-    !hideDiscussButton &&
-    !proxyIsOffTurn &&
-    !isCurrentlyReady &&
-    !asRoleId &&
-    !text.trim();
 
   return (
     <form
@@ -863,84 +772,38 @@ export function Composer({
           />
         ) : null}
       </div>
+      {/* User-persona HIGH H4: "Mark Ready in the rail" used to live
+          buried at the end of the keyboard-hints chiclet row, which a
+          first-time player skipped right past. Promote it to its own
+          line above the controls so the discovery moment lands. */}
+      <p className="mono flex items-center gap-1 text-[10px] uppercase tracking-[0.06em] text-ink-300">
+        <span aria-hidden="true">←</span>
+        Done discussing? Mark Ready in the roster on the left.
+      </p>
       <div className="flex flex-wrap items-center justify-between gap-2">
         <span className="mono text-[10px] uppercase tracking-[0.04em] text-ink-400">
           <kbd className="mono rounded-r-1 border border-ink-500 bg-ink-800 px-1 text-[10px] text-ink-100">Enter</kbd>{" "}
-          ready,{" "}
-          {showDiscussButton ? (
-            <>
-              <kbd className="mono rounded-r-1 border border-ink-500 bg-ink-800 px-1 text-[10px] text-ink-100">Ctrl</kbd>+
-              <kbd className="mono rounded-r-1 border border-ink-500 bg-ink-800 px-1 text-[10px] text-ink-100">Enter</kbd>{" "}
-              discuss,{" "}
-            </>
-          ) : null}
+          send,{" "}
           <kbd className="mono rounded-r-1 border border-ink-500 bg-ink-800 px-1 text-[10px] text-ink-100">Shift</kbd>+
           <kbd className="mono rounded-r-1 border border-ink-500 bg-ink-800 px-1 text-[10px] text-ink-100">Enter</kbd>{" "}
           newline,{" "}
-          {/* Wave 2 / User-Persona review HIGH H1: surface the ``@``
-              affordance in the canonical keyboard-hints row so a
-              first-time player learns about mentions without
-              accidentally hitting the key. ``@facilitator`` is
-              named explicitly because that's the canonical AI-
-              routing token. */}
+          {/* Wave 2: surface the ``@`` affordance in the canonical
+              keyboard-hints row so a first-time player learns about
+              mentions without accidentally hitting the key.
+              ``@facilitator`` is the canonical AI-routing token. */}
           <kbd className="mono rounded-r-1 border border-ink-500 bg-ink-800 px-1 text-[10px] text-ink-100">@</kbd>{" "}
           mention (try{" "}
           <kbd className="mono rounded-r-1 border border-ink-500 bg-ink-800 px-1 text-[10px] text-ink-100">@facilitator</kbd>
           {" "}for AI)
-          {isCurrentlyReady && showDiscussButton ? (
-            <>
-              {" · "}
-              <span className="text-signal" aria-live="polite">
-                You're marked ready
-              </span>
-            </>
-          ) : null}
         </span>
         <div className="flex flex-wrap items-center gap-2">
-          {showDiscussButton ? (
-            <button
-              type="button"
-              onClick={() => submit("discuss")}
-              disabled={!enabled || !text.trim()}
-              title={
-                isCurrentlyReady
-                  ? "Type a follow-up and submit it as discussion — clears your ready signal."
-                  : "Post without marking ready. Turn stays open for more discussion."
-              }
-              className="mono rounded-r-1 border border-ink-400 bg-ink-800 px-3 py-1.5 text-[11px] font-bold uppercase tracking-[0.18em] text-ink-100 hover:border-signal-deep hover:bg-ink-700 focus-visible:outline focus-visible:outline-2 focus-visible:outline-ink-300 disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              {isCurrentlyReady ? "UNREADY ↺" : "STILL DISCUSSING →"}
-            </button>
-          ) : null}
-          {showNothingToAdd ? (
-            // Secondary-styled (matches STILL DISCUSSING) so the
-            // signal-filled SUBMIT & READY → button stays the
-            // unambiguous primary action when text is typed. UI/UX
-            // review MEDIUM: a signal-tinted middle button drew the
-            // eye away from the actual primary CTA.
-            //
-            // Label puts READY first (User Agent HIGH) so the user
-            // can scan the row and immediately tell the button marks
-            // them ready; "NOTHING TO ADD" describes the transcript
-            // line. Arrow glyph matches the rest of the row — no
-            // decorative ``✓`` (HANDOFF.md "no emoji as decoration").
-            <button
-              type="button"
-              onClick={submitNothingToAdd}
-              disabled={!enabled}
-              title="Mark yourself ready without adding to the discussion. Posts a brief 'Nothing to add.' to the transcript so the team sees you're done."
-              className="mono rounded-r-1 border border-ink-400 bg-ink-800 px-3 py-1.5 text-[11px] font-bold uppercase tracking-[0.18em] text-ink-100 hover:border-signal-deep hover:bg-ink-700 focus-visible:outline focus-visible:outline-2 focus-visible:outline-ink-300 disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              READY — NOTHING TO ADD →
-            </button>
-          ) : null}
           <button
             type="submit"
             disabled={!enabled || !text.trim()}
             title={
-              hideDiscussButton
-                ? "Send this sidebar message"
-                : "Send this message AND mark yourself ready — AI advances once everyone is ready"
+              proxyIsOffTurn
+                ? "Send this sidebar message on the impersonated role's behalf"
+                : "Sends to transcript. Mark Ready in the rail to advance the turn."
             }
             className={`mono rounded-r-1 px-4 py-1.5 text-[11px] font-bold uppercase tracking-[0.18em] focus-visible:outline focus-visible:outline-2 disabled:cursor-not-allowed disabled:opacity-50 ${
               asRoleId
@@ -957,8 +820,7 @@ export function Composer({
                   ? "SUBMIT (SIDEBAR) →"
                   : "SUBMIT (PROXY) →";
               }
-              if (hideDiscussButton) return "SUBMIT →";
-              return "SUBMIT & READY →";
+              return "SUBMIT →";
             })()}
           </button>
         </div>

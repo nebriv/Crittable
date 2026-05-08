@@ -215,19 +215,46 @@ export type ServerEvent =
       workstream_id: string | null;
       actor_role_id: string;
     }
+  // Decoupled-ready (PR #209): broadcast to every connected tab whenever
+  // ANY role's ready state flips. Drives the ready dots in the roster
+  // and the optimistic-flip reconciliation on the actor's own client.
+  // ``client_seq`` echoes the actor's monotonic counter; clients that
+  // sent a higher seq locally than the broadcast carries should NOT
+  // overwrite their pending optimistic state with a stale one.
+  | {
+      type: "ready_changed";
+      subject_role_id: string;
+      actor_role_id: string;
+      ready: boolean;
+      ready_role_ids: string[];
+      client_seq: number;
+    }
+  // Directed ack frame for the actor's own ``set_ready`` event. Sent
+  // even on idempotent re-marks and 250ms-debounce silent-accept
+  // paths so the optimistic UI's ``client_seq`` always resolves —
+  // without it, a pending flip would never clear on those branches.
+  | {
+      type: "set_ready_ack";
+      scope: "set_ready";
+      client_seq: number;
+      ready_to_advance: boolean;
+    }
+  // Directed rejection frame. ``reason`` is one of the documented
+  // strings from ``SetReadyOutcome.reason`` — the page surfaces it as
+  // a brief banner and reverts the optimistic flip for the matching
+  // ``client_seq``.
+  | {
+      type: "set_ready_rejected";
+      scope: "set_ready";
+      reason: string;
+      client_seq: number;
+    }
   | { type: "error"; scope: string; message: string };
 
 export type ClientEvent =
   | {
       type: "submit_response";
       content: string;
-      /**
-       * Wave 1 (issue #134): per-submission intent. ``"ready"``
-       * signals the player is done; ``"discuss"`` keeps the seat
-       * open for further team discussion. Required — the backend
-       * rejects payloads without it.
-       */
-      intent: "ready" | "discuss";
       /**
        * Wave 2 (composer mentions + facilitator routing).
        *
@@ -251,6 +278,20 @@ export type ClientEvent =
        * one persisted on ``Message.mentions``.
        */
       mentions: string[];
+    }
+  // Decoupled-ready (PR #209): the ready quorum is a separate concern
+  // from the message stream. ``ready: true/false`` flips the actor's
+  // (or the impersonated subject's) ready state; ``client_seq`` is a
+  // monotonic per-client counter the server echoes back via
+  // ``set_ready_ack`` / ``set_ready_rejected`` so optimistic UI flips
+  // can reconcile without races. ``subject_role_id`` is for the creator
+  // toggling on behalf of an absent / inactive player; defaults to the
+  // actor's own role on the server side when omitted.
+  | {
+      type: "set_ready";
+      ready: boolean;
+      client_seq: number;
+      subject_role_id?: string;
     }
   | { type: "request_force_advance" }
   | { type: "request_end_session"; reason?: string }
@@ -475,6 +516,21 @@ export class WsClient {
             safe.message_id = parsed.message_id;
             safe.workstream_id = parsed.workstream_id;
             safe.actor_role_id = parsed.actor_role_id;
+            break;
+          case "ready_changed":
+            safe.subject_role_id = parsed.subject_role_id;
+            safe.actor_role_id = parsed.actor_role_id;
+            safe.ready = parsed.ready;
+            safe.client_seq = parsed.client_seq;
+            safe.ready_count = parsed.ready_role_ids?.length ?? 0;
+            break;
+          case "set_ready_ack":
+            safe.client_seq = parsed.client_seq;
+            safe.ready_to_advance = parsed.ready_to_advance;
+            break;
+          case "set_ready_rejected":
+            safe.client_seq = parsed.client_seq;
+            safe.reason = parsed.reason;
             break;
           default:
             break;

@@ -234,11 +234,19 @@ describe("Composer typing indicator (issue #77, heartbeat mode)", () => {
       vi.advanceTimersByTime(START_DELAY_MS + 50);
     });
     fireEvent.keyDown(textarea, { key: "Enter" });
-    // Wave 1 (issue #134): submit now carries an explicit intent
-    // ("ready" / "discuss"). Enter maps to "ready".
-    // Wave 2: the third positional arg is the structural mentions
+    // Decoupled-ready (PR #209 follow-up): submit no longer carries
+    // an intent. Enter posts the message; the rail's MarkReadyButton
+    // closes the quorum separately.
+    // Wave 2: the second positional arg is the structural mentions
     // list — empty when the player didn't @ anyone.
-    expect(onSubmit).toHaveBeenCalledWith("answer", "ready", [], undefined);
+    expect(onSubmit).toHaveBeenCalledWith("answer", [], undefined);
+    // PR #209 follow-up — QA review BLOCK: lock the contract that
+    // ``intent`` is gone. The call is exactly (text, mentions,
+    // asRoleId); no "ready"/"discuss" string in any position.
+    const lastCall = onSubmit.mock.calls[onSubmit.mock.calls.length - 1];
+    expect(lastCall.length).toBe(3);
+    expect(lastCall).not.toContain("ready");
+    expect(lastCall).not.toContain("discuss");
     expect(onTypingChange).toHaveBeenLastCalledWith(false);
     // QA review MEDIUM: post-submit re-typing fires start again.
     fireEvent.change(textarea, { target: { value: "n" } });

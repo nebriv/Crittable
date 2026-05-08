@@ -1,9 +1,31 @@
 import { RoleView } from "../api/client";
+import { MarkReadyButton } from "./brand/MarkReadyButton";
 
 interface Props {
   roles: RoleView[];
   activeRoleIds: string[];
   selfRoleId: string | null;
+  /**
+   * Decoupled-ready (PR #209): per-turn ready set from the snapshot's
+   * current_turn — overlaid with any pending optimistic flips upstream
+   * before being passed in here. A role's row shows a green ``READY``
+   * tag when present; if it's ``selfRoleId`` AND active, the
+   * ``<MarkReadyButton>`` below the roster lets the player toggle.
+   */
+  readyRoleIds?: ReadonlySet<string>;
+  /**
+   * Fired when the local participant clicks the rail Mark Ready
+   * button. The argument is the desired NEW ready state. Parent owns
+   * the ``client_seq`` counter and the ``set_ready`` WS dispatch —
+   * keeping that one level up means a ``ready_changed`` broadcast for
+   * an unrelated role doesn't have to touch this component's state.
+   * Omitted when the page can't currently toggle (spectator,
+   * non-active role, WS closed) — the button stays rendered but
+   * disabled with a tooltip explaining why.
+   */
+  onSelfMarkReady?: (next: boolean) => void;
+  /** Reason the Mark Ready button is disabled (tooltip copy). */
+  selfMarkReadyDisabledReason?: string;
   /**
    * Server-reported set of role_ids whose tabs are currently connected
    * over WebSocket. ``undefined`` hides the online dot entirely (older
@@ -12,10 +34,28 @@ interface Props {
   connectedRoleIds?: ReadonlySet<string>;
 }
 
-export function RoleRoster({ roles, activeRoleIds, selfRoleId, connectedRoleIds }: Props) {
+export function RoleRoster({
+  roles,
+  activeRoleIds,
+  selfRoleId,
+  connectedRoleIds,
+  readyRoleIds,
+  onSelfMarkReady,
+  selfMarkReadyDisabledReason,
+}: Props) {
   const isLarge = roles.length > 8;
   const active = new Set(activeRoleIds);
+  const ready = readyRoleIds ?? new Set<string>();
   const sorted = [...roles].sort((a, b) => Number(active.has(b.id)) - Number(active.has(a.id)));
+  const selfIsActive = selfRoleId !== null && active.has(selfRoleId);
+  const selfIsReady = selfRoleId !== null && ready.has(selfRoleId);
+  // The Mark Ready button shows for every active turn — even if the
+  // local viewer isn't on the active set, so they see why their seat
+  // is parked. The button itself is only ENABLED when the viewer IS
+  // active; a spectator or off-turn player gets the disabled state
+  // with a "Not on the active turn" tooltip.
+  const showMarkReady =
+    selfRoleId !== null && onSelfMarkReady !== undefined && active.size > 0;
   return (
     <aside
       aria-label="Role roster"
@@ -33,6 +73,7 @@ export function RoleRoster({ roles, activeRoleIds, selfRoleId, connectedRoleIds 
           const isActive = active.has(r.id);
           const isSelf = r.id === selfRoleId;
           const isOnline = connectedRoleIds?.has(r.id) ?? false;
+          const isRoleReady = ready.has(r.id);
           return (
             <li
               key={r.id}
@@ -80,11 +121,45 @@ export function RoleRoster({ roles, activeRoleIds, selfRoleId, connectedRoleIds 
                   </span>
                 ) : null}
               </span>
-              <span className="sr-only">{isOnline ? "online" : "offline"}</span>
+              {isActive && isRoleReady ? (
+                <span
+                  className="mono shrink-0 rounded-r-1 border border-signal bg-signal-tint px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-[0.16em] text-signal"
+                  title="Marked ready for this turn"
+                >
+                  READY ✓
+                </span>
+              ) : null}
+              <span className="sr-only">
+                {isOnline ? "online" : "offline"}
+                {isActive && isRoleReady ? ", marked ready" : ""}
+                {isActive && !isRoleReady ? ", not yet ready" : ""}
+              </span>
             </li>
           );
         })}
       </ul>
+      {showMarkReady ? (
+        <div className="flex flex-col gap-1.5 border-t border-dashed border-ink-600 pt-2">
+          <MarkReadyButton
+            isReady={selfIsReady}
+            enabled={selfIsActive}
+            onToggle={(next) => onSelfMarkReady?.(next)}
+            disabledReason={
+              selfMarkReadyDisabledReason ??
+              (!selfIsActive
+                ? "You aren't on the active turn — Mark Ready isn't your call this beat."
+                : undefined)
+            }
+          />
+          {/* User-persona MEDIUM M2: "quorum" is operator-jargon for
+              a first-time CISO. Plain copy reads sensibly and matches
+              the tooltip in MarkReadyButton ("AI advances once every
+              active role is ready"). */}
+          <p className="mono text-[9px] uppercase tracking-[0.10em] text-ink-400">
+            Once every active seat is ready, the AI moves on.
+          </p>
+        </div>
+      ) : null}
     </aside>
   );
 }
