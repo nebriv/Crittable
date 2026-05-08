@@ -980,42 +980,143 @@ def test_strict_yield_recovery_directive_uses_role_groups() -> None:
     assert "with the role_ids" not in _STRICT_YIELD_USER_NUDGE
 
 
-def test_drive_recovery_note_doesnt_enumerate_bookkeeping_tools_as_exhaustive() -> None:
-    """Bug-scrub H5: an earlier _DRIVE_RECOVERY_NOTE listed five
-    bookkeeping tools by name in a parenthetical that read as
-    exhaustive. The model on a missing-DRIVE recovery occasionally
-    inferred 'set_active_roles isn't in the bookkeeping list, so a
-    second yield must be the bookkeeping move' and yielded twice
-    instead of broadcasting. The runtime gate caught it, but the
-    prose was misleading.
+def test_recovery_directive_prose_action_matches_tools_allowlist() -> None:
+    """Class-level: every recovery directive narrows ``tools_allowlist``;
+    the prose tells the model "Issue a ``<tool>`` now". The action verb
+    in the prose MUST name a tool that's actually in the allowlist —
+    otherwise the model takes the prose's instruction, calls a tool
+    the dispatcher rejects, and the recovery itself fails to recover.
+    Symmetrically, the ``tool_choice`` pin must point at a tool in the
+    allowlist.
 
-    Pin two things:
-      * the directive doesn't enumerate the old bookkeeping list
-        (track_role_followup, resolve_role_followup, request_artifact,
-        lookup_resource, use_extension_tool) all together — that
-        exact pattern is what reads as exhaustive,
-      * it tells the model that broadcast/address_role/pose_choice/
-        share_data ARE the player-facing tools (positive list, not
-        a negative-by-omission list).
+    Catches the *class* of drift where someone tightens the allowlist
+    but not the prose (or vice-versa) on any present-or-future
+    recovery directive.
     """
 
+    import re
+
+    from app.sessions.turn_validator import (
+        drive_recovery_directive,
+        strict_yield_directive,
+    )
+
+    # Sample directive instances for every constructor we ship.
+    # Add new recovery paths to this list when they land — the
+    # class assertion below applies uniformly.
+    directives = [
+        ("strict_yield", strict_yield_directive()),
+        (
+            "drive_no_inject",
+            drive_recovery_directive(
+                pending_player_question=None,
+                pending_critical_inject_args=None,
+            ),
+        ),
+        (
+            "drive_with_question",
+            drive_recovery_directive(
+                pending_player_question="@facilitator what about Jordan?",
+                pending_critical_inject_args=None,
+            ),
+        ),
+        (
+            "drive_with_inject",
+            drive_recovery_directive(
+                pending_player_question=None,
+                pending_critical_inject_args={
+                    "severity": "warn",
+                    "headline": "ransomware note",
+                    "body": "posted to dark forum",
+                },
+            ),
+        ),
+    ]
+
+    failures: list[str] = []
+    for label, directive in directives:
+        allowlist = directive.tools_allowlist
+        assert allowlist, (
+            f"{label}: tools_allowlist is empty (use None to mean "
+            f"unconstrained, not empty)."
+        )
+
+        # tool_choice pin (when set) must be in the allowlist.
+        if directive.tool_choice and directive.tool_choice.get("type") == "tool":
+            pinned = directive.tool_choice.get("name")
+            if pinned not in allowlist:
+                failures.append(
+                    f"{label}: tool_choice pin '{pinned}' is not in "
+                    f"tools_allowlist {sorted(allowlist)}"
+                )
+
+        # Find every "Issue a `<tool>`" / "call `<tool>`" / "emit
+        # `<tool>`" / "`<tool>` now" pattern in the prose. Each named
+        # tool must be in the allowlist.
+        prose = (directive.system_addendum or "") + "\n" + (directive.user_nudge or "")
+        action_patterns = [
+            r"[Ii]ssue (?:a|an) `([a-z_]+)`",
+            r"[Cc]all `([a-z_]+)`",
+            r"[Ee]mit `([a-z_]+)`",
+            r"`([a-z_]+)` now\b",
+        ]
+        named: set[str] = set()
+        for pattern in action_patterns:
+            named.update(re.findall(pattern, prose))
+
+        for tool in named:
+            if tool not in allowlist:
+                failures.append(
+                    f"{label}: prose tells the model to act via `{tool}` "
+                    f"but tools_allowlist is {sorted(allowlist)}. The "
+                    f"dispatcher will reject and the recovery will fail."
+                )
+
+    assert not failures, (
+        "Recovery directive ↔ allowlist drift:\n  " + "\n  ".join(failures)
+    )
+
+
+def test_drive_recovery_directive_uses_positive_player_facing_list() -> None:
+    """Bug-scrub H5: the directive used to enumerate bookkeeping tools
+    by name in a parenthetical that read as exhaustive ("these are
+    the non-player-facing tools, everything else is fine"). The model
+    occasionally inferred 'set_active_roles isn't on the bookkeeping
+    list, so a second yield must be the bookkeeping move'.
+
+    Pin the *replacement* contract (positive list of player-facing
+    tools) by deriving the player-facing subset from the play-tier
+    palette — if a player-facing tool gets renamed in PLAY_TOOLS,
+    this test fails until the directive copy is updated too.
+    """
+
+    from app.llm.tools import PLAY_TOOLS
     from app.sessions.turn_validator import _DRIVE_RECOVERY_NOTE
 
-    # Old enumeration is gone (5-tool parenthetical that misled the
-    # model). Test for the exact substring that was the regression.
-    assert "track_role_followup`, `resolve_role_followup`, `request_artifact`, `lookup_resource`, `use_extension_tool" not in _DRIVE_RECOVERY_NOTE, (
-        "Drive-recovery directive shouldn't enumerate bookkeeping "
-        "tools as an exhaustive list — it reads as 'these are the "
-        "non-player-facing tools, everything else (incl. set_active_roles) "
-        "is fine'."
+    player_facing = {"broadcast", "address_role", "pose_choice", "share_data"}
+    actual_play_tool_names = {t["name"] for t in PLAY_TOOLS}
+    # Sanity: every name in our hardcoded subset must still exist in
+    # PLAY_TOOLS, otherwise this test is guarding stale ground.
+    missing_from_palette = player_facing - actual_play_tool_names
+    assert not missing_from_palette, (
+        f"player_facing subset references tool names that aren't in "
+        f"PLAY_TOOLS anymore: {missing_from_palette}. Update the subset."
     )
-    # New positive-list framing must mention the four player-facing
-    # tools so the model knows which one to reach for.
-    for tool in ("broadcast", "address_role", "pose_choice", "share_data"):
+
+    for tool in player_facing:
         assert tool in _DRIVE_RECOVERY_NOTE, (
-            f"Drive-recovery directive must name the player-facing "
-            f"tools (positive list); missing '{tool}'."
+            f"Drive-recovery directive must name '{tool}' (player-facing "
+            f"tool) in its positive-list framing; missing."
         )
+
+    # Negative-by-omission anti-pattern: the old enumeration listed
+    # five bookkeeping tools together. Pin that the exact regression
+    # substring is gone.
+    assert "track_role_followup`, `resolve_role_followup`, `request_artifact`, `lookup_resource`, `use_extension_tool" not in _DRIVE_RECOVERY_NOTE, (
+        "Drive-recovery directive shouldn't enumerate bookkeeping tools "
+        "as an exhaustive list — it reads as 'these are the non-player-"
+        "facing tools, everything else (incl. set_active_roles) is fine'."
+    )
 
 
 # ---------------------------------------------------------------------
@@ -1023,3 +1124,69 @@ def test_drive_recovery_note_doesnt_enumerate_bookkeeping_tools_as_exhaustive() 
 # ---------------------------------------------------------------------
 
 _ = json  # silence ruff if no JSON usage remains after edits.
+
+
+# ---------------------------------------------------------------------
+# Class-level: every shipped scenario JSON populates the new field
+# ---------------------------------------------------------------------
+
+
+def test_every_shipped_scenario_populates_active_role_label_groups() -> None:
+    """The May 2026 bug-scrub deleted the runner's legacy fallback
+    branch that inferred ``active_role_label_groups`` from submissions
+    when the field was absent. The four shipped scenarios were
+    migrated to populate the field. This test pins the invariant for
+    *every* scenario JSON shipped under ``backend/scenarios/``: each
+    ``play_turns[]`` entry must carry a non-empty
+    ``active_role_label_groups`` list.
+
+    Catches the class of failure where a contributor re-records a
+    scenario and forgets the field, OR adds a brand-new scenario
+    without it. Either case would make the runner hard-fail at replay
+    time; the test fails at CI time instead.
+    """
+
+    from pathlib import Path
+
+    scenarios_dir = (
+        Path(__file__).resolve().parents[1] / "scenarios"
+    )
+    scenario_files = sorted(scenarios_dir.glob("*.json"))
+    assert scenario_files, (
+        f"Expected to find scenario JSONs under {scenarios_dir}; "
+        f"none found."
+    )
+
+    failures: list[str] = []
+    for path in scenario_files:
+        data = json.loads(path.read_text())
+        play_turns = data.get("play_turns", [])
+        for i, turn in enumerate(play_turns):
+            groups = turn.get("active_role_label_groups")
+            if i == 0 and not turn.get("submissions"):
+                # The deterministic-mode contract: turn 0 is the
+                # briefing — no submissions yet. The runner doesn't
+                # consult the field for a turn that has no advance
+                # gate. Allow empty here so the migration didn't have
+                # to invent a yield-shape for the briefing.
+                continue
+            if groups is None or len(groups) == 0:
+                failures.append(
+                    f"{path.name} play_turns[{i}]: missing or empty "
+                    f"active_role_label_groups"
+                )
+                continue
+            for j, group in enumerate(groups):
+                if not isinstance(group, list) or len(group) == 0:
+                    failures.append(
+                        f"{path.name} play_turns[{i}].active_role_label_groups[{j}]: "
+                        f"each group must be a non-empty list of label strings"
+                    )
+
+    assert not failures, (
+        "Scenario JSON missing required active_role_label_groups field:\n  "
+        + "\n  ".join(failures)
+        + "\n\nFix: re-record the scenario via the recorder, or hand-edit "
+        "each play_turn to include `active_role_label_groups`: "
+        "[[label1], [label2]] mirroring the recorded submissions."
+    )

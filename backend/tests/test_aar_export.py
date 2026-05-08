@@ -1197,22 +1197,31 @@ def test_render_markdown_hides_flagged_for_review_section_when_empty() -> None:
 
 
 def test_aar_prompt_documents_section_order_matching_renderer() -> None:
-    """The AAR system prompt tells the model "the markdown export
-    renders these in a fixed order: ..." so the model can plan flow
-    and transitions correctly. If the prompt's order drifts from the
-    renderer's actual order (or omits a section), the model writes
-    against a stale mental model — the May 2026 bug-scrub caught
-    `flagged_for_review` missing from the documented order even
-    though the renderer placed it between gaps and recommendations.
+    """Class-level cross-walk: every section the renderer emits must
+    appear in the prompt's "fixed order" line, and the order must
+    match.
+
+    The May 2026 bug-scrub caught ``flagged_for_review`` missing from
+    the documented order even though the renderer placed it between
+    gaps and recommendations. This test catches that *class* of drift —
+    not just the one section. Add a new section to ``_render_markdown``
+    and you must (a) add it to ``_AAR_SYSTEM``'s order line and (b)
+    add the slug → header alias below; otherwise the test fails loud.
     """
+
+    import re
 
     from app.llm.export import _render_markdown
     from app.llm.prompts import _AAR_SYSTEM
 
-    # Sections the prompt documents in its order line, in canonical
-    # markdown-header form. Anchored to the snake_case field names
-    # the prompt uses; map each to the heading the renderer emits.
-    prompt_to_header = {
+    # Slug (the snake_case name the prompt uses) → rendered H2/H3 header.
+    # Keep this sorted by rendered-position so the assertion is
+    # readable when it fails.
+    slug_to_header: dict[str, str] = {
+        # Metadata block: "## Header" carries session id / created /
+        # ended / calibration. The prompt names this slot ``header`` in
+        # its order line.
+        "header": "## Header",
         "executive_summary": "## Executive summary",
         "narrative": "## After-action narrative",
         "what_went_well": "### What went well",
@@ -1220,26 +1229,42 @@ def test_aar_prompt_documents_section_order_matching_renderer() -> None:
         "flagged_for_review": "### Flagged for review",
         "recommendations": "### Recommendations",
         "per_role_scores": "## Per-role scores",
+        # Renderer emits "## Overall session score: N / 5"; prompt slug
+        # is the field name on the report dict.
         "overall_score": "## Overall session score",
     }
 
-    # Verify the prompt actually mentions the order line and every
-    # field appears in it. A regression that drops one of these from
-    # the prompt copy fails this assertion.
-    order_line = None
-    for line in _AAR_SYSTEM.splitlines():
-        if "fixed order" in line:
-            order_line = line
-            break
+    # Locate the prompt's order line. Tolerant of formatting changes
+    # in the surrounding sentence; just looks for the "fixed order" hint.
+    order_line = next(
+        (line for line in _AAR_SYSTEM.splitlines() if "fixed order" in line),
+        None,
+    )
     assert order_line is not None, "AAR prompt must document section order"
-    for field in prompt_to_header:
-        assert field in order_line, (
-            f"AAR prompt order line is missing '{field}': {order_line!r}"
+
+    # (1) Every slug must appear in the order line.
+    for slug in slug_to_header:
+        assert slug in order_line, (
+            f"AAR prompt order line is missing '{slug}': {order_line!r}. "
+            f"Update _AAR_SYSTEM (the 'fixed order' line) and the slug_to_header "
+            f"map in this test together."
         )
 
-    # Now verify the prompt's order matches the renderer's order.
-    # Build a session + report with every section populated so the
-    # renderer emits each header.
+    # (2) The order line must list slugs in the same order the renderer
+    #     emits headers. Extract the prompt's slug sequence by scanning
+    #     the order line in document order.
+    prompt_order: list[str] = []
+    for slug in slug_to_header:
+        # Use a word-boundary regex so e.g. ``per_role_scores`` doesn't
+        # match inside a longer token.
+        match = re.search(rf"\b{re.escape(slug)}\b", order_line)
+        if match:
+            prompt_order.append((match.start(), slug))
+    prompt_order.sort()
+    prompt_slugs = [s for _, s in prompt_order]
+
+    # (3) Build the rendered output with EVERY documented section
+    #     populated, so the renderer emits each header.
     session = _two_role_session()
     report = {
         "executive_summary": "exec",
@@ -1254,53 +1279,93 @@ def test_aar_prompt_documents_section_order_matching_renderer() -> None:
     }
     md = _render_markdown(session, report, audit_events=[])
 
-    # Prompt order → rendered header positions. Each must be > the prior.
-    rendered_positions = []
-    for field, header in prompt_to_header.items():
-        if field == "overall_score":
-            # Renderer header includes the digit; just check the prefix.
-            idx = md.index("## Overall session score")
-        else:
-            assert header in md, f"renderer didn't emit {header!r}"
-            idx = md.index(header)
-        rendered_positions.append((field, idx))
+    rendered_order: list[str] = []
+    for slug, header in slug_to_header.items():
+        # Allow header prefix-match for "## Overall session score: N / 5".
+        idx = md.find(header)
+        assert idx != -1, (
+            f"Renderer didn't emit header for '{slug}' (looked for {header!r}). "
+            f"Either the section was renamed (update slug_to_header) or the "
+            f"renderer dropped it (regression)."
+        )
+        rendered_order.append((idx, slug))
+    rendered_order.sort()
+    rendered_slugs = [s for _, s in rendered_order]
 
-    sorted_positions = sorted(rendered_positions, key=lambda p: p[1])
-    assert rendered_positions == sorted_positions, (
-        "AAR prompt's documented order disagrees with renderer order. "
-        f"prompt order: {[f for f, _ in rendered_positions]}; "
-        f"actual order: {[f for f, _ in sorted_positions]}. "
-        "Update _AAR_SYSTEM (the line with 'fixed order') to match "
-        "_render_markdown."
+    # (4) Class-level assertion: prompt order == renderer order.
+    assert prompt_slugs == rendered_slugs, (
+        "AAR prompt's documented order disagrees with renderer order.\n"
+        f"  prompt order:   {prompt_slugs}\n"
+        f"  renderer order: {rendered_slugs}\n"
+        "Update _AAR_SYSTEM (the 'fixed order' line) to match _render_markdown."
     )
 
+    # (5) Catch the *class* of drift: a NEW header in the rendered
+    #     report-body that isn't in the slug map. Walk every H2/H3 in
+    #     the body (transcript + appendices excluded) and assert each
+    #     is covered.
+    body_md = md.split("## Appendix A", 1)[0]
+    rendered_headers = re.findall(r"^(##{1,2}\s+[^\n]+)$", body_md, re.MULTILINE)
+    known_headers = {h.split(":", 1)[0] for h in slug_to_header.values()}
+    for header in rendered_headers:
+        # Trim trailing dynamic content (e.g. "## Overall session score: 3 / 5").
+        prefix = header.split(":", 1)[0].rstrip()
+        assert prefix in known_headers, (
+            f"Renderer emits a header the prompt doesn't document: {prefix!r}. "
+            f"Add it to _AAR_SYSTEM's order line and to slug_to_header in this test."
+        )
 
-def test_aar_prompt_documents_zero_as_skipped_in_rubric() -> None:
-    """PR #204 introduced the skip-zero feature: a sub-score of 0
-    renders as a dash, and ``compute_avg_subscore`` skips zeros when
-    averaging. The prompt's rubric must tell the model that 0 is the
-    correct emit when it has no observable evidence — otherwise the
-    model defaults to 3 ('at bar') to fill the slot, defeating the
-    feature and making the report read as evasive (the bunching anti-
-    pattern the rubric explicitly warns against)."""
+
+def test_aar_prompt_rubric_range_matches_extractor_clamp() -> None:
+    """Class-level: the rubric range the prompt teaches the model
+    must equal the range the extractor clamps to. Drift either
+    direction breaks the model's mental model:
+
+    * extractor clamp wider than prompt → model never emits the
+      out-of-rubric value the extractor accepts (e.g. 0 = skipped),
+      so the renderer's skip-zero feature is unreachable. This is
+      the May 2026 bug-scrub H3.
+    * extractor clamp narrower than prompt → model emits values the
+      extractor truncates, and the rationale says "5/5" but the
+      stored score is 4 (silent floor).
+
+    Pin the contract: the prompt's documented range == the extractor's
+    accepted range, expressed as the same lo/hi tuple.
+    """
+
+    import re
 
     from app.llm.prompts import _AAR_SYSTEM
 
-    rubric_block = _AAR_SYSTEM
-    # Must mention 0 in the score range (rubric is "0–5" not "1–5").
-    assert "0–5" in rubric_block or "0-5" in rubric_block, (
-        "AAR rubric must declare scores as 0–5 (not 1–5) — the "
-        "extractor accepts 0 and the renderer treats 0 as 'skipped'."
+    # Extractor's clamp range is set in _coerce_int's call sites. The
+    # rubric speaks to decision_quality / communication / speed; the
+    # extractor clamps each to lo=0, hi=5.
+    expected_lo, expected_hi = 0, 5
+
+    # Prompt rubric line is "Scoring rubric (LO–HI ...)"; tolerate both
+    # ASCII hyphen and en-dash separators.
+    match = re.search(
+        r"Scoring rubric \((\d+)\s*[–-]\s*(\d+)",
+        _AAR_SYSTEM,
     )
-    # Must explicitly tell the model what 0 means.
-    assert "0 = no observable evidence" in rubric_block, (
-        "AAR rubric must tell the model 0 = no observable evidence "
-        "and not to default to 3."
+    assert match, (
+        "AAR prompt must declare the rubric range as 'Scoring rubric (LO–HI ...)'. "
+        "Drift in this header makes the test stop guarding the contract."
     )
-    # Must explicitly tell the model NOT to default to 3.
-    lowered = rubric_block.lower()
-    assert "do not default to 3" in lowered or "never default to 3" in lowered, (
-        "AAR rubric must tell the model not to default to 3 when "
-        "evidence is absent — the bunching pattern is the failure "
-        "mode the skip-zero feature exists to fix."
+    prompt_lo = int(match.group(1))
+    prompt_hi = int(match.group(2))
+    assert (prompt_lo, prompt_hi) == (expected_lo, expected_hi), (
+        f"Rubric range drift: prompt teaches {prompt_lo}–{prompt_hi}, "
+        f"extractor accepts {expected_lo}–{expected_hi}. Either tighten "
+        f"_coerce_int (lo/hi at the call sites in app/llm/export.py) or "
+        f"update _AAR_SYSTEM's 'Scoring rubric' line. Both must agree."
     )
+
+    # Class-level: every integer in the inclusive range must have a
+    # rubric-line entry in the prompt. The shape is "  - N = ...".
+    for n in range(prompt_lo, prompt_hi + 1):
+        assert re.search(rf"^\s*-\s*{n}\s*=", _AAR_SYSTEM, re.MULTILINE), (
+            f"Rubric is missing an explicit '{n} = ...' bullet. The "
+            f"model needs to know what each score in the range MEANS; "
+            f"a missing bullet (especially 0) leads to bunching at 3."
+        )

@@ -537,6 +537,66 @@ describe("AarReportView", () => {
     expect(headlineSpan.className).toMatch(/text-ink-500/);
   });
 
+  it.each([
+    // Class-level: pin the score → tone band relationship across
+    // the full 0–5 range so a future tone-band reshuffle can't
+    // re-introduce the M3 bug ("0 = no evidence" rendered in crit
+    // red). The headline grade letter carries the tone via a text-*
+    // class; crit-red is reserved for genuinely failing scores
+    // (0 < s < 3), not for "no observable evidence" (score=0).
+    { score: 0, expected: /text-ink-500/, forbidden: /text-crit/, name: "0 (skipped → neutral)" },
+    { score: 1, expected: /text-crit/, forbidden: null, name: "1 (critical → crit)" },
+    { score: 2, expected: /text-crit/, forbidden: null, name: "2 (below bar → crit)" },
+    { score: 3, expected: /text-warn/, forbidden: /text-crit/, name: "3 (at bar → warn)" },
+    { score: 4, expected: /text-signal/, forbidden: /text-crit/, name: "4 (above bar → signal)" },
+    { score: 5, expected: /text-signal/, forbidden: /text-crit/, name: "5 (exemplary → signal)" },
+  ])(
+    "per-role headline tone band: $name",
+    async ({ score, expected, forbidden }) => {
+      // Drive the tone via the per-role overall (avg of three
+      // identical sub-scores). All-zero exercises the 0 = "neutral"
+      // branch; all-non-zero exercises crit/warn/signal.
+      _mockFetch(
+        200,
+        _report([
+          {
+            role_id: `role-tone-${score}`,
+            decision_quality: score,
+            communication: score,
+            speed: score,
+            decisions: 1,
+            rationale: "tone-band probe",
+            label: `T${score}`,
+            display_name: null,
+          },
+        ]),
+      );
+      render(
+        <AarReportView
+          sessionId="s1"
+          token="tok"
+          downloadMdHref="/x.md"
+          downloadJsonHref="/x.json"
+        />,
+      );
+      await waitFor(() =>
+        expect(screen.getByText(`T${score}`)).toBeInTheDocument(),
+      );
+      const toggle = screen.getByText(`T${score}`).closest("button")!;
+      // Grade letter span sits last inside the toggle button. With
+      // score=0 the grade is "—"; otherwise it's a letter A-F. Find
+      // it by class shape (mono + tabular-nums + the score letter).
+      const gradeSpan = within(toggle)
+        .getAllByText(score === 0 ? "—" : /^[A-F]$/)
+        .find((el) => el.classList.contains("mono"));
+      expect(gradeSpan, "grade letter span not found").toBeTruthy();
+      expect(gradeSpan!.className).toMatch(expected);
+      if (forbidden) {
+        expect(gradeSpan!.className).not.toMatch(forbidden);
+      }
+    },
+  );
+
   it("a 0 sub-score renders the DECISION cell in neutral ink, not crit (red)", async () => {
     // Bug-scrub M3 regression: with skip-zero mainstreamed in the
     // prompt rubric, the per-cell tone for a 0 sub-score must be
