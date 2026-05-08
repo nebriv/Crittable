@@ -195,26 +195,27 @@ function gradeForScore(score: number): string {
 
 /**
  * Brand status tone for the same 0-5 score:
- *   ≥4   signal (above bar)
- *   ≈3   warn   (at-or-around bar)
- *   <3   crit   (below bar — this is what the AAR is for)
- *   0    crit   (no score / phantom data)
+ *   ≥4   signal  (above bar)
+ *   ≈3   warn    (at-or-around bar)
+ *   <3   crit    (below bar — this is what the AAR is for)
+ *   0    neutral (no observable evidence; renders as a dash, not a fail)
  */
 function toneForScore(
   score: number,
-): "signal" | "warn" | "crit" {
-  if (!Number.isFinite(score) || score <= 0) return "crit";
+): "signal" | "warn" | "crit" | "neutral" {
+  if (!Number.isFinite(score) || score <= 0) return "neutral";
   if (score >= 3.75) return "signal";
   if (score >= 2.75) return "warn";
   return "crit";
 }
 
-function toneClass(tone: "signal" | "warn" | "crit"): {
+function toneClass(tone: "signal" | "warn" | "crit" | "neutral"): {
   border: string;
   text: string;
 } {
   if (tone === "signal") return { border: "border-signal", text: "text-signal" };
   if (tone === "warn") return { border: "border-warn", text: "text-warn" };
+  if (tone === "neutral") return { border: "border-ink-600", text: "text-ink-500" };
   return { border: "border-crit", text: "text-crit" };
 }
 
@@ -335,14 +336,13 @@ function LeftColumn({ report }: { report: AarReport }) {
 }
 
 function ScoreCard({ label, score }: { label: string; score: number }) {
-  // "—" (no data) renders in neutral ink so the empty state doesn't
-  // read as a failing grade. F still gets crit treatment.
+  // toneForScore returns "neutral" for 0/non-finite, which maps to ink-500
+  // via toneClass — the empty state can't read as a failing grade. F still
+  // gets crit treatment.
   const grade = gradeForScore(score);
-  const isEmpty = grade === "—";
-  const tone = toneForScore(score);
-  const t = toneClass(tone);
-  const borderClass = isEmpty ? "border-ink-600" : t.border;
-  const textClass = isEmpty ? "text-ink-500" : t.text;
+  const t = toneClass(toneForScore(score));
+  const borderClass = t.border;
+  const textClass = t.text;
   return (
     <div
       className={`flex flex-col gap-1 rounded-r-3 border bg-ink-850 p-4 ${borderClass}`}
@@ -394,10 +394,10 @@ function RightColumn({
             grade carries no anchoring without a key (a CISO seeing
             "B" can't tell if it's "fine" or "we need a postmortem"),
             and the chevron alone reads as ornament — calling out the
-            tap affordance turns a static-looking row into a clearly
+            open affordance turns a static-looking row into a clearly
             interactive one. */}
         <p className="mono text-[9px] uppercase tracking-[0.14em] text-ink-400">
-          Tap a row for the breakdown · A exemplary · B above bar · C at bar · D below bar · F critical
+          Open a row for the breakdown · A exemplary · B above bar · C at bar · D below bar · F critical
         </p>
       </div>
       <ul className="flex flex-col gap-2">
@@ -421,10 +421,8 @@ function RightColumn({
             s.speed,
           ]);
           const grade = gradeForScore(overall);
-          const isEmpty = grade === "—";
-          const tone = toneForScore(overall);
-          const tc = toneClass(tone);
-          const gradeColor = isEmpty ? "text-ink-500" : tc.text;
+          const tc = toneClass(toneForScore(overall));
+          const gradeColor = tc.text;
           const isOpen = expanded.has(s.role_id);
           const detailId = `aar-role-detail-${s.role_id}`;
           return (

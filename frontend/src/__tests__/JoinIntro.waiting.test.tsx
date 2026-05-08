@@ -54,7 +54,7 @@ describe("JoinIntro — issue #76 (joined, waiting for session start)", () => {
     );
     expect(screen.getByTestId("join-intro-waiting")).toBeInTheDocument();
     expect(
-      screen.getByText(/Waiting for your facilitator to start the scenario/i),
+      screen.getByText(/Waiting for facilitator to start/i),
     ).toBeInTheDocument();
     expect(
       screen.getByText(/seated as/i).textContent,
@@ -80,11 +80,11 @@ describe("JoinIntro — issue #76 (joined, waiting for session start)", () => {
       screen.getByText(/AI is preparing the scenario brief/i),
     ).toBeInTheDocument();
     expect(
-      screen.queryByText(/Waiting for your facilitator to start/i),
+      screen.queryByText(/Waiting for facilitator to start/i),
     ).toBeNull();
   });
 
-  it("hasName=true, sessionState=READY → 'finalising the lobby' copy variant", () => {
+  it("hasName=true, sessionState=READY → 'finalizing the lobby' copy variant", () => {
     // Plan is finalised, creator is gathering players in the lobby.
     // Pre-fix this state fell through to the chat view (sessionState
     // was not in the waiting list), so a player who joined here saw
@@ -102,7 +102,7 @@ describe("JoinIntro — issue #76 (joined, waiting for session start)", () => {
     );
     expect(screen.getByTestId("join-intro-waiting")).toBeInTheDocument();
     expect(
-      screen.getByText(/finalising the lobby/i),
+      screen.getByText(/finalizing the lobby/i),
     ).toBeInTheDocument();
     // BRIEFING-specific copy must NOT appear — the AI hasn't started
     // a brief yet during READY.
@@ -197,7 +197,7 @@ describe("JoinIntro — issue #76 (joined, waiting for session start)", () => {
     expect(liveTip).toBeInTheDocument();
   });
 
-  it("personalised welcome headline includes the joined display name", () => {
+  it("personalised waiting headline names the seated participant", () => {
     render(
       <JoinIntro
         {...COMMON_PROPS}
@@ -210,7 +210,7 @@ describe("JoinIntro — issue #76 (joined, waiting for session start)", () => {
     // section also has an h2.
     const panel = screen.getByTestId("join-intro-waiting");
     const heading = within(panel).getByRole("heading", { level: 2 });
-    expect(heading.textContent).toMatch(/Welcome, Bridget/);
+    expect(heading.textContent).toMatch(/Bridget seated/);
   });
 
   it("auto-resolves when sessionState transitions out of SETUP/BRIEFING", () => {

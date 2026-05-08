@@ -405,12 +405,12 @@ describe("AarReportView", () => {
     await waitFor(() =>
       expect(screen.getByText("CISO")).toBeInTheDocument(),
     );
-    // The legend tells a first-time creator (a) the rows are
-    // tappable and (b) what each letter actually means. Without it
+    // The legend tells a first-time creator (a) the rows can be
+    // expanded and (b) what each letter actually means. Without it
     // the bare "B" carries no anchoring.
     expect(
       screen.getByText(
-        /Tap a row for the breakdown.*A exemplary.*B above bar.*C at bar.*D below bar.*F critical/,
+        /Open a row for the breakdown.*A exemplary.*B above bar.*C at bar.*D below bar.*F critical/,
       ),
     ).toBeInTheDocument();
   });

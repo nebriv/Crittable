@@ -628,7 +628,9 @@ export function Facilitator() {
       const snap = await api.getSession(created.session_id, created.creator_token);
       setSnapshot(snap);
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn("[facilitator] create_session_failed", msg, err);
+      setError(msg);
     } finally {
       setBusy(false);
       setBusyMessage(null);
@@ -897,7 +899,9 @@ export function Facilitator() {
         setDecisionLog(snap.decision_log);
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn("[facilitator] refresh_snapshot_failed", msg, err);
+      setError(msg);
     }
   }
 
@@ -916,7 +920,9 @@ export function Facilitator() {
       await api.setupReply(state.sessionId, state.token, content.trim());
       await refreshSnapshot();
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn("[facilitator] setup_reply_failed", msg, err);
+      setError(msg);
     } finally {
       setBusy(false);
       setBusyMessage(null);
@@ -1045,7 +1051,9 @@ export function Facilitator() {
       const snap = await api.getSession(state.sessionId, state.token);
       setSnapshot(snap);
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn("[facilitator] setup_skip_failed", msg, err);
+      setError(msg);
     } finally {
       setBusy(false);
       setBusyMessage(null);
@@ -1096,7 +1104,9 @@ export function Facilitator() {
       await api.start(state.sessionId, state.token);
       await refreshSnapshot();
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn("[facilitator] start_failed", msg, err);
+      setError(msg);
     } finally {
       setBusy(false);
       setBusyMessage(null);
@@ -1143,7 +1153,9 @@ export function Facilitator() {
         mentions,
       });
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn("[facilitator] submit_response_failed", msg, err);
+      setError(msg);
     }
   }
 
@@ -1213,7 +1225,9 @@ export function Facilitator() {
       await api.forceAdvance(state.sessionId, state.token);
       await refreshSnapshot();
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn("[facilitator] force_advance_failed", msg, err);
+      setError(msg);
     } finally {
       setBusy(false);
       setBusyMessage(null);
@@ -1229,7 +1243,9 @@ export function Facilitator() {
       await api.endSession(state.sessionId, state.token, "ended by creator");
       await refreshSnapshot();
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn("[facilitator] end_session_failed", msg, err);
+      setError(msg);
     } finally {
       setBusy(false);
       setBusyMessage(null);

@@ -528,7 +528,7 @@ function LobbyRow({
             }}
             title="Re-mint and copy this role's join link."
           >
-            {copied ? "COPIED!" : joined ? "COPY LINK" : "+ COPY INVITE"}
+            {copied ? "COPIED" : joined ? "COPY LINK" : "+ COPY INVITE"}
           </button>
           {joined ? (
             <button
