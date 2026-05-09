@@ -170,15 +170,25 @@ async def judge(
     invent missing context.
     """
 
-    client = client or AsyncAnthropic(
-        api_key=_settings_api_key(),
-        # Thread the configured base_url through so a test runner
-        # pointed at a proxy / self-hosted Anthropic gateway routes
-        # the judge call to the same place as the production calls.
-        # Lazy import keeps this module importable without the app
-        # settings layer (judge.py is a leaf utility).
-        base_url=_settings_base_url(),
-    )
+    if client is None:
+        # Cost-cap wrap is load-bearing — the session-scoped
+        # ``AsyncAnthropic.__init__`` patch the prior live conftest
+        # installed is gone (#195), so every locally-constructed
+        # ``AsyncAnthropic`` must wrap itself or its
+        # ``messages.create`` calls bypass the ``_CostTracker`` and
+        # the live-test budget cap goes inert.
+        from tests.live.cost_cap import _wrap_messages_create
+
+        client = AsyncAnthropic(
+            api_key=_settings_api_key(),
+            # Thread the configured base_url through so a test runner
+            # pointed at a proxy / self-hosted Anthropic gateway routes
+            # the judge call to the same place as the production calls.
+            # Lazy import keeps this module importable without the app
+            # settings layer (judge.py is a leaf utility).
+            base_url=_settings_base_url(),
+        )
+        _wrap_messages_create(client)
     # Per-call random nonce — a forged ``</artifact>`` in the body
     # can't end this wrapper. ``token_hex(4)`` = 8 hex chars, enough
     # collision-resistance for a same-call attack but readable in

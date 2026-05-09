@@ -52,7 +52,7 @@ Long-term intent: this may become a subscription SaaS. **Build with the right se
 |---|---|
 | Backend | Python 3.12 + FastAPI (async) |
 | Frontend | React + Vite + TypeScript + Tailwind |
-| LLM | `ChatClient` ABC with two backends: Anthropic-direct (`anthropic` SDK, default) or LiteLLM-routed (~100 providers, opt-in via `LLM_BACKEND=litellm`); default model `claude-sonnet-4-6`, prompt caching on system prompt, streaming over WS. See [`llm_providers.md`](llm_providers.md). |
+| LLM | `ChatClient` ABC over a single LiteLLM-routed implementation (~100 providers); default model `claude-sonnet-4-6`, prompt caching on system prompt, streaming over WS. See [`llm_providers.md`](llm_providers.md). |
 | Storage | **Pure in-memory.** Final markdown export at end of session is the durable artifact. Repository interface so SQLite/Postgres slot in later. |
 | Deployment | Single Docker image. `docker run -e LLM_API_KEY=… -p 8000:8000 <img>` is the entire run command. |
 | Reconnect | Role link/token is durable for session lifetime; rejoin replays transcript and resumes. |
@@ -95,7 +95,6 @@ Crittable/  (originally `ai-tabletop-facilitator`)
 │   │   ├── llm/
 │   │   │   ├── protocol.py        # ChatClient ABC + LLMResult / InFlightCall + lifecycle base
 │   │   │   ├── _shared.py         # cache helpers, tool_choice validation, sampling-param strip
-│   │   │   ├── client.py          # Anthropic-direct ChatClient (anthropic SDK)
 │   │   │   ├── clients/litellm_client.py  # LiteLLM-routed ChatClient (~100 providers)
 │   │   │   ├── prompts.py         # system prompt assembly
 │   │   │   ├── tools.py           # built-in tool schemas + dispatch
@@ -145,7 +144,7 @@ The `AWAITING_PLAYERS → AI_PROCESSING` flip gates on a **ready quorum** (Wave 
 `backend/app/sessions/phase_policy.py` is the single source of truth for "what is the LLM allowed to do in tier X at session state Y?" The prompts express the facilitator's intent, but the engine enforces the contract in Python at three boundaries:
 
 1. **Entry-state assertion** — every `run_*_turn` calls `assert_state(tier, session.state)` so a refactor that calls the play tier during `ENDED`, etc., fails loudly instead of producing surprising LLM output.
-2. **Tool-list filter** — `LLMClient.acomplete` / `astream` call `filter_allowed_tools(tier, tools, extension_tool_names=…)` before forwarding to Anthropic and audit-log any dropped names. Operator extensions are passed through on the play tier; no other tier accepts them.
+2. **Tool-list filter** — `LiteLLMChatClient.acomplete` / `astream` call `filter_allowed_tools(tier, tools, extension_tool_names=…)` before forwarding to LiteLLM and audit-log any dropped names. Operator extensions are passed through on the play tier; no other tier accepts them.
 3. **Tool-choice posture + dispatcher rejection** — each tier pins a `tool_choice` posture (setup = `{"type":"any"}` always, AAR = `{"type":"tool","name":"finalize_report"}`, play = `auto` with strict-retry pinning to `set_active_roles`). The dispatcher rejects forbidden tool calls at runtime and returns `is_error=True` `tool_result` blocks; the strict-retry path feeds those back to the model so it self-corrects on the next attempt rather than retrying blind.
 
 See [`architecture.md`](architecture.md#phase-policy--engine-side-guardrails) for the table.
@@ -156,7 +155,7 @@ See [`architecture.md`](architecture.md#phase-policy--engine-side-guardrails) fo
 
 ### Claude integration (`backend/app/llm/`)
 
-- `ChatClient` instance (Anthropic-direct or LiteLLM-routed depending on `LLM_BACKEND`), instantiated once at app startup, reused across requests (HTTP keep-alive). Concurrent in-flight calls supported natively.
+- `ChatClient` instance (LiteLLM-routed), instantiated once at app startup, reused across requests (HTTP keep-alive). Concurrent in-flight calls supported natively.
 - One `messages.create` call per AI turn with the full transcript. Streaming enabled; deltas relayed to all session connections via `ConnectionManager.broadcast`.
 - **Prompt caching** on the system prompt block (scenario brief + role roster + active extension prompts). Stable across the session ⇒ near-100 % cache hits after turn 1.
 - **Parallel tool use**: Claude may return multiple `tool_use` blocks per turn. Dispatcher executes them concurrently via `asyncio.gather`, then sends a single `tool_result` batch back.
@@ -395,7 +394,7 @@ No authentication beyond signed join tokens, but every modern necessity scaffold
 - `sessions/models.py` (Session, Role, Turn, Message — `Message` carries `visibility: Literal["all"] | list[role_id]`; Session carries an unused `tenant_id: str | None` field as a tenancy stub).
 - `sessions/repository.py` (`SessionRepository` Protocol + `InMemoryRepository`).
 - `sessions/manager.py` with per-session locks; `sessions/turn_engine.py` pure state machine.
-- `llm/protocol.py` (ChatClient ABC + lifecycle), `llm/client.py` (Anthropic-direct backend), `llm/clients/litellm_client.py` (LiteLLM backend), `llm/prompts.py` (system prompt assembly merging scenario + roster + active extension prompts), `llm/tools.py` (built-in tools + dispatch into `SessionManager` + `ExtensionDispatcher`), `llm/export.py` (AAR generation).
+- `llm/protocol.py` (ChatClient ABC + lifecycle), `llm/clients/litellm_client.py` (LiteLLM-routed backend), `llm/prompts.py` (system prompt assembly merging scenario + roster + active extension prompts), `llm/tools.py` (built-in tools + dispatch into `SessionManager` + `ExtensionDispatcher`), `llm/export.py` (AAR generation).
 - `extensions/{registry,models,dispatch,loaders/env}.py` — populated at `lifespan` startup, immutable thereafter.
 - `api/` REST endpoints, `ws/` WebSocket endpoint + `ConnectionManager` (per-connection asyncio queues).
 - `audit/log.py` JSONL writer + ring buffer.

@@ -11,7 +11,6 @@ license = { text = "FSL-1.1-ALv2" }
 dependencies = [
     "fastapi>=0.115",
     "uvicorn[standard]>=0.30",
-    "anthropic>=0.40",
     "pydantic>=2.7",
     "pydantic-settings>=2.4",
     "structlog>=24.1",
@@ -26,14 +25,14 @@ dependencies = [
     "pycrdt>=0.10",
     # Provider router — routes LLM calls to ~100 providers (Azure OpenAI,
     # AWS Bedrock, Vertex AI, OpenRouter, OpenAI-direct, internal LLM
-    # gateways, etc). Selected at runtime via ``LLM_BACKEND=litellm``. See
+    # gateways, etc). The single LLM transport in production. See
     # `docs/llm_providers.md` and issue #193.
     #
     # Dep-intake (per CLAUDE.md): MIT-licensed, actively maintained
     # (BerriAI/litellm — daily commits as of 2026-05). Provider SDKs load
-    # lazily; the import-time footprint is comparable to ``anthropic``
-    # alone. Pinned to >=1.83 so Anthropic prompt-caching round-trips
-    # cleanly (validated in PoC, see issue #193 Phase 0).
+    # lazily; the import-time footprint is small. Pinned to >=1.83 so
+    # Anthropic prompt-caching round-trips cleanly (validated in PoC,
+    # see issue #193 Phase 0).
     "litellm>=1.83",
 ]
 
@@ -43,6 +42,12 @@ dev = [
     "pytest-asyncio>=0.23",
     "ruff>=0.6",
     "mypy>=1.11",
+    # Anthropic SDK — used only by the live-test ``anthropic_client`` /
+    # ``judge_client`` fixtures in ``backend/tests/live/`` for direct
+    # API calls (cost-tracked via ``_wrap_messages_create``). Production
+    # routing goes through LiteLLM; the SDK is not imported outside
+    # the live-test fixture path.
+    "anthropic>=0.40",
 ]
 
 [tool.setuptools.packages.find]

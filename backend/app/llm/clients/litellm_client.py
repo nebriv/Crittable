@@ -3,8 +3,8 @@
 Routes every LLM call through ``litellm.acompletion`` so any of the ~100
 providers LiteLLM supports (Azure OpenAI, AWS Bedrock, Vertex AI,
 OpenRouter, OpenAI-direct, vLLM/LocalAI, etc.) works as a Crittable
-backend with no code change — just env config. Selected via
-``LLM_BACKEND=litellm``. See `docs/llm_providers.md` and issue #193.
+backend with no code change — just env config. The single LLM transport
+in production. See `docs/llm_providers.md` and issue #193.
 
 # Internal vocabulary stays Anthropic-shaped
 
@@ -20,11 +20,8 @@ discipline matters.
 
 Importing ``_shared`` is what sets ``LITELLM_MODE=PRODUCTION`` (skipping
 litellm's import-time ``dotenv.load_dotenv()``) and zeroes every
-callback registry the library reads. Both ``ChatClient`` backends import
-from ``_shared``, so any boot path produces a hardened litellm —
-including the Anthropic-direct path, which now reads cost from
-LiteLLM's pricing JSON via ``compute_cost_usd``. Calling
-``harden_litellm_globals()`` again from this client's constructor is
+callback registry the library reads. ``LiteLLMChatClient.__init__``
+re-runs the (idempotent) ``harden_litellm_globals()`` as
 defense-in-depth against a third-party that imported litellm between
 our module load and client construction.
 """
@@ -569,7 +566,7 @@ class LiteLLMChatClient(ChatClient):
         if bare.startswith("claude-"):
             return f"anthropic/{bare}"
         raise RuntimeError(
-            f"LLM_BACKEND=litellm requires a provider-qualified model id "
+            f"LLM model id must be provider-qualified "
             f"(e.g. 'bedrock/...', 'openai/...', 'vertex_ai/...'); got bare "
             f"{bare!r} for tier {tier}. Set LLM_MODEL_{tier.upper()} "
             "to the fully-qualified form."
@@ -581,8 +578,7 @@ class LiteLLMChatClient(ChatClient):
         Two checks:
 
           1. Plain ``http://`` to a non-loopback host — prompts and
-             participant chat egress in cleartext. Mirrors the same
-             warning in ``app.llm.client._messages``.
+             participant chat egress in cleartext.
           2. Any scheme to a link-local address (``169.254.0.0/16`` or
              IPv6 ``fe80::/10``) — almost certainly a metadata-service
              SSRF target, no legitimate operator points at IMDS for
@@ -669,8 +665,7 @@ class LiteLLMChatClient(ChatClient):
             )
 
         # Drop tool_choice if every tool was filtered out — Anthropic
-        # rejects ``tool_choice`` without ``tools`` with HTTP 400. Same
-        # bug surface we hardened against in app.llm.client.
+        # rejects ``tool_choice`` without ``tools`` with HTTP 400.
         reconciled_tool_choice = reconcile_tool_choice(
             kept_tools, tool_choice, logger=_logger, tier=tier
         )
@@ -697,9 +692,9 @@ class LiteLLMChatClient(ChatClient):
         # ``LLM_API_KEY`` is provider-agnostic in name only — its *value*
         # is whatever credential the operator put in. Forwarding it to
         # every provider would mean an Anthropic key shipped to OpenAI
-        # on the very first ``LLM_BACKEND=litellm LLM_MODEL_PLAY=openai/...``
-        # deploy, which is both a footgun and a credential exfiltration
-        # risk (key now logged in OpenAI's auth-failure response). So:
+        # on the very first ``LLM_MODEL_PLAY=openai/...`` deploy, which
+        # is both a footgun and a credential exfiltration risk (key now
+        # logged in OpenAI's auth-failure response). So:
         # only forward ``LLM_API_KEY`` to wire models in the
         # ``anthropic/*`` family. For every other provider, omit the
         # ``api_key`` kwarg and let LiteLLM auto-discover the

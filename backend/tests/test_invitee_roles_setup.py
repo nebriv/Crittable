@@ -33,7 +33,7 @@ from app.llm.prompts import build_setup_system_blocks
 from app.main import create_app
 from app.sessions.models import Role, Session, SessionState
 from tests.conftest import default_settings_body
-from tests.mock_anthropic import MockAnthropic
+from tests.mock_chat_client import install_mock_chat_client
 
 
 @pytest.fixture()
@@ -43,9 +43,9 @@ def client(monkeypatch) -> TestClient:
     reset_settings_cache()
     app = create_app()
     with TestClient(app) as c:
-        # Wire a benign mock transport so the auto-fired setup turn
-        # (when not patched) doesn't hit the real Anthropic API.
-        c.app.state.llm.set_transport(MockAnthropic({}).messages)
+        # Wire a benign mock so the auto-fired setup turn (when not
+        # patched) doesn't hit the real LLM API.
+        install_mock_chat_client(c)
         yield c
 
 

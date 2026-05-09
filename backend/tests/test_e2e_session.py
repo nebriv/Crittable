@@ -10,7 +10,7 @@ from fastapi.testclient import TestClient
 from app.config import reset_settings_cache
 from app.main import create_app
 from tests.conftest import default_settings_body
-from tests.mock_anthropic import MockAnthropic, setup_then_play_script
+from tests.mock_chat_client import install_mock_chat_client, setup_then_play_script
 
 _TOOLS_JSON = """[{
     "name": "lookup_threat_intel",
@@ -47,8 +47,7 @@ def _install_mock_and_drive(client: TestClient, *, role_ids: list[str], extensio
     """Wire the deterministic mock onto the running app and return the markdown."""
 
     scripts = setup_then_play_script(role_ids=role_ids, extension_tool=extension)
-    mock = MockAnthropic(scripts)
-    client.app.state.llm.set_transport(mock.messages)
+    install_mock_chat_client(client, scripts)
     return ""  # callers fetch the export themselves
 
 
@@ -74,7 +73,7 @@ def _install_minimal_mock(client: TestClient) -> None:
     setup turn on session creation doesn't reach the real Anthropic API.
     """
 
-    client.app.state.llm.set_transport(MockAnthropic({}).messages)
+    install_mock_chat_client(client, {})
 
 
 @pytest.fixture
@@ -979,7 +978,7 @@ def test_strict_retry_recovers_when_ai_skips_yield(
     attempt 2, regardless of what the AI did on attempt 1.
     """
 
-    from tests.mock_anthropic import MockAnthropic, _ContentBlock, _Response
+    from tests.mock_chat_client import install_mock_chat_client, llm_result, text_block, tool_block
 
     seats = _create_and_seat(client, role_count=2)
     sid = seats["session_id"]
@@ -987,20 +986,9 @@ def test_strict_retry_recovers_when_ai_skips_yield(
 
     if first_tool_name is None:
         # AI emits text only — no tool calls.
-        play_attempt_1 = _Response(
-            content=[_ContentBlock(type="text", text="Standing by, no action this turn.")],
-            stop_reason="end_turn",
-        )
+        play_attempt_1 = llm_result(text_block("Standing by, no action this turn."), stop_reason="end_turn")
     else:
-        play_attempt_1 = _Response(
-            content=[_ContentBlock(
-                type="tool_use",
-                name=first_tool_name,
-                input=first_input,
-                id=f"tu_{first_tool_name}_1",
-            )],
-            stop_reason="tool_use",
-        )
+        play_attempt_1 = llm_result(tool_block(first_tool_name, first_input, block_id=f"tu_{first_tool_name}_1"), stop_reason="tool_use")
     # Under the validator refactor, ``broadcast`` (DRIVE) on attempt 1
     # already satisfies the contract for that slot, so only YIELD
     # recovery runs. The other parametrizations (text-only,
@@ -1008,24 +996,8 @@ def test_strict_retry_recovers_when_ai_skips_yield(
     # (broadcast), then YIELD recovery (set_active_roles). Feed
     # both possible follow-ups; the mock script ignores requested
     # tools and returns items in order.
-    drive_recovery_resp = _Response(
-        content=[_ContentBlock(
-            type="tool_use",
-            name="broadcast",
-            input={"message": "Recovered drive — what's your move?"},
-            id="tu_drive_recovery",
-        )],
-        stop_reason="tool_use",
-    )
-    yield_recovery_resp = _Response(
-        content=[_ContentBlock(
-            type="tool_use",
-            name="set_active_roles",
-            input={"role_groups": [[seats["role_ids"][1]]]},
-            id="tu_yield",
-        )],
-        stop_reason="tool_use",
-    )
+    drive_recovery_resp = llm_result(tool_block("broadcast", {"message": "Recovered drive — what's your move?"}, block_id="tu_drive_recovery"), stop_reason="tool_use")
+    yield_recovery_resp = llm_result(tool_block("set_active_roles", {"role_groups": [[seats["role_ids"][1]]]}, block_id="tu_yield"), stop_reason="tool_use")
     if first_tool_name == "broadcast":
         # DRIVE already satisfied on attempt 1; only YIELD recovery
         # runs, so the mock just needs the yield response next.
@@ -1034,8 +1006,7 @@ def test_strict_retry_recovers_when_ai_skips_yield(
         # DRIVE + YIELD both missing; engine runs drive recovery,
         # then yield recovery.
         script = [play_attempt_1, drive_recovery_resp, yield_recovery_resp]
-    mock = MockAnthropic({"play": script})
-    client.app.state.llm.set_transport(mock.messages)
+    mock = install_mock_chat_client(client, {"play": script})
 
     client.post(f"/api/sessions/{sid}/setup/skip?token={cr}")
     r = client.post(f"/api/sessions/{sid}/start?token={cr}")
@@ -1056,7 +1027,7 @@ def test_strict_retry_recovers_when_ai_skips_yield(
     # runs ONE recovery pass pinned to set_active_roles. Either way
     # we end up with a call that pins ``set_active_roles`` somewhere
     # in the sequence — find it by content rather than by position.
-    play_calls = [c for c in mock.messages.calls if "play" in c.get("model", "")]
+    play_calls = [c for c in mock.calls if c.get("tier") == "play"]
     assert len(play_calls) >= 2, f"expected ≥2 play calls; got {len(play_calls)}"
 
     # First call: NO tool_choice (Anthropic default = "auto"); full tool list.
@@ -1111,7 +1082,7 @@ def test_strict_retry_cannot_be_coerced_into_end_session(client: TestClient) -> 
     to call end_session on the strict retry; the second call's pinned
     tool_choice should reflect set_active_roles only."""
 
-    from tests.mock_anthropic import MockAnthropic, _ContentBlock, _Response
+    from tests.mock_chat_client import install_mock_chat_client, llm_result, tool_block
 
     seats = _create_and_seat(client, role_count=2)
     sid = seats["session_id"]
@@ -1119,31 +1090,14 @@ def test_strict_retry_cannot_be_coerced_into_end_session(client: TestClient) -> 
 
     # Attempt 1: broadcast only. Attempt 2: a yielding tool from a hypothetical
     # cooperative model — we only assert the kwargs we sent.
-    play_attempt_1 = _Response(
-        content=[_ContentBlock(
-            type="tool_use",
-            name="broadcast",
-            input={"message": "Detection."},
-            id="tu_b",
-        )],
-        stop_reason="tool_use",
-    )
-    play_attempt_2 = _Response(
-        content=[_ContentBlock(
-            type="tool_use",
-            name="set_active_roles",
-            input={"role_groups": [[seats["role_ids"][1]]]},
-            id="tu_yield",
-        )],
-        stop_reason="tool_use",
-    )
-    mock = MockAnthropic({"play": [play_attempt_1, play_attempt_2]})
-    client.app.state.llm.set_transport(mock.messages)
+    play_attempt_1 = llm_result(tool_block("broadcast", {"message": "Detection."}, block_id="tu_b"), stop_reason="tool_use")
+    play_attempt_2 = llm_result(tool_block("set_active_roles", {"role_groups": [[seats["role_ids"][1]]]}, block_id="tu_yield"), stop_reason="tool_use")
+    mock = install_mock_chat_client(client, {"play": [play_attempt_1, play_attempt_2]})
 
     client.post(f"/api/sessions/{sid}/setup/skip?token={cr}")
     client.post(f"/api/sessions/{sid}/start?token={cr}")
 
-    play_calls = [c for c in mock.messages.calls if "play" in c.get("model", "")]
+    play_calls = [c for c in mock.calls if c.get("tier") == "play"]
     assert len(play_calls) >= 2
     pinned = play_calls[1].get("tool_choice")
     assert pinned == {"type": "tool", "name": "set_active_roles"}, (
@@ -1189,7 +1143,7 @@ def test_strict_retry_recovers_from_solo_inject_critical_event(
     contract.
     """
 
-    from tests.mock_anthropic import MockAnthropic, _ContentBlock, _Response
+    from tests.mock_chat_client import install_mock_chat_client, llm_result, tool_block
 
     seats = _create_and_seat(client, role_count=2)
     sid = seats["session_id"]
@@ -1198,55 +1152,24 @@ def test_strict_retry_recovers_from_solo_inject_critical_event(
 
     # Attempt 1 — solo inject. Dispatcher's pairing scan should reject
     # this with is_error=True. No banner; no CRITICAL_INJECT message.
-    play_attempt_1 = _Response(
-        content=[
-            _ContentBlock(
-                type="tool_use",
-                name="inject_critical_event",
-                input={
+    play_attempt_1 = llm_result(tool_block("inject_critical_event", {
                     "severity": "HIGH",
                     "headline": "Press leak — Slack screenshot",
                     "body": "Reporter calling in 30 minutes.",
-                },
-                id="tu_solo_inject",
-            )
-        ],
-        stop_reason="tool_use",
-    )
+                }, block_id="tu_solo_inject"), stop_reason="tool_use")
     # The validator catches missing DRIVE + YIELD on attempt 1 (no
     # slot fired — rejection means ESCALATE didn't land either) and
     # runs DRIVE recovery first (priority 10), then YIELD recovery.
-    drive_recovery_resp = _Response(
-        content=[
-            _ContentBlock(
-                type="tool_use",
-                name="broadcast",
-                input={
+    drive_recovery_resp = llm_result(tool_block("broadcast", {
                     "message": (
                         "**SOC** — pull the screenshot's metadata. **CISO** "
                         "— call legal in the next 5 minutes. The reporter "
                         "is on a 30-minute window."
                     )
-                },
-                id="tu_drive_recovery",
-            )
-        ],
-        stop_reason="tool_use",
-    )
-    yield_recovery_resp = _Response(
-        content=[
-            _ContentBlock(
-                type="tool_use",
-                name="set_active_roles",
-                input={"role_groups": [[second_role_id]]},
-                id="tu_yield",
-            )
-        ],
-        stop_reason="tool_use",
-    )
+                }, block_id="tu_drive_recovery"), stop_reason="tool_use")
+    yield_recovery_resp = llm_result(tool_block("set_active_roles", {"role_groups": [[second_role_id]]}, block_id="tu_yield"), stop_reason="tool_use")
     script = [play_attempt_1, drive_recovery_resp, yield_recovery_resp]
-    mock = MockAnthropic({"play": script})
-    client.app.state.llm.set_transport(mock.messages)
+    mock = install_mock_chat_client(client, {"play": script})
 
     client.post(f"/api/sessions/{sid}/setup/skip?token={cr}")
     r = client.post(f"/api/sessions/{sid}/start?token={cr}")
@@ -1282,7 +1205,7 @@ def test_strict_retry_recovers_from_solo_inject_critical_event(
     # inject + got is_error=True back; attempt 2 was DRIVE recovery
     # (broadcast pinned); attempt 3 was YIELD recovery
     # (set_active_roles pinned).
-    play_calls = [c for c in mock.messages.calls if "play" in c.get("model", "")]
+    play_calls = [c for c in mock.calls if c.get("tier") == "play"]
     assert len(play_calls) >= 3, (
         f"expected ≥3 play calls (attempt 1 + DRIVE + YIELD recovery); "
         f"got {len(play_calls)}"
@@ -1311,56 +1234,23 @@ def test_briefing_recovers_when_ai_skips_broadcast(client: TestClient) -> None:
     ``state_changed`` to AWAITING_PLAYERS.
     """
 
-    from tests.mock_anthropic import MockAnthropic, _ContentBlock, _Response
+    from tests.mock_chat_client import install_mock_chat_client, llm_result, tool_block
 
     seats = _create_and_seat(client, role_count=2)
     sid = seats["session_id"]
     cr = seats["creator_token"]
 
     # First call: timeline pin + inject_event + yield, NO broadcast.
-    play_attempt_1 = _Response(
-        content=[
-            _ContentBlock(
-                type="tool_use",
-                name="mark_timeline_point",
-                input={"title": "Exercise Start — Beat 1", "note": "EDR fired."},
-                id="tu_pin_1",
-            ),
-            _ContentBlock(
-                type="tool_use",
-                name="inject_event",
-                input={"description": "Exercise clock starts. 03:14 Wednesday."},
-                id="tu_inject_1",
-            ),
-            _ContentBlock(
-                type="tool_use",
-                name="set_active_roles",
-                input={"role_groups": [[seats["role_ids"][0]], [seats["role_ids"][1]]]},
-                id="tu_yield_1",
-            ),
-        ],
-        stop_reason="tool_use",
-    )
+    play_attempt_1 = llm_result(tool_block("mark_timeline_point", {"title": "Exercise Start — Beat 1", "note": "EDR fired."}, block_id="tu_pin_1"), tool_block("inject_event", {"description": "Exercise clock starts. 03:14 Wednesday."}, block_id="tu_inject_1"), tool_block("set_active_roles", {"role_groups": [[seats["role_ids"][0]], [seats["role_ids"][1]]]}, block_id="tu_yield_1"), stop_reason="tool_use")
     # Recovery call: broadcast the situation brief.
-    play_recovery = _Response(
-        content=[
-            _ContentBlock(
-                type="tool_use",
-                name="broadcast",
-                input={
+    play_recovery = llm_result(tool_block("broadcast", {
                     "message": (
                         "CISO / Alex, Player_1 — your EDR just fired ransomware "
                         "signatures on finance laptops at 03:14. File shares are "
                         "serving .lockbit-suffixed files. What's your first move?"
                     )
-                },
-                id="tu_brief_recovery",
-            )
-        ],
-        stop_reason="tool_use",
-    )
-    mock = MockAnthropic({"play": [play_attempt_1, play_recovery]})
-    client.app.state.llm.set_transport(mock.messages)
+                }, block_id="tu_brief_recovery"), stop_reason="tool_use")
+    mock = install_mock_chat_client(client, {"play": [play_attempt_1, play_recovery]})
 
     client.post(f"/api/sessions/{sid}/setup/skip?token={cr}")
     r = client.post(f"/api/sessions/{sid}/start?token={cr}")
@@ -1390,7 +1280,7 @@ def test_briefing_recovers_when_ai_skips_broadcast(client: TestClient) -> None:
 
     # Inspect the LLM calls: the recovery call must narrow tools to
     # ``broadcast`` only and pin ``tool_choice`` to it.
-    play_calls = [c for c in mock.messages.calls if "play" in c.get("model", "")]
+    play_calls = [c for c in mock.calls if c.get("tier") == "play"]
     assert len(play_calls) >= 2, (
         f"expected ≥2 play calls (initial + recovery); got {len(play_calls)}"
     )
@@ -1412,37 +1302,20 @@ def test_briefing_does_not_recover_when_broadcast_already_present(client: TestCl
     briefing turn.
     """
 
-    from tests.mock_anthropic import MockAnthropic, _ContentBlock, _Response
+    from tests.mock_chat_client import install_mock_chat_client, llm_result, tool_block
 
     seats = _create_and_seat(client, role_count=2)
     sid = seats["session_id"]
     cr = seats["creator_token"]
 
-    play_ok = _Response(
-        content=[
-            _ContentBlock(
-                type="tool_use",
-                name="broadcast",
-                input={"message": "Brief delivered. What's your move?"},
-                id="tu_brief_ok",
-            ),
-            _ContentBlock(
-                type="tool_use",
-                name="set_active_roles",
-                input={"role_groups": [[seats["role_ids"][1]]]},
-                id="tu_yield_ok",
-            ),
-        ],
-        stop_reason="tool_use",
-    )
-    mock = MockAnthropic({"play": [play_ok]})
-    client.app.state.llm.set_transport(mock.messages)
+    play_ok = llm_result(tool_block("broadcast", {"message": "Brief delivered. What's your move?"}, block_id="tu_brief_ok"), tool_block("set_active_roles", {"role_groups": [[seats["role_ids"][1]]]}, block_id="tu_yield_ok"), stop_reason="tool_use")
+    mock = install_mock_chat_client(client, {"play": [play_ok]})
 
     client.post(f"/api/sessions/{sid}/setup/skip?token={cr}")
     r = client.post(f"/api/sessions/{sid}/start?token={cr}")
     assert r.status_code == 200, r.text
 
-    play_calls = [c for c in mock.messages.calls if "play" in c.get("model", "")]
+    play_calls = [c for c in mock.calls if c.get("tier") == "play"]
     assert len(play_calls) == 1, (
         f"healthy briefing must use exactly 1 play call; got {len(play_calls)}"
     )
@@ -1460,7 +1333,7 @@ def test_drive_required_on_mid_exercise_yield(client: TestClient) -> None:
     refactor: the briefing-only guard was extended across the whole
     exercise."""
 
-    from tests.mock_anthropic import MockAnthropic, _ContentBlock, _Response
+    from tests.mock_chat_client import install_mock_chat_client, llm_result, tool_block
 
     seats = _create_and_seat(client, role_count=2)
     sid = seats["session_id"]
@@ -1470,54 +1343,11 @@ def test_drive_required_on_mid_exercise_yield(client: TestClient) -> None:
 
     # Healthy BRIEFING turn (broadcast + yield) so we cleanly land in
     # AWAITING_PLAYERS without triggering the briefing recovery.
-    briefing = _Response(
-        content=[
-            _ContentBlock(
-                type="tool_use",
-                name="broadcast",
-                input={"message": "Welcome — your move."},
-                id="tu_brief",
-            ),
-            _ContentBlock(
-                type="tool_use",
-                name="set_active_roles",
-                input={"role_groups": [[creator_role]]},
-                id="tu_yield_brief",
-            ),
-        ],
-        stop_reason="tool_use",
-    )
+    briefing = llm_result(tool_block("broadcast", {"message": "Welcome — your move."}, block_id="tu_brief"), tool_block("set_active_roles", {"role_groups": [[creator_role]]}, block_id="tu_yield_brief"), stop_reason="tool_use")
     # The "bad" mid-exercise turn: inject_event + yield, no drive.
-    mid_turn_no_drive = _Response(
-        content=[
-            _ContentBlock(
-                type="tool_use",
-                name="inject_event",
-                input={"description": "Sirens at T+0:05."},
-                id="tu_inject_mid",
-            ),
-            _ContentBlock(
-                type="tool_use",
-                name="set_active_roles",
-                input={"role_groups": [[other_role]]},
-                id="tu_yield_mid",
-            ),
-        ],
-        stop_reason="tool_use",
-    )
-    drive_recovery = _Response(
-        content=[
-            _ContentBlock(
-                type="tool_use",
-                name="broadcast",
-                input={"message": "What's your call?"},
-                id="tu_drive_recovery_mid",
-            )
-        ],
-        stop_reason="tool_use",
-    )
-    mock = MockAnthropic({"play": [briefing, mid_turn_no_drive, drive_recovery]})
-    client.app.state.llm.set_transport(mock.messages)
+    mid_turn_no_drive = llm_result(tool_block("inject_event", {"description": "Sirens at T+0:05."}, block_id="tu_inject_mid"), tool_block("set_active_roles", {"role_groups": [[other_role]]}, block_id="tu_yield_mid"), stop_reason="tool_use")
+    drive_recovery = llm_result(tool_block("broadcast", {"message": "What's your call?"}, block_id="tu_drive_recovery_mid"), stop_reason="tool_use")
+    mock = install_mock_chat_client(client, {"play": [briefing, mid_turn_no_drive, drive_recovery]})
 
     client.post(f"/api/sessions/{sid}/setup/skip?token={cr}")
     client.post(f"/api/sessions/{sid}/start?token={cr}")
@@ -1548,7 +1378,7 @@ def test_drive_required_on_mid_exercise_yield(client: TestClient) -> None:
     )
 
     # The recovery LLM call should pin tool_choice to broadcast.
-    play_calls = [c for c in mock.messages.calls if "play" in c.get("model", "")]
+    play_calls = [c for c in mock.calls if c.get("tier") == "play"]
     assert any(
         c.get("tool_choice") == {"type": "tool", "name": "broadcast"}
         for c in play_calls
@@ -1606,7 +1436,7 @@ def test_player_question_does_not_downgrade_drive_recovery(
     explicit ``@facilitator`` mention; this test pins the new
     contract end-to-end."""
 
-    from tests.mock_anthropic import MockAnthropic, _ContentBlock, _Response
+    from tests.mock_chat_client import install_mock_chat_client, llm_result, tool_block
 
     seats = _create_and_seat(client, role_count=2)
     sid = seats["session_id"]
@@ -1615,69 +1445,22 @@ def test_player_question_does_not_downgrade_drive_recovery(
     other_role = seats["role_ids"][1]
 
     # Healthy briefing turn so we land in mid-exercise cleanly.
-    briefing = _Response(
-        content=[
-            _ContentBlock(
-                type="tool_use",
-                name="broadcast",
-                input={"message": "Welcome — your move."},
-                id="tu_brief",
-            ),
-            _ContentBlock(
-                type="tool_use",
-                name="set_active_roles",
-                input={"role_groups": [[creator_role]]},
-                id="tu_yield_brief",
-            ),
-        ],
-        stop_reason="tool_use",
-    )
+    briefing = llm_result(tool_block("broadcast", {"message": "Welcome — your move."}, block_id="tu_brief"), tool_block("set_active_roles", {"role_groups": [[creator_role]]}, block_id="tu_yield_brief"), stop_reason="tool_use")
     # The bad turn: only stage-direction (inject_event), no DRIVE, no
     # YIELD. Mirrors a real production failure mode where the AI used
     # a system note as a substitute for answering the player.
-    bad_mid_turn = _Response(
-        content=[
-            _ContentBlock(
-                type="tool_use",
-                name="inject_event",
-                input={"description": "Defender telemetry pull initiated."},
-                id="tu_event",
-            )
-        ],
-        stop_reason="tool_use",
-    )
-    drive_recovery = _Response(
-        content=[
-            _ContentBlock(
-                type="tool_use",
-                name="broadcast",
-                input={
+    bad_mid_turn = llm_result(tool_block("inject_event", {"description": "Defender telemetry pull initiated."}, block_id="tu_event"), stop_reason="tool_use")
+    drive_recovery = llm_result(tool_block("broadcast", {
                     "message": (
                         "Defender shows the service account auth'd "
                         "from 5 hosts in the last 90 minutes. "
                         "Player_1 — what's our containment posture?"
                     )
-                },
-                id="tu_drive_recovery",
-            )
-        ],
-        stop_reason="tool_use",
-    )
-    yield_recovery = _Response(
-        content=[
-            _ContentBlock(
-                type="tool_use",
-                name="set_active_roles",
-                input={"role_groups": [[other_role]]},
-                id="tu_yield_recovery",
-            )
-        ],
-        stop_reason="tool_use",
-    )
-    mock = MockAnthropic(
+                }, block_id="tu_drive_recovery"), stop_reason="tool_use")
+    yield_recovery = llm_result(tool_block("set_active_roles", {"role_groups": [[other_role]]}, block_id="tu_yield_recovery"), stop_reason="tool_use")
+    mock = install_mock_chat_client(client, 
         {"play": [briefing, bad_mid_turn, drive_recovery, yield_recovery]}
     )
-    client.app.state.llm.set_transport(mock.messages)
 
     client.post(f"/api/sessions/{sid}/setup/skip?token={cr}")
     client.post(f"/api/sessions/{sid}/start?token={cr}")
@@ -1729,7 +1512,7 @@ def test_player_question_does_not_downgrade_drive_recovery(
     # priority 10), then set_active_roles (YIELD recovery, priority
     # 20). Order matters — a future regression that runs YIELD before
     # DRIVE would yield silently.
-    play_calls = [c for c in mock.messages.calls if "play" in c.get("model", "")]
+    play_calls = [c for c in mock.calls if c.get("tier") == "play"]
     pinned = [c.get("tool_choice") for c in play_calls if c.get("tool_choice")]
     broadcast_pin = {"type": "tool", "name": "broadcast"}
     yield_pin = {"type": "tool", "name": "set_active_roles"}
@@ -1799,42 +1582,22 @@ def test_compound_violation_runs_drive_then_yield_sequentially(client: TestClien
     this over a single merged call so the recovery has a predictable
     cost (vs the model emitting only one tool and recursing)."""
 
-    from tests.mock_anthropic import MockAnthropic, _ContentBlock, _Response
+    from tests.mock_chat_client import install_mock_chat_client, llm_result, text_block, tool_block
 
     seats = _create_and_seat(client, role_count=2)
     sid = seats["session_id"]
     cr = seats["creator_token"]
 
-    text_only = _Response(
-        content=[_ContentBlock(type="text", text="Hmm.")],
-        stop_reason="end_turn",
-    )
-    drive_recovery = _Response(
-        content=[_ContentBlock(
-            type="tool_use",
-            name="broadcast",
-            input={"message": "What's the move?"},
-            id="tu_d",
-        )],
-        stop_reason="tool_use",
-    )
-    yield_recovery = _Response(
-        content=[_ContentBlock(
-            type="tool_use",
-            name="set_active_roles",
-            input={"role_groups": [[seats["role_ids"][0]]]},
-            id="tu_y",
-        )],
-        stop_reason="tool_use",
-    )
-    mock = MockAnthropic({"play": [text_only, drive_recovery, yield_recovery]})
-    client.app.state.llm.set_transport(mock.messages)
+    text_only = llm_result(text_block("Hmm."), stop_reason="end_turn")
+    drive_recovery = llm_result(tool_block("broadcast", {"message": "What's the move?"}, block_id="tu_d"), stop_reason="tool_use")
+    yield_recovery = llm_result(tool_block("set_active_roles", {"role_groups": [[seats["role_ids"][0]]]}, block_id="tu_y"), stop_reason="tool_use")
+    mock = install_mock_chat_client(client, {"play": [text_only, drive_recovery, yield_recovery]})
 
     client.post(f"/api/sessions/{sid}/setup/skip?token={cr}")
     r = client.post(f"/api/sessions/{sid}/start?token={cr}")
     assert r.status_code == 200, r.text
 
-    play_calls = [c for c in mock.messages.calls if "play" in c.get("model", "")]
+    play_calls = [c for c in mock.calls if c.get("tier") == "play"]
     assert len(play_calls) == 3, (
         f"expected 3 play calls (initial + drive + yield), got {len(play_calls)}"
     )
@@ -1855,30 +1618,18 @@ def test_finalize_setup_rejects_empty_arrays(client: TestClient) -> None:
     ``run_setup_turn`` then drives another LLM iteration; the model
     sees the rejection and self-corrects."""
 
-    from tests.mock_anthropic import MockAnthropic, _ContentBlock, _Response
+    from tests.mock_chat_client import install_mock_chat_client, llm_result, tool_block
 
     # Empty plan. The Pydantic model invariant
     # (``min_length=1`` on the three arrays) raises on construction.
-    empty_finalize = _Response(
-        content=[_ContentBlock(
-            type="tool_use",
-            name="finalize_setup",
-            input={
+    empty_finalize = llm_result(tool_block("finalize_setup", {
                 "title": "Empty",
                 "key_objectives": [],
                 "narrative_arc": [],
                 "injects": [],
-            },
-            id="tu_finalize",
-        )],
-        stop_reason="tool_use",
-    )
+            }, block_id="tu_finalize"), stop_reason="tool_use")
     # Non-empty follow-up so the loop can complete.
-    valid_finalize = _Response(
-        content=[_ContentBlock(
-            type="tool_use",
-            name="finalize_setup",
-            input={
+    valid_finalize = llm_result(tool_block("finalize_setup", {
                 "title": "Valid",
                 "key_objectives": ["containment"],
                 "narrative_arc": [
@@ -1887,13 +1638,8 @@ def test_finalize_setup_rejects_empty_arrays(client: TestClient) -> None:
                 "injects": [
                     {"trigger": "after beat 1", "type": "event", "summary": "x"}
                 ],
-            },
-            id="tu_finalize_2",
-        )],
-        stop_reason="tool_use",
-    )
-    mock = MockAnthropic({"setup": [empty_finalize, valid_finalize]})
-    client.app.state.llm.set_transport(mock.messages)
+            }, block_id="tu_finalize_2"), stop_reason="tool_use")
+    install_mock_chat_client(client, {"setup": [empty_finalize, valid_finalize]})
 
     r = client.post(
         "/api/sessions",
@@ -2034,44 +1780,27 @@ def test_tool_choice_does_not_leak_to_setup_or_aar(client: TestClient) -> None:
     """Confirm the strict-retry tool_choice plumbing is scoped to play turns
     only. Setup and AAR calls must never set tool_choice."""
 
-    from tests.mock_anthropic import MockAnthropic, _ContentBlock, _Response
+    from tests.mock_chat_client import install_mock_chat_client, llm_result, tool_block
 
     seats = _create_and_seat(client, role_count=2)
     sid = seats["session_id"]
     cr = seats["creator_token"]
 
-    yielding = _Response(
-        content=[_ContentBlock(
-            type="tool_use",
-            name="set_active_roles",
-            input={"role_groups": [[seats["role_ids"][1]]]},
-            id="tu_yield",
-        )],
-        stop_reason="tool_use",
-    )
-    aar = _Response(
-        content=[_ContentBlock(
-            type="tool_use",
-            name="finalize_report",
-            input={
+    yielding = llm_result(tool_block("set_active_roles", {"role_groups": [[seats["role_ids"][1]]]}, block_id="tu_yield"), stop_reason="tool_use")
+    aar = llm_result(tool_block("finalize_report", {
                 "executive_summary": "ok",
                 "narrative": "n",
                 "per_role_scores": [],
                 "overall_score": 3,
                 "overall_rationale": "ok",
-            },
-            id="tu_aar",
-        )],
-        stop_reason="tool_use",
-    )
-    mock = MockAnthropic({"play": [yielding], "aar": [aar]})
-    client.app.state.llm.set_transport(mock.messages)
+            }, block_id="tu_aar"), stop_reason="tool_use")
+    mock = install_mock_chat_client(client, {"play": [yielding], "aar": [aar]})
 
     client.post(f"/api/sessions/{sid}/setup/skip?token={cr}")
     client.post(f"/api/sessions/{sid}/start?token={cr}")
     client.post(f"/api/sessions/{sid}/end?token={cr}", json={})
 
-    for c in mock.messages.calls:
+    for c in mock.calls:
         model = c.get("model", "")
         if "play" not in model:
             assert "tool_choice" not in c or c["tool_choice"] is None, (
@@ -2088,26 +1817,17 @@ def test_strict_retry_double_failure_marks_turn_errored(client: TestClient) -> N
     total recovery LLM calls at ``LLM_STRICT_RETRY_MAX`` (default 2),
     so we feed three non-yielding responses to exhaust it."""
 
-    from tests.mock_anthropic import MockAnthropic, _ContentBlock, _Response
+    from tests.mock_chat_client import install_mock_chat_client, llm_result, tool_block
 
     seats = _create_and_seat(client, role_count=2)
     sid = seats["session_id"]
     cr = seats["creator_token"]
 
-    non_yielding = _Response(
-        content=[_ContentBlock(
-            type="tool_use",
-            name="broadcast",
-            input={"message": "Still broadcasting."},
-            id="tu_b",
-        )],
-        stop_reason="tool_use",
-    )
+    non_yielding = llm_result(tool_block("broadcast", {"message": "Still broadcasting."}, block_id="tu_b"), stop_reason="tool_use")
     # 3 non-yielding responses = 1 initial attempt + 2 recovery passes
     # (the LLM_STRICT_RETRY_MAX default). Every attempt fires
     # ``broadcast`` so DRIVE is satisfied — only YIELD never lands.
-    mock = MockAnthropic({"play": [non_yielding, non_yielding, non_yielding]})
-    client.app.state.llm.set_transport(mock.messages)
+    install_mock_chat_client(client, {"play": [non_yielding, non_yielding, non_yielding]})
 
     client.post(f"/api/sessions/{sid}/setup/skip?token={cr}")
     r = client.post(f"/api/sessions/{sid}/start?token={cr}")
@@ -2144,33 +1864,25 @@ def test_play_after_auto_greet_then_skip_does_not_400(client: TestClient) -> Non
          guarantees the message list ends with ``role=user``.
     """
 
-    from tests.mock_anthropic import MockAnthropic, _ContentBlock, _Response
+    from tests.mock_chat_client import install_mock_chat_client, llm_result, text_block, tool_block
 
     # Custom mock: the SETUP turn emits SIX ask_setup_question tool calls in
     # one response — exactly what was observed in production. The PLAY turn
     # then yields cleanly.
-    setup_burst = _Response(
-        content=[
-            _ContentBlock(
-                type="tool_use",
-                name="ask_setup_question",
-                input={"topic": f"q{i}", "question": f"What is q{i}?"},
-                id=f"tu_q{i}",
+    setup_burst = llm_result(
+        *[
+            tool_block(
+                "ask_setup_question",
+                {"topic": f"q{i}", "question": f"What is q{i}?"},
+                block_id=f"tu_q{i}",
             )
             for i in range(6)
         ],
         stop_reason="tool_use",
     )
-    play_yield = _Response(
-        content=[
-            _ContentBlock(type="text", text="Detection alarms firing."),
-            _ContentBlock(
-                type="tool_use",
-                name="set_active_roles",
-                input={"role_groups": []},  # filled in below
-                id="tu_set",
-            ),
-        ],
+    play_yield = llm_result(
+        text_block("Detection alarms firing."),
+        tool_block("set_active_roles", {"role_groups": []}),
         stop_reason="tool_use",
     )
 
@@ -2178,12 +1890,12 @@ def test_play_after_auto_greet_then_skip_does_not_400(client: TestClient) -> Non
     # session — we recreate after the mock is installed so the auto-greet
     # actually goes through the scripted SETUP burst.
     seats = _create_and_seat(client, role_count=2)
-    play_yield.content[1].input = {
+    play_yield.content[1]["input"] = {
         "role_groups": [[seats["role_ids"][1]]]
     }
 
-    client.app.state.llm.set_transport(
-        MockAnthropic({"setup": [setup_burst], "play": [play_yield]}).messages
+    install_mock_chat_client(
+        client, {"setup": [setup_burst], "play": [play_yield]}
     )
 
     # Re-create the session AFTER mock is installed so the auto-kicked setup
@@ -2207,7 +1919,7 @@ def test_play_after_auto_greet_then_skip_does_not_400(client: TestClient) -> Non
         json={"label": "SOC Analyst", "display_name": "Sam"},
     )
     assert r.status_code == 200
-    play_yield.content[1].input = {
+    play_yield.content[1]["input"] = {
         "role_groups": [[r.json()["role_id"]]]
     }
 
@@ -2510,32 +2222,48 @@ def test_aar_failed_path_returns_500(client: TestClient) -> None:
 
 def test_in_flight_tracker_records_and_releases(client: TestClient) -> None:
     """QA MAJOR: the activity endpoint claims to expose live LLM calls,
-    but no test confirmed an actual call shows up. This patches the LLM
-    transport to await a future, so we can observe the in-flight slot
-    while the call is hanging."""
+    but no test confirmed an actual call shows up. This swaps in a
+    ``ChatClient`` whose ``acomplete`` hangs on a gate so we can
+    observe the in-flight slot while the call is mid-flight."""
 
     import asyncio
 
-    llm = client.app.state.llm
+    from app.config import ModelTier
+    from app.llm.protocol import LLMResult
+    from tests.mock_chat_client import (
+        MockChatClient,
+        install_mock_chat_client,
+        llm_result,
+        text_block,
+    )
+
     gate = asyncio.Event()
     held = asyncio.Event()
 
-    class _HangingMessages:
-        async def create(self, **_: object) -> object:
-            held.set()
-            await gate.wait()
-            from tests.mock_anthropic import _ContentBlock, _Response
+    class _HangingChat(MockChatClient):
+        async def acomplete(self, **kwargs: Any) -> LLMResult:
+            tier: ModelTier = kwargs.get("tier", "play")
+            session_id = kwargs.get("session_id")
+            call = self._begin_call(
+                session_id=session_id,
+                tier=tier,
+                model=self.model_for(tier),
+                stream=False,
+            )
+            try:
+                held.set()
+                await gate.wait()
+                return llm_result(text_block("ok"))
+            finally:
+                self._end_call(session_id, call)
 
-            return _Response(content=[_ContentBlock(type="text", text="ok")])
-
-        def stream(self, **_: object) -> object:
-            raise NotImplementedError
+    hanging = _HangingChat()
+    install_mock_chat_client(client)
+    client.app.state.llm = hanging
+    client.app.state.manager._llm = hanging
+    llm = hanging
 
     async def _drive() -> None:
-        # Call llm.acomplete directly — simpler than threading through the
-        # full setup/start flow, and exactly the path that registers a slot.
-        prior_transport = llm._transport
-        llm.set_transport(_HangingMessages())
         task = asyncio.create_task(
             llm.acomplete(
                 tier="setup",
@@ -2552,7 +2280,6 @@ def test_in_flight_tracker_records_and_releases(client: TestClient) -> None:
         await task
         # After completion the slot is released.
         assert llm.in_flight_for("sentinel") == []
-        llm._transport = prior_transport
 
     asyncio.run(_drive())
 
@@ -2759,25 +2486,16 @@ def test_force_advance_recovers_from_errored_turn(client: TestClient) -> None:
     the human players.
     """
 
-    from tests.mock_anthropic import MockAnthropic, _ContentBlock, _Response
+    from tests.mock_chat_client import install_mock_chat_client, llm_result, tool_block
 
     seats = _create_and_seat(client, role_count=2)
     sid = seats["session_id"]
     cr = seats["creator_token"]
 
-    non_yielding = _Response(
-        content=[_ContentBlock(
-            type="tool_use",
-            name="broadcast",
-            input={"message": "Still broadcasting."},
-            id="tu_b",
-        )],
-        stop_reason="tool_use",
-    )
+    non_yielding = llm_result(tool_block("broadcast", {"message": "Still broadcasting."}, block_id="tu_b"), stop_reason="tool_use")
     # Three non-yielding responses to exhaust the validator's recovery
     # budget (1 initial + 2 recovery passes per the new default).
-    mock = MockAnthropic({"play": [non_yielding, non_yielding, non_yielding]})
-    client.app.state.llm.set_transport(mock.messages)
+    install_mock_chat_client(client, {"play": [non_yielding, non_yielding, non_yielding]})
 
     client.post(f"/api/sessions/{sid}/setup/skip?token={cr}")
     client.post(f"/api/sessions/{sid}/start?token={cr}")
@@ -2803,33 +2521,10 @@ def test_setup_dedupe_drops_duplicate_questions_in_same_turn(
     ``ask_setup_question`` calls in a single turn. Only the first should
     materialise as a setup note; the rest should be rejected as duplicates."""
 
-    from tests.mock_anthropic import MockAnthropic, _ContentBlock, _Response
+    from tests.mock_chat_client import install_mock_chat_client, llm_result, tool_block
 
-    burst = _Response(
-        content=[
-            _ContentBlock(
-                type="tool_use",
-                name="ask_setup_question",
-                input={"topic": "scope", "question": "What's the scope?"},
-                id="tu_a",
-            ),
-            _ContentBlock(
-                type="tool_use",
-                name="ask_setup_question",
-                input={"topic": "scope", "question": "Same topic, different wording?"},
-                id="tu_b",
-            ),
-            _ContentBlock(
-                type="tool_use",
-                name="ask_setup_question",
-                input={"topic": "regulators", "question": "Which regulators apply?"},
-                id="tu_c",
-            ),
-        ],
-        stop_reason="tool_use",
-    )
-    mock = MockAnthropic({"setup": [burst]})
-    client.app.state.llm.set_transport(mock.messages)
+    burst = llm_result(tool_block("ask_setup_question", {"topic": "scope", "question": "What's the scope?"}, block_id="tu_a"), tool_block("ask_setup_question", {"topic": "scope", "question": "Same topic, different wording?"}, block_id="tu_b"), tool_block("ask_setup_question", {"topic": "regulators", "question": "Which regulators apply?"}, block_id="tu_c"), stop_reason="tool_use")
+    install_mock_chat_client(client, {"setup": [burst]})
 
     resp = client.post(
         "/api/sessions",
@@ -2855,7 +2550,7 @@ def test_admin_abort_turn_marks_errored_and_recovers(client: TestClient) -> None
     """God-mode abort + force-advance is the operator's break-glass
     path when an AI turn is hung."""
 
-    from tests.mock_anthropic import MockAnthropic, _ContentBlock, _Response
+    from tests.mock_chat_client import install_mock_chat_client, llm_result, tool_block
 
     seats = _create_and_seat(client, role_count=2)
     sid = seats["session_id"]
@@ -2863,17 +2558,8 @@ def test_admin_abort_turn_marks_errored_and_recovers(client: TestClient) -> None
     non_creator = seats["role_tokens"][seats["role_ids"][1]]
 
     # Set up a non-yielding play turn so we have something to abort.
-    non_yielding = _Response(
-        content=[_ContentBlock(
-            type="tool_use",
-            name="broadcast",
-            input={"message": "Just broadcasting."},
-            id="tu_b",
-        )],
-        stop_reason="tool_use",
-    )
-    mock = MockAnthropic({"play": [non_yielding, non_yielding]})
-    client.app.state.llm.set_transport(mock.messages)
+    non_yielding = llm_result(tool_block("broadcast", {"message": "Just broadcasting."}, block_id="tu_b"), stop_reason="tool_use")
+    install_mock_chat_client(client, {"play": [non_yielding, non_yielding]})
 
     client.post(f"/api/sessions/{sid}/setup/skip?token={cr}")
     client.post(f"/api/sessions/{sid}/start?token={cr}")
@@ -3025,23 +2711,14 @@ def test_mark_timeline_point_does_not_yield(client: TestClient) -> None:
     against an accidental ``outcome.had_yielding_call = True`` regression
     in the dispatch handler."""
 
-    from tests.mock_anthropic import MockAnthropic, _ContentBlock, _Response
+    from tests.mock_chat_client import install_mock_chat_client, llm_result, tool_block
 
-    pin_only = _Response(
-        content=[_ContentBlock(
-            type="tool_use",
-            name="mark_timeline_point",
-            input={"title": "Containment debate", "note": "still talking"},
-            id="tu_pin",
-        )],
-        stop_reason="tool_use",
-    )
+    pin_only = llm_result(tool_block("mark_timeline_point", {"title": "Containment debate", "note": "still talking"}, block_id="tu_pin"), stop_reason="tool_use")
     # Three pin-only responses to exhaust the validator's recovery
     # budget (1 initial + 2 recovery passes). Pin satisfies neither
     # DRIVE nor YIELD so both directives fire and both burn budget
     # without the AI ever yielding.
-    mock = MockAnthropic({"play": [pin_only, pin_only, pin_only]})
-    client.app.state.llm.set_transport(mock.messages)
+    install_mock_chat_client(client, {"play": [pin_only, pin_only, pin_only]})
 
     seats = _create_and_seat(client, role_count=2)
     sid = seats["session_id"]
@@ -3062,31 +2739,14 @@ def test_mark_timeline_point_dispatch_emits_system_marker(client: TestClient) ->
     so we now route the visual output through the Timeline only and force
     the model to call ``broadcast`` for actual narration."""
 
-    from tests.mock_anthropic import MockAnthropic, _ContentBlock, _Response
+    from tests.mock_chat_client import install_mock_chat_client, llm_result, tool_block
 
     seats = _create_and_seat(client, role_count=2)
     sid = seats["session_id"]
     cr = seats["creator_token"]
 
-    pin_then_yield = _Response(
-        content=[
-            _ContentBlock(
-                type="tool_use",
-                name="mark_timeline_point",
-                input={"title": "Containment decision", "note": "IR ordered isolation."},
-                id="tu_pin",
-            ),
-            _ContentBlock(
-                type="tool_use",
-                name="set_active_roles",
-                input={"role_groups": [[seats["role_ids"][1]]]},
-                id="tu_set",
-            ),
-        ],
-        stop_reason="tool_use",
-    )
-    mock = MockAnthropic({"play": [pin_then_yield]})
-    client.app.state.llm.set_transport(mock.messages)
+    pin_then_yield = llm_result(tool_block("mark_timeline_point", {"title": "Containment decision", "note": "IR ordered isolation."}, block_id="tu_pin"), tool_block("set_active_roles", {"role_groups": [[seats["role_ids"][1]]]}, block_id="tu_set"), stop_reason="tool_use")
+    install_mock_chat_client(client, {"play": [pin_then_yield]})
 
     client.post(f"/api/sessions/{sid}/setup/skip?token={cr}")
     client.post(f"/api/sessions/{sid}/start?token={cr}")
@@ -3110,35 +2770,26 @@ def test_set_active_roles_resolves_label_fallback(client: TestClient) -> None:
     whole turn — that was the root cause of the operator's force-advance
     loop."""
 
-    from tests.mock_anthropic import MockAnthropic, _ContentBlock, _Response
+    from tests.mock_chat_client import install_mock_chat_client, llm_result, tool_block
 
     seats = _create_and_seat(client, role_count=2)
     sid = seats["session_id"]
     cr = seats["creator_token"]
     soc_role_id = seats["role_ids"][1]
 
-    yield_with_labels = _Response(
-        content=[
-            _ContentBlock(
-                type="tool_use",
-                name="broadcast",
-                input={"message": "Brief: stand by."},
-                id="tu_b",
-            ),
-            _ContentBlock(
-                type="tool_use",
-                name="set_active_roles",
-                # Pass the LABEL ("Player_1" — assigned by _create_and_seat)
-                # plus a non-existent label ("Engineering") to verify
-                # soft-success handles both.
-                input={"role_groups": [["Player_1"], ["Engineering"]]},
-                id="tu_set",
-            ),
-        ],
+    yield_with_labels = llm_result(
+        tool_block("broadcast", {"message": "Brief: stand by."}, block_id="tu_b"),
+        # Pass the LABEL ("Player_1" — assigned by _create_and_seat) plus
+        # a non-existent label ("Engineering") to verify soft-success
+        # handles both.
+        tool_block(
+            "set_active_roles",
+            {"role_groups": [["Player_1"], ["Engineering"]]},
+            block_id="tu_set",
+        ),
         stop_reason="tool_use",
     )
-    mock = MockAnthropic({"play": [yield_with_labels]})
-    client.app.state.llm.set_transport(mock.messages)
+    install_mock_chat_client(client, {"play": [yield_with_labels]})
 
     client.post(f"/api/sessions/{sid}/setup/skip?token={cr}")
     r = client.post(f"/api/sessions/{sid}/start?token={cr}")
@@ -3528,26 +3179,15 @@ def test_ai_auto_interjects_on_facilitator_mention(client: TestClient) -> None:
     import asyncio
 
     from app.sessions.models import SessionState, Turn
-    from tests.mock_anthropic import MockAnthropic, _ContentBlock, _Response
+    from tests.mock_chat_client import install_mock_chat_client, llm_result, tool_block
 
     seats = _create_and_seat(client, role_count=2)
     sid = seats["session_id"]
     cr = seats["creator_token"]
     other_role_id = seats["role_ids"][1]
 
-    interject = _Response(
-        content=[
-            _ContentBlock(
-                type="tool_use",
-                name="broadcast",
-                input={"message": "Open items: revoke vendor account, finish .lockbit sweep."},
-                id="tu_b",
-            ),
-        ],
-        stop_reason="tool_use",
-    )
-    mock = MockAnthropic({"play": [interject]})
-    client.app.state.llm.set_transport(mock.messages)
+    interject = llm_result(tool_block("broadcast", {"message": "Open items: revoke vendor account, finish .lockbit sweep."}, block_id="tu_b"), stop_reason="tool_use")
+    install_mock_chat_client(client, {"play": [interject]})
 
     client.post(f"/api/sessions/{sid}/setup/skip?token={cr}")
 
@@ -3821,7 +3461,7 @@ def test_out_of_turn_facilitator_mention_fires_interject(client: TestClient) -> 
     import asyncio
 
     from app.sessions.models import SessionState, Turn
-    from tests.mock_anthropic import MockAnthropic, _ContentBlock, _Response
+    from tests.mock_chat_client import install_mock_chat_client, llm_result, tool_block
 
     seats = _create_and_seat(client, role_count=2)
     sid = seats["session_id"]
@@ -3829,22 +3469,11 @@ def test_out_of_turn_facilitator_mention_fires_interject(client: TestClient) -> 
     creator_role_id = seats["creator_role_id"]
     other_role_id = seats["role_ids"][1]
 
-    interject = _Response(
-        content=[
-            _ContentBlock(
-                type="tool_use",
-                name="address_role",
-                input={
+    interject = llm_result(tool_block("address_role", {
                     "role_id": other_role_id,
                     "message": "Yes — focus on the egress logs first.",
-                },
-                id="tu_a",
-            ),
-        ],
-        stop_reason="tool_use",
-    )
-    mock = MockAnthropic({"play": [interject]})
-    client.app.state.llm.set_transport(mock.messages)
+                }, block_id="tu_a"), stop_reason="tool_use")
+    install_mock_chat_client(client, {"play": [interject]})
 
     client.post(f"/api/sessions/{sid}/setup/skip?token={cr}")
 
@@ -3906,7 +3535,7 @@ def test_strict_retry_max_zero_marks_errored_immediately(monkeypatch) -> None:
 
     from app.config import reset_settings_cache
     from app.main import create_app
-    from tests.mock_anthropic import MockAnthropic, _ContentBlock, _Response
+    from tests.mock_chat_client import install_mock_chat_client, llm_result, tool_block
 
     monkeypatch.setenv("LLM_STRICT_RETRY_MAX", "0")
     reset_settings_cache()
@@ -3919,19 +3548,8 @@ def test_strict_retry_max_zero_marks_errored_immediately(monkeypatch) -> None:
 
         # Non-yielding response. With strict-retry-max=0 we expect ONE
         # call only — locked by checking the mock's call log length below.
-        non_yielding = _Response(
-            content=[
-                _ContentBlock(
-                    type="tool_use",
-                    name="broadcast",
-                    input={"message": "Just broadcasting."},
-                    id="tu_b",
-                ),
-            ],
-            stop_reason="tool_use",
-        )
-        mock = MockAnthropic({"play": [non_yielding]})
-        c.app.state.llm.set_transport(mock.messages)
+        non_yielding = llm_result(tool_block("broadcast", {"message": "Just broadcasting."}, block_id="tu_b"), stop_reason="tool_use")
+        mock = install_mock_chat_client(c, {"play": [non_yielding]})
         c.post(f"/api/sessions/{sid}/setup/skip?token={cr}")
         r = c.post(f"/api/sessions/{sid}/start?token={cr}")
         assert r.status_code == 200, r.text
@@ -3943,7 +3561,7 @@ def test_strict_retry_max_zero_marks_errored_immediately(monkeypatch) -> None:
         last_turn = snap_debug["turns"][-1]
         assert last_turn["retried_with_strict"] is False
         # Exactly one play-tier streaming call (set_active_roles never fired).
-        assert len(mock.messages.calls) == 1, mock.messages.calls
+        assert len(mock.calls) == 1, mock.calls
 
 
 def test_max_participant_submission_chars_truncates(monkeypatch) -> None:
@@ -4004,16 +3622,12 @@ def test_skip_setup_flag_avoids_auto_greet(client: TestClient) -> None:
     and the session lands in READY. Counter-test: without the flag,
     the auto-greet runs (one setup-tier call)."""
 
-    from tests.mock_anthropic import MockAnthropic, _ContentBlock, _Response
+    from tests.mock_chat_client import install_mock_chat_client, llm_result, text_block
 
     # If the auto-greet runs, this script will be popped (and the test
     # will see a setup_tier call in the call log).
-    bare_text = _Response(
-        content=[_ContentBlock(type="text", text="Welcome to setup.")],
-        stop_reason="end_turn",
-    )
-    mock = MockAnthropic({"setup": [bare_text, bare_text]})
-    client.app.state.llm.set_transport(mock.messages)
+    bare_text = llm_result(text_block("Welcome to setup."), stop_reason="end_turn")
+    mock = install_mock_chat_client(client, {"setup": [bare_text, bare_text]})
 
     # ``skip_setup=true`` path.
     r = client.post(
@@ -4034,7 +3648,7 @@ def test_skip_setup_flag_avoids_auto_greet(client: TestClient) -> None:
     assert snap["state"] == "READY"
     assert snap["plan"] is not None
     # CRITICAL: no setup-tier LLM call happened.
-    assert len(mock.messages.calls) == 0, mock.messages.calls
+    assert len(mock.calls) == 0, mock.calls
 
 
 def test_setup_bare_text_is_discarded(client: TestClient) -> None:
@@ -4046,19 +3660,10 @@ def test_setup_bare_text_is_discarded(client: TestClient) -> None:
     thread on its first play turn."""
 
     from app.sessions.turn_driver import _play_messages
-    from tests.mock_anthropic import MockAnthropic, _ContentBlock, _Response
+    from tests.mock_chat_client import install_mock_chat_client, llm_result, text_block
 
-    bare_text = _Response(
-        content=[
-            _ContentBlock(
-                type="text",
-                text="Good morning. Question 1: Scope?",
-            ),
-        ],
-        stop_reason="end_turn",
-    )
-    mock = MockAnthropic({"setup": [bare_text]})
-    client.app.state.llm.set_transport(mock.messages)
+    bare_text = llm_result(text_block("Good morning. Question 1: Scope?"), stop_reason="end_turn")
+    install_mock_chat_client(client, {"setup": [bare_text]})
 
     r = client.post(
         "/api/sessions",
@@ -4101,7 +3706,7 @@ def test_max_setup_turns_caps_chained_calls(monkeypatch) -> None:
     from app.config import reset_settings_cache
     from app.main import create_app
     from app.sessions.turn_driver import TurnDriver
-    from tests.mock_anthropic import MockAnthropic, _ContentBlock, _Response
+    from tests.mock_chat_client import install_mock_chat_client, llm_result, tool_block
 
     monkeypatch.setenv("MAX_SETUP_TURNS", "2")
     reset_settings_cache()
@@ -4110,21 +3715,11 @@ def test_max_setup_turns_caps_chained_calls(monkeypatch) -> None:
         # ``end_session`` is rejected during SETUP — the dispatcher
         # records a tool_use_rejected and ``had_yielding_call`` stays
         # False, so the loop continues until the cap binds.
-        non_yielding = _Response(
-            content=[
-                _ContentBlock(
-                    type="tool_use",
-                    name="end_session",
-                    input={"reason": "test"},
-                    id="tu_end",
-                ),
-            ],
-            stop_reason="tool_use",
+        non_yielding = llm_result(tool_block("end_session", {"reason": "test"}, block_id="tu_end"), stop_reason="tool_use")
+        mock = install_mock_chat_client(
+            c,
+            {"setup": [non_yielding, non_yielding, non_yielding, non_yielding]},
         )
-        mock = MockAnthropic(
-            {"setup": [non_yielding, non_yielding, non_yielding, non_yielding]}
-        )
-        c.app.state.llm.set_transport(mock.messages)
 
         r = c.post(
             "/api/sessions",
@@ -4138,7 +3733,7 @@ def test_max_setup_turns_caps_chained_calls(monkeypatch) -> None:
         assert r.status_code == 200
         # Session creation auto-greets — exactly cap=2 calls before the
         # loop bails (proves the cap is binding).
-        assert len(mock.messages.calls) == 2, mock.messages.calls
+        assert len(mock.calls) == 2, mock.calls
 
         # Second invocation: another two calls. Total = 4.
         import asyncio
@@ -4152,7 +3747,7 @@ def test_max_setup_turns_caps_chained_calls(monkeypatch) -> None:
             await TurnDriver(manager=mgr).run_setup_turn(session=session)
 
         asyncio.run(_drive_again())
-        assert len(mock.messages.calls) == 4, mock.messages.calls
+        assert len(mock.calls) == 4, mock.calls
 
 
 def test_strict_retry_feeds_dispatcher_rejection_back_to_model(client: TestClient) -> None:
@@ -4169,46 +3764,25 @@ def test_strict_retry_feeds_dispatcher_rejection_back_to_model(client: TestClien
     ``tool_use(name='broadcast')`` and a user turn with a matching
     ``tool_result`` block."""
 
-    from tests.mock_anthropic import MockAnthropic, _ContentBlock, _Response
+    from tests.mock_chat_client import install_mock_chat_client, llm_result, tool_block
 
     seats = _create_and_seat(client, role_count=2)
     sid = seats["session_id"]
     cr = seats["creator_token"]
 
     # Attempt 1: non-yielding broadcast.
-    non_yielding = _Response(
-        content=[
-            _ContentBlock(
-                type="tool_use",
-                name="broadcast",
-                input={"message": "FYI."},
-                id="tu_b1",
-            ),
-        ],
-        stop_reason="tool_use",
-    )
+    non_yielding = llm_result(tool_block("broadcast", {"message": "FYI."}, block_id="tu_b1"), stop_reason="tool_use")
     # Attempt 2: actually yields.
-    yielding = _Response(
-        content=[
-            _ContentBlock(
-                type="tool_use",
-                name="set_active_roles",
-                input={"role_groups": [[seats["role_ids"][1]]]},
-                id="tu_set",
-            ),
-        ],
-        stop_reason="tool_use",
-    )
-    mock = MockAnthropic({"play": [non_yielding, yielding]})
-    client.app.state.llm.set_transport(mock.messages)
+    yielding = llm_result(tool_block("set_active_roles", {"role_groups": [[seats["role_ids"][1]]]}, block_id="tu_set"), stop_reason="tool_use")
+    mock = install_mock_chat_client(client, {"play": [non_yielding, yielding]})
 
     client.post(f"/api/sessions/{sid}/setup/skip?token={cr}")
     r = client.post(f"/api/sessions/{sid}/start?token={cr}")
     assert r.status_code == 200, r.text
 
     # Two play-tier calls: one non-yielding, one strict-retry yielding.
-    assert len(mock.messages.calls) == 2
-    retry_kwargs = mock.messages.calls[1]
+    assert len(mock.calls) == 2
+    retry_kwargs = mock.calls[1]
     msgs = retry_kwargs["messages"]
     # The retry must include an assistant turn with the prior tool_use
     # AND a user turn with the matching tool_result. Find them.
@@ -4243,7 +3817,7 @@ def test_strict_retry_max_two_runs_three_attempts(monkeypatch) -> None:
 
     from app.config import reset_settings_cache
     from app.main import create_app
-    from tests.mock_anthropic import MockAnthropic, _ContentBlock, _Response
+    from tests.mock_chat_client import install_mock_chat_client, llm_result, tool_block
 
     monkeypatch.setenv("LLM_STRICT_RETRY_MAX", "2")
     reset_settings_cache()
@@ -4254,19 +3828,8 @@ def test_strict_retry_max_two_runs_three_attempts(monkeypatch) -> None:
         sid = seats["session_id"]
         cr = seats["creator_token"]
 
-        non_yielding = _Response(
-            content=[
-                _ContentBlock(
-                    type="tool_use",
-                    name="broadcast",
-                    input={"message": "broadcast only."},
-                    id="tu_b",
-                ),
-            ],
-            stop_reason="tool_use",
-        )
-        mock = MockAnthropic({"play": [non_yielding] * 5})
-        c.app.state.llm.set_transport(mock.messages)
+        non_yielding = llm_result(tool_block("broadcast", {"message": "broadcast only."}, block_id="tu_b"), stop_reason="tool_use")
+        mock = install_mock_chat_client(c, {"play": [non_yielding] * 5})
         c.post(f"/api/sessions/{sid}/setup/skip?token={cr}")
         r = c.post(f"/api/sessions/{sid}/start?token={cr}")
         assert r.status_code == 200, r.text
@@ -4274,7 +3837,7 @@ def test_strict_retry_max_two_runs_three_attempts(monkeypatch) -> None:
         snap = c.get(f"/api/sessions/{sid}?token={cr}").json()
         assert snap["current_turn"]["status"] == "errored"
         # 1 non-strict + 2 strict = 3 attempts.
-        assert len(mock.messages.calls) == 3, mock.messages.calls
+        assert len(mock.calls) == 3, mock.calls
         snap_debug = c.get(f"/api/sessions/{sid}/debug?token={cr}").json()
         last_turn = snap_debug["turns"][-1]
         assert last_turn["retried_with_strict"] is True
@@ -4282,65 +3845,58 @@ def test_strict_retry_max_two_runs_three_attempts(monkeypatch) -> None:
 
 def test_per_tier_timeout_passed_to_anthropic(monkeypatch) -> None:
     """When ``LLM_TIMEOUT_<TIER>`` differs from the global, the
-    per-call ``with_options(timeout=…)`` path should fire and pass the
-    override through to the Anthropic SDK. Locks the SDK plumbing the
-    QA review flagged as untested (the existing settings-resolver
-    test only covers the resolver, not the wire)."""
+    per-call ``timeout=`` kwarg the LiteLLM client sends to
+    ``litellm.acompletion`` should carry the per-tier override.
+    Locks the wire-level plumbing the QA review flagged as untested
+    (the existing settings-resolver test only covers the resolver,
+    not the wire)."""
 
     import asyncio
+    from unittest.mock import AsyncMock, MagicMock, patch
 
     from app.config import Settings
-    from app.llm.client import LLMClient
+    from app.llm.clients.litellm_client import LiteLLMChatClient
 
     monkeypatch.setenv("LLM_API_KEY", "test-key")
+    monkeypatch.setenv("LLM_MODEL", "claude-haiku-4-5")
+    monkeypatch.setenv("LLM_MODEL_GUARDRAIL", "claude-haiku-4-5")
     monkeypatch.setenv("LLM_TIMEOUT_S", "600")
     monkeypatch.setenv("LLM_TIMEOUT_GUARDRAIL", "5")
 
     captured: dict[str, Any] = {}
 
-    class _StubMessages:
-        async def create(self, **kwargs: Any) -> Any:
-            captured["kwargs"] = kwargs
-            from tests.mock_anthropic import _ContentBlock, _Response
+    fake_response = MagicMock()
+    fake_response.choices = [MagicMock()]
+    fake_response.choices[0].message = MagicMock(content="on_topic", tool_calls=None)
+    fake_response.choices[0].finish_reason = "stop"
+    fake_response.usage = MagicMock(
+        prompt_tokens=10,
+        completion_tokens=5,
+        cache_creation_input_tokens=0,
+        cache_read_input_tokens=0,
+        prompt_tokens_details=None,
+    )
 
-            return _Response(content=[_ContentBlock(type="text", text="on_topic")])
-
-        def stream(self, **kwargs: Any) -> Any:
-            raise NotImplementedError
-
-    class _StubClient:
-        """Stand-in for the ``AsyncAnthropic`` instance — captures the
-        per-call timeout via ``with_options``."""
-
-        def __init__(self) -> None:
-            self.messages = _StubMessages()
-            self._with_options_calls: list[float] = []
-
-        def with_options(self, *, timeout: float) -> _StubClient:
-            # Return a fresh instance so the production code path mirrors
-            # the real SDK shape (each call gets its own derived client).
-            new = _StubClient()
-            new._with_options_calls = [*self._with_options_calls, timeout]
-            captured["with_options_timeout"] = timeout
-            return new
+    async def _fake_acompletion(**kwargs: Any) -> Any:
+        captured.update(kwargs)
+        return fake_response
 
     s = Settings()
-    llm = LLMClient(settings=s)
-    # Inject the stub at the ``_client`` level (NOT via ``set_transport``,
-    # which short-circuits ``_messages_for_tier``).
-    llm._client = _StubClient()  # type: ignore[assignment]
+    llm = LiteLLMChatClient(settings=s)
 
     async def _go() -> None:
-        await llm.acomplete(
-            tier="guardrail",
-            system_blocks=[{"type": "text", "text": "x"}],
-            messages=[{"role": "user", "content": "hi"}],
-        )
+        with patch(
+            "app.llm.clients.litellm_client.litellm.acompletion",
+            new=AsyncMock(side_effect=_fake_acompletion),
+        ):
+            await llm.acomplete(
+                tier="guardrail",
+                system_blocks=[{"type": "text", "text": "x"}],
+                messages=[{"role": "user", "content": "hi"}],
+            )
 
     asyncio.run(_go())
-    # The override kicked in (5 s != 600 s global) so with_options was
-    # called exactly once with the override.
-    assert captured.get("with_options_timeout") == 5.0
+    assert captured.get("timeout") == 5.0
 
 
 def test_temperature_stripped_for_opus_4_x(monkeypatch) -> None:
@@ -4350,14 +3906,15 @@ def test_temperature_stripped_for_opus_4_x(monkeypatch) -> None:
     AAR generation in production.
 
     The client now strips ``temperature`` for Opus-4.x models before
-    forwarding to Anthropic. Lock the strip at the wire so a future
+    forwarding to litellm. Lock the strip at the wire so a future
     refactor can't accidentally re-enable it.
     """
 
     import asyncio
+    from unittest.mock import AsyncMock, MagicMock, patch
 
     from app.config import Settings
-    from app.llm.client import LLMClient
+    from app.llm.clients.litellm_client import LiteLLMChatClient
 
     monkeypatch.setenv("LLM_API_KEY", "test-key")
     monkeypatch.setenv("LLM_MODEL_AAR", "claude-opus-4-7")
@@ -4365,59 +3922,62 @@ def test_temperature_stripped_for_opus_4_x(monkeypatch) -> None:
 
     captured: dict[str, Any] = {}
 
-    class _StubMessages:
-        async def create(self, **kwargs: Any) -> Any:
-            captured["kwargs"] = dict(kwargs)
-            from tests.mock_anthropic import _ContentBlock, _Response
+    fake_response = MagicMock()
+    fake_response.choices = [MagicMock()]
+    fake_response.choices[0].message = MagicMock(content="ok", tool_calls=None)
+    fake_response.choices[0].finish_reason = "stop"
+    fake_response.usage = MagicMock(
+        prompt_tokens=10,
+        completion_tokens=5,
+        cache_creation_input_tokens=0,
+        cache_read_input_tokens=0,
+        prompt_tokens_details=None,
+    )
 
-            return _Response(content=[_ContentBlock(type="text", text="ok")])
-
-        def stream(self, **kwargs: Any) -> Any:
-            raise NotImplementedError
-
-    class _StubClient:
-        def __init__(self) -> None:
-            self.messages = _StubMessages()
-
-        def with_options(self, *, timeout: float) -> _StubClient:
-            new = _StubClient()
-            return new
+    async def _fake_acompletion(**kwargs: Any) -> Any:
+        captured.clear()
+        captured.update(kwargs)
+        return fake_response
 
     s = Settings()
-    llm = LLMClient(settings=s)
-    llm._client = _StubClient()  # type: ignore[assignment]
+    llm = LiteLLMChatClient(settings=s)
 
     async def _go() -> None:
-        await llm.acomplete(
-            tier="aar",
-            system_blocks=[{"type": "text", "text": "x"}],
-            messages=[{"role": "user", "content": "y"}],
-        )
+        with patch(
+            "app.llm.clients.litellm_client.litellm.acompletion",
+            new=AsyncMock(side_effect=_fake_acompletion),
+        ):
+            await llm.acomplete(
+                tier="aar",
+                system_blocks=[{"type": "text", "text": "x"}],
+                messages=[{"role": "user", "content": "y"}],
+            )
 
     asyncio.run(_go())
-    kwargs = captured["kwargs"]
-    assert "temperature" not in kwargs, (
+    assert "temperature" not in captured, (
         "temperature must be stripped for Opus-4.x models (deprecated by "
-        f"Anthropic); kwargs sent: {sorted(kwargs)}"
+        f"Anthropic); kwargs sent: {sorted(captured)}"
     )
     # Sonnet keeps temperature — the strip is targeted, not blanket.
     monkeypatch.setenv("LLM_MODEL_AAR", "claude-sonnet-4-6")
     s2 = Settings()
-    llm2 = LLMClient(settings=s2)
-    llm2._client = _StubClient()  # type: ignore[assignment]
-    captured.clear()
+    llm2 = LiteLLMChatClient(settings=s2)
 
     async def _go2() -> None:
-        await llm2.acomplete(
-            tier="aar",
-            system_blocks=[{"type": "text", "text": "x"}],
-            messages=[{"role": "user", "content": "y"}],
-        )
+        with patch(
+            "app.llm.clients.litellm_client.litellm.acompletion",
+            new=AsyncMock(side_effect=_fake_acompletion),
+        ):
+            await llm2.acomplete(
+                tier="aar",
+                system_blocks=[{"type": "text", "text": "x"}],
+                messages=[{"role": "user", "content": "y"}],
+            )
 
     asyncio.run(_go2())
-    assert captured["kwargs"].get("temperature") == 0.4, (
+    assert captured.get("temperature") == 0.4, (
         "non-Opus-4.x models must keep the configured temperature; "
-        f"kwargs sent: {captured['kwargs']}"
+        f"kwargs sent: {captured}"
     )
 
 

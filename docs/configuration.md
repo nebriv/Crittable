@@ -21,7 +21,7 @@ default. Three small layers above that:
 |---|---|---|
 | **Required** | `LLM_API_KEY` | Always — the app refuses to start without it. |
 | **Before going public** | `SESSION_SECRET`, `CORS_ORIGINS`, `RATE_LIMIT_ENABLED` | Before anyone outside your machine touches the app. The app boots without these but warns loudly. See [the hardening checklist](#before-going-public--hardening-checklist). |
-| **Tweaks worth knowing** | `LLM_BACKEND`, `LLM_API_BASE`, `LLM_MODEL_<TIER>`, `LOG_LEVEL`, `MAX_TURNS_PER_SESSION`, `INPUT_GUARDRAIL_ENABLED` | When you want a different LLM backend, change models, see more logs, change cost caps, or disable the off-topic guardrail. See [`llm_providers.md`](llm_providers.md) for the multi-provider story. |
+| **Tweaks worth knowing** | `LLM_API_BASE`, `LLM_MODEL_<TIER>`, `LOG_LEVEL`, `MAX_TURNS_PER_SESSION`, `INPUT_GUARDRAIL_ENABLED` | When you want a different LLM provider, change models, see more logs, change cost caps, or disable the off-topic guardrail. See [`llm_providers.md`](llm_providers.md) for the multi-provider story. |
 | **Dev-only — never set in production** | `DEV_FAST_SETUP`, `DEV_TOOLS_ENABLED`, `AAR_INLINE_ON_END` | Iterating on the play UI / running scenario replays / running tests. Each one degrades security or correctness if left on. |
 
 The rest of this page is the long form: every var, its default, and
@@ -42,13 +42,7 @@ why you'd touch it.
 
 | Var | Effect |
 |---|---|
-| `LLM_API_KEY` | API key for the engine's primary credential. Required when `LLM_BACKEND=anthropic` (default; the SDK reads it directly) or when `LLM_BACKEND=litellm` and at least one tier targets the `anthropic/` family. **Not required for LiteLLM deployments routing only to non-Anthropic providers** — LiteLLM auto-discovers `OPENAI_API_KEY` / `AWS_*` / `AZURE_API_KEY` / `GOOGLE_APPLICATION_CREDENTIALS` from the process env at first call. The startup gate ([`app/main.py`](../backend/app/main.py)) fails fast when the key is needed and missing; conversely it logs `llm_api_key_skipped` and boots when a non-Anthropic LiteLLM target makes the key unnecessary. The pytest suite injects a dummy value via `backend/tests/conftest.py`. The app's `Settings` is configured with `env_file=None` and does not read `.env` directly — operators using a `.env` need an external loader (`docker compose` reads it for `${VAR}` interpolation, `direnv` exports it, the live-test conftest has a tiny inline parser). See [`llm_providers.md`](llm_providers.md) for per-provider env var conventions. |
-
-## LLM backend selection
-
-| Var | Default | Effect |
-|---|---|---|
-| `LLM_BACKEND` | `anthropic` | Chooses the LLM client implementation. `"anthropic"` uses `anthropic.AsyncAnthropic` directly (the original path; smallest dep footprint, Anthropic-only). `"litellm"` routes via LiteLLM, supporting ~100 providers (Azure OpenAI, AWS Bedrock, Vertex AI, OpenRouter, OpenAI direct, vLLM/Ollama, …). See [`llm_providers.md`](llm_providers.md) for the full multi-provider configuration story. Both backends share the same `ChatClient` ABC so downstream code is identical. |
+| `LLM_API_KEY` | API key for the engine's primary credential. Required when at least one tier targets the `anthropic/` family. **Not required for deployments routing only to non-Anthropic providers** — LiteLLM auto-discovers `OPENAI_API_KEY` / `AWS_*` / `AZURE_API_KEY` / `GOOGLE_APPLICATION_CREDENTIALS` from the process env at first call. The startup gate ([`app/main.py`](../backend/app/main.py)) fails fast when the key is needed and missing; conversely it logs `llm_api_key_skipped` and boots when a non-Anthropic target makes the key unnecessary. The pytest suite injects a dummy value via `backend/tests/conftest.py`. The app's `Settings` is configured with `env_file=None` and does not read `.env` directly — operators using a `.env` need an external loader (`docker compose` reads it for `${VAR}` interpolation, `direnv` exports it, the live-test conftest has a tiny inline parser). See [`llm_providers.md`](llm_providers.md) for per-provider env var conventions. |
 
 ## Models (tiered)
 
@@ -62,9 +56,9 @@ If `LLM_MODEL` is set, it is the fallback for any unset tier.
 | `LLM_MODEL_GUARDRAIL` | `claude-haiku-4-5` | Optional input-side classifier |
 | `LLM_MAX_RETRIES` | `4` | SDK retry budget on 429/5xx |
 | `LLM_TIMEOUT_S` | `600` | Per-request timeout in seconds |
-| `LLM_API_BASE` | _unset_ | Anthropic-direct backend: forwarded to `AsyncAnthropic(base_url=…)` for talking to Anthropic-compatible endpoints. LiteLLM backend: forwarded as `api_base` to `litellm.acompletion`. Either way, points the engine at a non-default endpoint. See [`llm_providers.md`](llm_providers.md). |
+| `LLM_API_BASE` | _unset_ | Forwarded as `api_base` to `litellm.acompletion`; points the engine at a non-default endpoint (Anthropic-compatible proxy, internal LLM gateway, OpenAI-compatible local server, etc.). See [`llm_providers.md`](llm_providers.md). |
 
-When `LLM_BACKEND=litellm`, set `LLM_MODEL_<TIER>` to a fully-
+Set `LLM_MODEL_<TIER>` to a fully-
 qualified id like `bedrock/anthropic.claude-opus-4-7-20251101-v1:0`,
 `vertex_ai/claude-sonnet-4-6`, `openai/gpt-4o`, etc. Bare ``claude-...``
 names auto-prefix with ``anthropic/``. Other bare names are rejected at

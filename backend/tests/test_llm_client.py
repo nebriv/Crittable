@@ -8,9 +8,9 @@ contract: every call begins with ``ai_thinking active=True`` and ends
 with ``active=False`` (matching ``call_id``), on success **and** on
 exception.
 
-Lifecycle now lives on ``ChatClient`` (the base class), so these tests
-exercise it via ``MockChatClient`` rather than the Anthropic-direct
-``LLMClient``. The same broadcast logic runs on every backend.
+Lifecycle lives on ``ChatClient`` (the base class), so these tests
+exercise it via ``MockChatClient``. Production code routes every call
+through ``LiteLLMChatClient`` which inherits the same lifecycle.
 
 Cache-helper tests below test the shared
 ``with_system_cache`` / ``with_message_cache`` from ``app.llm._shared``.
@@ -28,8 +28,7 @@ from app.llm._shared import with_message_cache, with_system_cache
 from app.llm.protocol import LLMResult
 from tests.mock_chat_client import MockChatClient, llm_result, text_block
 
-# Aliases keep the test names readable; the helpers live in _shared
-# (used by both Anthropic-direct and LiteLLM clients).
+# Aliases keep the test names readable; the helpers live in _shared.
 _with_cache = with_system_cache
 
 
@@ -339,7 +338,7 @@ def test_with_cache_recovery_shape_marks_only_first_block() -> None:
 
 
 def test_every_concrete_chatclient_subclass_calls_harden_litellm_globals() -> None:
-    """Class-level: any concrete ``ChatClient`` implementation must run
+    """Every concrete ``ChatClient`` implementation must run
     ``harden_litellm_globals()`` from its constructor.
 
     The ``_shared`` module runs it once at import time, but a third
@@ -348,11 +347,11 @@ def test_every_concrete_chatclient_subclass_calls_harden_litellm_globals() -> No
     Re-running the (idempotent) call from each backend's ``__init__``
     closes that window.
 
-    The May 2026 bug-scrub M4 was the asymmetric case:
-    ``LiteLLMChatClient`` called it; ``LLMClient`` (Anthropic-direct)
-    didn't. This test catches a future *third* backend lacking the
-    call. Walks every concrete subclass under ``app.llm.``, instantiates
-    it under a spy, and asserts the spy fires.
+    Walks every concrete subclass under ``app.llm.``, instantiates each
+    under a spy, and asserts the spy fires. The set is currently a
+    singleton (``LiteLLMChatClient``), but the loop catches a future
+    second backend dropping the call without having to add a separate
+    test.
     """
 
     import importlib
@@ -360,14 +359,11 @@ def test_every_concrete_chatclient_subclass_calls_harden_litellm_globals() -> No
     import pkgutil
     from unittest.mock import patch
 
+    # Eagerly import every backend module so ``ChatClient.__subclasses__``
+    # sees them. Walks ``app.llm.clients.*``.
+    import app.llm.clients as clients_pkg
     from app.config import Settings
     from app.llm.protocol import ChatClient
-
-    # Eagerly import every backend module so ``ChatClient.__subclasses__``
-    # sees them. Walks ``app.llm.clients.*`` and the top-level
-    # ``app.llm.client`` (which is the Anthropic-direct backend).
-    importlib.import_module("app.llm.client")
-    import app.llm.clients as clients_pkg
     for _, name, _ in pkgutil.iter_modules(clients_pkg.__path__):
         importlib.import_module(f"{clients_pkg.__name__}.{name}")
 
@@ -376,10 +372,17 @@ def test_every_concrete_chatclient_subclass_calls_harden_litellm_globals() -> No
         for cls in ChatClient.__subclasses__()
         if not inspect.isabstract(cls) and cls.__module__.startswith("app.llm.")
     ]
-    assert len(concrete) >= 2, (
-        f"Expected at least two concrete ChatClient subclasses (Anthropic-"
-        f"direct + LiteLLM); found {len(concrete)}. The discovery walk in "
-        f"this test or the protocol module changed; update accordingly."
+    # Pin the set of concrete backends explicitly. If this list grows,
+    # the `for` loop below covers the new entries automatically; if it
+    # *shrinks*, the assertion fires loudly so a contributor doesn't
+    # accidentally delete the only concrete backend and pass the
+    # post-cleanup test by virtue of `concrete == []`.
+    expected_names = {"LiteLLMChatClient"}
+    actual_names = {cls.__name__ for cls in concrete}
+    assert actual_names == expected_names, (
+        f"Concrete ChatClient subclasses changed: expected "
+        f"{expected_names}, got {actual_names}. Update this test "
+        f"and document the addition / removal in CLAUDE.md."
     )
 
     settings = Settings(llm_api_key="dummy-test-key")

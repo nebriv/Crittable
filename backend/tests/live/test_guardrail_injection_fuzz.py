@@ -31,7 +31,7 @@ from typing import Any
 import pytest
 
 from app.config import get_settings
-from app.llm.client import LLMClient
+from app.llm.clients.litellm_client import LiteLLMChatClient
 from app.llm.guardrail import InputGuardrail
 
 from .conftest import call_play
@@ -130,7 +130,7 @@ def guardrail() -> InputGuardrail:
     """Build the production guardrail wired to the real LLM client."""
 
     settings = get_settings()
-    llm = LLMClient(settings=settings)
+    llm = LiteLLMChatClient(settings=settings)
     return InputGuardrail(llm=llm, settings=settings)
 
 
@@ -147,7 +147,7 @@ async def test_guardrail_classifier(
     monkeypatch.setenv("INPUT_GUARDRAIL_ENABLED", "true")
     # Re-instantiate with the env override applied.
     settings = get_settings()
-    llm = LLMClient(settings=settings)
+    llm = LiteLLMChatClient(settings=settings)
     gr = InputGuardrail(llm=llm, settings=settings)
     verdict = await gr.classify(message=message)
     assert verdict == expected, (

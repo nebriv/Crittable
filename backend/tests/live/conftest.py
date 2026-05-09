@@ -198,7 +198,7 @@ def anthropic_client() -> Any:
     """Async Anthropic client wired to the configured base URL.
 
     Reads the API key via ``Settings.require_llm_api_key()`` — the
-    same resolution path the production ``LLMClient`` uses.  Reading
+    same resolution path the production ``LiteLLMChatClient`` uses.  Reading
     ``os.environ["LLM_API_KEY"]`` directly here would diverge:
     a contributor with the key in ``.env`` (which the auto-skip's
     dotenv loader handles into ``os.environ`` first) would otherwise
@@ -226,11 +226,12 @@ def anthropic_client() -> Any:
         api_key=key,
         base_url=settings.llm_api_base,
     )
-    # The session-scoped __init__ patch in ``_live_cost_cap`` already
-    # wraps every AsyncAnthropic; this is belt-and-braces for the
-    # case where this fixture is called before the autouse fixture
-    # has executed (parametrize ordering is not formally guaranteed
-    # to put session-scope before function-scope on the first item).
+    # Cost-cap wrap is load-bearing here. The session-scoped
+    # ``AsyncAnthropic.__init__`` patch the prior version of
+    # ``_live_cost_cap`` installed is gone (#195), so every
+    # direct-Anthropic fixture must wrap itself or its
+    # ``messages.create`` calls bypass the ``_CostTracker`` and the
+    # live-test budget cap goes inert.
     _wrap_messages_create(client)
     return client
 
@@ -571,61 +572,26 @@ def tool_names(resp: Any) -> list[str]:
 
 @pytest.fixture(autouse=True, scope="session")
 def _live_cost_cap() -> Any:
-    """Patch ``AsyncAnthropic.__init__`` so every client built during
-    the live session is wrapped with the cost-tracking ``messages.create``.
+    """Register the LiteLLM cost-tracking callback for the entire live
+    session so every ``litellm.acompletion`` call records spend.
 
-    Catches three categories of caller:
-      1. The ``anthropic_client`` fixture above.
-      2. The per-test ``judge_client`` fixture in
-         ``test_aar_quality_judge.py``.
-      3. ``LLMClient`` in ``app/llm/client.py`` (used by the
-         ``AARGenerator`` and the setup driver), which constructs
-         ``AsyncAnthropic`` lazily on first call.
+    The production runtime now goes through ``LiteLLMChatClient`` only;
+    ``LLMClient`` (Anthropic-direct) is gone, so the SDK-level
+    ``AsyncAnthropic.__init__`` patch the prior version of this fixture
+    installed is no longer needed.
 
-    Lifetime: this is a session-scoped autouse fixture, so once any
-    live test triggers it the patch stays active for the *entire*
-    pytest session and is only reverted at session teardown. Unit
-    tests that run BEFORE the live suite in the same invocation see
-    an unwrapped class; unit tests that run AFTER the live suite has
-    activated the fixture (and before the session ends) would see
-    the patched ``__init__``. In practice this only matters in a
-    single ``pytest`` invocation that mixes ``tests/`` and
-    ``tests/live/`` — CI runs them in separate jobs, and the wrapper
-    is benign for non-live AsyncAnthropic instances anyway (it just
-    counts usage that no test asserts on).
+    The two remaining direct-Anthropic call sites are the ``anthropic_client``
+    fixture above and ``judge_client`` in ``test_aar_quality_judge.py``;
+    both wrap their own ``AsyncAnthropic`` instance with
+    ``_wrap_messages_create`` at construction time, so cost tracking
+    still covers them without a class-wide patch.
     """
 
-    try:
-        from anthropic import AsyncAnthropic
-    except ImportError:
-        # Live tests will skip via the auto-skip hook anyway; nothing
-        # to wrap.
-        yield None
-        return
-
-    original_init = AsyncAnthropic.__init__
-
-    def init_wrapper(self: Any, *args: Any, **kwargs: Any) -> None:
-        original_init(self, *args, **kwargs)
-        _wrap_messages_create(self)
-
-    # Test-only monkeypatch of the SDK's __init__ so every
-    # AsyncAnthropic constructed during the live session gets the
-    # cost-cap wrapper. mypy flags re-assigning a method on a class
-    # (method-assign); intentional here.
-    AsyncAnthropic.__init__ = init_wrapper  # type: ignore[method-assign]
-    # LiteLLM-backed runs go through ``litellm.acompletion``, not
-    # ``AsyncAnthropic``. Register the LiteLLM callback so the same
-    # ``_CostTracker`` records both backends. No-op if litellm isn't
-    # importable.
     teardown_litellm_tracking = install_litellm_cost_tracking()
     try:
         yield get_tracker()
     finally:
         teardown_litellm_tracking()
-        # Restore the original at session end so a later non-live
-        # test invocation in the same shell sees an unwrapped class.
-        AsyncAnthropic.__init__ = original_init  # type: ignore[method-assign]
 
 
 def pytest_runtest_teardown(item: pytest.Item, nextitem: pytest.Item | None) -> None:

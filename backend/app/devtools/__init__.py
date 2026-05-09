@@ -12,8 +12,8 @@ A ``Scenario`` is a declarative JSON file describing:
   * setup-phase replies (creator's side of the AI setup dialogue)
   * play-phase replies (per-turn, per-role player submissions)
   * optional ``mock_llm`` script — when provided the scenario plays
-    against the deterministic ``MockAnthropic`` transport instead of
-    burning real Anthropic tokens.
+    against the deterministic ``MockChatClient`` instead of burning
+    real LLM tokens.
 
 The ``ScenarioRunner`` drives a scenario through the live ``SessionManager``
 + HTTP/WS surface so the same code path runs in pytest, in a CLI, and in

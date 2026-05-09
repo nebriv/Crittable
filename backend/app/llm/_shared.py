@@ -1,25 +1,21 @@
-"""Helpers shared by every ``ChatClient`` implementation.
+"""Helpers shared with the LiteLLM-routed ``ChatClient``.
 
 Internal-only — name starts with ``_`` to mark it as a package-internal
-module. Stateless helpers that don't care which provider they run
-against: tool_choice validation, deprecated-sampling-param stripping,
+module. Stateless helpers that don't care about wire-shape specifics:
+tool_choice validation, deprecated-sampling-param stripping,
 cache-breakpoint placement, and ``compute_cost_usd`` (single
-authoritative cost source for both backends — talks to LiteLLM's
-pricing JSON instead of the now-deleted local table).
+authoritative cost source — talks to LiteLLM's pricing JSON instead of
+the deleted local table).
 
 # litellm import + hardening lives here
 
-Both ``ChatClient`` implementations import from this module, so any
-path that boots a backend ends up with litellm hardened
-(callback registries zeroed, telemetry off). The Anthropic-direct
-backend now also reads its cost from LiteLLM's pricing table, so
-``import litellm`` happens via this module on the Anthropic-only
-path too.
-
-``LITELLM_MODE=PRODUCTION`` is set *before* ``import litellm`` to
-skip the library's import-time ``dotenv.load_dotenv()`` (which would
-silently load a contributor's ``.env`` and re-arm the very third-party
-telemetry we wipe in ``_harden_litellm_globals``).
+Importing this module sets ``LITELLM_MODE=PRODUCTION`` *before*
+``import litellm`` to skip the library's import-time
+``dotenv.load_dotenv()`` (which would silently load a contributor's
+``.env`` and re-arm the very third-party telemetry we wipe in
+``_harden_litellm_globals``). ``LiteLLMChatClient.__init__`` re-runs
+``harden_litellm_globals()`` defensively in case a third party
+imported litellm between this module load and client construction.
 """
 
 from __future__ import annotations

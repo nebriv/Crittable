@@ -459,7 +459,7 @@ def http_client(monkeypatch: pytest.MonkeyPatch) -> Any:
     from fastapi.testclient import TestClient
 
     from app.main import create_app
-    from tests.mock_anthropic import MockAnthropic
+    from tests.mock_chat_client import install_mock_chat_client
 
     monkeypatch.setenv("LLM_MODEL_PLAY", "mock-play")
     monkeypatch.setenv("LLM_MODEL_SETUP", "mock-setup")
@@ -472,7 +472,7 @@ def http_client(monkeypatch: pytest.MonkeyPatch) -> Any:
     reset_settings_cache()
     app = create_app()
     with TestClient(app) as c:
-        c.app.state.llm.set_transport(MockAnthropic({}).messages)
+        install_mock_chat_client(c)
         yield c
 
 

@@ -350,7 +350,7 @@ def _to_recorded(
 
 
 def _try_build_mock_script(session: Session) -> dict[str, Any] | None:
-    """Attempt to reconstruct a MockAnthropic script from AI messages.
+    """Attempt to reconstruct a MockChatClient script from AI messages.
 
     Stub for now. The audit log records tool-use kinds and partial
     payloads; reconstructing a faithful mock would need the full

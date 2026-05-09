@@ -1,9 +1,9 @@
 """Shared fixtures for scenario-replay tests.
 
 These tests drive `app.devtools.runner.ScenarioRunner` against the
-deterministic ``MockAnthropic`` transport so the runner — and the
-canonical scenario JSON files in ``backend/scenarios/`` — stay in
-contract with the engine without burning real tokens.
+deterministic ``MockChatClient`` so the runner — and the canonical
+scenario JSON files in ``backend/scenarios/`` — stay in contract with
+the engine without burning real tokens.
 """
 
 from __future__ import annotations
@@ -15,7 +15,11 @@ from fastapi.testclient import TestClient
 
 from app.config import reset_settings_cache
 from app.main import create_app
-from tests.mock_anthropic import MockAnthropic, setup_then_play_script
+from tests.mock_chat_client import (
+    MockChatClient,
+    install_mock_chat_client,
+    setup_then_play_script,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -40,7 +44,7 @@ def client() -> Iterator[TestClient]:
 
     app = create_app()
     with TestClient(app) as c:
-        c.app.state.llm.set_transport(MockAnthropic({}).messages)
+        install_mock_chat_client(c)
         yield c
 
 
@@ -49,12 +53,10 @@ def install_mock_for_roles():
     """Install a richer mock script keyed off a role_id list. Returns a
     callable so the test can re-install after creating roles."""
 
-    def _install(client: TestClient, role_ids: list[str]) -> MockAnthropic:
+    def _install(client: TestClient, role_ids: list[str]) -> MockChatClient:
         scripts = setup_then_play_script(
             role_ids=role_ids, extension_tool=None, fire_critical=False
         )
-        mock = MockAnthropic(scripts)
-        client.app.state.llm.set_transport(mock.messages)
-        return mock
+        return install_mock_chat_client(client, scripts)
 
     return _install

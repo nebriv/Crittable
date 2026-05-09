@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 # Run backend/tests/live/ against the live LLM provider (Anthropic
-# direct, or whichever provider you've set via LLM_BACKEND=litellm +
-# LLM_MODEL_<TIER>).
+# by default, or whichever provider you've set via LLM_MODEL_<TIER>).
 #
 # Bridges a harness-namespaced key into the pytest subprocess only.
 # Setting ``LLM_API_KEY`` directly at the Claude Code session level is

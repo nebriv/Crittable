@@ -1,5 +1,5 @@
 """Unit-ish tests for the ScenarioRunner — drive a small Scenario through
-the live SessionManager + a MockAnthropic transport, assert state.
+the live SessionManager + a MockChatClient transport, assert state.
 
 Runs the runner against an in-process app rather than the full HTTP
 TestClient — that's the runner's intended call surface (see
@@ -180,7 +180,7 @@ async def test_recorder_captures_ai_messages_for_deterministic_replay(
         "recorder should capture AI messages, not just player submissions"
     )
 
-    # Replay deterministically — no MockAnthropic install, the runner
+    # Replay deterministically — no MockChatClient install, the runner
     # injects recorded AI messages directly. If it tried to call the
     # LLM, the un-installed transport would crash.
     replay_runner = ScenarioRunner(manager, recorded)
@@ -411,13 +411,13 @@ async def test_runner_routes_player_submissions_through_pipeline(
 
     from app.config import reset_settings_cache
     from app.main import create_app
-    from tests.mock_anthropic import MockAnthropic
+    from tests.mock_chat_client import install_mock_chat_client
 
     monkeypatch.setenv("MAX_PARTICIPANT_SUBMISSION_CHARS", "50")
     reset_settings_cache()
     app = create_app()
     with TestClient(app) as test_client:
-        test_client.app.state.llm.set_transport(MockAnthropic({}).messages)
+        install_mock_chat_client(test_client)
         scenario = _basic_scenario()
         # Replace the first scripted submission with a too-long body.
         scenario.play_turns[0].submissions[0] = PlayStep(

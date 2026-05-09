@@ -420,8 +420,10 @@ class _StubClientWithStream:
 @pytest.mark.asyncio
 async def test_wrap_stream_records_usage_via_get_final_message() -> None:
     """The wrapped ``messages.stream`` must record the final usage
-    via ``stream.get_final_message()``. This is the path exercised by
-    production's ``LLMClient.astream``.
+    via ``stream.get_final_message()``. This is the path the live-test
+    ``anthropic_client`` / ``judge_client`` fixtures exercise; the
+    production ``LiteLLMChatClient`` records via the LiteLLM callback
+    path instead.
 
     Critically: ``async with mgr as stream`` looks up dunders on
     ``type(mgr)``, not the instance. The wrapper has to return a

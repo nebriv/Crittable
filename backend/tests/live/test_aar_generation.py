@@ -35,7 +35,7 @@ import pytest
 
 from app.auth.audit import AuditLog
 from app.config import get_settings
-from app.llm.client import LLMClient
+from app.llm.clients.litellm_client import LiteLLMChatClient
 from app.llm.export import AARGenerator, _extract_report
 from app.llm.prompts import build_aar_system_blocks
 from app.llm.tools import AAR_TOOL
@@ -63,12 +63,12 @@ def aar_audit() -> AuditLog:
 
 
 @pytest.fixture
-def aar_client() -> LLMClient:
-    """Production-shaped LLMClient pointed at the live API."""
+def aar_client() -> LiteLLMChatClient:
+    """Production-shaped LiteLLMChatClient pointed at the live API."""
 
     settings = get_settings()
     # The client's own factory; same path the SessionManager uses.
-    client = LLMClient(settings=settings)
+    client = LiteLLMChatClient(settings=settings)
     return client
 
 
@@ -76,7 +76,7 @@ def aar_client() -> LLMClient:
 
 
 async def test_aar_generator_emits_finalize_report(
-    aar_session: Session, aar_audit: AuditLog, aar_client: LLMClient
+    aar_session: Session, aar_audit: AuditLog, aar_client: LiteLLMChatClient
 ) -> None:
     """End-to-end: AARGenerator on a small transcript produces a markdown
     string that includes every required section. Routing-level check —
@@ -121,7 +121,7 @@ async def test_aar_generator_emits_finalize_report(
 
 
 async def test_aar_report_includes_per_role_scores_for_seated_roles(
-    aar_session: Session, aar_audit: AuditLog, aar_client: LLMClient
+    aar_session: Session, aar_audit: AuditLog, aar_client: LiteLLMChatClient
 ) -> None:
     """Each seated role must appear in ``per_role_scores`` with all four
     sub-fields populated. The renderer falls back to ``–`` for missing
@@ -170,7 +170,7 @@ async def test_aar_report_includes_per_role_scores_for_seated_roles(
 
 
 async def test_aar_report_overall_score_in_range(
-    aar_session: Session, aar_audit: AuditLog, aar_client: LLMClient
+    aar_session: Session, aar_audit: AuditLog, aar_client: LiteLLMChatClient
 ) -> None:
     """Overall score must be an integer 1–5 with a non-empty rationale."""
 
@@ -199,7 +199,7 @@ async def test_aar_report_overall_score_in_range(
 
 
 async def test_aar_report_grounds_recommendations_in_transcript(
-    aar_session: Session, aar_audit: AuditLog, aar_client: LLMClient
+    aar_session: Session, aar_audit: AuditLog, aar_client: LiteLLMChatClient
 ) -> None:
     """The model should produce at least one recommendation that touches
     a topic actually present in the transcript (containment, regulator
@@ -262,7 +262,7 @@ async def test_aar_report_grounds_recommendations_in_transcript(
 
 
 async def test_aar_report_what_went_well_and_gaps_non_empty(
-    aar_session: Session, aar_audit: AuditLog, aar_client: LLMClient
+    aar_session: Session, aar_audit: AuditLog, aar_client: LiteLLMChatClient
 ) -> None:
     """Both the strengths and the gaps list must be populated for the
     AAR to feel balanced. The system prompt explicitly asks for 3–7 items
@@ -304,7 +304,7 @@ async def test_aar_report_what_went_well_and_gaps_non_empty(
 
 
 async def test_aar_report_no_temperature_param_for_opus(
-    aar_session: Session, aar_audit: AuditLog, aar_client: LLMClient
+    aar_session: Session, aar_audit: AuditLog, aar_client: LiteLLMChatClient
 ) -> None:
     """Defensive guard: the AAR tier defaults to Opus 4.x which rejects
     the ``temperature`` param. The client strips it before the API call;

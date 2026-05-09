@@ -27,7 +27,7 @@ from fastapi.testclient import TestClient
 from app.config import reset_settings_cache
 from app.main import create_app
 from tests.conftest import default_settings_body
-from tests.mock_anthropic import MockAnthropic, setup_then_play_script
+from tests.mock_chat_client import install_mock_chat_client, setup_then_play_script
 
 
 @pytest.fixture(autouse=True)
@@ -46,7 +46,7 @@ def client() -> TestClient:
     reset_settings_cache()
     app = create_app()
     with TestClient(app) as c:
-        c.app.state.llm.set_transport(MockAnthropic({}).messages)
+        install_mock_chat_client(c)
         yield c
 
 
@@ -95,12 +95,11 @@ def _system_text(call: dict[str, Any]) -> str:
     return "\n".join(b.get("text", "") for b in blocks if isinstance(b, dict))
 
 
-def _play_call(transport: Any) -> dict[str, Any] | None:
+def _play_call(mock: Any) -> dict[str, Any] | None:
     """Find the first captured play-tier LLM call."""
 
-    for call in transport.calls:
-        model = (call.get("model") or "").lower()
-        if "play" in model:
+    for call in mock.calls:
+        if call.get("tier") == "play":
             return call
     return None
 
@@ -122,8 +121,7 @@ async def test_play_turn_marks_unjoined_seat_in_block_10(client: TestClient) -> 
     seats = _seat_three(client)
     role_ids = [seats["creator_role_id"], seats["soc_role_id"], seats["ic_role_id"]]
     scripts = setup_then_play_script(role_ids=role_ids, extension_tool="")
-    transport = MockAnthropic(scripts).messages
-    client.app.state.llm.set_transport(transport)
+    mock = install_mock_chat_client(client, scripts)
 
     # Plant CISO + SOC into the connection manager directly. We don't
     # need real WebSockets — the manager's ``connected_role_ids`` /
@@ -149,7 +147,7 @@ async def test_play_turn_marks_unjoined_seat_in_block_10(client: TestClient) -> 
     client.post(f"/api/sessions/{seats['sid']}/setup/skip?token={seats['creator_token']}")
     client.post(f"/api/sessions/{seats['sid']}/start?token={seats['creator_token']}")
 
-    play_call = _play_call(transport)
+    play_call = _play_call(mock)
     assert play_call is not None, "expected at least one play-tier LLM call"
     text = _system_text(play_call)
 
@@ -226,8 +224,7 @@ async def test_play_turn_snapshots_presence_exactly_once_per_turn(
     seats = _seat_three(client)
     role_ids = [seats["creator_role_id"], seats["soc_role_id"], seats["ic_role_id"]]
     scripts = setup_then_play_script(role_ids=role_ids, extension_tool="")
-    transport = MockAnthropic(scripts).messages
-    client.app.state.llm.set_transport(transport)
+    install_mock_chat_client(client, scripts)
 
     # Wrap the live connection manager AFTER skip_setup so the setup
     # path doesn't pollute the count. The wrapper passes through every
@@ -279,8 +276,7 @@ async def test_run_interject_marks_unjoined_seat_in_block_10(
     seats = _seat_three(client)
     role_ids = [seats["creator_role_id"], seats["soc_role_id"], seats["ic_role_id"]]
     scripts = setup_then_play_script(role_ids=role_ids, extension_tool="")
-    transport = MockAnthropic(scripts).messages
-    client.app.state.llm.set_transport(transport)
+    mock = install_mock_chat_client(client, scripts)
 
     # Plant CISO + SOC connections; IC stays unregistered.
     connections = client.app.state.connections
@@ -314,14 +310,14 @@ async def test_run_interject_marks_unjoined_seat_in_block_10(
     # Snapshot the call count BEFORE run_interject so we can pick the
     # interject's call out of the transport log even if the briefing
     # produced multiple calls.
-    pre_calls = len(transport.calls)
+    pre_calls = len(mock.calls)
     await TurnDriver(manager=manager).run_interject(
         session=session, turn=turn, for_role_id=seats["soc_role_id"]
     )
-    new_calls = transport.calls[pre_calls:]
+    new_calls = mock.calls[pre_calls:]
     assert new_calls, "run_interject should fire at least one LLM call"
     play_call = next(
-        (c for c in new_calls if "play" in (c.get("model") or "").lower()),
+        (c for c in new_calls if c.get("tier") == "play"),
         None,
     )
     assert play_call is not None, (
@@ -357,14 +353,13 @@ async def test_play_turn_with_no_connected_seats_marks_all_not_joined(
     seats = _seat_three(client)
     role_ids = [seats["creator_role_id"], seats["soc_role_id"], seats["ic_role_id"]]
     scripts = setup_then_play_script(role_ids=role_ids, extension_tool="")
-    transport = MockAnthropic(scripts).messages
-    client.app.state.llm.set_transport(transport)
+    mock = install_mock_chat_client(client, scripts)
 
     # Deliberately don't register any connection.
     client.post(f"/api/sessions/{seats['sid']}/setup/skip?token={seats['creator_token']}")
     client.post(f"/api/sessions/{seats['sid']}/start?token={seats['creator_token']}")
 
-    play_call = _play_call(transport)
+    play_call = _play_call(mock)
     assert play_call is not None
     text = _system_text(play_call)
 
