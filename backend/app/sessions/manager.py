@@ -795,6 +795,76 @@ class SessionManager:
         )
         return msg
 
+    async def set_message_hidden_from_ai(
+        self,
+        *,
+        session_id: str,
+        message_id: str,
+        hidden_from_ai: bool,
+        by_role_id: str,
+        is_creator: bool,
+    ) -> Message:
+        """Per-message mute that hides this entry from every LLM-tier
+        user block (issue #162).
+
+        Authz mirrors ``override_message_workstream``:
+          - ``is_creator=True`` → may mute / unmute any message;
+          - else the caller must be the message's ``role_id`` (the
+            message-of-record's role can mute its own asides).
+          - everything else: ``IllegalTransitionError`` (mapped 403).
+
+        The flip is binary and forward-only — once muted, the next
+        play / interject / AAR user-block build drops the message.
+        Past LLM responses stay as they were; we don't rewrite the
+        model's view of history.
+
+        Emits the ``message_hidden_from_ai_changed`` audit kind with
+        ``before`` / ``after`` / ``actor`` so the AAR archeology run
+        can replay every mute/unmute. Fans out a
+        ``message_hidden_from_ai_changed`` WS event with
+        ``record=False`` (mirrors workstream override: the field
+        lives on the persisted message, the WS frame is only a
+        live-tab nudge — replay-buffer pressure on a tight toggle
+        loop would evict legitimate state_changed entries).
+        """
+
+        async with await self._lock_for(session_id):
+            session = await self._repo.get(session_id)
+            msg = next((m for m in session.messages if m.id == message_id), None)
+            if msg is None:
+                raise IllegalTransitionError(f"message not found: {message_id}")
+            if not is_creator and msg.role_id != by_role_id:
+                raise IllegalTransitionError(
+                    "only the message's author or the creator may mute the message from AI"
+                )
+            before = msg.hidden_from_ai
+            target = bool(hidden_from_ai)
+            if before == target:
+                # Idempotent no-op — no audit / broadcast spam from a
+                # double-click on the same toggle.
+                return msg
+            msg.hidden_from_ai = target
+            await self._repo.save(session)
+        self._emit(
+            "message_hidden_from_ai_changed",
+            session,
+            message_id=message_id,
+            before=before,
+            after=target,
+            actor=by_role_id,
+        )
+        await self._connections.broadcast(
+            session.id,
+            {
+                "type": "message_hidden_from_ai_changed",
+                "message_id": message_id,
+                "hidden_from_ai": target,
+                "actor_role_id": by_role_id,
+            },
+            record=False,
+        )
+        return msg
+
     async def set_ai_paused(
         self, *, session_id: str, paused: bool, by_role_id: str
     ) -> Session:
@@ -1356,6 +1426,22 @@ class SessionManager:
         # second call between our check and the state mutation,
         # producing the very race we're guarding against.
         async with await self._lock_for(session_id):
+            session = await self._repo.get(session_id)
+            # Creator-only gate (issue #215). Mirrors the equivalent
+            # check in ``end_session`` so the wire contract matches the
+            # UI contract: PR #214 removed the player-facing button, so
+            # any non-creator caller is either a buggy client or a
+            # probe and we surface it in the audit log.
+            if session.creator_role_id != by_role_id:
+                _logger.warning(
+                    "force_advance_unauthorized",
+                    session_id=session_id,
+                    by_role_id=by_role_id,
+                    creator_role_id=session.creator_role_id,
+                )
+                raise AuthorizationError(
+                    "only the creator can force-advance the session"
+                )
             in_flight = self._llm.in_flight_for(session_id)
             if any(c.tier == "play" for c in in_flight):
                 _logger.info(
@@ -1367,7 +1453,6 @@ class SessionManager:
                 raise IllegalTransitionError(
                     "AI is still processing — wait a few seconds before forcing advance"
                 )
-            session = await self._repo.get(session_id)
             turn = session.current_turn
             if turn is None:
                 raise IllegalTransitionError("nothing to force-advance")
@@ -1872,6 +1957,7 @@ class SessionManager:
         task.add_done_callback(self._bg_tasks.discard)
 
     async def _generate_aar_bg(self, session_id: str) -> None:
+        from ..llm.errors import UpstreamLLMError, notify_creator_of_upstream_error
         from ..llm.export import AARGenerator
 
         async with await self._lock_for(session_id):
@@ -1904,6 +1990,54 @@ class SessionManager:
         try:
             generator = AARGenerator(llm=self._llm, audit=self._audit)
             markdown, report = await generator.generate(target)
+        except UpstreamLLMError as upstream_exc:
+            # Issue #191 — AAR pipeline upstream blip. Surface the
+            # banner to the creator with the status-page link before
+            # falling through to the regular ``failed`` path so the
+            # operator knows it's an upstream issue (and that
+            # re-triggering AAR generation in a minute will likely
+            # succeed) rather than a Crittable bug.
+            await notify_creator_of_upstream_error(
+                connections=self._connections,
+                session=target,
+                err=upstream_exc,
+            )
+            _logger.exception(
+                "aar_generation_failed",
+                session_id=session_id,
+                error=str(upstream_exc),
+                upstream_category=upstream_exc.category,
+            )
+            async with await self._lock_for(session_id):
+                try:
+                    session = await self._repo.get(session_id)
+                except Exception as repo_exc:
+                    _logger.warning(
+                        "aar_failure_persist_aborted_repo_get_failed",
+                        session_id=session_id,
+                        original_error=str(upstream_exc),
+                        repo_error=str(repo_exc),
+                    )
+                    return
+                session.aar_status = "failed"
+                # ``aar_error`` is read by /activity, /export.md (425/500
+                # body), and rendered in SessionActivityPanel — must
+                # NOT carry the raw SDK exception text (Copilot review
+                # on PR #219). The sanitized summary keeps category +
+                # status + request_id; the raw message stays on the
+                # ``upstream_llm_error`` log line for ops.
+                session.aar_error = upstream_exc.sanitized_summary()[:500]
+                await self._repo.save(session)
+            # Audit payload's ``error`` field is creator-readable via
+            # /debug too; same sanitization rule applies.
+            self._emit(
+                "aar_failed", session, error=upstream_exc.sanitized_summary()
+            )
+            await self._connections.broadcast(
+                session_id, {"type": "aar_status_changed", "status": "failed"}
+            )
+            await self._broadcast_ai_status(session_id, phase=None)
+            return
         except Exception as exc:
             _logger.exception("aar_generation_failed", session_id=session_id, error=str(exc))
             async with await self._lock_for(session_id):

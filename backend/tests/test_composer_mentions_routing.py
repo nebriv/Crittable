@@ -1118,10 +1118,6 @@ def test_play_turn_reply_tags_facilitator_asker_when_quorum_closes(
     )
 
 
-@pytest.mark.skip(
-    reason="Test depends on intent=ready auto-advancing the turn; needs "
-    "rewrite to explicit set_role_ready calls (PR #209 follow-up)."
-)
 def test_play_turn_freeform_ai_text_also_gets_asker_mention(
     client: TestClient,
 ) -> None:
@@ -1178,10 +1174,22 @@ def test_play_turn_freeform_ai_text_also_gets_asker_mention(
             session_id=sid,
             role_id=creator_id,
             content="@facilitator IOCs?",
-
             mentions=[FACILITATOR_MENTION_TOKEN],
         )
-        assert outcome.advanced
+        # PR #209: submissions never advance — ``advanced`` is always
+        # False; the quorum gate is ``set_role_ready``.
+        assert not outcome.advanced
+        ready_outcome = await manager.set_role_ready(
+            session_id=sid,
+            actor_role_id=creator_id,
+            subject_role_id=creator_id,
+            ready=True,
+            client_seq=1,
+        )
+        assert ready_outcome.accepted
+        assert ready_outcome.ready_to_advance, (
+            "single active role marking ready closes the quorum"
+        )
         session = await manager.get_session(sid)
         turn = session.current_turn
         assert turn is not None
@@ -1214,10 +1222,6 @@ def test_play_turn_freeform_ai_text_also_gets_asker_mention(
     )
 
 
-@pytest.mark.skip(
-    reason="Test depends on intent=ready auto-advancing the turn; needs "
-    "rewrite to explicit set_role_ready calls (PR #209 follow-up)."
-)
 def test_play_turn_reply_tags_multiple_facilitator_askers_in_same_turn(
     client: TestClient,
 ) -> None:
@@ -1253,22 +1257,39 @@ def test_play_turn_reply_tags_multiple_facilitator_askers_in_same_turn(
             session_id=seats["session_id"],
             role_id=seats["creator_id"],
             content="@facilitator IOC list?",
-
             mentions=[FACILITATOR_MENTION_TOKEN],
         )
-        assert not outcome_ciso.advanced, (
-            "CISO alone shouldn't close quorum"
+        # PR #209: submissions never advance the turn (always False).
+        assert not outcome_ciso.advanced
+        ciso_ready = await manager.set_role_ready(
+            session_id=seats["session_id"],
+            actor_role_id=seats["creator_id"],
+            subject_role_id=seats["creator_id"],
+            ready=True,
+            client_seq=1,
+        )
+        assert ciso_ready.accepted
+        assert not ciso_ready.ready_to_advance, (
+            "CISO ready alone shouldn't close the two-role quorum"
         )
         outcome_soc = await prepare_and_submit_player_response(
             manager=manager,
             session_id=seats["session_id"],
             role_id=seats["soc_id"],
             content="@facilitator timeline?",
-
             mentions=[FACILITATOR_MENTION_TOKEN],
         )
-        assert outcome_soc.advanced, (
-            "SOC submission should close quorum"
+        assert not outcome_soc.advanced
+        soc_ready = await manager.set_role_ready(
+            session_id=seats["session_id"],
+            actor_role_id=seats["soc_id"],
+            subject_role_id=seats["soc_id"],
+            ready=True,
+            client_seq=1,
+        )
+        assert soc_ready.accepted
+        assert soc_ready.ready_to_advance, (
+            "second ready submission must close the quorum"
         )
         session = await manager.get_session(seats["session_id"])
         turn = session.current_turn

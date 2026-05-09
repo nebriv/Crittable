@@ -273,8 +273,14 @@ def _strip_workstream_keys(payload: dict[str, Any] | Any) -> dict[str, Any] | An
 
 
 def _user_payload(session: Session, audit: AuditLog) -> str:
+    # Issue #162: per-message AI mute. Operator-flipped messages are
+    # filtered out of the AAR transcript so muted asides don't
+    # pollute the post-mortem either. Mirrors the play-tier filter
+    # in ``turn_driver._play_messages``.
     transcript = "\n".join(
-        f"[{m.kind.value}] role={m.role_id or 'AI'}: {m.body}" for m in session.messages
+        f"[{m.kind.value}] role={m.role_id or 'AI'}: {m.body}"
+        for m in session.messages
+        if not m.hidden_from_ai
     )
     setup = "\n".join(
         f"[{n.speaker}] {n.topic or '-'}: {n.content}" for n in session.setup_notes
@@ -291,6 +297,18 @@ def _user_payload(session: Session, audit: AuditLog) -> str:
         # workstream-blind because it formats body/kind/role_id only,
         # not a full ``model_dump``.
         if e.kind != "workstream_declared"
+        # Issue #162: per-message AI mute. The transcript above
+        # already drops muted messages, but the audit log carries
+        # ``message_hidden_from_ai_changed`` events with
+        # ``{message_id, before, after, actor}``. Letting those
+        # through would tell the AAR LLM "the operator hid msg_X
+        # at time T" — defeating the issue's "muted asides
+        # shouldn't pollute the post-mortem" requirement (the
+        # model could reason about who muted what, even with
+        # the body redacted). Sub-agent security review HIGH +
+        # prompt-expert LOW agreed; treat this as a hard filter
+        # at the same boundary as the workstream carve-out.
+        and e.kind != "message_hidden_from_ai_changed"
     )
 
     # Player notepad. Wrapped in nonced delimiters so a player cannot
@@ -917,6 +935,13 @@ def _format_transcript_entry(session: Session, msg: Message) -> list[str]:
         actor = "**System**"
 
     tag = f" _[{msg.tool_name}]_" if msg.tool_name else ""
+    # Issue #162: per-message AI mute. The message was excluded from
+    # the LLM AAR user block (see ``_user_payload``), but it still
+    # appears here in the human-readable transcript appendix —
+    # annotate so the report reader knows the AI never saw this
+    # entry when generating the analysis above.
+    if msg.hidden_from_ai:
+        tag += " _[hidden from AI]_"
     header = f"**{msg.ts.isoformat()}** — {actor}{tag}"
     body = (msg.body or "").rstrip()
     if not body:

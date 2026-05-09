@@ -696,6 +696,21 @@ export function Transcript({
                       </div>
                     );
                   })()}
+                  {/* Issue #162: per-message AI mute on an AI / critical
+                      bubble. Rare in practice (the operator usually
+                      mutes player asides, not the model's own
+                      messages), but available for symmetry — once the
+                      flip lands, every LLM-tier user block drops the
+                      entry going forward. */}
+                  {m.hidden_from_ai === true ? (
+                    <p
+                      role="note"
+                      data-testid="hidden-from-ai-indicator"
+                      className="mt-1 italic text-[11px] leading-tight text-ink-400"
+                    >
+                      Hidden from AI
+                    </p>
+                  ) : null}
                 </div>
               </article>
             </Landmarks>
@@ -816,6 +831,20 @@ export function Transcript({
                     className="mt-1 italic text-[11px] leading-tight text-ink-400"
                   >
                     AI silenced — won't reply
+                  </p>
+                ) : null}
+                {/* Issue #162: per-message AI mute. The bubble stays
+                    visible to humans; the backend filters this entry
+                    out of every LLM-tier user block. The badge tells
+                    the operator (and any human re-reading the
+                    transcript) that the AI never saw this. */}
+                {m.hidden_from_ai === true ? (
+                  <p
+                    role="note"
+                    data-testid="hidden-from-ai-indicator"
+                    className="mt-1 italic text-[11px] leading-tight text-ink-400"
+                  >
+                    Hidden from AI
                   </p>
                 ) : null}
               </div>

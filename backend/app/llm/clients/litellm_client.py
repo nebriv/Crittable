@@ -47,6 +47,7 @@ from .._shared import (
     with_message_cache,
     with_system_cache,
 )
+from ..errors import classify_upstream_error
 from ..protocol import ChatClient, LLMResult
 
 if TYPE_CHECKING:
@@ -816,6 +817,19 @@ class LiteLLMChatClient(ChatClient):
                 duration_ms=int((time.monotonic() - started) * 1000),
                 error=str(exc),
             )
+            classified = classify_upstream_error(exc)
+            if classified is not None:
+                _logger.warning(
+                    "upstream_llm_error",
+                    audit_kind="upstream_llm_error",
+                    tier=tier,
+                    model=wire_model,
+                    category=classified.category,
+                    status_code=classified.status_code,
+                    request_id=classified.request_id,
+                    retry_hint_seconds=classified.retry_hint_seconds,
+                )
+                raise classified from exc
             raise
         finally:
             self._end_call(session_id, call)
@@ -1004,6 +1018,20 @@ class LiteLLMChatClient(ChatClient):
                     stream=True,
                     error=str(exc),
                 )
+                classified = classify_upstream_error(exc)
+                if classified is not None:
+                    _logger.warning(
+                        "upstream_llm_error",
+                        audit_kind="upstream_llm_error",
+                        tier=tier,
+                        model=wire_model,
+                        stream=True,
+                        category=classified.category,
+                        status_code=classified.status_code,
+                        request_id=classified.request_id,
+                        retry_hint_seconds=classified.retry_hint_seconds,
+                    )
+                    raise classified from exc
                 raise
         finally:
             self._end_call(session_id, call)

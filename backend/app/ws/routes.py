@@ -8,7 +8,7 @@ from typing import Any
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, status
 
 from ..auth.authn import HMACAuthenticator, InvalidTokenError, ParticipantKindLiteral
-from ..auth.authz import AuthorizationError, require_participant
+from ..auth.authz import AuthorizationError, require_creator, require_participant
 from ..config import Settings
 from ..logging_setup import bind_session_context, clear_session_context, get_logger
 from ..sessions.manager import SessionManager
@@ -764,6 +764,28 @@ async def _client_pump(
                                 session=session, turn=turn, for_role_id=role_id
                             )
             elif event_type == "request_force_advance":
+                # Creator-only admin action (issue #215). The UI hides the
+                # button on player views (PR #214); this gate enforces the
+                # same contract on the wire so a player can't bypass via a
+                # hand-crafted WS frame. The manager re-checks the same
+                # invariant inside the lock as defense-in-depth.
+                try:
+                    require_creator(token_payload)
+                except AuthorizationError as exc:
+                    _logger.warning(
+                        "ws_force_advance_unauthorized",
+                        session_id=session_id,
+                        by_role_id=role_id,
+                        kind=token_payload["kind"],
+                    )
+                    await websocket.send_json(
+                        {
+                            "type": "error",
+                            "scope": "force_advance",
+                            "message": str(exc),
+                        }
+                    )
+                    continue
                 try:
                     await manager.force_advance(
                         session_id=session_id, by_role_id=role_id
@@ -774,6 +796,10 @@ async def _client_pump(
                         await TurnDriver(manager=manager).run_play_turn(
                             session=session, turn=turn
                         )
+                except AuthorizationError as exc:
+                    await websocket.send_json(
+                        {"type": "error", "scope": "force_advance", "message": str(exc)}
+                    )
                 except IllegalTransitionError as exc:
                     await websocket.send_json(
                         {"type": "error", "scope": "force_advance", "message": str(exc)}

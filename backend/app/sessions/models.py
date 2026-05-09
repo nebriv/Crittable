@@ -202,6 +202,14 @@ class Message(BaseModel):
     # indicator survives snapshot reloads even after the creator
     # resumes the AI later in the session.
     ai_paused_at_submit: bool = False
+    # Issue #162: per-message "hidden from AI" mute. When True, the
+    # message stays in the human-visible transcript (with a "hidden
+    # from AI" badge) but is filtered out of every LLM-tier user
+    # block (play / interject / AAR). Toggled via the right-click
+    # contextmenu by the creator or the message-of-record's role.
+    # The AI sees the new state on the next user-block build, not
+    # retroactively (a previous turn's transcript stays as it was).
+    hidden_from_ai: bool = False
 
     def is_visible_to(self, role_id: str | None, *, is_creator: bool = False) -> bool:
         if self.visibility == "all":

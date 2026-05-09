@@ -132,6 +132,32 @@ describe("Transcript — workstream contextmenu (chat-declutter polish)", () => 
     expect(onCtx).not.toHaveBeenCalled();
   });
 
+  it("renders a 'Hidden from AI' badge under a muted bubble (issue #162)", () => {
+    const messages: MessageView[] = [
+      msg({
+        id: "m-muted",
+        kind: "player",
+        ts: "2026-05-04T14:00:00Z",
+        body: "this stays for humans",
+        role_id: "role-author",
+        hidden_from_ai: true,
+      }),
+    ];
+    const { container } = render(
+      <Transcript
+        messages={messages}
+        roles={ROLES}
+        workstreams={WORKSTREAMS}
+        viewerIsCreator={true}
+        selfAuthoredRoleIds={null}
+        onMessageContextMenu={() => {}}
+      />,
+    );
+    expect(
+      container.querySelector("[data-testid='hidden-from-ai-indicator']"),
+    ).not.toBeNull();
+  });
+
   it("renders the keyboard '...' affordance only for messages the viewer may re-tag", () => {
     const messages: MessageView[] = [
       msg({

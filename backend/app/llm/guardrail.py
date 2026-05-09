@@ -45,6 +45,14 @@ class InputGuardrail:
                 # Per-tier default from settings.max_tokens_for("guardrail").
             )
         except Exception as exc:  # fall open
+            # Includes ``UpstreamLLMError`` (issue #191) — guardrail is
+            # a side-channel classifier; falling open silently is the
+            # documented behavior and surfacing a banner here would
+            # confuse a creator whose message went through fine. The
+            # next play-turn / setup-turn / AAR call surfaces the
+            # banner if the upstream is still down. The LLM client
+            # already logs ``upstream_llm_error`` at WARNING with the
+            # provider request_id, so ops still has the trace ID.
             _logger.warning("guardrail_classifier_failed", error=str(exc))
             return "on_topic"
 

@@ -159,9 +159,14 @@ def _drive(
     assert r.status_code == 200, r.text
 
     # The first play turn ran during /start; now the engine should be awaiting
-    # a player response. Connect each role and submit until the session ends.
+    # a player response. Connect each role and submit + mark-ready until the
+    # session ends. PR #209 split the ready quorum away from the submission:
+    # a ``submit_response`` posts a message but never closes the quorum, so
+    # every active role must follow up with an explicit ``set_ready`` event
+    # for the turn to advance.
     safety_cap = 30
     turns_played = 0
+    seq = 0
     while turns_played < safety_cap:
         snap = client.get(
             f"/api/sessions/{session_id}?token={creator_token}"
@@ -176,17 +181,25 @@ def _drive(
             )
             turns_played += 1
             continue
-        # Submit for each active role via WS
+        # Submit + mark ready for each active role via WS. Driving these on
+        # the same socket per role keeps the connection-version check happy
+        # and exercises the same path the real frontend takes.
         for rid in active:
             tok = role_tokens[rid]
             with client.websocket_connect(
                 f"/ws/sessions/{session_id}?token={tok}"
             ) as ws:
                 ws.send_json(
-                    {"type": "submit_response", "content": "Acknowledged, taking action.", "intent": "ready", "mentions": []}
+                    {"type": "submit_response", "content": "Acknowledged, taking action.", "mentions": []}
                 )
-                # Drain a bounded number of events; close on first message_complete
-                # for our role (server-driven; never blocks indefinitely).
+                seq += 1
+                ws.send_json(
+                    {"type": "set_ready", "ready": True, "client_seq": seq}
+                )
+                # Drain a bounded number of events; break on the first
+                # state-changing event so the driver can re-check the
+                # snapshot. Without this the loop blocks until the WS
+                # idle-timeout fires when the role isn't quorum-closing.
                 for _ in range(64):
                     try:
                         evt = ws.receive_json(mode="text", timeout=2)
@@ -197,10 +210,6 @@ def _drive(
         turns_played += 1
 
 
-@pytest.mark.skip(
-    reason="E2E flow assumes intent=ready submissions auto-advance the turn; "
-    "needs rewrite to drive set_role_ready explicitly (PR #209 follow-up)."
-)
 def test_e2e_2_role(client: TestClient) -> None:
     seats = _create_and_seat(client, role_count=2)
     _install_mock_and_drive(
@@ -265,10 +274,6 @@ def test_e2e_2_role(client: TestClient) -> None:
     ), "gate 9 violated: lookup_threat_intel never dispatched"
 
 
-@pytest.mark.skip(
-    reason="E2E flow assumes intent=ready submissions auto-advance the turn; "
-    "needs rewrite to drive set_role_ready explicitly (PR #209 follow-up)."
-)
 def test_e2e_12_role(client: TestClient) -> None:
     seats = _create_and_seat(client, role_count=12)
     _install_mock_and_drive(
@@ -461,8 +466,15 @@ def test_plan_not_revealed_to_non_creator(client: TestClient) -> None:
     assert other_view["cost"] is None, "non-creator must not see the cost meter"
 
 
-def test_force_advance_from_any_participant(client: TestClient) -> None:
-    """Acceptance gate: any seated participant can force-advance a stalled turn."""
+def test_force_advance_creator_only(client: TestClient) -> None:
+    """Issue #215: only the creator can force-advance.
+
+    PR #214 hid the player-facing button; this gate enforces the same
+    contract on the wire so a player can't bypass via curl or a
+    hand-crafted WS frame. The creator-only check is duplicated at the
+    REST gate (``require_creator``) and inside ``manager.force_advance``
+    (defense in depth).
+    """
 
     seats = _create_and_seat(client, role_count=3)
     _install_mock_and_drive(
@@ -480,9 +492,19 @@ def test_force_advance_from_any_participant(client: TestClient) -> None:
     if snap["state"] != "AWAITING_PLAYERS":
         pytest.skip("first AI turn did not yield to players (mock variance)")
 
-    # Non-creator force-advances — should be allowed.
+    # Non-creator force-advance — rejected with 403.
     r = client.post(
         f"/api/sessions/{sid}/force-advance?token={non_creator}"
+    )
+    assert r.status_code == 403, r.text
+
+    # Session state is unchanged.
+    snap = client.get(f"/api/sessions/{sid}?token={cr}").json()
+    assert snap["state"] == "AWAITING_PLAYERS"
+
+    # Creator force-advance — allowed.
+    r = client.post(
+        f"/api/sessions/{sid}/force-advance?token={cr}"
     )
     assert r.status_code == 200, r.text
 
@@ -1321,10 +1343,6 @@ def test_briefing_does_not_recover_when_broadcast_already_present(client: TestCl
     )
 
 
-@pytest.mark.skip(
-    reason="Mid-exercise advance flow assumes intent=ready auto-advances; "
-    "needs rewrite to fire set_role_ready (PR #209 follow-up)."
-)
 def test_drive_required_on_mid_exercise_yield(client: TestClient) -> None:
     """Mid-exercise turn (state != BRIEFING) where the AI yields with
     ONLY ``inject_event`` — no broadcast. The validator must spawn a
@@ -1352,12 +1370,15 @@ def test_drive_required_on_mid_exercise_yield(client: TestClient) -> None:
     client.post(f"/api/sessions/{sid}/setup/skip?token={cr}")
     client.post(f"/api/sessions/{sid}/start?token={cr}")
 
-    # Submit creator response so the engine kicks the second AI turn.
+    # Submit creator response + mark ready so the quorum closes and
+    # the engine kicks the second AI turn. PR #209 split ready away
+    # from submit; both events must fire.
     creator_token = seats["role_tokens"][creator_role]
     with client.websocket_connect(
         f"/ws/sessions/{sid}?token={creator_token}"
     ) as ws:
-        ws.send_json({"type": "submit_response", "content": "we triage", "intent": "ready", "mentions": []})
+        ws.send_json({"type": "submit_response", "content": "we triage", "mentions": []})
+        ws.send_json({"type": "set_ready", "ready": True, "client_seq": 1})
         # drain for a moment so the manager's submit_response chain runs
         for _ in range(8):
             try:
@@ -1418,10 +1439,6 @@ def test_drive_required_kill_switch_drops_drive_from_contract() -> None:
     assert res.ok, "kill-switch must allow yield without drive"
 
 
-@pytest.mark.skip(
-    reason="Drive-recovery flow assumes intent=ready auto-advances; needs "
-    "rewrite to fire set_role_ready (PR #209 follow-up)."
-)
 def test_player_question_does_not_downgrade_drive_recovery(
     client: TestClient,
 ) -> None:
@@ -1446,20 +1463,48 @@ def test_player_question_does_not_downgrade_drive_recovery(
 
     # Healthy briefing turn so we land in mid-exercise cleanly.
     briefing = llm_result(tool_block("broadcast", {"message": "Welcome — your move."}, block_id="tu_brief"), tool_block("set_active_roles", {"role_groups": [[creator_role]]}, block_id="tu_yield_brief"), stop_reason="tool_use")
-    # The bad turn: only stage-direction (inject_event), no DRIVE, no
-    # YIELD. Mirrors a real production failure mode where the AI used
-    # a system note as a substitute for answering the player.
-    bad_mid_turn = llm_result(tool_block("inject_event", {"description": "Defender telemetry pull initiated."}, block_id="tu_event"), stop_reason="tool_use")
-    drive_recovery = llm_result(tool_block("broadcast", {
-                    "message": (
-                        "Defender shows the service account auth'd "
-                        "from 5 hosts in the last 90 minutes. "
-                        "Player_1 — what's our containment posture?"
-                    )
-                }, block_id="tu_drive_recovery"), stop_reason="tool_use")
-    yield_recovery = llm_result(tool_block("set_active_roles", {"role_groups": [[other_role]]}, block_id="tu_yield_recovery"), stop_reason="tool_use")
-    mock = install_mock_chat_client(client, 
-        {"play": [briefing, bad_mid_turn, drive_recovery, yield_recovery]}
+    # a system note as a substitute for answering the player. PR #209
+    # routes ``@facilitator`` submissions through ``run_interject``
+    # before the play turn fires, so two ``bad_mid_turn`` scripts are
+    # consumed: one by the interject (which dispatches inject_event
+    # under its narrowed allow-list and emits no broadcast), then a
+    # second by the play-turn first attempt (which fails the validator
+    # for missing DRIVE and triggers the recovery pin). Without the
+    # second copy the play turn would burn ``drive_recovery`` directly,
+    # satisfy DRIVE, and never trigger the broadcast pin we're testing.
+    bad_mid_turn = llm_result(
+        tool_block("inject_event", {"description": "Defender telemetry pull initiated."}, block_id="tu_event"),
+        stop_reason="tool_use",
+    )
+    drive_recovery = llm_result(
+        tool_block(
+            "broadcast",
+            {
+                "message": (
+                    "Defender shows the service account auth'd "
+                    "from 5 hosts in the last 90 minutes. "
+                    "Player_1 — what's our containment posture?"
+                )
+            },
+            block_id="tu_drive_recovery",
+        ),
+        stop_reason="tool_use",
+    )
+    yield_recovery = llm_result(
+        tool_block("set_active_roles", {"role_groups": [[other_role]]}, block_id="tu_yield_recovery"),
+        stop_reason="tool_use",
+    )
+    mock = install_mock_chat_client(
+        client,
+        {
+            "play": [
+                briefing,
+                bad_mid_turn,  # consumed by run_interject
+                bad_mid_turn,  # consumed by play turn first attempt
+                drive_recovery,
+                yield_recovery,
+            ]
+        },
     )
 
     client.post(f"/api/sessions/{sid}/setup/skip?token={cr}")
@@ -1467,7 +1512,8 @@ def test_player_question_does_not_downgrade_drive_recovery(
 
     # Creator ``@facilitator``s the AI — Wave 2's explicit signal.
     # Pre-Wave-2 this used a `?`-terminated message and the legacy
-    # carve-out would silence the AI's response.
+    # carve-out would silence the AI's response. PR #209 split ready
+    # from submission, so we fire both events.
     creator_token = seats["role_tokens"][creator_role]
     with client.websocket_connect(
         f"/ws/sessions/{sid}?token={creator_token}"
@@ -1476,10 +1522,10 @@ def test_player_question_does_not_downgrade_drive_recovery(
             {
                 "type": "submit_response",
                 "content": "@facilitator yeah we can pull account activity. What do we see?",
-                "intent": "ready",
                 "mentions": ["facilitator"],
             }
         )
+        ws.send_json({"type": "set_ready", "ready": True, "client_seq": 1})
         for _ in range(8):
             try:
                 ws.receive_json(mode="text")
