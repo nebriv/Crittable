@@ -1137,8 +1137,14 @@ def test_every_shipped_scenario_populates_active_role_label_groups() -> None:
     when the field was absent. The four shipped scenarios were
     migrated to populate the field. This test pins the invariant for
     *every* scenario JSON shipped under ``backend/scenarios/``: each
-    ``play_turns[]`` entry must carry a non-empty
-    ``active_role_label_groups`` list.
+    ``play_turns[]`` entry that the runner OPENS must carry a non-
+    empty ``active_role_label_groups`` list.
+
+    The initial briefing turn (``play_turns[0]`` with no submissions)
+    is exempt — the engine opens it directly from ``state==BRIEFING``
+    rather than going through ``_next_active_role_groups``, so its
+    role-groups are never consulted. Mirrors the docstring on
+    ``ScenarioRunner._next_active_role_groups``.
 
     Catches the class of failure where a contributor re-records a
     scenario and forgets the field, OR adds a brand-new scenario

@@ -622,14 +622,24 @@ class ScenarioRunner:
 
     def _next_active_role_groups(self, turn: Any) -> list[list[str]]:
         """Resolve a scripted PlayTurn's role-groups to the role-id
-        groups the runner should mark active when opening the next
+        groups the runner should mark active when opening the *next*
         turn.
 
-        ``active_role_label_groups`` is required on every turn — the
-        recorder captures the AI's actual yield-shape so we reproduce
-        it exactly. Multi-role any-of groups round-trip faithfully;
-        attempting to infer groups from submissions would silently
-        split them into singleton "must-respond" groups and stall.
+        Required on every turn that the runner OPENS (i.e. every turn
+        whose role-set the runner consults to start it). The initial
+        briefing turn (``play_turns[0]``) is opened by the engine
+        itself when ``state == BRIEFING`` and never goes through this
+        helper, so its ``active_role_label_groups`` may be empty —
+        the scenario JSON invariant test
+        (``test_every_shipped_scenario_populates_active_role_label_groups``)
+        explicitly exempts turn 0 with no submissions for that reason.
+
+        Wherever this helper IS consulted, the field must be present:
+        the recorder captures the AI's actual yield-shape so we
+        reproduce it exactly. Multi-role any-of groups round-trip
+        faithfully; attempting to infer groups from submissions would
+        silently split them into singleton "must-respond" groups and
+        stall.
         """
 
         if not getattr(turn, "active_role_label_groups", None):
