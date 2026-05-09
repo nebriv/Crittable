@@ -194,18 +194,33 @@ def test_force_advance_ws_rejects_player_with_error_frame(client: TestClient) ->
     sid = seats["sid"]
     ptok = seats["other_token"]
 
-    with client.websocket_connect(f"/ws/sessions/{sid}?token={ptok}") as ws:
-        ws.send_json({"type": "request_force_advance"})
-        saw_rejection = False
+    import concurrent.futures
+
+    from starlette.websockets import WebSocketDisconnect
+
+    def _wait_for_rejection(ws_local: Any) -> dict[str, Any] | None:
         for _ in range(64):
             try:
-                evt = ws.receive_json()
-            except Exception:
-                break
+                evt = ws_local.receive_json()
+            except WebSocketDisconnect:
+                return None
             if evt.get("type") == "error" and evt.get("scope") == "force_advance":
-                saw_rejection = True
-                break
-        assert saw_rejection, "player must be rejected on request_force_advance"
+                return evt
+        return None
+
+    with client.websocket_connect(f"/ws/sessions/{sid}?token={ptok}") as ws:
+        ws.send_json({"type": "request_force_advance"})
+        # Bounded wait (Copilot review on PR #217): if a future
+        # regression breaks the error-frame emission, fail fast in
+        # CI rather than stalling the whole suite. starlette's
+        # ``BlockingPortal`` makes the WS receive thread-safe.
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+            fut = ex.submit(_wait_for_rejection, ws)
+            try:
+                result = fut.result(timeout=5.0)
+            except concurrent.futures.TimeoutError:
+                pytest.fail("WS did not emit a force_advance error frame within 5s")
+        assert result is not None, "player must be rejected on request_force_advance"
 
     # State unchanged.
     snap2 = client.get(f"/api/sessions/{sid}?token={seats['creator_token']}").json()
