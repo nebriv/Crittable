@@ -173,6 +173,14 @@ export interface MessageView {
    * indicator under the bubble. Persisted on the message so the
    * indicator survives a page reload after the creator resumes. */
   ai_paused_at_submit?: boolean;
+  /** Issue #162: per-message AI mute. When true, the bubble
+   *  renders a "hidden from AI" badge under the body and the
+   *  backend filters this entry out of every LLM-tier user block
+   *  (play / interject / AAR). Toggled via the right-click
+   *  contextmenu by the creator or the message-of-record's role.
+   *  Surfaced on the snapshot so the badge survives a page
+   *  reload. */
+  hidden_from_ai?: boolean;
 }
 
 export interface CostSnapshot {
@@ -515,6 +523,25 @@ export const api = {
       "POST",
       `/api/sessions/${sessionId}/messages/${messageId}/workstream?token=${encodeURIComponent(token)}`,
       { workstream_id: workstreamId },
+    );
+  },
+
+  /** Issue #162: per-message "hidden from AI" mute. When ``true``,
+   *  the message stays visible to humans (with a "hidden from AI"
+   *  badge) but is filtered out of every LLM-tier user block
+   *  (play / interject / AAR). Server enforces creator-OR-author
+   *  authz; clients see the result fanned out via the
+   *  ``message_hidden_from_ai_changed`` WS event. */
+  async setMessageHiddenFromAi(
+    sessionId: string,
+    token: string,
+    messageId: string,
+    hiddenFromAi: boolean,
+  ): Promise<{ ok: boolean; hidden_from_ai: boolean }> {
+    return request(
+      "POST",
+      `/api/sessions/${sessionId}/messages/${messageId}/hidden_from_ai?token=${encodeURIComponent(token)}`,
+      { hidden_from_ai: hiddenFromAi },
     );
   },
 

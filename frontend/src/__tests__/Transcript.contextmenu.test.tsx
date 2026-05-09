@@ -132,6 +132,74 @@ describe("Transcript — workstream contextmenu (chat-declutter polish)", () => 
     expect(onCtx).not.toHaveBeenCalled();
   });
 
+  it("passes the bubble's current hidden_from_ai state into the contextmenu payload (issue #162)", () => {
+    const onCtx = vi.fn();
+    const messages: MessageView[] = [
+      msg({
+        id: "m-muted",
+        kind: "player",
+        ts: "2026-05-04T14:00:00Z",
+        body: "muted aside",
+        role_id: "role-author",
+        hidden_from_ai: true,
+      }),
+      msg({
+        id: "m-loud",
+        kind: "player",
+        ts: "2026-05-04T14:01:00Z",
+        body: "normal",
+        role_id: "role-author",
+        hidden_from_ai: false,
+      }),
+    ];
+    render(
+      <Transcript
+        messages={messages}
+        roles={ROLES}
+        workstreams={WORKSTREAMS}
+        viewerIsCreator={true}
+        selfAuthoredRoleIds={null}
+        onMessageContextMenu={onCtx}
+      />,
+    );
+    fireEvent.contextMenu(document.getElementById("msg-m-muted")!);
+    fireEvent.contextMenu(document.getElementById("msg-m-loud")!);
+    expect(onCtx).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({ messageId: "m-muted", hiddenFromAi: true }),
+    );
+    expect(onCtx).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ messageId: "m-loud", hiddenFromAi: false }),
+    );
+  });
+
+  it("renders a 'Hidden from AI' badge under a muted bubble (issue #162)", () => {
+    const messages: MessageView[] = [
+      msg({
+        id: "m-muted",
+        kind: "player",
+        ts: "2026-05-04T14:00:00Z",
+        body: "this stays for humans",
+        role_id: "role-author",
+        hidden_from_ai: true,
+      }),
+    ];
+    const { container } = render(
+      <Transcript
+        messages={messages}
+        roles={ROLES}
+        workstreams={WORKSTREAMS}
+        viewerIsCreator={true}
+        selfAuthoredRoleIds={null}
+        onMessageContextMenu={() => {}}
+      />,
+    );
+    expect(
+      container.querySelector("[data-testid='hidden-from-ai-indicator']"),
+    ).not.toBeNull();
+  });
+
   it("renders the keyboard '...' affordance only for messages the viewer may re-tag", () => {
     const messages: MessageView[] = [
       msg({

@@ -23,6 +23,14 @@ const WORKSTREAMS: WorkstreamView[] = [
   },
 ];
 
+// Issue #162: required props for the per-message mute toggle. Default
+// to "not hidden" + a no-op handler so the workstream-side cases stay
+// focused on workstream behavior.
+const MUTE_DEFAULTS = {
+  hiddenFromAi: false,
+  onToggleHiddenFromAi: () => {},
+};
+
 describe("WorkstreamMenu", () => {
   it("renders one entry per declared workstream + #main", () => {
     render(
@@ -32,6 +40,7 @@ describe("WorkstreamMenu", () => {
         workstreams={WORKSTREAMS}
         onPick={() => {}}
         onClose={() => {}}
+        {...MUTE_DEFAULTS}
       />,
     );
     expect(screen.getByText("#main (unscoped)")).toBeInTheDocument();
@@ -47,6 +56,7 @@ describe("WorkstreamMenu", () => {
         workstreams={WORKSTREAMS}
         onPick={() => {}}
         onClose={() => {}}
+        {...MUTE_DEFAULTS}
       />,
     );
     // The check glyph appears once next to the active row.
@@ -64,6 +74,7 @@ describe("WorkstreamMenu", () => {
         workstreams={WORKSTREAMS}
         onPick={onPick}
         onClose={onClose}
+        {...MUTE_DEFAULTS}
       />,
     );
     fireEvent.click(screen.getByText("#main (unscoped)"));
@@ -80,6 +91,7 @@ describe("WorkstreamMenu", () => {
         workstreams={WORKSTREAMS}
         onPick={onPick}
         onClose={() => {}}
+        {...MUTE_DEFAULTS}
       />,
     );
     fireEvent.click(screen.getByText("#Containment"));
@@ -94,6 +106,7 @@ describe("WorkstreamMenu", () => {
         workstreams={WORKSTREAMS}
         onPick={() => {}}
         onClose={() => {}}
+        {...MUTE_DEFAULTS}
       />,
     );
     expect(container.firstChild).toBeNull();
@@ -108,6 +121,7 @@ describe("WorkstreamMenu", () => {
         workstreams={WORKSTREAMS}
         onPick={() => {}}
         onClose={onClose}
+        {...MUTE_DEFAULTS}
       />,
     );
     fireEvent.keyDown(document, { key: "Escape" });
@@ -122,8 +136,81 @@ describe("WorkstreamMenu", () => {
         workstreams={[]}
         onPick={() => {}}
         onClose={() => {}}
+        {...MUTE_DEFAULTS}
       />,
     );
     expect(screen.getByText("No workstreams declared")).toBeInTheDocument();
+  });
+
+  // ---------------------------------------------- Issue #162: AI-mute toggle
+  it("renders the Hidden from AI toggle in the unchecked state by default", () => {
+    render(
+      <WorkstreamMenu
+        position={{ x: 100, y: 100 }}
+        current={null}
+        workstreams={WORKSTREAMS}
+        onPick={() => {}}
+        onClose={() => {}}
+        hiddenFromAi={false}
+        onToggleHiddenFromAi={() => {}}
+      />,
+    );
+    const toggle = screen.getByTestId("hidden-from-ai-toggle");
+    expect(toggle).toBeInTheDocument();
+    expect(toggle).toHaveAttribute("aria-checked", "false");
+    expect(screen.queryByText("ON")).toBeNull();
+  });
+
+  it("marks the Hidden from AI toggle checked when the message is muted", () => {
+    render(
+      <WorkstreamMenu
+        position={{ x: 100, y: 100 }}
+        current={null}
+        workstreams={WORKSTREAMS}
+        onPick={() => {}}
+        onClose={() => {}}
+        hiddenFromAi={true}
+        onToggleHiddenFromAi={() => {}}
+      />,
+    );
+    const toggle = screen.getByTestId("hidden-from-ai-toggle");
+    expect(toggle).toHaveAttribute("aria-checked", "true");
+    expect(screen.getByText("ON")).toBeInTheDocument();
+  });
+
+  it("invokes onToggleHiddenFromAi(true) and onClose when toggling on", () => {
+    const onToggle = vi.fn();
+    const onClose = vi.fn();
+    render(
+      <WorkstreamMenu
+        position={{ x: 100, y: 100 }}
+        current={null}
+        workstreams={WORKSTREAMS}
+        onPick={() => {}}
+        onClose={onClose}
+        hiddenFromAi={false}
+        onToggleHiddenFromAi={onToggle}
+      />,
+    );
+    fireEvent.click(screen.getByTestId("hidden-from-ai-toggle"));
+    expect(onToggle).toHaveBeenCalledWith(true);
+    expect(onClose).toHaveBeenCalled();
+  });
+
+  it("invokes onToggleHiddenFromAi(false) when toggling off an already-muted message", () => {
+    const onToggle = vi.fn();
+    render(
+      <WorkstreamMenu
+        position={{ x: 100, y: 100 }}
+        current={null}
+        workstreams={WORKSTREAMS}
+        onPick={() => {}}
+        onClose={() => {}}
+        hiddenFromAi={true}
+        onToggleHiddenFromAi={onToggle}
+      />,
+    );
+    fireEvent.click(screen.getByTestId("hidden-from-ai-toggle"));
+    expect(onToggle).toHaveBeenCalledWith(false);
   });
 });

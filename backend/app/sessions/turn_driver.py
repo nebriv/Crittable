@@ -1607,6 +1607,16 @@ def _play_messages(session: Session, *, strict: bool = False) -> list[dict[str, 
     for m in session.messages:
         if m.tool_name in _SETUP_TOOL_NAMES:
             continue  # setup conversation lives in setup_notes
+        # Issue #162: per-message AI mute. Operator (creator OR the
+        # message author) flipped this entry to "hidden from AI" via
+        # the right-click contextmenu. The message stays in the
+        # human transcript with a badge, but the model never sees it
+        # in any play / interject user block. Filtering here keeps
+        # the policy in one place (every play-tier call goes through
+        # this builder) — the AAR builder applies the same filter on
+        # its side.
+        if m.hidden_from_ai:
+            continue
         if m.kind == MessageKind.PLAYER:
             label = ""
             role = session.role_by_id(m.role_id) if m.role_id else None

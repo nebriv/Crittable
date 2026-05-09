@@ -795,6 +795,76 @@ class SessionManager:
         )
         return msg
 
+    async def set_message_hidden_from_ai(
+        self,
+        *,
+        session_id: str,
+        message_id: str,
+        hidden_from_ai: bool,
+        by_role_id: str,
+        is_creator: bool,
+    ) -> Message:
+        """Per-message mute that hides this entry from every LLM-tier
+        user block (issue #162).
+
+        Authz mirrors ``override_message_workstream``:
+          - ``is_creator=True`` → may mute / unmute any message;
+          - else the caller must be the message's ``role_id`` (the
+            message-of-record's role can mute its own asides).
+          - everything else: ``IllegalTransitionError`` (mapped 403).
+
+        The flip is binary and forward-only — once muted, the next
+        play / interject / AAR user-block build drops the message.
+        Past LLM responses stay as they were; we don't rewrite the
+        model's view of history.
+
+        Emits the ``message_hidden_from_ai_changed`` audit kind with
+        ``before`` / ``after`` / ``actor`` so the AAR archeology run
+        can replay every mute/unmute. Fans out a
+        ``message_hidden_from_ai_changed`` WS event with
+        ``record=False`` (mirrors workstream override: the field
+        lives on the persisted message, the WS frame is only a
+        live-tab nudge — replay-buffer pressure on a tight toggle
+        loop would evict legitimate state_changed entries).
+        """
+
+        async with await self._lock_for(session_id):
+            session = await self._repo.get(session_id)
+            msg = next((m for m in session.messages if m.id == message_id), None)
+            if msg is None:
+                raise IllegalTransitionError(f"message not found: {message_id}")
+            if not is_creator and msg.role_id != by_role_id:
+                raise IllegalTransitionError(
+                    "only the message's author or the creator may mute the message from AI"
+                )
+            before = msg.hidden_from_ai
+            target = bool(hidden_from_ai)
+            if before == target:
+                # Idempotent no-op — no audit / broadcast spam from a
+                # double-click on the same toggle.
+                return msg
+            msg.hidden_from_ai = target
+            await self._repo.save(session)
+        self._emit(
+            "message_hidden_from_ai_changed",
+            session,
+            message_id=message_id,
+            before=before,
+            after=target,
+            actor=by_role_id,
+        )
+        await self._connections.broadcast(
+            session.id,
+            {
+                "type": "message_hidden_from_ai_changed",
+                "message_id": message_id,
+                "hidden_from_ai": target,
+                "actor_role_id": by_role_id,
+            },
+            record=False,
+        )
+        return msg
+
     async def set_ai_paused(
         self, *, session_id: str, paused: bool, by_role_id: str
     ) -> Session:
