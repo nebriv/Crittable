@@ -327,13 +327,246 @@ async def test_notify_no_creator_role_is_noop() -> None:
     assert conns.broadcasted == []
 
 
-# Future work (issue #191 follow-up): an end-to-end integration test
-# that simulates an Anthropic 529 mid-play-turn through the real
-# turn-driver and asserts the turn ends ``errored`` with the
-# ``upstream_overloaded:`` reason while the creator gets a
-# ``send_to_role`` and players get nothing on ``broadcast``. The
-# unit-level pieces (classifier, payload shape, notify helper) are
-# locked above; the integration weaves them together but takes a
-# nontrivial amount of FastAPI/TestClient scaffolding to drive a
-# play turn end-to-end. Punted to a follow-up rather than rushing a
-# brittle test.
+# -------------------------------------------------------------- integration
+
+
+def test_play_turn_529_marks_errored_and_targets_creator_only() -> None:
+    """End-to-end: an Anthropic 529 mid-play-turn must produce
+    (a) ``turn.status == "errored"`` with a ``upstream_overloaded:``
+    reason, (b) a creator-targeted ``send_to_role`` carrying the
+    structured banner event, and (c) NO ``broadcast`` of the banner
+    so players don't see it.
+
+    Pins the wiring contract that the unit tests above can't reach
+    on their own — the unit tests prove each piece works in
+    isolation; this test proves they're plugged in to each other
+    inside ``turn_driver.run_play_turn``. Without this, swapping
+    ``notify_creator_of_upstream_error`` for ``connections.broadcast``
+    in a future refactor would pass every unit test while leaking
+    the banner to every player (the explicit anti-requirement on
+    issue #191: "Players don't see the creator's error banner").
+
+    The test drives the BRIEFING turn (turn 0 fired at ``/start``)
+    with the erroring transport pre-installed — that's the cleanest
+    entry point because ``setup/skip`` synthesises a plan without an
+    LLM call, so the only LLM call is the one we're testing.
+    """
+
+    import anthropic
+    import httpx
+    from fastapi.testclient import TestClient
+
+    from app.config import reset_settings_cache
+    from app.main import create_app
+    from app.sessions.models import SessionState
+    from tests.conftest import default_settings_body
+    from tests.mock_anthropic import MockAnthropic
+
+    reset_settings_cache()
+    app = create_app()
+    with TestClient(app) as client:
+        # Baseline mock so the server boots.
+        client.app.state.llm.set_transport(MockAnthropic({}).messages)
+
+        # Seat creator + one player.
+        resp = client.post(
+            "/api/sessions",
+            json={
+                "scenario_prompt": "Ransomware via vendor portal",
+                "creator_label": "CISO",
+                "creator_display_name": "Alex",
+                **default_settings_body(),
+            },
+        )
+        assert resp.status_code == 200, resp.text
+        created = resp.json()
+        sid = created["session_id"]
+        creator_token = created["creator_token"]
+        creator_role_id = created["creator_role_id"]
+        r = client.post(
+            f"/api/sessions/{sid}/roles?token={creator_token}",
+            json={"label": "Player_1", "display_name": "P1"},
+        )
+        assert r.status_code == 200, r.text
+
+        # Skip setup (no LLM call) → READY.
+        client.post(f"/api/sessions/{sid}/setup/skip?token={creator_token}")
+
+        # Wrap connections to observe role-targeted vs. broadcast
+        # event flow. Pattern lifted from
+        # ``tests/test_turn_driver.py::_RecordingConnections`` — a
+        # transparent proxy that records each call before delegating
+        # to the real connection manager so the rest of the system
+        # behaves identically.
+        real_connections = client.app.state.connections
+        rec_role_targeted: list[tuple[str, str, dict[str, Any]]] = []
+        rec_broadcasted: list[dict[str, Any]] = []
+
+        class _Observing:
+            async def broadcast(
+                self,
+                session_id: str,
+                event: dict[str, Any],
+                *,
+                record: bool = True,
+            ) -> None:
+                rec_broadcasted.append(event)
+                await real_connections.broadcast(
+                    session_id, event, record=record
+                )
+
+            async def send_to_role(
+                self, session_id: str, role_id: str, event: dict[str, Any]
+            ) -> None:
+                rec_role_targeted.append((session_id, role_id, event))
+                await real_connections.send_to_role(
+                    session_id, role_id, event
+                )
+
+            def __getattr__(self, name: str) -> Any:
+                return getattr(real_connections, name)
+
+        observer = _Observing()
+        client.app.state.connections = observer
+        client.app.state.manager._connections = observer
+        client.app.state.llm.set_connections(observer)
+
+        # Install an erroring transport. The play-turn driver streams
+        # the response; we have to raise on ``stream(...)``'s context
+        # manager + iterator surface specifically (the create-only
+        # path is for non-streamed calls). Raising on
+        # ``get_final_message`` covers the "stream connected but
+        # final message fetch errored" path too, which is what 529
+        # looks like in practice.
+        request = httpx.Request(
+            "POST", "https://api.anthropic.com/v1/messages"
+        )
+        response = httpx.Response(
+            529,
+            request=request,
+            headers={"request-id": "req_int_test_529"},
+        )
+
+        def _raise_overloaded() -> None:
+            raise anthropic.InternalServerError(
+                "Overloaded", response=response, body=None
+            )
+
+        class _ErrCtx:
+            async def __aenter__(self) -> Any:
+                return self
+
+            async def __aexit__(self, *exc: Any) -> None:
+                return None
+
+            def __aiter__(self) -> Any:
+                async def _gen() -> Any:
+                    _raise_overloaded()
+                    if False:  # pragma: no cover - unreachable
+                        yield None
+                return _gen()
+
+            async def get_final_message(self) -> Any:
+                _raise_overloaded()
+
+        class _ErroringMessages:
+            async def create(self, **kwargs: Any) -> Any:
+                _raise_overloaded()
+
+            def stream(self, **kwargs: Any) -> Any:
+                return _ErrCtx()
+
+        client.app.state.llm.set_transport(_ErroringMessages())
+
+        # Fire the BRIEFING turn. The route awaits ``run_play_turn``
+        # synchronously, so by the time the response lands the
+        # turn-driver's exception path has already run.
+        start_resp = client.post(
+            f"/api/sessions/{sid}/start?token={creator_token}"
+        )
+        # 200 is correct: the turn errored gracefully; the banner is
+        # the operator-visible signal, not the HTTP status. The route
+        # handler doesn't (and shouldn't) propagate an upstream blip
+        # as a 5xx — that'd hide the new structured signal behind a
+        # generic gateway-style error toast.
+        assert start_resp.status_code == 200, start_resp.text
+
+    # -------- assertion 1: turn flipped to "errored" with the
+    # upstream-prefixed reason. Read straight from the in-memory
+    # repo, not via REST, so we see the field as the driver wrote
+    # it before any serialiser round-trips it.
+    import asyncio
+
+    manager = client.app.state.manager
+
+    async def _read_turn_status() -> tuple[str, str | None]:
+        session = await manager._repo.get(sid)
+        # Snapshot just turn 0 — the BRIEFING turn the test drove.
+        turn = next((t for t in session.turns if t.index == 0), None)
+        assert turn is not None, "expected the BRIEFING turn (index 0)"
+        return turn.status, turn.error_reason
+
+    status_, reason = asyncio.run(_read_turn_status())
+    assert status_ == "errored", (
+        f"expected turn.status='errored' on upstream blip; got {status_!r}"
+    )
+    assert reason is not None and reason.startswith("upstream_overloaded:"), (
+        f"expected upstream_overloaded prefix; got {reason!r}"
+    )
+
+    # -------- assertion 2: the creator got the structured banner
+    # event via send_to_role.
+    creator_payloads = [
+        evt
+        for _sid, rid, evt in rec_role_targeted
+        if rid == creator_role_id
+        and evt.get("type") == "error"
+        and evt.get("scope") == "upstream_llm"
+    ]
+    assert len(creator_payloads) == 1, (
+        f"expected exactly one creator-targeted upstream_llm event; "
+        f"saw {len(creator_payloads)}: {rec_role_targeted!r}"
+    )
+    payload = creator_payloads[0]
+    assert payload["category"] == "overloaded"
+    assert payload["status_code"] == 529
+    assert payload["request_id"] == "req_int_test_529"
+    # Wire-shape lock: ``message`` MUST NOT be in the payload (the
+    # raw SDK string can leak ``LLM_API_BASE`` URLs on misconfigured
+    # deploys; banner copy is category-derived).
+    assert "message" not in payload, (
+        f"raw SDK message leaked to wire payload: {payload!r}"
+    )
+
+    # -------- assertion 3: NO broadcast carried the upstream banner.
+    # This is the user's explicit anti-requirement on issue #191
+    # ("regular players don't need to see it"). A future refactor
+    # that swaps ``send_to_role`` for ``broadcast`` here would fail
+    # this assertion specifically.
+    upstream_in_broadcast = [
+        e
+        for e in rec_broadcasted
+        if e.get("type") == "error" and e.get("scope") == "upstream_llm"
+    ]
+    assert upstream_in_broadcast == [], (
+        f"upstream_llm event leaked to broadcast (visible to players): "
+        f"{upstream_in_broadcast!r}"
+    )
+
+    # -------- assertion 4: the session state is consistent with an
+    # errored turn — neither wedged in AI_PROCESSING (the prior
+    # bug pattern) nor accidentally completed. The exact state may
+    # be ``BRIEFING`` (the turn errored before yielding so we never
+    # transitioned out) or ``AWAITING_PLAYERS`` if a future
+    # refactor opens the door for "errored turn → wait for player
+    # nudge". Either is acceptable; ``AI_PROCESSING`` is not.
+
+    async def _read_state() -> SessionState:
+        session = await manager._repo.get(sid)
+        return session.state
+
+    final_state = asyncio.run(_read_state())
+    assert final_state != SessionState.AI_PROCESSING, (
+        f"session wedged in AI_PROCESSING after upstream blip; "
+        f"got {final_state!r}"
+    )
