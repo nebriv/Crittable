@@ -1,12 +1,6 @@
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, SessionSnapshot } from "../api/client";
 import { Composer } from "../components/Composer";
-// Wave 1 (issue #134): the creator's WaitingChip is the canonical
-// "N of M ready" component. Player view also surfaces it so a first-
-// time player gets the same readiness signal the creator does — without
-// it, players don't know whether to keep discussing or wait for the AI
-// (Product review HIGH).
-import { WaitingChip } from "./Facilitator";
 import { CriticalEventBanner } from "../components/CriticalEventBanner";
 import { HighlightActionPopover } from "../components/HighlightActionPopover";
 import { RightSidebar } from "../components/RightSidebar";
@@ -28,6 +22,7 @@ import { isMidSessionJoiner } from "../lib/proxy";
 import { classifySnapshotError } from "../lib/snapshotError";
 import { useSessionTitle } from "../lib/useSessionTitle";
 import { useStickyScroll } from "../lib/useStickyScroll";
+import { friendlyRejectionMessage } from "../lib/setReadyRejection";
 import { useTabFocusReporter } from "../lib/useTabFocusReporter";
 import { ServerEvent, WsClient } from "../lib/ws";
 
@@ -107,10 +102,6 @@ export function Play({ sessionId, token }: Props) {
     recovery?: string | null;
     forRoleId?: string | null;
   } | null>(null);
-  // 3-second client-side cooldown on force-advance — paired with the
-  // backend in-flight gate. Prevents the triple-banner cascade from a
-  // double/triple click (issue #63).
-  const [forceAdvanceCooldown, setForceAdvanceCooldown] = useState(false);
   // Wave 3 (issue #69) AI-pause toggle round-trip flag. Disables the
   // creator's "Pause AI / Resume AI" button while the POST is in
   // flight so a rapid double-click doesn't fire two contradictory
@@ -142,6 +133,58 @@ export function Play({ sessionId, token }: Props) {
   // can sit idle and the notepad never mounts. Issue surfaced during
   // manual smoke for #98.
   const [wsClient, setWsClient] = useState<WsClient | null>(null);
+  // Decoupled-ready (PR #209 follow-up): monotonic counter for
+  // ``set_ready`` events. The server echoes it back on every
+  // ack/reject so the optimistic-flip overlay can reconcile without
+  // races. Held in a ref because we never render off it directly —
+  // each send reads-modify-writes the integer in place.
+  const clientSeqRef = useRef(0);
+  // Optimistic-flip overlay keyed by ``client_seq`` → desired
+  // ``{subject_role_id, ready}``. The displayed ready state for any
+  // role is "is the role in the snapshot's ``ready_role_ids`` list,
+  // overridden by the latest pending entry for that subject if any."
+  // Cleared per-entry on ack (canonical state matches) and reject
+  // (revert) — see the WS event-handler cases below. The map lives
+  // in state (not a ref) so a flip changes the rendered button
+  // immediately without waiting for the server round-trip.
+  const [pendingReadyFlips, setPendingReadyFlips] = useState<
+    Map<number, { subject_role_id: string; ready: boolean }>
+  >(() => new Map());
+  // Brief inline banner when the server rejects a flip
+  // (``not_active_role`` race, ``flip_cap_exceeded`` DoS guard, etc).
+  // Self-clears after 4s so a stuck banner can't hide the rest of
+  // the rail; the user sees the cause and the optimistic state has
+  // already reverted by the time they read it.
+  const [readyRejectionNotice, setReadyRejectionNotice] = useState<
+    string | null
+  >(null);
+  // ``setTimeout`` handle for the auto-clear of ``readyRejectionNotice``.
+  // Held in a ref so the cleanup can clear it on unmount and on any
+  // new notice (otherwise an unmount mid-fade left the timer scheduled
+  // → React warning + a leaked microtask). QA review HIGH on PR #209
+  // follow-up.
+  const readyNoticeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
+    null,
+  );
+  function setReadyRejectionNoticeWithAutoClear(msg: string) {
+    if (readyNoticeTimerRef.current !== null) {
+      clearTimeout(readyNoticeTimerRef.current);
+      readyNoticeTimerRef.current = null;
+    }
+    setReadyRejectionNotice(msg);
+    readyNoticeTimerRef.current = setTimeout(() => {
+      setReadyRejectionNotice((cur) => (cur === msg ? null : cur));
+      readyNoticeTimerRef.current = null;
+    }, 4000);
+  }
+  useEffect(() => {
+    return () => {
+      if (readyNoticeTimerRef.current !== null) {
+        clearTimeout(readyNoticeTimerRef.current);
+        readyNoticeTimerRef.current = null;
+      }
+    };
+  }, []);
   // Phase B chat-declutter (docs/plans/chat-decluttering.md §4.7):
   // local filter state for the TranscriptFilters component above the
   // chat. Quality is single-valued (All / @Me / Critical); track set
@@ -159,7 +202,6 @@ export function Play({ sessionId, token }: Props) {
     x: number;
     y: number;
   } | null>(null);
-  const forceAdvanceTimerRef = useRef<number | null>(null);
 
   // Determine self by inspecting snapshot.roles and matching the role with the
   // missing display_name (server doesn't echo our token; we use the snapshot
@@ -294,6 +336,22 @@ export function Play({ sessionId, token }: Props) {
         break;
       case "turn_changed":
         console.info("[play] turn changed", evt);
+        // Decoupled-ready (PR #209 follow-up): the per-role flip cap
+        // is per-turn, so any unresolved optimistic entry from an
+        // earlier turn is moot the moment the turn changes. Clear
+        // them — but log the count and seqs first so a "stuck-flip"
+        // diagnosis from production has a breadcrumb. QA review
+        // HIGH (overlay leak) + Security review MEDIUM (defense in
+        // depth) on PR #209 follow-up.
+        setPendingReadyFlips((prev) => {
+          if (prev.size === 0) return prev;
+          const seqs = Array.from(prev.keys());
+          console.warn(
+            "[play] dropping stale ready flips on turn change",
+            { count: prev.size, seqs, new_turn_index: evt.turn_index },
+          );
+          return new Map();
+        });
         refreshSnapshot();
         break;
       case "participant_renamed":
@@ -414,7 +472,63 @@ export function Play({ sessionId, token }: Props) {
           console.warn("[play] submit rejected — restoring composer text", evt);
           setSubmitErrorEpoch((n) => n + 1);
         }
+        // Decoupled-ready (PR #209): a malformed set_ready payload
+        // surfaces as ``error{scope:"set_ready"}``. Don't treat it
+        // as a per-flip rejection (those use the dedicated
+        // ``set_ready_rejected`` frame) — just surface the message.
+        if (evt.scope === "set_ready") {
+          console.warn("[play] set_ready protocol error", evt);
+        }
         break;
+      // Decoupled-ready (PR #209): broadcast that ANY role's ready
+      // state flipped. Drop the matching optimistic entry (if any)
+      // and refresh the snapshot so ``ready_role_ids`` updates.
+      case "ready_changed":
+        setPendingReadyFlips((prev) => {
+          if (!prev.has(evt.client_seq)) return prev;
+          const next = new Map(prev);
+          next.delete(evt.client_seq);
+          return next;
+        });
+        void refreshSnapshot();
+        break;
+      // Directed ack for our own ``set_ready`` — drop the optimistic
+      // entry; the canonical snapshot now matches our flip. Sent
+      // even on idempotent re-marks and the 250ms-debounce silent-
+      // accept path so the optimistic state always resolves.
+      case "set_ready_ack":
+        setPendingReadyFlips((prev) => {
+          if (!prev.has(evt.client_seq)) return prev;
+          const next = new Map(prev);
+          next.delete(evt.client_seq);
+          return next;
+        });
+        // ``ready_to_advance`` flipping true means the server is
+        // about to drive ``run_play_turn``; the AI_PROCESSING
+        // ``state_changed`` will land within milliseconds. Nothing
+        // to do here — we just don't suppress the snapshot refresh.
+        break;
+      // Directed rejection — revert the optimistic entry and
+      // surface a brief banner with the reason so the actor knows
+      // why their flip didn't take.
+      case "set_ready_rejected": {
+        setPendingReadyFlips((prev) => {
+          if (!prev.has(evt.client_seq)) return prev;
+          const next = new Map(prev);
+          next.delete(evt.client_seq);
+          return next;
+        });
+        // Defensive: ``reason`` is typed string on the wire but a
+        // misbehaving server / MITM could send a non-string.
+        // Coerce so the user sees readable copy instead of
+        // "[object Object]". Security review LOW.
+        const reason =
+          typeof evt.reason === "string" ? evt.reason : "unknown";
+        const friendly = friendlyRejectionMessage(reason, "player");
+        console.warn("[play] set_ready rejected", evt);
+        setReadyRejectionNoticeWithAutoClear(friendly);
+        break;
+      }
       default:
         break;
     }
@@ -442,17 +556,6 @@ export function Play({ sessionId, token }: Props) {
     [messageCount, streamingActive],
     [messageCount],
   );
-
-  // Clean up the force-advance cooldown timer on unmount so a tab
-  // close mid-cooldown doesn't fire setState on an unmounted component.
-  useEffect(() => {
-    return () => {
-      if (forceAdvanceTimerRef.current !== null) {
-        window.clearTimeout(forceAdvanceTimerRef.current);
-        forceAdvanceTimerRef.current = null;
-      }
-    };
-  }, []);
 
   // Expire stale typing entries.
   useEffect(() => {
@@ -497,7 +600,6 @@ export function Play({ sessionId, token }: Props) {
 
   function handleSubmit(
     text: string,
-    intent: "ready" | "discuss",
     mentions: string[],
   ) {
     setError(null);
@@ -509,10 +611,9 @@ export function Play({ sessionId, token }: Props) {
       wsRef.current?.send({
         type: "submit_response",
         content: text,
-        // Wave 1 (issue #134): per-submission intent gates the
-        // ready-quorum advance. The Composer always sets this; never
-        // omit on the wire — the backend rejects payloads without it.
-        intent,
+        // Decoupled-ready (PR #209 follow-up): no ``intent`` field.
+        // Submissions never advance the turn; the ready quorum is
+        // closed via the dedicated ``set_ready`` event below.
         // Wave 2: structural mention list from the composer's marks.
         // Plain ``@<role>`` entries surface the @-highlight to the
         // addressed role; the literal ``"facilitator"`` token (alias
@@ -550,6 +651,56 @@ export function Play({ sessionId, token }: Props) {
       const msg = err instanceof Error ? err.message : String(err);
       console.warn("[play] submit_failed", msg, err);
       setError(msg);
+    }
+  }
+
+  // Decoupled-ready (PR #209 follow-up): dispatch a ``set_ready``
+  // event for the local participant's own role. The argument is the
+  // desired NEW state. Bumps ``clientSeqRef`` and queues an
+  // optimistic-flip entry so the button reflects the intent
+  // immediately; the entry clears on ack / ready_changed broadcast
+  // or reverts on rejection (see WS event-handler cases above).
+  function handleSelfMarkReady(next: boolean) {
+    const ws = wsRef.current;
+    if (!ws || !selfRoleId) {
+      console.warn("[play] mark-ready dropped — WS or selfRoleId missing", {
+        hasWs: !!ws,
+        selfRoleId,
+      });
+      return;
+    }
+    const seq = (clientSeqRef.current += 1);
+    setPendingReadyFlips((prev) => {
+      const entry = { subject_role_id: selfRoleId, ready: next };
+      const out = new Map(prev);
+      out.set(seq, entry);
+      return out;
+    });
+    try {
+      ws.send({ type: "set_ready", ready: next, client_seq: seq });
+      console.info("[play] set_ready sent", {
+        ready: next,
+        client_seq: seq,
+        subject_role_id: selfRoleId,
+      });
+    } catch (err) {
+      // WS dispatch failed (closed / not-yet-open). Revert the
+      // optimistic flip so the button doesn't lie about state, and
+      // surface a transient banner — the player can retry once the
+      // ws-status banner clears. Pass the full err object (not just
+      // ``err.message``) so the console keeps the stack — QA review
+      // HIGH on PR #209 follow-up.
+      setPendingReadyFlips((prev) => {
+        if (!prev.has(seq)) return prev;
+        const out = new Map(prev);
+        out.delete(seq);
+        return out;
+      });
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn("[play] set_ready send failed", { message: msg, err });
+      setReadyRejectionNoticeWithAutoClear(
+        "Mark Ready dropped — connection to server lost. Retrying once it's back.",
+      );
     }
   }
 
@@ -597,31 +748,6 @@ export function Play({ sessionId, token }: Props) {
   // are React refs (stable identity across renders) — accessing ``.current``
   // inside the callback reads the latest value without needing them as deps.
   }, []);
-
-  function handleForceAdvance() {
-    if (forceAdvanceCooldown) {
-      console.warn("[play] force-advance suppressed (cooldown)");
-      return;
-    }
-    setForceAdvanceCooldown(true);
-    // Tracked in a ref so a tab-close mid-cooldown doesn't try to
-    // setState on an unmounted component.
-    forceAdvanceTimerRef.current = window.setTimeout(() => {
-      setForceAdvanceCooldown(false);
-      forceAdvanceTimerRef.current = null;
-    }, 3000);
-    // Pin the chat to the bottom so the participant sees the AI's next
-    // beat land. Mirrors Facilitator.tsx's force-advance behavior so
-    // the "consistent for the creator and the user" half of issue #79
-    // covers force-advance, not just submit.
-    forceScrollToBottom();
-    try {
-      wsRef.current?.send({ type: "request_force_advance" });
-    } catch (err) {
-      console.warn("[play] force-advance send failed", err);
-      setError(err instanceof Error ? err.message : String(err));
-    }
-  }
 
   function handleEnd() {
     // Issue #81: button is rendered only when the local participant is
@@ -1023,24 +1149,58 @@ export function Play({ sessionId, token }: Props) {
   })();
   const activeRoleIds = snapshot.current_turn?.active_role_ids ?? [];
   const submittedRoleIds = snapshot.current_turn?.submitted_role_ids ?? [];
-  // Wave 1 (issue #134): per-role ready signal. The composer surfaces
-  // whether the local participant is currently marked ready; the HUD
-  // counts "N of M ready" off this list (distinct from
-  // ``submittedRoleIds`` which counts every message a role has spoken
-  // on the turn — including discussion contributions that don't yet
-  // flip the AI to advance).
+  // Decoupled-ready (PR #209): per-role ready signal. Roles enter
+  // this list via the dedicated ``set_ready`` WS event from the rail
+  // ``<MarkReadyButton>`` — the composer is no longer in the loop.
+  // The set is distinct from ``submittedRoleIds`` (every message a
+  // role has spoken on the turn, including discussion contributions
+  // that don't close the quorum). The displayed set rendered to the
+  // user is the canonical snapshot value overlaid with any pending
+  // optimistic flips (see ``displayedReadyRoleIds`` below); the
+  // inline "N of M ready" copy near the composer reads from that
+  // overlay so the display stays in lockstep with the rail button's
+  // optimistic state.
   const readyRoleIds = snapshot.current_turn?.ready_role_ids ?? [];
+  // Decoupled-ready (PR #209 follow-up): the displayed ready set
+  // overlays any pending optimistic flips on top of the canonical
+  // snapshot. Each pending entry's ``ready`` value wins over the
+  // snapshot for that subject — the overlay clears as
+  // ``set_ready_ack`` / ``ready_changed`` / ``set_ready_rejected``
+  // events arrive (see WS event-handler cases above). Without the
+  // overlay the rail button would feel laggy: the snapshot only
+  // refreshes on ``ready_changed`` (~RTT after the click).
+  const displayedReadyRoleIds = (() => {
+    if (pendingReadyFlips.size === 0) return new Set(readyRoleIds);
+    const out = new Set(readyRoleIds);
+    for (const entry of pendingReadyFlips.values()) {
+      if (entry.ready) out.add(entry.subject_role_id);
+      else out.delete(entry.subject_role_id);
+    }
+    return out;
+  })();
+  // Set of subject_role_ids with at least one pending optimistic
+  // flip — drives the in-flight pulse on ``<MarkReadyButton>``.
+  // UI/UX review MEDIUM M2: a slow round-trip leaves the button
+  // looking idle and users double-click; the pulse hints the
+  // server hasn't acked yet.
+  const pendingMarkReadySubjects = (() => {
+    if (pendingReadyFlips.size === 0) return new Set<string>();
+    const out = new Set<string>();
+    for (const entry of pendingReadyFlips.values()) {
+      out.add(entry.subject_role_id);
+    }
+    return out;
+  })();
   const iAmActive = selfRoleId !== null && activeRoleIds.includes(selfRoleId);
   const iHaveSubmitted = selfRoleId !== null && submittedRoleIds.includes(selfRoleId);
-  const iAmReady = selfRoleId !== null && readyRoleIds.includes(selfRoleId);
-  // "My turn" = the engine is waiting on me to signal ready. Wave 1
-  // changes this from "I haven't submitted" to "I haven't yet signaled
-  // ready" so the composer stays available for follow-up discussion
-  // submissions even after a first message lands. The composer's
-  // primary button still flips to "Walk back ready" via the
-  // ``isCurrentlyReady`` prop when ``iAmReady`` is true, so a player
-  // who marked ready prematurely can re-open discussion.
-  const isMyTurn = iAmActive && !iAmReady;
+  // Decoupled-ready (PR #209 follow-up): "My turn" simplifies to "I
+  // am on the active role set." The ready quorum is no longer a
+  // composer concern — it's closed via the rail Mark Ready button.
+  // The per-role ``READY ✓`` tag is rendered inside ``<RoleRoster>``
+  // straight from ``displayedReadyRoleIds``; we don't need a local
+  // ``iAmReady`` variable any more (was used by the old composer's
+  // ``isCurrentlyReady`` prop, which is gone).
+  const isMyTurn = iAmActive;
   const myRole = snapshot.roles.find((r) => r.id === selfRoleId);
   // Fail closed: an undefined ``myRole`` (token's role_id missing from
   // snapshot.roles, e.g. mid-rehydrate) must NOT light up the composer.
@@ -1080,14 +1240,21 @@ export function Play({ sessionId, token }: Props) {
     otherPendingGroups.push(memberLabels.join(" or "));
   }
   const otherPending = otherPendingGroups; // Compatibility alias.
-  // Issue #78: composer is enabled for any participant whenever the
-  // session is ``AWAITING_PLAYERS`` so out-of-turn comments / follow-
-  // ups can land in the transcript. Spectators stay locked out (the WS
-  // layer would reject anyway). ``ENDED`` / ``AI_PROCESSING`` /
-  // ``BRIEFING`` are also disabled — the backend would reject those on
-  // submit, so disabling client-side is just early UX.
+  // Decoupled-ready (PR #209 follow-up): the composer is enabled for
+  // any participant whenever the session is ``AWAITING_PLAYERS`` OR
+  // ``AI_PROCESSING``. Submissions during AI_PROCESSING land as
+  // interjections (server-side ``is_interjection=true`` per
+  // ``submission_pipeline``) — the AI sees them on its next pass.
+  // Without this span, the original frustration (Player A drafting a
+  // long reply while Player B + Creator close the quorum, freezing
+  // Player A's composer mid-keystroke) would still bite. ``ENDED``
+  // and ``BRIEFING`` are still disabled — the backend rejects those
+  // submissions, so disabling client-side is just early UX.
+  // Spectators stay locked out (WS layer rejects anyway).
   const composerEnabled =
-    isPlayer && snapshot.state === "AWAITING_PLAYERS";
+    isPlayer &&
+    (snapshot.state === "AWAITING_PLAYERS" ||
+      snapshot.state === "AI_PROCESSING");
   // Wave 2: roster the composer's @-popover offers. Excludes the
   // local participant (a player ``@``-ing themself is never useful)
   // and spectators (they aren't addressable beats). The synthetic
@@ -1316,22 +1483,76 @@ export function Play({ sessionId, token }: Props) {
             activeRoleIds={activeRoleIds}
             selfRoleId={selfRoleId}
             connectedRoleIds={presence}
+            readyRoleIds={displayedReadyRoleIds}
+            selfMarkReadyInFlight={
+              selfRoleId !== null &&
+              pendingMarkReadySubjects.has(selfRoleId)
+            }
+            // PR #213 Copilot review: pass the handler on EVERY
+            // render so the button stays mounted (just disabled)
+            // during a brief WS reconnect. Pre-fix the button
+            // disappeared entirely while ``wsStatus !== "open"``,
+            // which read as "the app is broken." The interactivity
+            // gate moved into ``selfMarkReadyEnabled`` below.
+            onSelfMarkReady={isPlayer ? handleSelfMarkReady : undefined}
+            selfMarkReadyEnabled={
+              // Combines all the page-level gates the disabled
+              // tooltip names. Mirrors Facilitator.tsx's
+              // ``markReadyEnabled`` so the two pages stay in
+              // lockstep.
+              isPlayer &&
+              wsStatus === "open" &&
+              snapshot.state === "AWAITING_PLAYERS" &&
+              iAmActive
+            }
+            selfMarkReadyDisabledReason={(() => {
+              // The button stays rendered but disabled when the local
+              // viewer can't toggle their own ready state — the
+              // tooltip names the cause so they can fix it (or know
+              // why the AI hasn't advanced).
+              if (!isPlayer) return "Spectator — Mark Ready isn't available.";
+              if (wsStatus !== "open")
+                return "Reconnecting — Mark Ready re-opens once the connection is back.";
+              if (snapshot.state === "AI_PROCESSING") {
+                // User-persona HIGH H3: when the local participant
+                // closed the quorum themselves, celebrate the
+                // transition instead of greying out with neutral
+                // copy that reads as "broken".
+                if (
+                  selfRoleId !== null &&
+                  displayedReadyRoleIds.has(selfRoleId)
+                ) {
+                  return "Quorum closed — AI is responding. Mark Ready re-opens on the next beat.";
+                }
+                return "AI is responding to this beat — Mark Ready re-opens on the next turn.";
+              }
+              if (snapshot.state !== "AWAITING_PLAYERS")
+                return "Mark Ready is only available during the play loop.";
+              if (!iAmActive)
+                return "You aren't on the active turn — Mark Ready isn't your call this beat.";
+              return undefined;
+            })()}
           />
-          <div className="flex flex-col gap-2 rounded-r-3 border border-ink-600 bg-ink-850 p-3">
-            <span className="mono text-[10px] font-bold uppercase tracking-[0.22em] text-ink-300">
-              ESCAPE HATCHES
-            </span>
-            <button
-              onClick={handleForceAdvance}
-              disabled={forceAdvanceCooldown}
-              aria-disabled={forceAdvanceCooldown}
-              className="mono rounded-r-1 border border-warn px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-warn hover:bg-warn-bg focus-visible:outline focus-visible:outline-2 focus-visible:outline-warn disabled:cursor-not-allowed disabled:opacity-50"
+          {readyRejectionNotice ? (
+            // ``role="alert"`` + ``aria-live="assertive"`` so a
+            // screen-reader hears the rejection as soon as it
+            // surfaces — the user just clicked and is waiting on
+            // feedback. UI/UX review HIGH H4. Polite is too quiet
+            // for the cap-exceeded path where the user is mashing.
+            <div
+              role="alert"
+              aria-live="assertive"
+              className="mono rounded-r-1 border border-warn bg-warn-bg px-2 py-1 text-[10px] uppercase tracking-[0.04em] text-warn"
+              data-testid="ready-rejection-notice"
             >
-              {forceAdvanceCooldown
-                ? "Force-advance (cooling)"
-                : "Force-advance turn"}
-            </button>
-            {isSelfCreator ? (
+              {readyRejectionNotice}
+            </div>
+          ) : null}
+          {isSelfCreator ? (
+            <div className="flex flex-col gap-2 rounded-r-3 border border-ink-600 bg-ink-850 p-3">
+              <span className="mono text-[10px] font-bold uppercase tracking-[0.22em] text-ink-300">
+                ESCAPE HATCHES
+              </span>
               <button
                 onClick={() => handlePauseToggle(snapshot.ai_paused === true)}
                 disabled={pauseInFlight}
@@ -1341,16 +1562,14 @@ export function Play({ sessionId, token }: Props) {
               >
                 {snapshot.ai_paused === true ? "Resume AI" : "Pause AI"}
               </button>
-            ) : null}
-            {isSelfCreator ? (
               <button
                 onClick={handleEnd}
                 className="mono rounded-r-1 border border-crit px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-crit hover:bg-crit-bg focus-visible:outline focus-visible:outline-2 focus-visible:outline-crit"
               >
                 End session
               </button>
-            ) : null}
-          </div>
+            </div>
+          ) : null}
         </aside>
         <section className="flex min-w-0 flex-col gap-2 lg:min-h-0 lg:overflow-hidden">
           {/*
@@ -1476,17 +1695,26 @@ export function Play({ sessionId, token }: Props) {
                 ● YOUR TURN — {myRole?.label ?? "you"}
               </div>
             ) : null}
-            {/* Wave 1 (issue #134): readiness chip for players. Renders
-                the same "N of M ready" the creator sees so a first-time
-                player can tell the team is still mid-discussion vs the
-                AI is about to fire. Hidden when the session ended. */}
-            {snapshot.state === "AWAITING_PLAYERS" ? (
-              <WaitingChip
-                activeRoleIds={activeRoleIds}
-                submittedRoleIds={submittedRoleIds}
-                readyRoleIds={readyRoleIds}
-                roles={snapshot.roles}
-              />
+            {/* Decoupled-ready (PR #209 follow-up): the rail's per-role
+                READY ✓ tags + the Mark Ready button now carry the
+                "who's ready vs still discussing?" signal that
+                ``WaitingChip`` used to surface here. The compact "N
+                of M ready" summary is preserved by passing the same
+                set into the rail. Hidden when the session ended. */}
+            {snapshot.state === "AWAITING_PLAYERS" &&
+            activeRoleIds.length > 0 ? (
+              <p
+                role="status"
+                aria-live="polite"
+                className="mono mb-2 text-[10px] uppercase tracking-[0.06em] text-ink-300"
+              >
+                {(() => {
+                  const readyCount = activeRoleIds.filter((id) =>
+                    displayedReadyRoleIds.has(id),
+                  ).length;
+                  return `${readyCount} of ${activeRoleIds.length} ready · use Mark Ready in the rail when you're done.`;
+                })()}
+              </p>
             ) : null}
             <Composer
               enabled={composerEnabled}
@@ -1495,13 +1723,6 @@ export function Play({ sessionId, token }: Props) {
               onSubmit={handleSubmit}
               onTypingChange={handleTypingChange}
               submitErrorEpoch={submitErrorEpoch}
-              isCurrentlyReady={iAmReady}
-              // Wave 1: out-of-turn / interjection submissions don't
-              // participate in the ready quorum (the backend records
-              // them with ``intent=None`` and they never touch
-              // ``ready_role_ids``). Hide the discuss button so the
-              // affordance only shows where it's load-bearing.
-              hideDiscussButton={!iAmActive}
               mentionRoster={mentionRoster}
             />
             {notice ? (

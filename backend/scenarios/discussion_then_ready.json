@@ -1,16 +1,10 @@
 {
   "meta": {
-    "name": "Discussion then ready (Wave 1, issue #134)",
-    "description": "Exercises the per-submission intent + ready-quorum gate with two players. Turn 1: SOC opens with a discussion question (no advance), CISO answers ready, SOC closes ready — quorum met, AI fires. Turn 2: CISO posts ready first, SOC chimes in discuss (still no advance), then SOC closes ready. Demonstrates the load-bearing Wave 1 affordance: players can talk to each other before the AI moves on. Engine-mode scenario (no ai_messages captured); covered by tests/scenarios/test_scenario_runner.py::test_discussion_then_ready_scenario_runs which drives every submission through the live pipeline and asserts per-submission intent flows end-to-end.",
-    "tags": [
-      "smoke",
-      "wave1",
-      "intent",
-      "ready-quorum",
-      "multi-role"
-    ]
+    "name": "Discussion then ready",
+    "description": "Exercises the decoupled-ready gate with two players. Turn 1: SOC opens with a discussion message (ready_after=false; no advance), CISO answers (ready_after=true), SOC closes (ready_after=true) — quorum met, AI fires. Turn 2: CISO posts ready first, SOC chimes in (ready_after=false), then SOC closes ready. Demonstrates the load-bearing affordance: players can talk to each other before the AI moves on. Engine-mode scenario (no ai_messages captured); covered by tests/scenarios/test_scenario_runner.py::test_discussion_then_ready_scenario_runs which drives every submission through the live pipeline and asserts ready_role_ids flips through every step.",
+    "tags": ["smoke", "ready-quorum", "multi-role"]
   },
-  "scenario_prompt": "Ransomware via vendor portal — finance laptops impacted at 03:14 Wed. Drill: confirm intent gating works.",
+  "scenario_prompt": "Ransomware via vendor portal — finance laptops impacted at 03:14 Wed. Drill: confirm ready-quorum gating works.",
   "creator_label": "CISO",
   "creator_display_name": "Alex (CISO)",
   "skip_setup": true,
@@ -28,17 +22,17 @@
         {
           "role_label": "SOC Analyst",
           "content": "Quick check before I commit — are we treating the vendor portal as compromised end-to-end, or just the affected laptops? Want to make sure my containment scope matches the call.",
-          "intent": "discuss"
+          "ready_after": false
         },
         {
           "role_label": "CISO",
           "content": "Treat the portal as compromised end-to-end. Isolate the affected laptops, pull IR Lead, start the regulator-notification clock.",
-          "intent": "ready"
+          "ready_after": true
         },
         {
           "role_label": "SOC Analyst",
           "content": "Acknowledged — disabling the vendor account, pulling Defender event timeline, scoping for lateral movement. Will report in 5.",
-          "intent": "ready"
+          "ready_after": true
         }
       ],
       "active_role_label_groups": [
@@ -55,17 +49,17 @@
         {
           "role_label": "CISO",
           "content": "Stage Comms draft for legal review. Notify board chair via the secure channel.",
-          "intent": "ready"
+          "ready_after": true
         },
         {
           "role_label": "SOC Analyst",
           "content": "One thing — Comms might want to wait until we know whether the vendor account exfiltrated anything. Otherwise the holding statement promises we don't know yet.",
-          "intent": "discuss"
+          "ready_after": false
         },
         {
           "role_label": "SOC Analyst",
           "content": "Initial scope: 3 laptops in finance, all behind the vendor portal. No lateral movement seen yet. Exfil check: pulling proxy logs now, ETA 10 min.",
-          "intent": "ready"
+          "ready_after": true
         }
       ],
       "active_role_label_groups": [
@@ -78,6 +72,6 @@
       ]
     }
   ],
-  "end_reason": "intent-gating drill complete",
+  "end_reason": "ready-quorum drill complete",
   "mock_llm_script": null
 }

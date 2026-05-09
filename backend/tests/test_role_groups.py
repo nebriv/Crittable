@@ -791,7 +791,7 @@ def test_recorder_round_trips_role_groups() -> None:
                 role_id="paul",
                 body="filing it now",
                 turn_id=turn.id,
-                intent="ready",
+
             ),
         ],
     )
@@ -852,8 +852,8 @@ def test_runner_rejects_turn_missing_active_role_label_groups(
 
     turn = PlayTurn(
         submissions=[
-            PlayStep(role_label="creator", content="…", intent="ready"),
-            PlayStep(role_label="Paul", content="…", intent="ready"),
+            PlayStep(role_label="creator", content="…"),
+            PlayStep(role_label="Paul", content="…"),
         ],
         ai_messages=[],
         active_role_label_groups=[],

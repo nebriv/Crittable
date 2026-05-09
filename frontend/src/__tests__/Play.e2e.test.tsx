@@ -251,6 +251,36 @@ describe("Play page e2e — state transitions", () => {
     expect(
       screen.getByText(/what does the alert queue actually show/i),
     ).toBeInTheDocument();
+    // ESCAPE HATCHES panel must NOT render for a non-creator player.
+    // The whole panel (including the heading) is creator-gated; a
+    // regression that re-shows force-advance / pause AI / end session
+    // to a non-creator gets caught here.
+    expect(screen.queryByText(/escape hatches/i)).toBeNull();
+    expect(screen.queryByText(/force-advance/i)).toBeNull();
+    expect(screen.queryByText(/pause ai/i)).toBeNull();
+    expect(screen.queryByText(/end session/i)).toBeNull();
+  });
+
+  it("AI_PROCESSING: composer stays enabled so a player can drop a sidebar / interjection", async () => {
+    // PR #209 follow-up — QA review BLOCK. The headline backend
+    // change was that ``submit_response`` is allowed during
+    // ``AI_PROCESSING`` (recorded as ``is_interjection=true``) so a
+    // player who's drafting a long reply isn't locked out the
+    // moment the rest of the room closes the quorum. The frontend
+    // gate on ``composerEnabled`` was widened to span both states.
+    // Lock the contract: the textarea remains writable and SUBMIT
+    // is reachable when ``state === "AI_PROCESSING"``.
+    const aiProcessingSnap = (() => {
+      const s = _playSnapshot();
+      s.state = "AI_PROCESSING";
+      return s;
+    })();
+    vi.spyOn(api, "getSession").mockImplementation(async () => aiProcessingSnap);
+    render(<Play sessionId="s-test" token={_socToken()} />);
+
+    const textarea = await screen.findByRole("combobox");
+    expect(textarea).toBeInTheDocument();
+    expect(textarea).not.toBeDisabled();
   });
 
   it("ENDED: renders the after-action review surface", async () => {

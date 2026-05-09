@@ -81,7 +81,6 @@ describe("Composer @-mention popover (Wave 2)", () => {
     fireEvent.keyDown(textarea, { key: "Enter" });
     expect(onSubmit).toHaveBeenCalledWith(
       "hi @CISO",
-      "ready",
       ["ciso"],
       undefined,
     );
@@ -95,7 +94,6 @@ describe("Composer @-mention popover (Wave 2)", () => {
     fireEvent.keyDown(textarea, { key: "Enter" });
     expect(onSubmit).toHaveBeenCalledWith(
       "@facilitator",
-      "ready",
       ["facilitator"],
       undefined,
     );
@@ -136,7 +134,7 @@ describe("Composer @-mention popover (Wave 2)", () => {
     type(textarea, "hi @CIS ");
     // Submit and confirm mentions[] is now empty.
     fireEvent.keyDown(textarea, { key: "Enter" });
-    expect(onSubmit).toHaveBeenCalledWith("hi @CIS", "ready", [], undefined);
+    expect(onSubmit).toHaveBeenCalledWith("hi @CIS", [], undefined);
   });
 
   it("text inserted BEFORE a mark does NOT drop the mark", () => {
@@ -159,7 +157,7 @@ describe("Composer @-mention popover (Wave 2)", () => {
     fireEvent.keyDown(textarea, { key: "Enter" });
     const last = onSubmit.mock.calls[onSubmit.mock.calls.length - 1];
     expect(last[0]).toBe("prefix @CISO");
-    expect(last[2]).toEqual(["ciso"]);
+    expect(last[1]).toEqual(["ciso"]);
   });
 
   it("text appended AFTER a mark does NOT drop the mark", () => {
@@ -174,7 +172,7 @@ describe("Composer @-mention popover (Wave 2)", () => {
     fireEvent.keyDown(textarea, { key: "Enter" });
     const last = onSubmit.mock.calls[onSubmit.mock.calls.length - 1];
     expect(last[0]).toBe("@CISO and what's the call?");
-    expect(last[2]).toEqual(["ciso"]);
+    expect(last[1]).toEqual(["ciso"]);
   });
 
   it("paste-replace of the entire body drops all marks", () => {
@@ -191,7 +189,7 @@ describe("Composer @-mention popover (Wave 2)", () => {
     type(textarea, "totally different content with no @-tokens");
     fireEvent.keyDown(textarea, { key: "Enter" });
     const last = onSubmit.mock.calls[onSubmit.mock.calls.length - 1];
-    expect(last[2]).toEqual([]);
+    expect(last[1]).toEqual([]);
   });
 
   it("dedupes mentions on submit — multiple inserts of the same role count once", () => {
@@ -203,9 +201,10 @@ describe("Composer @-mention popover (Wave 2)", () => {
     fireEvent.keyDown(textarea, { key: "Enter" }); // submit
     const calls = onSubmit.mock.calls;
     const submitCall = calls[calls.length - 1];
-    // Third positional arg is mentions[]; should have exactly one
-    // entry for ``ciso``.
-    expect(submitCall[2]).toEqual(["ciso"]);
+    // Second positional arg is mentions[]; should have exactly one
+    // entry for ``ciso``. (PR #209 follow-up: dropped the ``intent``
+    // arg, so positions shifted left by one.)
+    expect(submitCall[1]).toEqual(["ciso"]);
   });
 
   it("textarea wires aria-controls and aria-activedescendant to the listbox", () => {
@@ -231,7 +230,7 @@ describe("Composer @-mention popover (Wave 2)", () => {
     fireEvent.keyDown(textarea, { key: "Tab" });
     expect(textarea.value).toBe("@CISO ");
     fireEvent.keyDown(textarea, { key: "Enter" });
-    expect(onSubmit.mock.calls[0][2]).toEqual(["ciso"]);
+    expect(onSubmit.mock.calls[0][1]).toEqual(["ciso"]);
   });
 
   it("does NOT open the popover for an @ inside an email-like token", () => {
@@ -257,8 +256,8 @@ describe("Composer @-mention popover (Wave 2)", () => {
     fireEvent.keyDown(textarea, { key: "Enter" });
     const last = onSubmit.mock.calls[onSubmit.mock.calls.length - 1];
     // Mentions list contains ONLY the role_id, never "facilitator".
-    expect(last[2]).toEqual(["diana"]);
-    expect(last[2]).not.toContain("facilitator");
+    expect(last[1]).toEqual(["diana"]);
+    expect(last[1]).not.toContain("facilitator");
   });
 
   it("hand-typed @facilitator (no popover pick) still resolves on submit", () => {
@@ -278,7 +277,7 @@ describe("Composer @-mention popover (Wave 2)", () => {
     fireEvent.keyDown(textarea, { key: "Enter" });
     const last = onSubmit.mock.calls[onSubmit.mock.calls.length - 1];
     expect(last[0]).toBe("@facilitator");
-    expect(last[2]).toEqual(["facilitator"]);
+    expect(last[1]).toEqual(["facilitator"]);
   });
 
   it("hand-typed alias @ai resolves to the canonical facilitator on submit", () => {
@@ -288,7 +287,7 @@ describe("Composer @-mention popover (Wave 2)", () => {
     expect(screen.queryByRole("listbox")).toBeNull();
     fireEvent.keyDown(textarea, { key: "Enter" });
     const last = onSubmit.mock.calls[onSubmit.mock.calls.length - 1];
-    expect(last[2]).toEqual(["facilitator"]);
+    expect(last[1]).toEqual(["facilitator"]);
   });
 
   it("hand-typed @<role> resolves to the role_id on submit", () => {
@@ -298,7 +297,7 @@ describe("Composer @-mention popover (Wave 2)", () => {
     type(textarea, "@CISO confirm clock");
     fireEvent.keyDown(textarea, { key: "Enter" });
     const last = onSubmit.mock.calls[onSubmit.mock.calls.length - 1];
-    expect(last[2]).toEqual(["ciso"]);
+    expect(last[1]).toEqual(["ciso"]);
   });
 
   it("hand-typed mention is de-duplicated against popover-picked marks", () => {
@@ -317,7 +316,7 @@ describe("Composer @-mention popover (Wave 2)", () => {
     fireEvent.keyDown(textarea, { key: "Escape" });
     fireEvent.keyDown(textarea, { key: "Enter" }); // submit
     const last = onSubmit.mock.calls[onSubmit.mock.calls.length - 1];
-    expect(last[2]).toEqual(["ciso"]);
+    expect(last[1]).toEqual(["ciso"]);
   });
 
   it("kbd hint row mentions @facilitator for discoverability", () => {

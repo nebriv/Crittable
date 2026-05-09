@@ -7,21 +7,12 @@ legal?" decisions, then performs the mutation itself.
 
 from __future__ import annotations
 
-from typing import Literal
-
 from .models import (
     PLAN_EDITABLE_FIELDS,
     Session,
     SessionState,
     Turn,
 )
-
-# Wave 1 (issue #134): per-submission intent. A "ready" submission
-# adds the role to ``Turn.ready_role_ids`` and may flip the state to
-# ``AI_PROCESSING`` once the quorum is met; a "discuss" submission
-# leaves space for further team discussion (and removes the role from
-# the quorum if they had previously signaled ready).
-SubmissionIntent = Literal["ready", "discuss"]
 
 
 class IllegalTransitionError(RuntimeError):
@@ -68,13 +59,11 @@ def groups_from_flat(role_ids: list[str]) -> list[list[str]]:
 def can_submit(turn: Turn, role_id: str) -> bool:
     """A role may submit only if it's named active on an awaiting turn.
 
-    Wave 1 (issue #134): we no longer cap submissions at one per role
-    per turn. The ready-quorum gate replaces "submitted once" as the
-    advance signal — a role can post multiple discussion messages
-    before signaling ``intent="ready"``, and all of them count as
-    turn submissions (each updates ``ready_role_ids`` based on the
-    submission's intent). Non-active roles (or active roles on a
-    non-awaiting turn) still land as out-of-turn interjections.
+    Submissions never advance the turn — the ready-quorum gate
+    (``set_role_ready`` + ``groups_quorum_met``) does. A role can post
+    any number of discussion messages before marking themselves ready.
+    Non-active roles (or active roles on a non-awaiting turn) land as
+    out-of-turn interjections instead.
 
     Issue #168 (role-groups): "named active" means "appears in any of
     the turn's ``active_role_groups``" — equivalent to membership in
@@ -101,15 +90,15 @@ def all_submitted(turn: Turn) -> bool:
 
 
 def groups_quorum_met(turn: Turn) -> bool:
-    """Has every active group received at least one ``intent="ready"``
-    submission?
+    """Has every active group received at least one ready signal?
 
     The role-groups model (issue #168) replaces the all-roles-must-ready
     gate with a per-group quorum. Each group in ``active_role_groups``
-    closes when ANY of its members signals ready; the turn advances
-    when *every* group is closed. A single-role group reduces to "that
-    role must ready" (the previous default for a single-id yield); a
-    multi-role group is the "either of you can answer" case.
+    closes when ANY of its members fires ``set_ready{ready: True}``;
+    the turn advances when *every* group is closed. A single-role group
+    reduces to "that role must ready" (the previous default for a
+    single-id yield); a multi-role group is the "either of you can
+    answer" case.
 
     Examples:
 

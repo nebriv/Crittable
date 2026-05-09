@@ -268,19 +268,23 @@ async def test_discussion_then_ready_scenario_runs(
     )
     scenario = Scenario.model_validate(raw)
 
-    # (a) Sanity: the scenario file actually exercises discuss +
-    # ready across multiple roles. Catches a future scenario edit
-    # that accidentally simplifies away the multi-role discussion.
-    intents = [
-        step.intent
+    # (a) Sanity: the scenario file actually exercises discussion
+    # (ready_after=False on at least one early step) plus ready
+    # closures (ready_after=True on at least one closing step) across
+    # multiple roles. Catches a future scenario edit that accidentally
+    # simplifies away the multi-role discussion.
+    ready_flags = [
+        step.ready_after
         for turn in scenario.play_turns
         for step in turn.submissions
     ]
-    assert "discuss" in intents, (
-        "scenario should include at least one discuss-intent submission"
+    assert False in ready_flags, (
+        "scenario should include at least one discussion submission "
+        "(ready_after=False)"
     )
-    assert "ready" in intents, (
-        "scenario should include at least one ready-intent submission"
+    assert True in ready_flags, (
+        "scenario should include at least one closing submission "
+        "(ready_after=True)"
     )
     role_labels = {
         step.role_label
@@ -304,13 +308,14 @@ async def test_discussion_then_ready_scenario_runs(
 
     # (c) Drive each scripted submission through the live pipeline.
     # Pre-open each turn with both roles active so every submission
-    # lands as a turn-submission (not an interjection). The test
-    # exercises the ``intent`` field at every layer:
-    #   - the WS payload (skipped — pipeline boundary is the
-    #     equivalent contract);
-    #   - submission_pipeline (forwards intent);
-    #   - manager.submit_response (writes Message.intent + updates
-    #     ready_role_ids).
+    # lands as a turn-submission (not an interjection). After each
+    # submission, fire ``set_role_ready`` per ``step.ready_after`` —
+    # same path the WS handler takes when the client emits a
+    # ``set_ready`` event. This exercises:
+    #   - submission_pipeline (no intent param);
+    #   - manager.submit_response (writes the message; never advances);
+    #   - manager.set_role_ready (the dedicated quorum gate).
+    quorum_advances = 0
     for turn in scenario.play_turns:
 
         async def _open() -> None:
@@ -345,47 +350,43 @@ async def test_discussion_then_ready_scenario_runs(
                 session_id=sid,
                 role_id=role_id,
                 content=step.content,
-                intent=step.intent,
             )
+            if step.ready_after:
+                ready_outcome = await manager.set_role_ready(
+                    session_id=sid,
+                    actor_role_id=role_id,
+                    subject_role_id=role_id,
+                    ready=True,
+                    client_seq=0,
+                )
+                if ready_outcome.ready_to_advance:
+                    quorum_advances += 1
 
-    # (d) Verify intent survived end-to-end on every submission, both
-    # roles. Pre-Wave-1 ``Message.intent`` was always ``None``; this
-    # asserts the field landed on each turn-submission.
+    # (d) Verify the quorum closed at least once per scripted turn —
+    # the scenario must drive every active group to ready by the
+    # turn's last step or it isn't exercising the gate. This
+    # supersedes the legacy "every Message.intent round-trips"
+    # assertion (Message.intent no longer exists; the audit trail for
+    # ready toggles lives on AuditEvent rows + ready_role_ids
+    # snapshots, not on the message itself).
     session = await manager.get_session(sid)
-    by_role: dict[str, list[str | None]] = {creator_id: [], soc_id: []}
-    for m in session.messages:
-        if (
-            m.kind == MessageKind.PLAYER
-            and not m.is_interjection
-            and m.role_id in by_role
-        ):
-            by_role[m.role_id].append(m.intent)
-    creator_intents = by_role[creator_id]
-    soc_intents = by_role[soc_id]
-    assert "ready" in creator_intents, (
-        f"creator should have at least one ready submission; got {creator_intents}"
+    assert quorum_advances >= len(scenario.play_turns), (
+        f"every scripted turn should close its quorum once; got "
+        f"{quorum_advances} advance(s) across {len(scenario.play_turns)} "
+        f"scripted turn(s)"
     )
-    assert "discuss" in soc_intents, (
-        f"SOC should have at least one discuss-intent submission; got {soc_intents}"
+    # MessageKind sanity: every submission landed as a player message
+    # tied to a real turn (not silently dropped).
+    player_msgs = [
+        m for m in session.messages
+        if m.kind == MessageKind.PLAYER and not m.is_interjection
+    ]
+    expected_player_msgs = sum(
+        len(t.submissions) for t in scenario.play_turns
     )
-    assert "ready" in soc_intents, (
-        f"SOC should close turn 1 with a ready submission; got {soc_intents}"
-    )
-    # Belt-and-braces: every recorded submission's intent matches a
-    # message in the transcript with the same intent — the scenario
-    # round-trips faithfully.
-    expected_intents = sorted(
-        step.intent
-        for turn in scenario.play_turns
-        for step in turn.submissions
-    )
-    actual_intents = sorted(creator_intents + soc_intents)
-    # Drop any None / interjection entries that slipped through —
-    # asserting expected as a multiset against actual non-None.
-    actual_non_none = sorted(i for i in actual_intents if i is not None)
-    assert actual_non_none == expected_intents, (
-        f"every scripted intent should appear in the transcript "
-        f"(expected={expected_intents}, got={actual_non_none})"
+    assert len(player_msgs) == expected_player_msgs, (
+        f"expected {expected_player_msgs} player turn-submissions in "
+        f"the transcript; got {len(player_msgs)}"
     )
 
     # Silence the asyncio-import lint — kept for the closure in
@@ -499,8 +500,8 @@ async def test_deterministic_replay_preserves_workstream_and_mentions(
             # Turn 1: responses to the briefing + tagged AI fallout.
             PlayTurn(
                 submissions=[
-                    PlayStep(role_label="IR Lead", content="On it.", intent="ready"),
-                    PlayStep(role_label="SOC Analyst", content="Logs pulled.", intent="ready"),
+                    PlayStep(role_label="IR Lead", content="On it."),
+                    PlayStep(role_label="SOC Analyst", content="Logs pulled."),
                 ],
                 ai_messages=[
                     RecordedMessage(

@@ -400,7 +400,6 @@ class ScenarioRunner:
                     session_id=sid,
                     role_id=role_id,
                     content=step.content,
-                    intent=step.intent,
                 )
             except EmptySubmissionError:
                 self._log(
@@ -418,13 +417,25 @@ class ScenarioRunner:
                     f"role={step.role_label} verdict={outcome.blocked_verdict}"
                 )
                 continue
-            if not outcome.advanced:
-                continue
-            session = await self._manager.get_session(sid)
-            if session.current_turn is not None:
-                await TurnDriver(manager=self._manager).run_play_turn(
-                    session=session, turn=session.current_turn
+            # Submissions never advance the turn in the new model.
+            # If the recorded step says the role marked ready after
+            # this submission, fire ``set_ready`` so the quorum closes
+            # naturally — same path the live UI uses.
+            if step.ready_after:
+                ready_outcome = await self._manager.set_role_ready(
+                    session_id=sid,
+                    actor_role_id=role_id,
+                    subject_role_id=role_id,
+                    ready=True,
+                    client_seq=0,
                 )
+                if not ready_outcome.ready_to_advance:
+                    continue
+                session = await self._manager.get_session(sid)
+                if session.current_turn is not None:
+                    await TurnDriver(manager=self._manager).run_play_turn(
+                        session=session, turn=session.current_turn
+                    )
 
     # Caps on inter-event sleep durations. Recorded sessions can have
     # multi-minute idle gaps (real dev typing pauses, lunch breaks
@@ -560,7 +571,6 @@ class ScenarioRunner:
                     session_id=sid,
                     role_id=role_id,
                     content=step.content,
-                    intent=step.intent,
                 )
             except EmptySubmissionError:
                 self._log(
@@ -580,6 +590,20 @@ class ScenarioRunner:
                 self._log(
                     f"replay submission blocked by guardrail — "
                     f"role={step.role_label} verdict={outcome.blocked_verdict}"
+                )
+            # Deterministic mode: still fire ``set_ready`` so the
+            # quorum closes and state flips to AI_PROCESSING the same
+            # way it would in engine / live modes. We DO NOT call
+            # ``run_play_turn`` here — the recorded AI fallout is
+            # injected via ``_inject_ai_messages`` below; that's the
+            # whole point of deterministic mode.
+            if step.ready_after:
+                await self._manager.set_role_ready(
+                    session_id=sid,
+                    actor_role_id=role_id,
+                    subject_role_id=role_id,
+                    ready=True,
+                    client_seq=0,
                 )
         await self._inject_ai_messages(turn.ai_messages)
         if next_turn is None:

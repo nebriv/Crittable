@@ -296,6 +296,16 @@ class LLMClient(ChatClient):
         """Yield streamed events. The terminal event has ``type == "complete"``
         and carries the final ``LLMResult`` under the ``result`` key.
 
+        Mid-stream events:
+          * ``text_delta`` — incremental text from the model.
+          * ``tool_use_start`` — emitted at ``content_block_start`` for
+            a ``tool_use`` block; carries ``name`` so callers can react
+            the moment the model commits to a specific tool (e.g. the
+            setup-tier driver broadcasts a ``setup_drafting_plan`` WS
+            event when ``name == "propose_scenario_plan"``). Anthropic
+            streams the full block metadata at start, so the name is
+            available before any input deltas arrive.
+
         ``tool_choice`` is passed through to Anthropic. Use ``{"type":
         "any"}`` on the strict-retry path to guarantee a tool call.
 
@@ -378,7 +388,17 @@ class LLMClient(ChatClient):
                 async with stream as s:
                     async for event in s:
                         etype = getattr(event, "type", None)
-                        if etype == "content_block_delta":
+                        if etype == "content_block_start":
+                            block = getattr(event, "content_block", None)
+                            if (
+                                block is not None
+                                and getattr(block, "type", None) == "tool_use"
+                            ):
+                                yield {
+                                    "type": "tool_use_start",
+                                    "name": getattr(block, "name", None),
+                                }
+                        elif etype == "content_block_delta":
                             delta = getattr(event, "delta", None)
                             if (
                                 delta is not None

@@ -5,7 +5,6 @@ import {
   DecisionLogEntry,
   DEFAULT_SESSION_FEATURES,
   Difficulty,
-  RoleView,
   ScenarioPlan,
   SessionFeatures,
   SessionSnapshot,
@@ -48,6 +47,7 @@ import { useTabFocusReporter } from "../lib/useTabFocusReporter";
 import { HighlightActionPopover } from "../components/HighlightActionPopover";
 import { SharedNotepad } from "../components/SharedNotepad";
 import { ServerEvent, WsClient } from "../lib/ws";
+import { friendlyRejectionMessage } from "../lib/setReadyRejection";
 
 export type Phase = "intro" | "setup" | "ready" | "play" | "ended";
 
@@ -274,12 +274,21 @@ export function Facilitator() {
   // the plan lands or an error surfaces. Distinct from ``busy``
   // because the chat-region DieLoader's *plan-specific* label is
   // honest only when we know a plan is imminent — i.e. the operator
-  // explicitly asked for one. The implicit "AI is thinking" indicator
-  // for regular pre-plan replies is owned by SetupView itself
-  // (debounced; soft label) so quick chip-pick turns under ~1.5 s
-  // never mount the heavy banner. See SetupView's
-  // ``showImplicitThinkingBanner`` state for that branch.
+  // explicitly asked for one. Regular setup back-and-forth keeps
+  // only the small "AI is typing" dots inside <SetupChat> — the
+  // heavy banner is reserved for the explicit plan-drafting step.
   const [draftingPlan, setDraftingPlan] = useState(false);
+  // Mirror of ``draftingPlan`` driven by the backend ``setup_drafting_plan``
+  // WS event. The setup tier streams its first LLM call; when the model
+  // commits to ``propose_scenario_plan`` (regardless of whether the
+  // operator clicked LOOKS READY or the AI decided on its own that it
+  // had enough background), the engine fires ``active=true`` and the
+  // banner mounts immediately — closing the prior gap where an AI-
+  // initiated plan draft showed only the small "AI is typing" dots
+  // for the full 10-30 s wait. ``active=false`` fires in the setup-
+  // driver's ``finally`` (even on exception), so a failed call never
+  // leaves the banner stuck.
+  const [aiDraftingPlan, setAiDraftingPlan] = useState(false);
   const [wsStatus, setWsStatus] = useState<"connecting" | "open" | "closed" | "error" | "kicked" | "rejected" | "session-gone">("connecting");
 
   // Live AI text streaming was producing visible mid-flight rewrites:
@@ -395,6 +404,43 @@ export function Facilitator() {
   // HighlightActionPopover) need React to re-render once the client
   // exists. See the matching note in Play.tsx (issue #98 player view).
   const [wsClient, setWsClient] = useState<WsClient | null>(null);
+  // Decoupled-ready (PR #209 follow-up): see Play.tsx for the full
+  // contract. Same shape: monotonic ``client_seq`` counter, an
+  // optimistic-flip overlay keyed by seq, and a transient banner
+  // for ``set_ready_rejected`` reasons. Creator-side toggles also
+  // include the impersonation path (``subject_role_id`` ≠ creator),
+  // so the overlay tracks subject_role_id explicitly.
+  const clientSeqRef = useRef(0);
+  const [pendingReadyFlips, setPendingReadyFlips] = useState<
+    Map<number, { subject_role_id: string; ready: boolean }>
+  >(() => new Map());
+  const [readyRejectionNotice, setReadyRejectionNotice] = useState<
+    string | null
+  >(null);
+  // ``setTimeout`` handle for the auto-clear of ``readyRejectionNotice``.
+  // QA review HIGH on PR #209 follow-up — same pattern as Play.tsx.
+  const readyNoticeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
+    null,
+  );
+  function setReadyRejectionNoticeWithAutoClear(msg: string) {
+    if (readyNoticeTimerRef.current !== null) {
+      clearTimeout(readyNoticeTimerRef.current);
+      readyNoticeTimerRef.current = null;
+    }
+    setReadyRejectionNotice(msg);
+    readyNoticeTimerRef.current = setTimeout(() => {
+      setReadyRejectionNotice((cur) => (cur === msg ? null : cur));
+      readyNoticeTimerRef.current = null;
+    }, 4000);
+  }
+  useEffect(() => {
+    return () => {
+      if (readyNoticeTimerRef.current !== null) {
+        clearTimeout(readyNoticeTimerRef.current);
+        readyNoticeTimerRef.current = null;
+      }
+    };
+  }, []);
   const forceAdvanceTimerRef = useRef<number | null>(null);
   // Rate-limit the typing-send-dropped log to one line per WS
   // state edge (issue #77 logging fix; see ``handleTypingChange``).
@@ -446,6 +492,17 @@ export function Facilitator() {
   useEffect(() => {
     if (phase !== "ready" && advancedToReview) setAdvancedToReview(false);
   }, [phase, advancedToReview]);
+
+  // Stuck-banner safety net for ``aiDraftingPlan``. The
+  // ``setup_drafting_plan active=false`` event is ``record=False`` so
+  // it can be missed on a flaky reconnect, but a plan landing in the
+  // snapshot is a hard signal that the draft completed (the only way
+  // ``snapshot.plan`` becomes truthy is via a successful
+  // ``propose_scenario_plan`` dispatch). Clearing here makes the
+  // success path self-healing even if the closing WS frame was lost.
+  useEffect(() => {
+    if (snapshot?.plan && aiDraftingPlan) setAiDraftingPlan(false);
+  }, [snapshot?.plan, aiDraftingPlan]);
 
   useEffect(() => {
     if (error) console.warn("[facilitator] error surfaced", error);
@@ -651,6 +708,16 @@ export function Facilitator() {
         // has to wait for a fresh ``presence_snapshot`` before the
         // tip can fire again.
         if (s !== "open") setPresenceReady(false);
+        // Reconnect-safety net for the plan-drafting banner.
+        // ``setup_drafting_plan`` is broadcast with ``record=False``
+        // (stale on reconnect, won't replay), so a dropped WS frame
+        // between ``active=true`` and ``active=false`` would otherwise
+        // latch the banner forever. Clearing on every "leave open"
+        // transition trades a possible momentary banner-down during a
+        // glitchy reconnect (the next iteration's ``active=true`` will
+        // re-mount it if a draft is genuinely still in flight) for a
+        // hard guarantee that the banner can't get permanently stuck.
+        if (s !== "open") setAiDraftingPlan(false);
       },
     });
     ws.connect();
@@ -704,6 +771,21 @@ export function Facilitator() {
         }
         break;
       case "turn_changed":
+        // Decoupled-ready (PR #209 follow-up): per-turn flip cap →
+        // any unresolved optimistic entry from the prior turn is
+        // moot. Clear + log the count for diagnosability. QA review
+        // HIGH + Security review MEDIUM.
+        setPendingReadyFlips((prev) => {
+          if (prev.size === 0) return prev;
+          const seqs = Array.from(prev.keys());
+          console.warn(
+            "[facilitator] dropping stale ready flips on turn change",
+            { count: prev.size, seqs, new_turn_index: evt.turn_index },
+          );
+          return new Map();
+        });
+        refreshSnapshot();
+        break;
       case "plan_proposed":
       case "plan_finalized":
       case "plan_edited":
@@ -762,6 +844,19 @@ export function Facilitator() {
         console.debug("[facilitator] ai_status", {
           phase: evt.phase,
           recovery: evt.recovery,
+        });
+        break;
+      case "setup_drafting_plan":
+        // The setup-tier driver fires this the moment the streaming
+        // model commits to ``propose_scenario_plan``. We mirror it
+        // into ``aiDraftingPlan`` and the banner gates on
+        // ``draftingPlan || aiDraftingPlan`` so both paths (operator
+        // clicked LOOKS READY → ``draftingPlan`` and AI-initiated
+        // draft → ``aiDraftingPlan``) mount the same banner without
+        // double-counting.
+        setAiDraftingPlan(evt.active);
+        console.info("[facilitator] setup_drafting_plan", {
+          active: evt.active,
         });
         break;
       case "critical_event":
@@ -839,7 +934,45 @@ export function Facilitator() {
         break;
       case "error":
         setError(evt.message);
+        if (evt.scope === "set_ready") {
+          console.warn("[facilitator] set_ready protocol error", evt);
+        }
         break;
+      // Decoupled-ready (PR #209): broadcast that ANY role's ready
+      // state flipped. Mirror Play.tsx — drop the matching
+      // optimistic entry, then refresh so ``ready_role_ids`` updates.
+      case "ready_changed":
+        setPendingReadyFlips((prev) => {
+          if (!prev.has(evt.client_seq)) return prev;
+          const next = new Map(prev);
+          next.delete(evt.client_seq);
+          return next;
+        });
+        refreshSnapshot();
+        break;
+      case "set_ready_ack":
+        setPendingReadyFlips((prev) => {
+          if (!prev.has(evt.client_seq)) return prev;
+          const next = new Map(prev);
+          next.delete(evt.client_seq);
+          return next;
+        });
+        break;
+      case "set_ready_rejected": {
+        setPendingReadyFlips((prev) => {
+          if (!prev.has(evt.client_seq)) return prev;
+          const next = new Map(prev);
+          next.delete(evt.client_seq);
+          return next;
+        });
+        // Defensive coercion — Security review LOW.
+        const reason =
+          typeof evt.reason === "string" ? evt.reason : "unknown";
+        const friendly = friendlyRejectionMessage(reason, "creator");
+        console.warn("[facilitator] set_ready rejected", evt);
+        setReadyRejectionNoticeWithAutoClear(friendly);
+        break;
+      }
       default:
         break;
     }
@@ -912,10 +1045,9 @@ export function Facilitator() {
     setBusyMessage(busyText);
     // Note: this path does NOT set ``draftingPlan`` — that flag is
     // reserved for the LOOKS READY click where we know a plan is
-    // imminent. The implicit-thinking banner (debounced, with a
-    // softer "AI is thinking" label) is owned by SetupView itself
-    // based on ``busy && !hasPlan && !draftingPlan``. See
-    // ``SetupView``'s ``showImplicitThinkingBanner`` state.
+    // imminent. Regular back-and-forth replies surface only the
+    // small "AI is typing" dots inside <SetupChat>; the prominent
+    // DieLoader banner stays parked until plan-drafting time.
     try {
       await api.setupReply(state.sessionId, state.token, content.trim());
       await refreshSnapshot();
@@ -926,6 +1058,14 @@ export function Facilitator() {
     } finally {
       setBusy(false);
       setBusyMessage(null);
+      // Last-line safety net: ``api.setupReply`` only resolves once
+      // the engine's setup turn has finished, which means the
+      // ``setup_drafting_plan active=false`` WS event should already
+      // have fired. If the frame was dropped (record=False, no
+      // replay), the request resolution is the next best signal that
+      // the draft is no longer in flight — clear so the banner can't
+      // outlive its own LLM call.
+      setAiDraftingPlan(false);
     }
   }
 
@@ -1116,7 +1256,6 @@ export function Facilitator() {
 
   async function handleSubmit(
     text: string,
-    intent: "ready" | "discuss",
     mentions: string[],
     asRoleId?: string,
   ) {
@@ -1131,7 +1270,6 @@ export function Facilitator() {
         // is hard-pinned to the connection's own role).
         console.info("[facilitator] proxy submit", {
           asRoleId,
-          intent,
           mentions,
         });
         await api.adminProxyRespond(
@@ -1139,7 +1277,6 @@ export function Facilitator() {
           state.token,
           asRoleId,
           text,
-          intent,
           mentions,
         );
         return;
@@ -1148,7 +1285,10 @@ export function Facilitator() {
       wsRef.current.send({
         type: "submit_response",
         content: text,
-        intent,
+        // Decoupled-ready (PR #209 follow-up): no ``intent`` field.
+        // Submissions never advance the turn; the ready quorum is
+        // closed via the dedicated ``set_ready`` event from
+        // ``handleMarkReady`` below.
         // Wave 2: structural mention list from the composer's marks.
         // See ``Play.tsx::handleSubmit`` for the routing semantics.
         mentions,
@@ -1157,6 +1297,70 @@ export function Facilitator() {
       const msg = err instanceof Error ? err.message : String(err);
       console.warn("[facilitator] submit_response_failed", msg, err);
       setError(msg);
+    }
+  }
+
+  // Decoupled-ready (PR #209 follow-up): dispatch a ``set_ready`` for
+  // any active role. ``subjectRoleId`` defaults to the creator's own
+  // role; passing another active role's id is the impersonation path
+  // (the creator marks an absent player ready on their behalf — the
+  // backend records ``actor_role_id`` ≠ ``subject_role_id`` so the
+  // audit log distinguishes). Same optimistic-flip + reconcile
+  // contract as Play.tsx.
+  function handleMarkReady(subjectRoleId: string, next: boolean) {
+    const ws = wsRef.current;
+    if (!ws || !state) {
+      console.warn("[facilitator] mark-ready dropped — WS or state missing", {
+        hasWs: !!ws,
+        hasState: !!state,
+        subjectRoleId,
+      });
+      return;
+    }
+    const seq = (clientSeqRef.current += 1);
+    setPendingReadyFlips((prev) => {
+      const out = new Map(prev);
+      out.set(seq, { subject_role_id: subjectRoleId, ready: next });
+      return out;
+    });
+    try {
+      const payload: {
+        type: "set_ready";
+        ready: boolean;
+        client_seq: number;
+        subject_role_id?: string;
+      } = { type: "set_ready", ready: next, client_seq: seq };
+      // Only include ``subject_role_id`` for impersonation — for the
+      // creator's own toggle the backend defaults it to ``role_id``
+      // (the WS connection's bound role), so the field is redundant
+      // and would just inflate the wire payload.
+      if (subjectRoleId !== state.creatorRoleId) {
+        payload.subject_role_id = subjectRoleId;
+      }
+      ws.send(payload);
+      console.info("[facilitator] set_ready sent", {
+        ready: next,
+        client_seq: seq,
+        subject_role_id: subjectRoleId,
+        impersonating: subjectRoleId !== state.creatorRoleId,
+      });
+    } catch (err) {
+      setPendingReadyFlips((prev) => {
+        if (!prev.has(seq)) return prev;
+        const out = new Map(prev);
+        out.delete(seq);
+        return out;
+      });
+      // Pass full err object so the console keeps the stack — QA
+      // review HIGH.
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn("[facilitator] set_ready send failed", {
+        message: msg,
+        err,
+      });
+      setReadyRejectionNoticeWithAutoClear(
+        "Mark Ready dropped — connection to server lost. Retrying once it's back.",
+      );
     }
   }
 
@@ -1307,15 +1511,63 @@ export function Facilitator() {
 
   const activeRoleIds = snapshot.current_turn?.active_role_ids ?? [];
   const readyRoleIds = snapshot.current_turn?.ready_role_ids ?? [];
-  const iAmActive = activeRoleIds.includes(state.creatorRoleId);
-  const iAmReady = readyRoleIds.includes(state.creatorRoleId);
-  // ``isMyTurn`` matches the Play.tsx contract: active on the current
-  // turn AND not yet readied. A creator who has marked ready but is
-  // still on the active set is no longer "their turn" — the AI is
-  // waiting on someone else, the WaitingChip should render, and the
-  // composer's secondary button flips to UNREADY ↺ via
-  // ``isCurrentlyReady`` so the creator can walk it back if needed.
-  const isMyTurn = iAmActive && !iAmReady;
+  // Decoupled-ready (PR #209 follow-up): overlay any pending
+  // optimistic flips on the canonical snapshot. See Play.tsx for the
+  // matching computation. The creator-side overlay also covers the
+  // impersonation path — when the creator marks an absent player
+  // ready on their behalf, that subject's row reflects the flip
+  // before ``ready_changed`` arrives.
+  const displayedReadyRoleIdsSet = (() => {
+    if (pendingReadyFlips.size === 0) return new Set(readyRoleIds);
+    const out = new Set(readyRoleIds);
+    for (const entry of pendingReadyFlips.values()) {
+      if (entry.ready) out.add(entry.subject_role_id);
+      else out.delete(entry.subject_role_id);
+    }
+    return out;
+  })();
+  // Subjects with an in-flight ``set_ready`` (creator can have one
+  // per active role at a time — own seat plus any impersonated
+  // subjects). Drives the per-row pulse in ``<RolesPanel>``.
+  // UI/UX review MEDIUM M2.
+  const pendingMarkReadySubjects = (() => {
+    if (pendingReadyFlips.size === 0) return new Set<string>();
+    const out = new Set<string>();
+    for (const entry of pendingReadyFlips.values()) {
+      out.add(entry.subject_role_id);
+    }
+    return out;
+  })();
+  const activeRoleIdsSet = new Set(activeRoleIds);
+  const iAmActive = activeRoleIdsSet.has(state.creatorRoleId);
+  // Decoupled-ready (PR #209 follow-up): "My turn" simplifies to "I
+  // am on the active role set." Ready is its own concern, closed via
+  // the rail's per-role Mark Ready buttons (own row + impersonation
+  // rows). The creator can drop comments / interjections at any
+  // ``AWAITING_PLAYERS`` or ``AI_PROCESSING`` state.
+  const isMyTurn = iAmActive;
+  // Tooltip surfaced when Mark Ready is disabled. Single computation
+  // shared across all rail rows. User-persona HIGH H3 + UI/UX H5:
+  // celebrate when the local participant just closed the quorum;
+  // call out WS reconnect explicitly so a stuck button has a cause.
+  const markReadyDisabledReason = (() => {
+    if (wsStatus !== "open")
+      return "Reconnecting — Mark Ready re-opens once the connection is back.";
+    if (snapshot.state === "AI_PROCESSING") {
+      const allActiveReady =
+        activeRoleIds.length > 0 &&
+        activeRoleIds.every((id) => displayedReadyRoleIdsSet.has(id));
+      if (allActiveReady) {
+        return "Quorum closed — AI is responding. Mark Ready re-opens on the next beat.";
+      }
+      return "AI is responding to this beat — Mark Ready re-opens on the next turn.";
+    }
+    if (snapshot.state !== "AWAITING_PLAYERS")
+      return "Mark Ready is only available during the play loop.";
+    return undefined;
+  })();
+  const markReadyEnabled =
+    snapshot.state === "AWAITING_PLAYERS" && wsStatus === "open";
   // Lifted from the composer IIFE so the "Awaiting your response"
   // banner can include the role-label suffix the player-side
   // awaiting-response banner in ``Play.tsx`` ships. Without the
@@ -1364,7 +1616,7 @@ export function Facilitator() {
           }
           busy={busy}
           busyMessage={busyMessage}
-          draftingPlan={draftingPlan}
+          draftingPlan={draftingPlan || aiDraftingPlan}
         />
       );
     } else if (wizardReadyForReview && snapshot.plan) {
@@ -1511,12 +1763,26 @@ export function Facilitator() {
             onError={setError}
             connectedRoleIds={presence}
             focusedRoleIds={focusedRoleIds}
+            readyRoleIds={displayedReadyRoleIdsSet}
+            activeRoleIds={activeRoleIdsSet}
+            onMarkReady={handleMarkReady}
+            selfRoleId={state.creatorRoleId}
+            markReadyEnabled={markReadyEnabled}
+            markReadyDisabledReason={markReadyDisabledReason}
+            pendingMarkReadySubjects={pendingMarkReadySubjects}
           />
-          {snapshot.current_turn?.active_role_ids?.length ? (
-            <ActiveRolesHint
-              activeRoleIds={activeRoleIds}
-              roles={snapshot.roles}
-            />
+          {readyRejectionNotice ? (
+            // ``role="alert"`` + ``aria-live="assertive"`` so a
+            // screen-reader hears the rejection as soon as it
+            // surfaces. UI/UX review HIGH H4.
+            <div
+              role="alert"
+              aria-live="assertive"
+              className="mono rounded-r-1 border border-warn bg-warn-bg px-2 py-1 text-[10px] uppercase tracking-[0.04em] text-warn"
+              data-testid="ready-rejection-notice"
+            >
+              {readyRejectionNotice}
+            </div>
           ) : null}
           <div className="rounded-r-3 border border-ink-600 bg-ink-850">
             <TurnStateRail
@@ -1739,15 +2005,26 @@ export function Facilitator() {
                   ⚠ Awaiting your response — {selfRole?.label ?? "you"}
                 </div>
               ) : null}
-              {!isMyTurn && activeRoleIds.length ? (
-                <WaitingChip
-                  activeRoleIds={activeRoleIds}
-                  submittedRoleIds={
-                    snapshot.current_turn?.submitted_role_ids ?? []
-                  }
-                  readyRoleIds={readyRoleIds}
-                  roles={snapshot.roles}
-                />
+              {/* Decoupled-ready (PR #209 follow-up): per-role READY ✓
+                  tags + the Mark Ready buttons in the rail now carry
+                  the "who's ready vs still discussing?" signal that
+                  ``WaitingChip`` used to surface. The compact "N of
+                  M ready" summary is preserved by reading the same
+                  set the rail uses. Hidden when the session ended. */}
+              {snapshot.state === "AWAITING_PLAYERS" &&
+              activeRoleIds.length > 0 ? (
+                <p
+                  role="status"
+                  aria-live="polite"
+                  className="mono mb-2 text-[10px] uppercase tracking-[0.06em] text-ink-300"
+                >
+                  {(() => {
+                    const readyCount = activeRoleIds.filter((id) =>
+                      displayedReadyRoleIdsSet.has(id),
+                    ).length;
+                    return `${readyCount} of ${activeRoleIds.length} ready · use Mark Ready in the rail when each role is done.`;
+                  })()}
+                </p>
               ) : null}
               {(() => {
                 // Creator-only "respond as" dropdown. See
@@ -1780,15 +2057,16 @@ export function Facilitator() {
                     displayLabel: r.label,
                     secondary: r.display_name ?? undefined,
                   }));
-                // Issue #78: the creator can post any time the session
-                // is awaiting players — even when they're not on the
-                // active set. Out-of-turn submissions land as
-                // interjections (transcript only, no turn advance).
-                // ``!busy`` keeps double-submits during an in-flight
-                // creator action (force-advance, end-session) out of
-                // the queue.
+                // Decoupled-ready (PR #209 follow-up): the composer
+                // stays editable across ``AI_PROCESSING`` so the
+                // creator can drop interjections / side-comments
+                // while the AI thinks. ``!busy`` keeps double-submits
+                // during an in-flight creator action out of the
+                // queue.
                 const composerEnabled =
-                  snapshot.state === "AWAITING_PLAYERS" && !busy;
+                  (snapshot.state === "AWAITING_PLAYERS" ||
+                    snapshot.state === "AI_PROCESSING") &&
+                  !busy;
                 const canSelfSpeak = isMyTurn && !busy;
                 const canProxy = impersonateOptions.length > 0 && !busy;
                 // Issue #103: the tip used to fire whenever the
@@ -1845,20 +2123,6 @@ export function Facilitator() {
                       impersonateOptions={impersonateOptions}
                       selfLabel={selfRole?.label}
                       mentionRoster={mentionRoster}
-                      // Mirror Play.tsx: surface the creator's own ready
-                      // signal so the secondary button flips to
-                      // ``UNREADY ↺`` after they mark ready, the
-                      // ``You're marked ready`` hint shows, and the
-                      // ``NOTHING TO ADD →`` shortcut hides (no point
-                      // when the role is already in ``ready_role_ids``).
-                      isCurrentlyReady={iAmReady}
-                      // The creator can post out-of-turn sidebar
-                      // comments at any time (issue #78). Hide the
-                      // discuss/ready buttons when they're not on the
-                      // active turn so the affordances only show where
-                      // they're load-bearing — same rule the player
-                      // path uses on Play.tsx.
-                      hideDiscussButton={!iAmActive}
                     />
                   </>
                 );
@@ -2228,92 +2492,12 @@ function Spinner() {
  * If a future task needs an inline cost chip back in the top bar, the
  * minimal mono variant in `BottomActionBar` is the canonical version. */
 
-function ActiveRolesHint({
-  activeRoleIds,
-  roles,
-}: {
-  activeRoleIds: string[];
-  roles: RoleView[];
-}) {
-  const labels = activeRoleIds
-    .map((id) => roles.find((r) => r.id === id)?.label ?? id)
-    .join(", ");
-  return (
-    <div className="rounded border border-signal-deep bg-signal-tint p-2 text-xs text-signal-bright">
-      <p className="uppercase tracking-widest text-signal">Active</p>
-      <p>{labels || "(none)"}</p>
-    </div>
-  );
-}
-
-/**
- * Pinned above the Composer when *other* roles still owe a response. Names
- * the actor we're blocked on so the screen doesn't look frozen, with a
- * smaller ``(N of M)`` tail for at-a-glance count.
- *
- * Issue #88: previously rendered warn-tone-on-warn-tone (read as
- * "warning") and exposed a per-role "Copy invite" button that
- * duplicated the Copy link affordance already in the Roles panel.
- * The tone is now neutral ink matching the rest of the
- * awaiting-state banners; copy/issuing links is handled
- * exclusively by the Roles panel.
- */
-export function WaitingChip({
-  activeRoleIds,
-  submittedRoleIds,
-  readyRoleIds,
-  roles,
-}: {
-  activeRoleIds: string[];
-  /** Roles who have spoken at all on this turn (any number of messages). */
-  submittedRoleIds: string[];
-  /**
-   * Wave 1 (issue #134): roles who have signaled ``intent="ready"``
-   * on their most recent submission. The AI advances when this set
-   * covers ``activeRoleIds``. ``undefined`` for legacy snapshots
-   * (treated as empty — i.e. nobody is ready yet).
-   */
-  readyRoleIds?: string[];
-  roles: RoleView[];
-}) {
-  const submitted = new Set(submittedRoleIds);
-  const ready = new Set(readyRoleIds ?? []);
-  // "Pending" = not yet ready (the gate that flips the AI). A role
-  // who submitted a discussion message is still pending — they've
-  // spoken but haven't signaled the team is ready to advance.
-  const pending = activeRoleIds.filter((id) => !ready.has(id));
-  if (pending.length === 0) return null;
-  const labels = pending.map((id) => {
-    const r = roles.find((x) => x.id === id);
-    if (!r) return id;
-    const tail = submitted.has(id) ? " — discussing" : "";
-    const base = r.display_name ? `${r.label} (${r.display_name})` : r.label;
-    return `${base}${tail}`;
-  });
-  let phrase: string;
-  if (labels.length === 1) {
-    phrase = `Waiting on ${labels[0]} to mark ready.`;
-  } else if (labels.length === 2) {
-    phrase = `Waiting on ${labels[0]} and ${labels[1]} to mark ready.`;
-  } else {
-    const head = labels.slice(0, 2).join(", ");
-    phrase = `Waiting on ${head} and ${labels.length - 2} more to mark ready.`;
-  }
-  const readyCount = activeRoleIds.length - pending.length;
-
-  return (
-    <div
-      role="status"
-      aria-live="polite"
-      className="mb-2 flex items-center gap-2 rounded bg-ink-800 px-2 py-1 text-xs text-ink-200"
-    >
-      <span>{phrase}</span>
-      <span className="text-ink-400">
-        ({readyCount} of {activeRoleIds.length} ready)
-      </span>
-    </div>
-  );
-}
+// ActiveRolesHint and WaitingChip removed in PR #209 follow-up
+// (decoupled-ready). Both were creator-side ready-quorum surfaces;
+// the rail's per-role READY ✓ tags + Mark Ready buttons now carry
+// the same signal in a place that's visible regardless of where the
+// creator's cursor is. The compact "N of M ready" copy was inlined
+// into the composer column above each composer.
 
 
 /**
@@ -2347,83 +2531,32 @@ export function SetupView({
   onPickOption: (option: string) => void;
   busy: boolean;
   busyMessage: string | null;
-  /** True from the moment the operator clicks LOOKS READY → PROPOSE
-   *  THE PLAN until either the plan arrives or an error surfaces.
+  /** True while the AI is drafting the scenario plan — driven by
+   *  EITHER (a) the operator clicking LOOKS READY → PROPOSE THE PLAN
+   *  (Facilitator's local ``draftingPlan`` state) OR (b) the
+   *  ``setup_drafting_plan`` WS event, which the backend fires the
+   *  moment the streaming setup-tier model commits to
+   *  ``propose_scenario_plan`` (covers the AI-initiated draft path
+   *  the user complained looked "stuck" with only the typing dots).
    *  Drives a prominent in-chat banner with the plan-specific label
-   *  "Drafting scenario plan · typically 10–30 sec" so the operator
-   *  has unambiguous feedback during the 10–30 s wait. The implicit
-   *  branch — AI is thinking during a regular reply / option pick —
-   *  is owned by SetupView's internal ``showImplicitThinkingBanner``
-   *  state (debounced, neutral label) so quick turns don't mount the
-   *  heavy banner. Required, not optional — every call site already
-   *  passes it explicitly and a default would silently hide the
-   *  indicator if a future site forgets. */
+   *  "Drafting scenario plan · typically 10–30 sec". Regular
+   *  back-and-forth replies use only the small in-chat typing dots.
+   *  Required, not optional — every call site already passes it
+   *  explicitly and a default would silently hide the indicator if a
+   *  future site forgets. */
   draftingPlan: boolean;
 }) {
   const hasPlan = Boolean(snapshot.plan);
   const notes = snapshot.setup_notes ?? [];
 
-  // Implicit-thinking banner: shown during a regular reply / option
-  // pick (not LOOKS READY) when the AI is processing pre-plan and the
-  // wait crosses ~1.5 s. Two design choices, both from
-  // user-persona + UI/UX review:
-  //   1. **Debounce** — fast turns (chip pick → 5 s question) keep
-  //      the small typing dots; only slow turns (≳1.5 s) escalate to
-  //      the banner. Without this the banner would mount/unmount on
-  //      every routine Q&A round, training the operator to ignore it
-  //      and undermining its signal value when LOOKS-READY actually
-  //      runs.
-  //   2. **Neutral label** — "AI is thinking · typically 5–30 sec"
-  //      rather than the LOOKS-READY-specific "Drafting scenario
-  //      plan". The setup tier is non-streaming so we can't tell
-  //      mid-call whether the AI is producing another question or
-  //      the actual plan; a neutral label is honest in either case.
-  //      The plan-specific label is reserved for ``draftingPlan``
-  //      (the explicit operator-clicked-LOOKS-READY path) where a
-  //      plan IS the documented next step.
-  // The 1500 ms threshold matches the perceptual "barely noticed"
-  // → "definitely waiting" boundary; tune if user feedback diverges.
-  const [showImplicitThinkingBanner, setShowImplicitThinkingBanner] =
-    useState(false);
-  useEffect(() => {
-    // The implicit banner only applies pre-plan and only when the
-    // explicit LOOKS-READY banner isn't already up.
-    if (busy && !hasPlan && !draftingPlan) {
-      const timer = window.setTimeout(() => {
-        setShowImplicitThinkingBanner(true);
-        console.debug("[facilitator] implicit-thinking banner mounted");
-      }, 1500);
-      return () => {
-        window.clearTimeout(timer);
-        // The cleanup runs both on unmount and on dep change. If the
-        // banner had mounted, ensure it clears so a transition from
-        // "busy without plan" → "plan exists" / "LOOKS-READY took
-        // over" / "request finished" doesn't leave a stale banner.
-        setShowImplicitThinkingBanner(false);
-      };
-    }
-    // Defensive reset for the ``busy=false`` / ``hasPlan=true`` /
-    // ``draftingPlan=true`` branches — the cleanup above only fires
-    // on dep change *from the previous truthy branch*, so a
-    // first-render with the banner already false has no effect here.
-    setShowImplicitThinkingBanner(false);
-    return undefined;
-  }, [busy, hasPlan, draftingPlan]);
-
-  // The prominent banner is shown when EITHER explicit signal
-  // (``draftingPlan``) or the debounced implicit signal is true and
-  // no plan exists yet. The implicit branch is also gated on
-  // ``busy`` directly (not just on the latched
-  // ``showImplicitThinkingBanner`` state) so a render commit where
-  // ``busy`` has just flipped false but the effect cleanup hasn't
-  // run yet doesn't paint a stale banner for one frame (Copilot
-  // PR #201 review). The state still drives the *delay* (banner only
-  // appears after the 1500 ms timer); the ``busy`` gate just makes
-  // the unmount synchronous with the request finishing.
-  const showLooksReadyBanner = draftingPlan && !hasPlan;
-  const showThinkingBanner =
-    showImplicitThinkingBanner && busy && !hasPlan && !draftingPlan;
-  const bannerVisible = showLooksReadyBanner || showThinkingBanner;
+  // The prominent in-chat banner is reserved for the explicit
+  // LOOKS-READY → PROPOSE-THE-PLAN path. Regular setup back-and-forth
+  // (busy && !draftingPlan) keeps only the small "AI is typing" dots
+  // inside <SetupChat> — escalating to a heavy DieLoader banner on
+  // every reply was reading as "the app is stuck" instead of "the AI
+  // is composing the next question". The plan-drafting wait is the
+  // one wait that genuinely deserves a named, prominent indicator.
+  const bannerVisible = draftingPlan && !hasPlan;
 
   // Layout intent (across both branches):
   //   - No plan: single column — chat → reply form, top to bottom.
@@ -2461,10 +2594,9 @@ export function SetupView({
           can't dispatch a second ``api.setupReply()`` while a
           LOOKS-READY draft is mid-air (PR #186 review block).
           ``aiTyping`` is the indicator-only flag: suppress the
-          small bouncing dots once a prominent banner takes over,
-          otherwise mirror ``busy``. Sub-debounce regular replies
-          (``busy=true``, banner not yet mounted) keep the dots so
-          quick turns get a light indicator. The two flags are
+          small bouncing dots once the plan-drafting banner takes
+          over, otherwise mirror ``busy`` so regular back-and-forth
+          replies show the small typing dots. The two flags are
           deliberately split — combining them would silently
           re-enable chip clicks during the draft. */}
       <SetupChat
@@ -2474,24 +2606,17 @@ export function SetupView({
         onPickOption={onPickOption}
       />
 
-      {/* Brand DieLoader as a named in-chat wait state. The DieLoader
-          itself supplies ``role="status"`` + ``aria-live="polite"``;
-          this wrapper deliberately does NOT add another live region
-          (UI/UX review: nested aria-live blocks let screen readers
-          drop the inner caption). The label carries the timing
+      {/* Brand DieLoader as a named in-chat wait state for the
+          plan-drafting step. The DieLoader itself supplies
+          ``role="status"`` + ``aria-live="polite"``; this wrapper
+          deliberately does NOT add another live region (UI/UX
+          review: nested aria-live blocks let screen readers drop
+          the inner caption). The label carries the timing
           expectation inline so screen readers announce the full
           message in one pass.
 
-          Two label branches share one banner element (single
-          ``data-testid`` so existing tests / observers find it):
-          ``draftingPlan`` (operator clicked LOOKS READY) → the
-          plan-specific label with the 10–30 s window we know
-          applies; the implicit/debounced branch → a neutral "AI is
-          thinking" label that's honest whether the AI ends up
-          drafting another question or the plan.
-
-          ``!hasPlan`` race guard on both branches: the Facilitator
-          clears ``draftingPlan`` as soon as the plan lands, but a
+          ``!hasPlan`` race guard: the Facilitator clears
+          ``draftingPlan`` as soon as the plan lands, but a
           render-cycle race could leave both true for a frame.
           Hiding the banner once a plan exists makes that race a
           no-op rather than a "drafting" caption flashing over the
@@ -2499,17 +2624,11 @@ export function SetupView({
       {bannerVisible ? (
         <div
           data-testid="drafting-plan-banner"
-          data-banner-variant={
-            showLooksReadyBanner ? "looks-ready" : "implicit-thinking"
-          }
+          data-banner-variant="looks-ready"
           className="flex flex-col items-center gap-3 rounded-r-3 border border-signal-deep bg-signal-tint p-6"
         >
           <DieLoader
-            label={
-              showLooksReadyBanner
-                ? "Drafting scenario plan · typically 10–30 sec"
-                : "AI is thinking · typically 5–30 sec"
-            }
+            label="Drafting scenario plan · typically 10–30 sec"
             size={64}
           />
         </div>

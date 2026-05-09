@@ -871,20 +871,11 @@ def register_api_routes(app: FastAPI) -> None:
                     status.HTTP_400_BAD_REQUEST,
                     "use the normal submit endpoint for your own role",
                 )
-            # Wave 1 (issue #134): proxy-respond mirrors the WS
-            # ``submit_response`` payload contract — ``intent`` is a
-            # required field. Per CLAUDE.md "no backwards compat",
-            # missing or malformed values are rejected here so a
-            # stale client surfaces the mismatch loudly instead of
-            # silently advancing on a coerced default. The Composer
-            # ALWAYS sends an explicit value; any caller hitting
-            # this gate is a contract violation, not a flow.
-            intent_raw = body.get("intent")
-            if intent_raw not in ("ready", "discuss"):
-                raise HTTPException(
-                    status.HTTP_400_BAD_REQUEST,
-                    "intent is required and must be 'ready' or 'discuss'",
-                )
+            # Submissions never advance the turn in the new model —
+            # the proxy endpoint just appends the message. To proxy-mark
+            # a role ready, the creator UI fires a separate
+            # ``set_ready`` WS event with ``actor=<creator>`` and
+            # ``subject=<as_role_id>``.
             cap = manager.settings().max_participant_submission_chars
             # Mirror the WS submit path: when truncating, append a server
             # marker so the AI doesn't read a clipped sentence as a real
@@ -914,9 +905,8 @@ def register_api_routes(app: FastAPI) -> None:
             # landing in one place.
             #
             # Per CLAUDE.md "no backwards compat" — ``mentions`` is a
-            # required body field. Mirrors the ``intent`` gate
-            # immediately above: missing or non-list payloads are a
-            # contract violation, not a flow.  The frontend's
+            # required body field. Missing or non-list payloads are a
+            # contract violation, not a flow. The frontend's
             # ``adminProxyRespond`` always sends an explicit list
             # (empty if no mentions); a caller hitting this branch
             # is a stale client and should fail loud rather than
@@ -944,7 +934,6 @@ def register_api_routes(app: FastAPI) -> None:
                 by_role_id=token["role_id"],
                 as_role_id=as_role_id,
                 content=posted,
-                intent=intent_raw,
                 mentions=cleaned_mentions,
             )
         except AuthorizationError as exc:
@@ -953,14 +942,13 @@ def register_api_routes(app: FastAPI) -> None:
             raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
 
         session = await manager.get_session(session_id)
+        # Decoupled-ready model: ``proxy_submit_as`` never advances the
+        # turn (the caller fires ``set_ready`` separately to mark the
+        # proxied role ready). The pre-rebase dispatch here would
+        # double-fire ``run_play_turn`` whenever this route landed
+        # while the session was already in AI_PROCESSING — racing the
+        # in-flight LLM call. Copilot review on PR #209.
         if (
-            session.current_turn is not None
-            and session.state == SessionState.AI_PROCESSING
-        ):
-            await TurnDriver(manager=manager).run_play_turn(
-                session=session, turn=session.current_turn
-            )
-        elif (
             session.current_turn is not None
             and session.state == SessionState.AWAITING_PLAYERS
             and FACILITATOR_MENTION_TOKEN in cleaned_mentions

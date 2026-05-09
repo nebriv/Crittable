@@ -144,15 +144,17 @@ class SessionRecorder:
                         role_label=label,
                         content=msg.body or "",
                         ts=msg.ts.isoformat() if msg.ts else None,
-                        # Wave 1 (issue #134): preserve per-submission
-                        # intent so deterministic replay reproduces the
-                        # ready-vs-discuss flow that drove the recording.
-                        # Pre-Wave-1 messages have ``intent=None`` (the
-                        # default in ``Message``); the recorder maps
-                        # those onto ``PlayStep``'s default of "ready"
-                        # so the legacy "submit-and-advance" semantics
-                        # round-trip without change.
-                        intent=msg.intent if msg.intent is not None else "ready",
+                        # Tentatively ``True`` — fixed up below in a
+                        # per-turn pass that demotes all-but-the-last
+                        # submission per role to ``False``. Hard-coding
+                        # ``True`` for every step would mark the role
+                        # ready after the FIRST message of a multi-
+                        # message turn, flipping the session into
+                        # AI_PROCESSING and silently demoting
+                        # subsequent same-turn submissions to
+                        # interjections on replay. Copilot review on
+                        # PR #209.
+                        ready_after=True,
                     )
                 )
             elif msg.kind == MessageKind.PLAYER and msg.is_interjection:
@@ -234,6 +236,21 @@ class SessionRecorder:
             label = role_id_to_label.get(rid)
             if label is not None:
                 notepad_contributor_role_labels.append(label)
+        # Per-turn fixup: only the LAST submission per role on each
+        # turn carries ``ready_after=True``. Earlier same-role
+        # submissions on the same turn read as discussion-style posts
+        # that don't close the quorum yet — only the last one signals
+        # the role is done. Without this, multi-message turns replay
+        # by closing the quorum after the first message and demoting
+        # subsequent messages from the same role to interjections.
+        for turn_id in turn_order:
+            steps = player_steps.get(turn_id, [])
+            seen_role_labels: set[str] = set()
+            for step in reversed(steps):
+                if step.role_label in seen_role_labels:
+                    step.ready_after = False
+                else:
+                    seen_role_labels.add(step.role_label)
         # Decision-log entries (creator-only AI rationale). Captured
         # by ``record_decision_rationale`` tool calls during the
         # original run; replay applies them at end-of-play so the

@@ -277,3 +277,112 @@ def test_activity_endpoint_includes_recent_turn_diagnostics(
     assert len(body["recent_turn_diagnostics"]) <= 3
     assert "ai_paused" in body
     assert "legacy_carve_out_enabled" in body
+
+
+def _setup_drafting_events(rec: _RecordingConnections) -> list[dict[str, Any]]:
+    return [e for e in rec.events if e.get("type") == "setup_drafting_plan"]
+
+
+def test_setup_drafting_plan_fires_when_propose_tool_starts(
+    client: TestClient,
+) -> None:
+    """The setup-tier driver must broadcast ``setup_drafting_plan
+    active=true`` the moment the streaming model commits to
+    ``propose_scenario_plan``, and ``active=false`` once the turn
+    completes. Pre-fix, an AI-initiated plan draft (i.e. the model
+    decides on its own that it has enough background and calls
+    ``propose_scenario_plan`` after a regular reply, not via the
+    operator's LOOKS-READY click) showed only the small "AI is typing"
+    dots for the full 10-30 s wait — read as "the app is stuck."
+    """
+
+    rec = _wrap_connections(client)
+    seats = _seat_two(client)
+
+    # Script a setup turn whose first iteration goes straight to
+    # ``propose_scenario_plan``. We don't need the real prompt-driven
+    # ask-then-propose flow here; the test is about the broadcast
+    # contract, not the LLM's decision logic.
+    plan_args = {
+        "title": "Ransomware via vendor portal",
+        "executive_summary": "Vendor portal compromise leading to ransomware.",
+        "key_objectives": ["containment", "comms"],
+        "narrative_arc": [
+            {
+                "beat": 1,
+                "label": "Detection",
+                "expected_actors": [seats["creator_role_id"]],
+            }
+        ],
+        "injects": [
+            {"trigger": "after beat 1", "type": "info", "summary": "ping"}
+        ],
+        "guardrails": [],
+        "success_criteria": [],
+        "out_of_scope": [],
+    }
+    from tests.mock_anthropic import response, tool_block
+
+    scripts = {
+        "setup": [
+            response(tool_block("propose_scenario_plan", plan_args)),
+        ]
+    }
+    client.app.state.llm.set_transport(MockAnthropic(scripts).messages)
+
+    # Trigger one setup turn via the same path the creator UI uses.
+    sid = seats["sid"]
+    cr = seats["creator_token"]
+    r = client.post(
+        f"/api/sessions/{sid}/setup/reply?token={cr}",
+        json={"content": "Financial services, ~1k employees, SOX/PCI."},
+    )
+    assert r.status_code == 200, r.text
+
+    drafting = _setup_drafting_events(rec)
+    actives = [e["active"] for e in drafting]
+    assert actives == [True, False], (
+        f"expected exactly one True followed by one False, got {actives!r}"
+    )
+    # Stale on reconnect — must NOT be in the replay buffer.
+    assert all(e["_record"] is False for e in drafting), drafting
+
+
+def test_setup_drafting_plan_does_not_fire_on_ask_question(
+    client: TestClient,
+) -> None:
+    """A regular back-and-forth ``ask_setup_question`` MUST NOT trigger
+    the prominent banner. The creator's small "AI is typing" dots are
+    the only indicator for routine setup Q&A; firing the heavy banner
+    here was the false-positive from the prior 1.5 s-debounce attempt.
+    """
+
+    rec = _wrap_connections(client)
+    seats = _seat_two(client)
+
+    from tests.mock_anthropic import response, tool_block
+
+    scripts = {
+        "setup": [
+            response(
+                tool_block(
+                    "ask_setup_question",
+                    {"topic": "industry", "question": "What industry?"},
+                )
+            ),
+        ]
+    }
+    client.app.state.llm.set_transport(MockAnthropic(scripts).messages)
+
+    sid = seats["sid"]
+    cr = seats["creator_token"]
+    r = client.post(
+        f"/api/sessions/{sid}/setup/reply?token={cr}",
+        json={"content": "Financial services."},
+    )
+    assert r.status_code == 200, r.text
+
+    drafting = _setup_drafting_events(rec)
+    assert drafting == [], (
+        f"setup_drafting_plan must not fire for ask_setup_question; got {drafting!r}"
+    )

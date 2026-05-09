@@ -69,6 +69,10 @@ describe("RolesPanel — issue #82 (no on-screen tokens)", () => {
         onError={vi.fn()}
         connectedRoleIds={new Set()}
         focusedRoleIds={new Set()}
+        readyRoleIds={new Set()}
+        activeRoleIds={new Set()}
+        selfRoleId="role-creator"
+        markReadyEnabled={false}
       />,
     );
 
@@ -136,6 +140,10 @@ describe("RolesPanel — issue #82 (no on-screen tokens)", () => {
         onError={vi.fn()}
         connectedRoleIds={new Set()}
         focusedRoleIds={new Set()}
+        readyRoleIds={new Set()}
+        activeRoleIds={new Set()}
+        selfRoleId="role-creator"
+        markReadyEnabled={false}
       />,
     );
 
@@ -165,7 +173,6 @@ describe("RolesPanel — issue #82 (no on-screen tokens)", () => {
 
   it("Kick & reissue copies the new link, surfaces a hint, never renders the URL", async () => {
     const onRoleChanged = vi.fn();
-    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
     const revoke = vi.spyOn(api, "revokeRole").mockResolvedValue({
       token: "fresh-kick-token",
       join_url: `https://example.test/play/${SESSION_ID}/fresh-kick-token`,
@@ -182,14 +189,22 @@ describe("RolesPanel — issue #82 (no on-screen tokens)", () => {
         onError={vi.fn()}
         connectedRoleIds={new Set()}
         focusedRoleIds={new Set()}
+        readyRoleIds={new Set()}
+        activeRoleIds={new Set()}
+        selfRoleId="role-creator"
+        markReadyEnabled={false}
       />,
     );
 
-    // Post-redesign: "Kick & reissue" button text was tightened to just
-    // "KICK" (mono uppercase brand button); the title attribute still
-    // carries the full description.
-    fireEvent.click(screen.getByRole("button", { name: /Kick/i }));
-    expect(confirmSpy).toHaveBeenCalled();
+    // PR #209 follow-up: kick uses an inline 2-click guard. First
+    // click flips the label to "CONFIRM KICK?"; second click within
+    // ARM_TIMEOUT_MS actually fires the API call. The browser's
+    // ``confirm()`` dialog is gone — it was easy to dismiss-by-Enter
+    // and offered no in-document lead-in.
+    const kickBtn = screen.getByRole("button", { name: /Kick/i });
+    fireEvent.click(kickBtn);
+    expect(kickBtn.textContent).toMatch(/CONFIRM KICK/i);
+    fireEvent.click(kickBtn);
 
     await waitFor(() => expect(revoke).toHaveBeenCalled());
     await waitFor(() => expect(writeText).toHaveBeenCalled());
@@ -209,6 +224,278 @@ describe("RolesPanel — issue #82 (no on-screen tokens)", () => {
         /Kicked\. New join link for SOC Analyst copied/,
       ),
     );
+  });
+
+  // PR #209 follow-up: the inline 2-click guard replaces browser
+  // ``confirm()``. The QA-review BLOCKs below pin the contract:
+  //   - REMOVE follows the same arm-and-confirm pattern as KICK.
+  //   - 4 s timeout disarms automatically.
+  //   - Arming KICK on row A then KICK on row B disarms A.
+  //   - Escape disarms.
+  //   - Click outside the panel disarms.
+  // Without these tests a regression that fired the destructive
+  // action on first-click would ship silently.
+  it("REMOVE follows the same 2-click guard pattern as KICK", async () => {
+    const onRoleChanged = vi.fn();
+    const removeRole = vi.spyOn(api, "removeRole").mockResolvedValue({
+      ok: true,
+    });
+
+    render(
+      <RolesPanel
+        sessionId={SESSION_ID}
+        creatorToken={CREATOR_TOKEN}
+        roles={baseRoles}
+        busy={false}
+        onRoleAdded={vi.fn()}
+        onRoleChanged={onRoleChanged}
+        onError={vi.fn()}
+        connectedRoleIds={new Set()}
+        focusedRoleIds={new Set()}
+        readyRoleIds={new Set()}
+        activeRoleIds={new Set()}
+        selfRoleId="role-creator"
+        markReadyEnabled={false}
+      />,
+    );
+
+    const btn = screen.getByRole("button", { name: /^REMOVE$/i });
+    fireEvent.click(btn);
+    expect(btn.textContent).toMatch(/CONFIRM REMOVE/i);
+    expect(removeRole).not.toHaveBeenCalled();
+
+    fireEvent.click(btn);
+    await waitFor(() => expect(removeRole).toHaveBeenCalled());
+    await waitFor(() => expect(onRoleChanged).toHaveBeenCalled());
+    expect(removeRole).toHaveBeenCalledWith(
+      SESSION_ID,
+      CREATOR_TOKEN,
+      "role-soc",
+    );
+  });
+
+  it("KICK auto-disarms after the 4 s timeout — second click does NOT fire", async () => {
+    vi.useFakeTimers();
+    const revoke = vi.spyOn(api, "revokeRole").mockResolvedValue({
+      token: "should-not-fire",
+      join_url: "x",
+    });
+
+    render(
+      <RolesPanel
+        sessionId={SESSION_ID}
+        creatorToken={CREATOR_TOKEN}
+        roles={baseRoles}
+        busy={false}
+        onRoleAdded={vi.fn()}
+        onRoleChanged={vi.fn()}
+        onError={vi.fn()}
+        connectedRoleIds={new Set()}
+        focusedRoleIds={new Set()}
+        readyRoleIds={new Set()}
+        activeRoleIds={new Set()}
+        selfRoleId="role-creator"
+        markReadyEnabled={false}
+      />,
+    );
+
+    const btn = screen.getByRole("button", { name: /Kick/i });
+    fireEvent.click(btn);
+    expect(btn.textContent).toMatch(/CONFIRM KICK/i);
+
+    // Step past the 4 s arm-timeout window.
+    await act(async () => {
+      vi.advanceTimersByTime(4500);
+    });
+    // Label reverts; second click only re-arms (does not confirm).
+    expect(btn.textContent).toMatch(/^KICK$/i);
+    fireEvent.click(btn);
+    expect(btn.textContent).toMatch(/CONFIRM KICK/i);
+    expect(revoke).not.toHaveBeenCalled();
+  });
+
+  it("arming KICK on row A and KICK on row B disarms row A (only one row armed at a time)", async () => {
+    const roles: RoleView[] = [
+      ...baseRoles,
+      {
+        id: "role-legal",
+        label: "Legal",
+        kind: "player",
+        is_creator: false,
+        display_name: null,
+      } as RoleView,
+    ];
+
+    render(
+      <RolesPanel
+        sessionId={SESSION_ID}
+        creatorToken={CREATOR_TOKEN}
+        roles={roles}
+        busy={false}
+        onRoleAdded={vi.fn()}
+        onRoleChanged={vi.fn()}
+        onError={vi.fn()}
+        connectedRoleIds={new Set()}
+        focusedRoleIds={new Set()}
+        readyRoleIds={new Set()}
+        activeRoleIds={new Set()}
+        selfRoleId="role-creator"
+        markReadyEnabled={false}
+      />,
+    );
+
+    // Two non-creator rows → two KICK buttons. Order matches `roles[]`.
+    const kickButtons = screen.getAllByRole("button", { name: /Kick/i });
+    expect(kickButtons.length).toBe(2);
+    const [kickA, kickB] = kickButtons;
+
+    fireEvent.click(kickA);
+    expect(kickA.textContent).toMatch(/CONFIRM KICK/i);
+    expect(kickB.textContent).toMatch(/^KICK$/i);
+
+    fireEvent.click(kickB);
+    // Row A reverts, row B is now armed.
+    expect(kickA.textContent).toMatch(/^KICK$/i);
+    expect(kickB.textContent).toMatch(/CONFIRM KICK/i);
+  });
+
+  it("Escape disarms an armed KICK without firing the API call", () => {
+    const revoke = vi.spyOn(api, "revokeRole");
+
+    render(
+      <RolesPanel
+        sessionId={SESSION_ID}
+        creatorToken={CREATOR_TOKEN}
+        roles={baseRoles}
+        busy={false}
+        onRoleAdded={vi.fn()}
+        onRoleChanged={vi.fn()}
+        onError={vi.fn()}
+        connectedRoleIds={new Set()}
+        focusedRoleIds={new Set()}
+        readyRoleIds={new Set()}
+        activeRoleIds={new Set()}
+        selfRoleId="role-creator"
+        markReadyEnabled={false}
+      />,
+    );
+
+    const btn = screen.getByRole("button", { name: /Kick/i });
+    fireEvent.click(btn);
+    expect(btn.textContent).toMatch(/CONFIRM KICK/i);
+
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(btn.textContent).toMatch(/^KICK$/i);
+    expect(revoke).not.toHaveBeenCalled();
+  });
+
+  it("Mark Ready button shows the in-flight pulse when its subject is in pendingMarkReadySubjects", () => {
+    // PR #209 follow-up — UI/UX MEDIUM M2. The creator can have
+    // one pending flip per active role they impersonate plus
+    // their own seat. Each row's <MarkReadyButton> independently
+    // reads from the set and surfaces the pulse + aria-busy.
+    const onMarkReady = vi.fn();
+    render(
+      <RolesPanel
+        sessionId={SESSION_ID}
+        creatorToken={CREATOR_TOKEN}
+        roles={baseRoles}
+        busy={false}
+        onRoleAdded={vi.fn()}
+        onRoleChanged={vi.fn()}
+        onError={vi.fn()}
+        connectedRoleIds={new Set()}
+        focusedRoleIds={new Set()}
+        readyRoleIds={new Set()}
+        // SOC is on the active set so the impersonation row's
+        // <MarkReadyButton> renders.
+        activeRoleIds={new Set(["role-soc"])}
+        selfRoleId="role-creator"
+        markReadyEnabled={true}
+        onMarkReady={onMarkReady}
+        // SOC's set_ready is in flight; creator's own row is not.
+        pendingMarkReadySubjects={new Set(["role-soc"])}
+      />,
+    );
+
+    const socButton = screen.getByTestId("mark-ready-impersonate");
+    expect(socButton.getAttribute("data-in-flight")).toBe("true");
+    expect(socButton.getAttribute("aria-busy")).toBe("true");
+    expect(socButton.className).toMatch(/animate-tt-pulse/);
+  });
+
+  it("Mark Ready in-flight pulse is per-row (other roles' rows are idle)", () => {
+    const onMarkReady = vi.fn();
+    const roles: RoleView[] = [
+      ...baseRoles,
+      {
+        id: "role-legal",
+        label: "Legal",
+        kind: "player",
+        is_creator: false,
+        display_name: null,
+      } as RoleView,
+    ];
+    render(
+      <RolesPanel
+        sessionId={SESSION_ID}
+        creatorToken={CREATOR_TOKEN}
+        roles={roles}
+        busy={false}
+        onRoleAdded={vi.fn()}
+        onRoleChanged={vi.fn()}
+        onError={vi.fn()}
+        connectedRoleIds={new Set()}
+        focusedRoleIds={new Set()}
+        readyRoleIds={new Set()}
+        activeRoleIds={new Set(["role-soc", "role-legal"])}
+        selfRoleId="role-creator"
+        markReadyEnabled={true}
+        onMarkReady={onMarkReady}
+        // Only Legal's flip is pending; SOC's button stays idle.
+        pendingMarkReadySubjects={new Set(["role-legal"])}
+      />,
+    );
+
+    const buttons = screen.getAllByTestId("mark-ready-impersonate");
+    expect(buttons.length).toBe(2);
+    // Roles render in declaration order; SOC first (idx 0), Legal second (idx 1).
+    expect(buttons[0].getAttribute("data-in-flight")).toBeNull();
+    expect(buttons[1].getAttribute("data-in-flight")).toBe("true");
+  });
+
+  it("a click outside the armed button disarms KICK without firing", () => {
+    const revoke = vi.spyOn(api, "revokeRole");
+
+    render(
+      <div>
+        <button data-testid="outside-button">outside</button>
+        <RolesPanel
+          sessionId={SESSION_ID}
+          creatorToken={CREATOR_TOKEN}
+          roles={baseRoles}
+          busy={false}
+          onRoleAdded={vi.fn()}
+          onRoleChanged={vi.fn()}
+          onError={vi.fn()}
+          connectedRoleIds={new Set()}
+          focusedRoleIds={new Set()}
+          readyRoleIds={new Set()}
+          activeRoleIds={new Set()}
+          selfRoleId="role-creator"
+          markReadyEnabled={false}
+        />
+      </div>,
+    );
+
+    const btn = screen.getByRole("button", { name: /Kick/i });
+    fireEvent.click(btn);
+    expect(btn.textContent).toMatch(/CONFIRM KICK/i);
+
+    // Pointer-down anywhere outside the armed button disarms.
+    fireEvent.pointerDown(screen.getByTestId("outside-button"));
+    expect(btn.textContent).toMatch(/^KICK$/i);
+    expect(revoke).not.toHaveBeenCalled();
   });
 
   it("renders tri-state status dot per role: blue (active), yellow (joined+idle), gray (not joined)", () => {
@@ -256,6 +543,10 @@ describe("RolesPanel — issue #82 (no on-screen tokens)", () => {
           new Set(["role-creator", "role-active", "role-idle"])
         }
         focusedRoleIds={new Set(["role-creator", "role-active"])}
+        readyRoleIds={new Set()}
+        activeRoleIds={new Set()}
+        selfRoleId="role-creator"
+        markReadyEnabled={false}
       />,
     );
 
@@ -301,6 +592,10 @@ describe("RolesPanel — issue #82 (no on-screen tokens)", () => {
         onError={onError}
         connectedRoleIds={new Set()}
         focusedRoleIds={new Set()}
+        readyRoleIds={new Set()}
+        activeRoleIds={new Set()}
+        selfRoleId="role-creator"
+        markReadyEnabled={false}
       />,
     );
 

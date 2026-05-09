@@ -106,13 +106,13 @@ export interface TurnView {
   /** Role-ids that have already submitted on this turn. */
   submitted_role_ids?: string[];
   /**
-   * Wave 1 (issue #134; reshaped by issue #168): role-ids that have
-   * signaled ``intent="ready"`` on their most recent submission this
-   * turn. The AI advances when every group in
-   * ``active_role_groups`` has at least one member in this list (or
-   * the creator force-advances). A role can walk back ready by
-   * sending another submission with ``intent="discuss"``, which
-   * removes them from this list.
+   * Decoupled-ready (PR #209): role-ids that have flipped ready=true
+   * on the current turn via the dedicated ``set_ready`` WS event.
+   * The AI advances when every group in ``active_role_groups`` has
+   * at least one member in this list (or the creator force-advances).
+   * Walk-back is the same event with ``ready=false``; submissions
+   * never touch this list any more (the composer is a pure message
+   * channel — Mark Ready is in the rail).
    */
   ready_role_ids?: string[];
   status: string;
@@ -427,23 +427,23 @@ export const api = {
 
   /** Creator-only solo-test helper: submit on behalf of a specific role.
    *
-   * ``intent`` (Wave 1, issue #134): ``"ready"`` mirrors the historical
-   * "advance now" behavior; ``"discuss"`` injects a discussion message
-   * that doesn't trip the ready-quorum gate. Required — the backend
-   * rejects payloads without it (CLAUDE.md "no backwards compat").
+   * Decoupled-ready (PR #209 follow-up): no ``intent`` parameter. Every
+   * submission lands in the transcript without touching the ready
+   * quorum — the creator closes the quorum (for self or impersonated
+   * roles) via the dedicated ``set_ready`` WS event. The backend
+   * rejects ``intent`` in the payload (CLAUDE.md "no backwards compat").
    */
   async adminProxyRespond(
     sessionId: string,
     creatorToken: string,
     asRoleId: string,
     content: string,
-    intent: "ready" | "discuss",
     mentions: string[],
   ): Promise<{ ok: boolean }> {
     return request(
       "POST",
       `/api/sessions/${sessionId}/admin/proxy-respond?token=${encodeURIComponent(creatorToken)}`,
-      { as_role_id: asRoleId, content, intent, mentions },
+      { as_role_id: asRoleId, content, mentions },
     );
   },
 

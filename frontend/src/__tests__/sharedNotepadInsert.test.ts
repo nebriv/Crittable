@@ -7,19 +7,39 @@
  */
 import { Editor } from "@tiptap/core";
 import StarterKit from "@tiptap/starter-kit";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 
 import {
   appendPinToEditor,
   findPinInsertPos,
 } from "../lib/notepadEditor";
 
+// Track every editor created by ``makeEditor`` so the ``afterEach``
+// hook can destroy them all. ProseMirror's ``DOMObserver`` schedules a
+// ``setTimeout`` (~20 ms) to batch DOM mutations on every doc change;
+// without ``editor.destroy()`` the timer survives vitest's per-test
+// teardown of the jsdom environment, then fires while a later test is
+// running and crashes with ``ReferenceError: document is not defined``
+// (the global was already cleaned up). The error doesn't fail any
+// individual test but it pollutes the console output and would mask a
+// real unhandled error if one ever showed up.
+const livingEditors: Editor[] = [];
+
 function makeEditor(html: string): Editor {
-  return new Editor({
+  const editor = new Editor({
     extensions: [StarterKit.configure({ undoRedo: false })],
     content: html,
   });
+  livingEditors.push(editor);
+  return editor;
 }
+
+afterEach(() => {
+  while (livingEditors.length > 0) {
+    const editor = livingEditors.pop();
+    editor?.destroy();
+  }
+});
 
 describe("findPinInsertPos — timeline section", () => {
   it("returns null when there is no Timeline heading (caller falls back to end-of-doc)", () => {
