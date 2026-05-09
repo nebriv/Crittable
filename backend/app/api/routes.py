@@ -1099,7 +1099,7 @@ def register_api_routes(app: FastAPI) -> None:
         manager = _manager(request)
         token = await _bind_token(request, session_id)
         try:
-            require_participant(token)
+            require_creator(token)
             await manager.force_advance(session_id=session_id, by_role_id=token["role_id"])
         except AuthorizationError as exc:
             raise HTTPException(status.HTTP_403_FORBIDDEN, str(exc)) from exc
