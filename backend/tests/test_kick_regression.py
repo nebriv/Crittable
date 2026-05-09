@@ -35,7 +35,7 @@ from app.config import reset_settings_cache
 from app.main import create_app
 from app.sessions.turn_engine import IllegalTransitionError
 from tests.conftest import default_settings_body
-from tests.mock_anthropic import MockAnthropic, setup_then_play_script
+from tests.mock_chat_client import install_mock_chat_client, setup_then_play_script
 
 
 @pytest.fixture(autouse=True)
@@ -55,7 +55,7 @@ def client() -> TestClient:
     reset_settings_cache()
     app = create_app()
     with TestClient(app) as c:
-        c.app.state.llm.set_transport(MockAnthropic({}).messages)
+        install_mock_chat_client(c)
         yield c
 
 
@@ -65,7 +65,7 @@ def _install_play_mock(client: TestClient, role_ids: list[str]) -> None:
     minimal ``end_session``-everywhere fallback."""
 
     scripts = setup_then_play_script(role_ids=role_ids, extension_tool=None)
-    client.app.state.llm.set_transport(MockAnthropic(scripts).messages)
+    install_mock_chat_client(client, scripts)
 
 
 def _create_and_seat(client: TestClient, *, role_count: int) -> dict[str, Any]:

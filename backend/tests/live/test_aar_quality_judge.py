@@ -24,7 +24,7 @@ from anthropic import AsyncAnthropic
 
 from app.auth.audit import AuditLog
 from app.config import get_settings
-from app.llm.client import LLMClient
+from app.llm.clients.litellm_client import LiteLLMChatClient
 from app.llm.export import AARGenerator, strip_creator_only
 
 from .judge import assert_judge_passes
@@ -38,8 +38,8 @@ def aar_audit() -> AuditLog:
 
 
 @pytest.fixture
-def aar_client() -> LLMClient:
-    return LLMClient(settings=get_settings())
+def aar_client() -> LiteLLMChatClient:
+    return LiteLLMChatClient(settings=get_settings())
 
 
 @pytest.fixture
@@ -62,6 +62,7 @@ def judge_client() -> AsyncAnthropic:
     """
 
     from tests.conftest import DUMMY_LLM_API_KEY
+    from tests.live.cost_cap import _wrap_messages_create
 
     settings = get_settings()
     key = settings.require_llm_api_key()
@@ -70,10 +71,17 @@ def judge_client() -> AsyncAnthropic:
         "dummy key; the live conftest's auto-skip should have "
         "intercepted this."
     )
-    return AsyncAnthropic(
+    client = AsyncAnthropic(
         api_key=key,
         base_url=settings.llm_api_base,
     )
+    # Cost-cap wrap is load-bearing here. The session-scoped
+    # ``AsyncAnthropic.__init__`` patch the prior live conftest
+    # installed is gone (#195), so every direct-Anthropic fixture
+    # must wrap itself or its ``messages.create`` calls bypass the
+    # ``_CostTracker`` and the live-test budget cap goes inert.
+    _wrap_messages_create(client)
+    return client
 
 
 def _truncate_for_judge(md: str, *, cap_chars: int = 12_000) -> str:
@@ -92,7 +100,7 @@ def _truncate_for_judge(md: str, *, cap_chars: int = 12_000) -> str:
 async def test_aar_grounds_claims_in_transcript(
     aar_session: Any,  # imported indirectly via test_aar_generation conftest
     aar_audit: AuditLog,
-    aar_client: LLMClient,
+    aar_client: LiteLLMChatClient,
     judge_client: AsyncAnthropic,
 ) -> None:
     """Every concrete claim in the AAR (decisions, role actions, what
@@ -160,7 +168,7 @@ async def test_aar_grounds_claims_in_transcript(
 async def test_aar_per_role_scores_are_differentiated(
     aar_session: Any,
     aar_audit: AuditLog,
-    aar_client: LLMClient,
+    aar_client: LiteLLMChatClient,
     judge_client: AsyncAnthropic,
 ) -> None:
     """A common failure mode: the model gives every role 5/5 across
@@ -206,7 +214,7 @@ async def test_aar_per_role_scores_are_differentiated(
 async def test_aar_gaps_and_recommendations_are_concrete(
     aar_session: Any,
     aar_audit: AuditLog,
-    aar_client: LLMClient,
+    aar_client: LiteLLMChatClient,
     judge_client: AsyncAnthropic,
 ) -> None:
     """The "Gaps" and "Recommendations" sections must be actionable.
@@ -250,7 +258,7 @@ async def test_aar_gaps_and_recommendations_are_concrete(
 async def test_aar_participant_view_strips_creator_only(
     aar_session: Any,
     aar_audit: AuditLog,
-    aar_client: LLMClient,
+    aar_client: LiteLLMChatClient,
     judge_client: AsyncAnthropic,
 ) -> None:
     """The non-creator markdown (``strip_creator_only``) must not

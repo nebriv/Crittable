@@ -1,26 +1,16 @@
-"""Backend-agnostic ``ChatClient`` mock for tests (Phase 4 of #193).
+"""Backend-agnostic ``ChatClient`` mock for tests.
 
-Sibling to ``mock_anthropic.MockAnthropic``: that one mocks the
-Anthropic SDK *transport* and is wired via ``LLMClient.set_transport``;
-this one mocks the ``ChatClient`` *interface* and is wired by replacing
-``app.state.llm`` outright. The latter works regardless of which
-backend's class would otherwise be in use, so tests written against
-``MockChatClient`` survive the eventual ``LLM_BACKEND=litellm`` flip
-without rewrite.
-
-Today's existing tests use ``MockAnthropic`` and that's fine — they
-pass with the default ``LLM_BACKEND=anthropic`` and exercise the
-production path through ``LLMClient``. New tests should reach for
-``MockChatClient`` instead. Phase 8 migrates the existing 19 callers
-in one sweep when ``LLMClient`` (Anthropic-direct) is removed
-alongside the ``anthropic`` dep.
+Mocks the ``ChatClient`` *interface* and is wired by replacing every
+captured-reference holder of the LLM client (``app.state.llm``,
+``manager._llm``, ``guardrail._llm``) atomically — see
+``install_mock_chat_client``.
 
 # Scripts API
 
-The script shape mirrors ``MockAnthropic.scripts`` for ergonomic
-parity: a per-tier dict of ``LLMResult`` lists. Each call pops the
-next response. When the script for a tier is exhausted, a benign
-default response (one ``end_turn`` text block) is returned.
+Per-tier dict of ``LLMResult`` lists. Each call pops the next
+response. When the script for a tier is exhausted, a benign auto-end
+response (an ``end_session`` tool_use) is returned so the play-tier
+driver advances to ENDED instead of looping.
 
   scripts = {
       "play": [
@@ -31,7 +21,7 @@ default response (one ``end_turn`` text block) is returned.
           llm_result(tool_block("ask_setup_question", {"question": "?"})),
       ],
   }
-  app.state.llm = MockChatClient(scripts=scripts)
+  install_mock_chat_client(test_client, scripts=scripts)
 """
 
 from __future__ import annotations
@@ -73,9 +63,8 @@ def llm_result(
 ) -> LLMResult:
     """Build an ``LLMResult`` from content blocks.
 
-    Default ``usage`` mirrors the ``_UsageBlock`` defaults in
-    ``MockAnthropic`` so cost-related assertions stay consistent
-    across the two mocks.
+    Default ``usage`` is non-zero so cost-related assertions in tests
+    have realistic-shape numbers to assert against.
     """
 
     return LLMResult(
@@ -88,9 +77,18 @@ def llm_result(
 
 
 def _benign_default() -> LLMResult:
-    """Generic ``end_turn`` response used when a script is exhausted."""
+    """Auto-end response used when a script is exhausted.
 
-    return llm_result(text_block("ok"), stop_reason="end_turn")
+    Emits an ``end_session`` tool_use so the play-tier driver advances
+    to ENDED instead of looping when the test script runs out. Tests
+    that drive a session through play without a full script still
+    terminate cleanly.
+    """
+
+    return llm_result(
+        tool_block("end_session", {"reason": "scripted-default"}),
+        stop_reason="tool_use",
+    )
 
 
 def install_mock_chat_client(
@@ -105,8 +103,7 @@ def install_mock_chat_client(
     capture a reference to the client at construction time. Writing to
     ``app.state.llm`` only updates the canonical handle; the captured
     references would still point at the original ``LiteLLMChatClient``
-    (or whichever backend the lifespan built). This helper updates
-    them all atomically.
+    the lifespan built. This helper updates them all atomically.
 
     Returns the constructed mock so tests can inspect ``calls`` after
     the fact:
@@ -114,12 +111,6 @@ def install_mock_chat_client(
         mock = install_mock_chat_client(client, scripts={"play": [...]})
         ...
         assert mock.calls[0]["tier"] == "play"
-
-    The ``set_transport`` pattern from the legacy ``MockAnthropic``
-    worked without this helper because it modified the *internals* of
-    a single ``LLMClient`` instance that every reference holder
-    shared. ``MockChatClient`` is a sibling class — replacing it
-    requires touching every holder.
     """
 
     mock = MockChatClient(scripts=scripts, default_response=default_response)

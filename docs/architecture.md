@@ -100,7 +100,7 @@ boundaries:
 | Boundary | Module | What it does |
 |---|---|---|
 | **Entry-state check** | `turn_driver.py` (each `run_*_turn`) | Calls `assert_state(tier, state)` at function entry. Raises `PhaseViolation` if a refactor would call the play tier during ENDED, etc. |
-| **Tool-list filter** | `llm/client.py::acomplete + astream` and `llm/clients/litellm_client.py::_build_call_kwargs` | Calls `filter_allowed_tools(tier, tools, extension_tool_names)` before forwarding to the provider. Drops any tool not in the tier's `allowed_tool_names` and logs the dropped names so a regression is visible in the audit trail. Both backends share the same gate. |
+| **Tool-list filter** | `llm/clients/litellm_client.py::_build_call_kwargs` | Calls `filter_allowed_tools(tier, tools, extension_tool_names)` before forwarding to the provider. Drops any tool not in the tier's `allowed_tool_names` and logs the dropped names so a regression is visible in the audit trail. |
 | **Runtime tool-call rejection** | `llm/dispatch.py` | When the model emits a tool call that's forbidden in the current state (e.g. `ask_setup_question` during play), the dispatcher returns `is_error=True` in the `tool_result` block. The strict-retry path then feeds those `tool_result` blocks back to the model so it can self-correct rather than retry blind. |
 
 ### Tier policies
@@ -227,15 +227,11 @@ events from the replay buffer.
 ## LLM boundary
 
 The engine talks to LLMs through a provider-agnostic `ChatClient` ABC
-(`backend/app/llm/protocol.py`). Two concrete implementations live
-behind the seam:
-
-- `app.llm.client.LLMClient` — talks to Anthropic-direct via
-  `anthropic.AsyncAnthropic` (the original path, default).
-- `app.llm.clients.litellm_client.LiteLLMChatClient` — routes via
-  LiteLLM, supporting ~100 providers (Azure OpenAI, AWS Bedrock,
-  Vertex AI, OpenRouter, OpenAI direct, vLLM/Ollama, …). Selected
-  via `LLM_BACKEND=litellm`. See [`llm_providers.md`](llm_providers.md).
+(`backend/app/llm/protocol.py`). The single concrete implementation
+is `app.llm.clients.litellm_client.LiteLLMChatClient`, which routes
+via LiteLLM and supports ~100 providers (Azure OpenAI, AWS Bedrock,
+Vertex AI, OpenRouter, OpenAI direct, vLLM/Ollama, …). See
+[`llm_providers.md`](llm_providers.md).
 
 A single `ChatClient` instance is built at app startup (lifespan) by
 `_build_chat_client(settings)` and reused process-wide for HTTP

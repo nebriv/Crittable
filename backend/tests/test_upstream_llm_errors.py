@@ -390,21 +390,23 @@ def test_play_turn_529_marks_errored_and_targets_creator_only() -> None:
     LLM call, so the only LLM call is the one we're testing.
     """
 
-    import anthropic
-    import httpx
+    from collections.abc import AsyncIterator
+
     from fastapi.testclient import TestClient
 
-    from app.config import reset_settings_cache
+    from app.config import ModelTier, reset_settings_cache
+    from app.llm.errors import UpstreamLLMError
+    from app.llm.protocol import LLMResult
     from app.main import create_app
     from app.sessions.models import SessionState
     from tests.conftest import default_settings_body
-    from tests.mock_anthropic import MockAnthropic
+    from tests.mock_chat_client import MockChatClient, install_mock_chat_client
 
     reset_settings_cache()
     app = create_app()
     with TestClient(app) as client:
         # Baseline mock so the server boots.
-        client.app.state.llm.set_transport(MockAnthropic({}).messages)
+        install_mock_chat_client(client)
 
         # Seat creator + one player.
         resp = client.post(
@@ -469,52 +471,53 @@ def test_play_turn_529_marks_errored_and_targets_creator_only() -> None:
         client.app.state.manager._connections = observer
         client.app.state.llm.set_connections(observer)
 
-        # Install an erroring transport. The play-turn driver streams
-        # the response; we have to raise on ``stream(...)``'s context
-        # manager + iterator surface specifically (the create-only
-        # path is for non-streamed calls). Raising on
-        # ``get_final_message`` covers the "stream connected but
-        # final message fetch errored" path too, which is what 529
-        # looks like in practice.
-        request = httpx.Request(
-            "POST", "https://api.anthropic.com/v1/messages"
-        )
-        response = httpx.Response(
-            529,
-            request=request,
-            headers={"request-id": "req_int_test_529"},
-        )
+        # Swap in a ChatClient whose play-tier ``astream`` raises the
+        # same ``UpstreamLLMError`` that ``LiteLLMChatClient.astream``
+        # synthesises from a 529 ``InternalServerError`` via
+        # ``classify_upstream_error``. By raising the classified
+        # exception directly we exercise the turn-driver's catch +
+        # ``notify_creator_of_upstream_error`` path without having to
+        # mock the whole LiteLLM streaming surface. The classifier
+        # itself is unit-tested separately
+        # (``test_upstream_llm_errors.py::test_classify_*``); this
+        # integration test owns the wiring contract.
+        class _OverloadedMockChat(MockChatClient):
+            async def astream(
+                self,
+                *,
+                tier: ModelTier,
+                system_blocks: list[dict[str, Any]],
+                messages: list[dict[str, Any]],
+                tools: list[dict[str, Any]] | None = None,
+                max_tokens: int | None = None,
+                session_id: str | None = None,
+                tool_choice: dict[str, Any] | None = None,
+                extension_tool_names: frozenset[str] | None = None,
+            ) -> AsyncIterator[dict[str, Any]]:
+                raise UpstreamLLMError(
+                    category="overloaded",
+                    status_code=529,
+                    request_id="req_int_test_529",
+                    retry_hint_seconds=None,
+                    message="Overloaded",
+                )
+                # Unreachable but required for ``AsyncIterator`` type.
+                if False:  # pragma: no cover
+                    yield {"type": "complete"}
 
-        def _raise_overloaded() -> None:
-            raise anthropic.InternalServerError(
-                "Overloaded", response=response, body=None
-            )
+            async def acomplete(self, **kwargs: Any) -> LLMResult:
+                raise UpstreamLLMError(
+                    category="overloaded",
+                    status_code=529,
+                    request_id="req_int_test_529",
+                    retry_hint_seconds=None,
+                    message="Overloaded",
+                )
 
-        class _ErrCtx:
-            async def __aenter__(self) -> Any:
-                return self
-
-            async def __aexit__(self, *exc: Any) -> None:
-                return None
-
-            def __aiter__(self) -> Any:
-                async def _gen() -> Any:
-                    _raise_overloaded()
-                    if False:  # pragma: no cover - unreachable
-                        yield None
-                return _gen()
-
-            async def get_final_message(self) -> Any:
-                _raise_overloaded()
-
-        class _ErroringMessages:
-            async def create(self, **kwargs: Any) -> Any:
-                _raise_overloaded()
-
-            def stream(self, **kwargs: Any) -> Any:
-                return _ErrCtx()
-
-        client.app.state.llm.set_transport(_ErroringMessages())
+        erroring = _OverloadedMockChat()
+        erroring.set_connections(observer)
+        client.app.state.llm = erroring
+        client.app.state.manager._llm = erroring
 
         # Fire the BRIEFING turn. The route awaits ``run_play_turn``
         # synchronously, so by the time the response lands the

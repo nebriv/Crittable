@@ -442,22 +442,11 @@ def test_ws_routing_fires_interject_when_facilitator_mentioned(
 ) -> None:
     """Composer mention triggers ``run_interject`` end-to-end."""
 
-    from tests.mock_anthropic import MockAnthropic, _ContentBlock, _Response
+    from tests.mock_chat_client import install_mock_chat_client, llm_result, tool_block
 
     seats = asyncio.run(_seat_two_role_session(client))
-    interject = _Response(
-        content=[
-            _ContentBlock(
-                type="tool_use",
-                name="broadcast",
-                input={"message": "Pulling Defender telemetry now."},
-                id="tu_b",
-            ),
-        ],
-        stop_reason="tool_use",
-    )
-    mock = MockAnthropic({"play": [interject]})
-    client.app.state.llm.set_transport(mock.messages)
+    interject = llm_result(tool_block("broadcast", {"message": "Pulling Defender telemetry now."}, block_id="tu_b"), stop_reason="tool_use")
+    install_mock_chat_client(client, {"play": [interject]})
 
     creator_token = client.app.state.authn.mint(
         session_id=seats["session_id"],
@@ -499,14 +488,13 @@ def test_ws_routing_skips_interject_without_facilitator_mention(
     """Plain ``@<role>`` mentions are player-to-player; no AI side
     effect. The transcript-with-highlight is the entire affordance."""
 
-    from tests.mock_anthropic import MockAnthropic
+    from tests.mock_chat_client import install_mock_chat_client
 
     seats = asyncio.run(_seat_two_role_session(client))
     # Empty transport — any LLM call would fail loudly. The test
     # asserts no LLM call is made, so this is a defensive belt to
     # catch a regression where the routing branch fires unexpectedly.
-    mock = MockAnthropic({"play": []})
-    client.app.state.llm.set_transport(mock.messages)
+    mock = install_mock_chat_client(client, {"play": []})
 
     creator_token = client.app.state.authn.mint(
         session_id=seats["session_id"],
@@ -531,7 +519,7 @@ def test_ws_routing_skips_interject_without_facilitator_mention(
             except Exception:
                 break
 
-    play_calls = [c for c in mock.messages.calls if "play" in c.get("model", "")]
+    play_calls = [c for c in mock.calls if c.get("tier") == "play"]
     assert play_calls == [], (
         "plain @<role> mention must NOT fire the AI interject; "
         f"got {len(play_calls)} play call(s)"
@@ -543,7 +531,7 @@ def test_ws_routing_skips_interject_when_ai_paused(client: TestClient) -> None:
     even when ``@facilitator`` is mentioned. The message still lands
     in the transcript with the highlight."""
 
-    from tests.mock_anthropic import MockAnthropic
+    from tests.mock_chat_client import install_mock_chat_client
 
     seats = asyncio.run(_seat_two_role_session(client))
 
@@ -555,8 +543,7 @@ def test_ws_routing_skips_interject_when_ai_paused(client: TestClient) -> None:
 
     asyncio.run(pause())
 
-    mock = MockAnthropic({"play": []})
-    client.app.state.llm.set_transport(mock.messages)
+    mock = install_mock_chat_client(client, {"play": []})
 
     creator_token = client.app.state.authn.mint(
         session_id=seats["session_id"],
@@ -581,7 +568,7 @@ def test_ws_routing_skips_interject_when_ai_paused(client: TestClient) -> None:
             except Exception:
                 break
 
-    play_calls = [c for c in mock.messages.calls if "play" in c.get("model", "")]
+    play_calls = [c for c in mock.calls if c.get("tier") == "play"]
     assert play_calls == [], (
         "ai_paused must suppress run_interject even with @facilitator; "
         f"got {len(play_calls)} play call(s)"
@@ -614,22 +601,11 @@ def test_ws_routing_facilitator_mention_with_ready_intent_still_interjects(
     doesn't close the quorum, exercising the interject branch
     directly."""
 
-    from tests.mock_anthropic import MockAnthropic, _ContentBlock, _Response
+    from tests.mock_chat_client import install_mock_chat_client, llm_result, tool_block
 
     seats = asyncio.run(_seat_two_role_session(client))
-    interject = _Response(
-        content=[
-            _ContentBlock(
-                type="tool_use",
-                name="broadcast",
-                input={"message": "Acknowledged — pulling now."},
-                id="tu_b",
-            ),
-        ],
-        stop_reason="tool_use",
-    )
-    mock = MockAnthropic({"play": [interject]})
-    client.app.state.llm.set_transport(mock.messages)
+    interject = llm_result(tool_block("broadcast", {"message": "Acknowledged — pulling now."}, block_id="tu_b"), stop_reason="tool_use")
+    install_mock_chat_client(client, {"play": [interject]})
 
     creator_token = client.app.state.authn.mint(
         session_id=seats["session_id"],
@@ -673,22 +649,11 @@ def test_ws_routing_combined_role_and_facilitator_fires_interject(
     Phase B's @-highlight rendering reads correctly for the addressed
     teammate."""
 
-    from tests.mock_anthropic import MockAnthropic, _ContentBlock, _Response
+    from tests.mock_chat_client import install_mock_chat_client, llm_result, tool_block
 
     seats = asyncio.run(_seat_two_role_session(client))
-    interject = _Response(
-        content=[
-            _ContentBlock(
-                type="tool_use",
-                name="broadcast",
-                input={"message": "Loop in Bo on the egress trace."},
-                id="tu_b",
-            ),
-        ],
-        stop_reason="tool_use",
-    )
-    mock = MockAnthropic({"play": [interject]})
-    client.app.state.llm.set_transport(mock.messages)
+    interject = llm_result(tool_block("broadcast", {"message": "Loop in Bo on the egress trace."}, block_id="tu_b"), stop_reason="tool_use")
+    install_mock_chat_client(client, {"play": [interject]})
 
     creator_token = client.app.state.authn.mint(
         session_id=seats["session_id"],
@@ -752,23 +717,12 @@ def test_interject_broadcast_reply_tags_asker_mention(
     can't tell from logs whether the auto-tag ran on a stuck
     session."""
 
-    from tests.mock_anthropic import MockAnthropic, _ContentBlock, _Response
+    from tests.mock_chat_client import install_mock_chat_client, llm_result, tool_block
 
     seats = asyncio.run(_seat_two_role_session(client))
     capsys.readouterr()  # discard setup-time logs
-    interject = _Response(
-        content=[
-            _ContentBlock(
-                type="tool_use",
-                name="broadcast",
-                input={"message": "CISO — pulling Defender now."},
-                id="tu_b",
-            ),
-        ],
-        stop_reason="tool_use",
-    )
-    mock = MockAnthropic({"play": [interject]})
-    client.app.state.llm.set_transport(mock.messages)
+    interject = llm_result(tool_block("broadcast", {"message": "CISO — pulling Defender now."}, block_id="tu_b"), stop_reason="tool_use")
+    install_mock_chat_client(client, {"play": [interject]})
 
     creator_token = client.app.state.authn.mint(
         session_id=seats["session_id"],
@@ -827,25 +781,14 @@ def test_interject_share_data_reply_tags_asker_mention(
     without structural mentions, so the asker sees a Defender table
     drop in with no @YOU signal. Auto-tagging fixes that."""
 
-    from tests.mock_anthropic import MockAnthropic, _ContentBlock, _Response
+    from tests.mock_chat_client import install_mock_chat_client, llm_result, tool_block
 
     seats = asyncio.run(_seat_two_role_session(client))
-    interject = _Response(
-        content=[
-            _ContentBlock(
-                type="tool_use",
-                name="share_data",
-                input={
+    interject = llm_result(tool_block("share_data", {
                     "label": "Defender Telemetry — FS-01",
                     "data": "07:14 AM — Unusual auth event\n07:17 AM — chkdst.exe written",
-                },
-                id="tu_sd",
-            ),
-        ],
-        stop_reason="tool_use",
-    )
-    mock = MockAnthropic({"play": [interject]})
-    client.app.state.llm.set_transport(mock.messages)
+                }, block_id="tu_sd"), stop_reason="tool_use")
+    install_mock_chat_client(client, {"play": [interject]})
 
     creator_token = client.app.state.authn.mint(
         session_id=seats["session_id"],
@@ -892,25 +835,14 @@ def test_interject_address_role_reply_does_not_duplicate_asker_mention(
     ``mentions=[asker_id]``. The interject auto-tag must NOT append a
     duplicate entry — exactly one occurrence."""
 
-    from tests.mock_anthropic import MockAnthropic, _ContentBlock, _Response
+    from tests.mock_chat_client import install_mock_chat_client, llm_result, tool_block
 
     seats = asyncio.run(_seat_two_role_session(client))
-    interject = _Response(
-        content=[
-            _ContentBlock(
-                type="tool_use",
-                name="address_role",
-                input={
+    interject = llm_result(tool_block("address_role", {
                     "role_id": seats["creator_id"],
                     "message": "no new IOCs since 07:42.",
-                },
-                id="tu_ar",
-            ),
-        ],
-        stop_reason="tool_use",
-    )
-    mock = MockAnthropic({"play": [interject]})
-    client.app.state.llm.set_transport(mock.messages)
+                }, block_id="tu_ar"), stop_reason="tool_use")
+    install_mock_chat_client(client, {"play": [interject]})
 
     creator_token = client.app.state.authn.mint(
         session_id=seats["session_id"],
@@ -960,25 +892,14 @@ def test_interject_address_role_to_other_role_appends_asker_mention(
       - CISO sees @YOU on their bubble (new auto-tag behavior)
     Order: dispatcher's `[target_id]` first, then the asker appended."""
 
-    from tests.mock_anthropic import MockAnthropic, _ContentBlock, _Response
+    from tests.mock_chat_client import install_mock_chat_client, llm_result, tool_block
 
     seats = asyncio.run(_seat_two_role_session(client))
-    interject = _Response(
-        content=[
-            _ContentBlock(
-                type="tool_use",
-                name="address_role",
-                input={
+    interject = llm_result(tool_block("address_role", {
                     "role_id": seats["soc_id"],
                     "message": "Bo — pull the egress trace and report.",
-                },
-                id="tu_ar_soc",
-            ),
-        ],
-        stop_reason="tool_use",
-    )
-    mock = MockAnthropic({"play": [interject]})
-    client.app.state.llm.set_transport(mock.messages)
+                }, block_id="tu_ar_soc"), stop_reason="tool_use")
+    install_mock_chat_client(client, {"play": [interject]})
 
     creator_token = client.app.state.authn.mint(
         session_id=seats["session_id"],
@@ -1026,26 +947,15 @@ def test_interject_pose_choice_reply_tags_asker_mention(
     when it poses to a non-asker, the auto-tag must append the
     asker so they still see @YOU."""
 
-    from tests.mock_anthropic import MockAnthropic, _ContentBlock, _Response
+    from tests.mock_chat_client import install_mock_chat_client, llm_result, tool_block
 
     seats = asyncio.run(_seat_two_role_session(client))
-    interject = _Response(
-        content=[
-            _ContentBlock(
-                type="tool_use",
-                name="pose_choice",
-                input={
+    interject = llm_result(tool_block("pose_choice", {
                     "role_id": seats["soc_id"],
                     "question": "How aggressive should we go on egress block?",
                     "options": ["Block all outbound", "Block to known C2 only"],
-                },
-                id="tu_pc",
-            ),
-        ],
-        stop_reason="tool_use",
-    )
-    mock = MockAnthropic({"play": [interject]})
-    client.app.state.llm.set_transport(mock.messages)
+                }, block_id="tu_pc"), stop_reason="tool_use")
+    install_mock_chat_client(client, {"play": [interject]})
 
     creator_token = client.app.state.authn.mint(
         session_id=seats["session_id"],
@@ -1094,22 +1004,11 @@ def test_interject_with_no_asker_does_not_tag_mentions(
     has empty ``mentions`` (no spurious tagging when no asker)."""
 
     from app.sessions.turn_driver import TurnDriver
-    from tests.mock_anthropic import MockAnthropic, _ContentBlock, _Response
+    from tests.mock_chat_client import install_mock_chat_client, llm_result, tool_block
 
     seats = asyncio.run(_seat_two_role_session(client))
-    interject = _Response(
-        content=[
-            _ContentBlock(
-                type="tool_use",
-                name="broadcast",
-                input={"message": "ack."},
-                id="tu_b_noasker",
-            ),
-        ],
-        stop_reason="tool_use",
-    )
-    mock = MockAnthropic({"play": [interject]})
-    client.app.state.llm.set_transport(mock.messages)
+    interject = llm_result(tool_block("broadcast", {"message": "ack."}, block_id="tu_b_noasker"), stop_reason="tool_use")
+    install_mock_chat_client(client, {"play": [interject]})
 
     async def _run() -> Any:
         manager = client.app.state.manager
@@ -1143,7 +1042,7 @@ def test_play_turn_reply_tags_facilitator_asker_when_quorum_closes(
     ``_apply_play_outcome`` must still @-back the asker so they see
     @YOU on the AI's response."""
 
-    from tests.mock_anthropic import MockAnthropic, _ContentBlock, _Response
+    from tests.mock_chat_client import install_mock_chat_client, llm_result, tool_block
 
     # 1-active-role variant: only the creator is active, so their
     # ``intent="ready"`` submission closes quorum immediately and
@@ -1180,25 +1079,8 @@ def test_play_turn_reply_tags_facilitator_asker_when_quorum_closes(
     # Two play responses: the first satisfies DRIVE+YIELD with a
     # broadcast + set_active_roles. The asker's @-back must land on
     # the broadcast.
-    play_response = _Response(
-        content=[
-            _ContentBlock(
-                type="tool_use",
-                name="broadcast",
-                input={"message": "Pulling Defender now."},
-                id="tu_b_playturn",
-            ),
-            _ContentBlock(
-                type="tool_use",
-                name="set_active_roles",
-                input={"role_groups": [[creator_id]]},
-                id="tu_sar",
-            ),
-        ],
-        stop_reason="tool_use",
-    )
-    mock = MockAnthropic({"play": [play_response]})
-    client.app.state.llm.set_transport(mock.messages)
+    play_response = llm_result(tool_block("broadcast", {"message": "Pulling Defender now."}, block_id="tu_b_playturn"), tool_block("set_active_roles", {"role_groups": [[creator_id]]}, block_id="tu_sar"), stop_reason="tool_use")
+    install_mock_chat_client(client, {"play": [play_response]})
 
     auth_token = client.app.state.authn.mint(
         session_id=sid,
@@ -1251,11 +1133,7 @@ def test_play_turn_freeform_ai_text_also_gets_asker_mention(
         prepare_and_submit_player_response,
     )
     from app.sessions.turn_driver import TurnDriver
-    from tests.mock_anthropic import (
-        MockAnthropic,
-        _ContentBlock,
-        _Response,
-    )
+    from tests.mock_chat_client import install_mock_chat_client, llm_result, text_block, tool_block
 
     # 1-active-role variant so a single ready submission closes
     # the quorum and the regular play turn fires.
@@ -1286,29 +1164,8 @@ def test_play_turn_freeform_ai_text_also_gets_asker_mention(
 
     # Leading text block before the tool calls — this is what
     # produces the freeform AI_TEXT message.
-    play_response = _Response(
-        content=[
-            _ContentBlock(
-                type="text",
-                text="On it — pulling Defender now.",
-            ),
-            _ContentBlock(
-                type="tool_use",
-                name="broadcast",
-                input={"message": "Detection at 03:14."},
-                id="tu_b_freeform",
-            ),
-            _ContentBlock(
-                type="tool_use",
-                name="set_active_roles",
-                input={"role_groups": [[creator_id]]},
-                id="tu_sar_freeform",
-            ),
-        ],
-        stop_reason="tool_use",
-    )
-    mock = MockAnthropic({"play": [play_response]})
-    client.app.state.llm.set_transport(mock.messages)
+    play_response = llm_result(text_block("On it — pulling Defender now."), tool_block("broadcast", {"message": "Detection at 03:14."}, block_id="tu_b_freeform"), tool_block("set_active_roles", {"role_groups": [[creator_id]]}, block_id="tu_sar_freeform"), stop_reason="tool_use")
+    install_mock_chat_client(client, {"play": [play_response]})
 
     async def _drive() -> None:
         manager = client.app.state.manager
@@ -1374,28 +1231,11 @@ def test_play_turn_reply_tags_multiple_facilitator_askers_in_same_turn(
     this, the auto-tag would only honor the first asker and the
     second player would silently lose their @YOU badge."""
 
-    from tests.mock_anthropic import MockAnthropic, _ContentBlock, _Response
+    from tests.mock_chat_client import install_mock_chat_client, llm_result, tool_block
 
     seats = asyncio.run(_seat_two_role_session(client))
-    play_response = _Response(
-        content=[
-            _ContentBlock(
-                type="tool_use",
-                name="broadcast",
-                input={"message": "Both questions answered."},
-                id="tu_b_multi",
-            ),
-            _ContentBlock(
-                type="tool_use",
-                name="set_active_roles",
-                input={"role_ids": [seats["creator_id"]]},
-                id="tu_sar_multi",
-            ),
-        ],
-        stop_reason="tool_use",
-    )
-    mock = MockAnthropic({"play": [play_response]})
-    client.app.state.llm.set_transport(mock.messages)
+    play_response = llm_result(tool_block("broadcast", {"message": "Both questions answered."}, block_id="tu_b_multi"), tool_block("set_active_roles", {"role_ids": [seats["creator_id"]]}, block_id="tu_sar_multi"), stop_reason="tool_use")
+    install_mock_chat_client(client, {"play": [play_response]})
 
     # Submit both players via the load-bearing submission pipeline
     # (the same path the WS handler uses), then directly drive the

@@ -60,8 +60,9 @@ async def test_acomplete_pops_scripted_response() -> None:
 @pytest.mark.asyncio
 async def test_acomplete_exhausted_script_returns_default() -> None:
     """When the script for a tier is empty (or never registered), the
-    benign default response keeps the test from crashing on an
-    unexpected extra call.
+    benign default fires an ``end_session`` tool_use so the play-tier
+    driver advances to ENDED instead of looping. Scenario / e2e tests
+    rely on this to terminate cleanly without a full play script.
     """
 
     client = MockChatClient(scripts={"play": []})
@@ -70,8 +71,40 @@ async def test_acomplete_exhausted_script_returns_default() -> None:
         system_blocks=[],
         messages=[{"role": "user", "content": "hi"}],
     )
-    assert result.stop_reason == "end_turn"
-    assert any(b.get("type") == "text" for b in result.content)
+    assert result.stop_reason == "tool_use"
+    tool_uses = [b for b in result.content if b.get("type") == "tool_use"]
+    assert tool_uses and tool_uses[0]["name"] == "end_session"
+    # Pin the input shape too — tests that drive the play-tier dispatcher
+    # depend on the canonical reason field; a future refactor that drops
+    # it would break those tests in confusing ways.
+    assert tool_uses[0]["input"] == {"reason": "scripted-default"}
+
+
+@pytest.mark.asyncio
+async def test_astream_exhausted_script_returns_default() -> None:
+    """Symmetric coverage for the streaming code path: when the script
+    is exhausted, ``astream`` emits the same benign ``end_session``
+    auto-end via the terminal ``complete`` event. The streaming branch
+    synthesizes its own events from ``_default`` (separate code path
+    from ``acomplete``), so a refactor that diverged the two would
+    pass the non-streaming test and silently break play-tier streaming
+    auto-end.
+    """
+
+    client = MockChatClient(scripts={"play": []})
+    final_result = None
+    async for event in client.astream(
+        tier="play",
+        system_blocks=[],
+        messages=[{"role": "user", "content": "hi"}],
+    ):
+        if event.get("type") == "complete":
+            final_result = event["result"]
+    assert final_result is not None
+    assert final_result.stop_reason == "tool_use"
+    tool_uses = [b for b in final_result.content if b.get("type") == "tool_use"]
+    assert tool_uses and tool_uses[0]["name"] == "end_session"
+    assert tool_uses[0]["input"] == {"reason": "scripted-default"}
 
 
 @pytest.mark.asyncio

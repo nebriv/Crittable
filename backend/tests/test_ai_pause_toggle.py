@@ -401,7 +401,7 @@ def test_pause_via_rest_suppresses_facilitator_interject(
     output to keep the test resilient — capturing structlog stdout
     requires more plumbing than the mock-call check is worth."""
 
-    from tests.mock_anthropic import MockAnthropic
+    from tests.mock_chat_client import install_mock_chat_client
 
     seats = asyncio.run(_seat_two_role_session(client))
     sid = seats["session_id"]
@@ -414,8 +414,7 @@ def test_pause_via_rest_suppresses_facilitator_interject(
 
     # Install a mock so any accidental run_interject call would land
     # on it — we'll assert the call list is empty.
-    mock = MockAnthropic({"play": []})
-    client.app.state.llm.set_transport(mock.messages)
+    mock = install_mock_chat_client(client, {"play": []})
 
     # Server-side ``submit_response`` handler awaits the submission
     # pipeline synchronously before returning to its WS recv loop;
@@ -434,9 +433,9 @@ def test_pause_via_rest_suppresses_facilitator_interject(
             }
         )
 
-    assert mock.messages.calls == [], (
+    assert mock.calls == [], (
         "ai_paused via REST must suppress run_interject; "
-        f"got {len(mock.messages.calls)} LLM call(s)"
+        f"got {len(mock.calls)} LLM call(s)"
     )
 
     # Inspect the persisted message.
@@ -506,21 +505,13 @@ def test_resumed_facilitator_message_does_not_get_silenced_indicator(
     client.post(f"/api/sessions/{sid}/pause?token={cr}")
     client.post(f"/api/sessions/{sid}/resume?token={cr}")
 
-    from tests.mock_anthropic import MockAnthropic, _ContentBlock, _Response
+    from tests.mock_chat_client import install_mock_chat_client, llm_result, tool_block
 
-    interject = _Response(
-        content=[
-            _ContentBlock(
-                type="tool_use",
-                name="broadcast",
-                input={"message": "ack"},
-                id="tu_b",
-            ),
-        ],
+    interject = llm_result(
+        tool_block("broadcast", {"message": "ack"}, block_id="tu_b"),
         stop_reason="tool_use",
     )
-    mock = MockAnthropic({"play": [interject]})
-    client.app.state.llm.set_transport(mock.messages)
+    install_mock_chat_client(client, {"play": [interject]})
 
     # The interject would land if the broadcast tool's ``run_interject``
     # actually fired — we only care that ``ai_paused_at_submit`` is
@@ -780,7 +771,7 @@ def test_proxy_respond_path_skipped_when_ai_paused(
       ``ai_paused_at_submit=True`` so the transcript indicator
       renders consistently for proxy-typed messages."""
 
-    from tests.mock_anthropic import MockAnthropic
+    from tests.mock_chat_client import install_mock_chat_client
 
     seats = asyncio.run(_seat_two_role_session(client))
     sid = seats["session_id"]
@@ -789,8 +780,7 @@ def test_proxy_respond_path_skipped_when_ai_paused(
 
     client.post(f"/api/sessions/{sid}/pause?token={cr}")
 
-    mock = MockAnthropic({"play": []})
-    client.app.state.llm.set_transport(mock.messages)
+    mock = install_mock_chat_client(client, {"play": []})
 
     r = client.post(
         f"/api/sessions/{sid}/admin/proxy-respond?token={cr}",
@@ -804,9 +794,9 @@ def test_proxy_respond_path_skipped_when_ai_paused(
     assert r.status_code == 200, r.text
 
     # No LLM call fired.
-    assert mock.messages.calls == [], (
+    assert mock.calls == [], (
         f"proxy-respond + ai_paused must skip run_interject; "
-        f"got {len(mock.messages.calls)} LLM call(s)"
+        f"got {len(mock.calls)} LLM call(s)"
     )
 
     # Message landed in the transcript with the snapshot.

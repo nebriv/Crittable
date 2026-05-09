@@ -8,23 +8,24 @@ crosses the configured cap. Without this, a runaway loop or a stray
 Two cost-recording paths
 ========================
 
-Crittable supports two LLM backends (``LLM_BACKEND=anthropic|litellm``).
-The cap covers both:
+The live tests exercise both the production path and direct-Anthropic
+fixture calls; the cap covers both:
 
-* **Anthropic-direct.** ``_wrap_messages_create`` patches
-  ``AsyncAnthropic.messages.create`` and ``.stream`` and is hooked up via
-  the session-scoped autouse fixture in ``conftest.py``. Records on every
-  ``messages.create`` response and on ``stream.get_final_message()``.
-* **LiteLLM.** ``install_litellm_cost_tracking`` registers a
-  ``litellm.callbacks`` handler that records successful completions.
-  Failure callbacks are intentionally a no-op: LiteLLM may auto-retry
-  upstream errors, and counting both the failed attempt and the
-  eventual success would inflate per-call cost attribution. Same fixture
-  installs both — a single pytest run can exercise either backend
-  without rewiring.
+* **Production path (LiteLLM-routed).** ``install_litellm_cost_tracking``
+  registers a ``litellm.callbacks`` handler that records successful
+  completions. Failure callbacks are intentionally a no-op: LiteLLM
+  may auto-retry upstream errors, and counting both the failed attempt
+  and the eventual success would inflate per-call cost attribution.
+* **Direct-Anthropic fixtures.** ``_wrap_messages_create`` patches
+  ``AsyncAnthropic.messages.create`` and ``.stream`` and is invoked
+  explicitly inside the ``anthropic_client`` and ``judge_client``
+  fixtures (the only two places that still construct
+  ``AsyncAnthropic`` directly — production routes through LiteLLM).
+  Records on every ``messages.create`` response and on
+  ``stream.get_final_message()``.
 
 Both paths feed the same module-singleton ``_CostTracker``, so the cap
-fires regardless of which backend is in use.
+fires regardless of which call site produced the cost.
 
 Why we need this even with low per-test cost
 --------------------------------------------
@@ -41,20 +42,18 @@ the only guardrail that actually enforces budget.
 What's tracked
 --------------
 
-Every ``AsyncAnthropic.messages.create`` call made during the live
-session is intercepted via an ``__init__`` wrapper installed in the
-session-scoped autouse fixture below. Each call's ``response.usage``
-is fed through ``app.llm._shared.compute_cost_usd`` (which talks to
+Every LLM call made during the live session is fed through
+``app.llm._shared.compute_cost_usd`` (which talks to
 ``litellm.cost_per_token``) so the test cap matches the per-call cost
 the product itself reports.
 
 Coverage:
-  * The ``anthropic_client`` fixture in ``conftest.py`` -> wrapped on construction.
-  * ``judge_client`` in ``test_aar_quality_judge.py`` -> wrapped on construction.
-  * ``LLMClient`` in ``app/llm/client.py`` (used by ``AARGenerator``,
-    ``run_setup_turn``, etc.) constructs ``AsyncAnthropic`` lazily;
-    that instance is also wrapped because the ``__init__`` patch is
-    process-wide for the test session's lifetime.
+  * Production ``LiteLLMChatClient`` calls — recorded via the LiteLLM
+    callback registered by ``install_litellm_cost_tracking``.
+  * The ``anthropic_client`` fixture in ``conftest.py`` — wrapped at
+    fixture construction by ``_wrap_messages_create``.
+  * ``judge_client`` in ``test_aar_quality_judge.py`` — wrapped at
+    fixture construction by ``_wrap_messages_create``.
 
 Configuration
 -------------
@@ -238,16 +237,13 @@ def reset_tracker_for_tests() -> None:
 
 def _wrap_messages_create(client: Any) -> None:
     """Install ``messages.create`` AND ``messages.stream`` wrappers
-    that record usage. Production has TWO Anthropic call paths:
+    that record usage on a directly-constructed ``AsyncAnthropic``.
 
-      * ``messages.create``  — non-streaming. Used by ``acomplete``
-        in ``app/llm/client.py`` (AAR generation, setup driver,
-        guardrail) and by every ``call_play`` in the live suite.
-      * ``messages.stream``  — streaming. Used by ``astream`` in
-        ``app/llm/client.py`` (the play-turn relay). Today's live
-        tests don't exercise this path, but a future test that
-        drives a real play turn through ``run_play_turn`` would
-        bypass the cap unless ``stream`` is wrapped too.
+    Production routes through LiteLLM, so this wrapper only fires for
+    the ``anthropic_client`` and ``judge_client`` live-test fixtures
+    (the only places that still build ``AsyncAnthropic`` directly).
+    Both ``messages.create`` and ``messages.stream`` are wrapped so
+    a future fixture that streams hits the cap.
 
     Idempotent — repeated calls on the same instance no-op via the
     sentinel attribute. Tolerates missing attrs (some test stubs
@@ -332,8 +328,8 @@ def _build_litellm_cost_handler() -> Any:
     Why a subclass: LiteLLM's success/failure dispatchers gate on
     ``isinstance(callback, CustomLogger)`` before calling ``log_*_event``.
     A duck-typed bare object is silently skipped. Caught by QA review
-    on issue #193 — the cap was inert against ``LLM_BACKEND=litellm``
-    until the subclass landed.
+    on issue #193 — pre-fix the cap was inert against the
+    LiteLLM-routed path until the subclass landed.
     """
 
     from litellm.integrations.custom_logger import CustomLogger

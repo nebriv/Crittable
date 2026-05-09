@@ -147,27 +147,6 @@ class Settings(BaseSettings):
         default=600.0, alias="LLM_TIMEOUT_S", gt=0.0
     )
 
-    # ---- LLM backend selection ----------------------------------------
-    # Selects which ``ChatClient`` implementation the app instantiates at
-    # startup. ``"anthropic"`` uses ``app.llm.client.LLMClient`` (talks to
-    # Anthropic-direct via the official SDK). ``"litellm"`` uses
-    # ``app.llm.clients.litellm_client.LiteLLMChatClient`` which routes
-    # through LiteLLM and supports ~100 providers (Azure OpenAI, AWS
-    # Bedrock, Vertex AI, OpenRouter, OpenAI-direct, internal LLM
-    # gateways, etc.). See `docs/llm_providers.md` and issue #193 for
-    # the multi-provider configuration story.
-    llm_backend: str = Field(default="anthropic", alias="LLM_BACKEND")
-
-    @field_validator("llm_backend")
-    @classmethod
-    def _validate_llm_backend(cls, value: str) -> str:
-        allowed = {"anthropic", "litellm"}
-        if value not in allowed:
-            raise ValueError(
-                f"LLM_BACKEND must be one of {sorted(allowed)}; got {value!r}"
-            )
-        return value
-
     # ---- Per-tier sampling tunables ------------------------------------
     # Each tier has independent ``max_tokens``, ``temperature`` and
     # ``top_p`` knobs. ``None`` means "use the SDK default".
@@ -509,13 +488,12 @@ class Settings(BaseSettings):
     def require_llm_api_key(self) -> str:
         """Return ``LLM_API_KEY`` or raise.
 
-        Required when ``LLM_BACKEND=anthropic`` (default) or when
-        ``LLM_BACKEND=litellm`` and at least one tier targets the
-        ``anthropic/`` family. For LiteLLM deployments routing only to
-        non-Anthropic providers (OpenAI, Bedrock, Vertex, etc.), the
-        provider-native env var (``OPENAI_API_KEY``, ``AWS_*``,
-        ``GOOGLE_APPLICATION_CREDENTIALS``) is what LiteLLM auto-
-        discovers — ``LLM_API_KEY`` is not used and not required.
+        Required when at least one tier targets the ``anthropic/``
+        family. For deployments routing only to non-Anthropic providers
+        (OpenAI, Bedrock, Vertex, etc.), the provider-native env var
+        (``OPENAI_API_KEY``, ``AWS_*``, ``GOOGLE_APPLICATION_CREDENTIALS``)
+        is what LiteLLM auto-discovers — ``LLM_API_KEY`` is not used
+        and not required.
         """
 
         if self.llm_api_key is not None:

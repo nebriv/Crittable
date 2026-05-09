@@ -14,7 +14,7 @@ from fastapi.testclient import TestClient
 from app.config import reset_settings_cache
 from app.main import create_app
 from tests.conftest import default_settings_body
-from tests.mock_anthropic import MockAnthropic, setup_then_play_script
+from tests.mock_chat_client import install_mock_chat_client, setup_then_play_script
 
 
 @pytest.fixture(autouse=True)
@@ -33,7 +33,7 @@ def client() -> TestClient:
     reset_settings_cache()
     app = create_app()
     with TestClient(app) as c:
-        c.app.state.llm.set_transport(MockAnthropic({}).messages)
+        install_mock_chat_client(c)
         yield c
 
 
@@ -68,7 +68,7 @@ def _seat_two(client: TestClient) -> dict[str, Any]:
 def _drive_to_play(client: TestClient, seats: dict[str, Any]) -> None:
     role_ids = [seats["creator_role_id"], seats["other_role_id"]]
     scripts = setup_then_play_script(role_ids=role_ids, extension_tool="")
-    client.app.state.llm.set_transport(MockAnthropic(scripts).messages)
+    install_mock_chat_client(client, scripts)
     client.post(f"/api/sessions/{seats['sid']}/setup/skip?token={seats['creator_token']}")
     client.post(f"/api/sessions/{seats['sid']}/start?token={seats['creator_token']}")
 
@@ -321,14 +321,14 @@ def test_setup_drafting_plan_fires_when_propose_tool_starts(
         "success_criteria": [],
         "out_of_scope": [],
     }
-    from tests.mock_anthropic import response, tool_block
+    from tests.mock_chat_client import llm_result, tool_block
 
     scripts = {
         "setup": [
-            response(tool_block("propose_scenario_plan", plan_args)),
+            llm_result(tool_block("propose_scenario_plan", plan_args), stop_reason="tool_use"),
         ]
     }
-    client.app.state.llm.set_transport(MockAnthropic(scripts).messages)
+    install_mock_chat_client(client, scripts)
 
     # Trigger one setup turn via the same path the creator UI uses.
     sid = seats["sid"]
@@ -360,19 +360,20 @@ def test_setup_drafting_plan_does_not_fire_on_ask_question(
     rec = _wrap_connections(client)
     seats = _seat_two(client)
 
-    from tests.mock_anthropic import response, tool_block
+    from tests.mock_chat_client import llm_result, tool_block
 
     scripts = {
         "setup": [
-            response(
+            llm_result(
                 tool_block(
                     "ask_setup_question",
                     {"topic": "industry", "question": "What industry?"},
-                )
+                ),
+                stop_reason="tool_use",
             ),
         ]
     }
-    client.app.state.llm.set_transport(MockAnthropic(scripts).messages)
+    install_mock_chat_client(client, scripts)
 
     sid = seats["sid"]
     cr = seats["creator_token"]

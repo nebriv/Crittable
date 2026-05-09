@@ -54,7 +54,7 @@ from app.sessions.manager import (
 )
 from app.sessions.models import SessionState, Turn
 from tests.conftest import default_settings_body
-from tests.mock_anthropic import MockAnthropic
+from tests.mock_chat_client import install_mock_chat_client
 
 
 # Per-test env: keep all LLM model names mock-prefixed so the live
@@ -77,9 +77,9 @@ def client() -> TestClient:
     reset_settings_cache()
     app = create_app()
     with TestClient(app) as c:
-        # Install a mock LLM transport so the auto-kicked setup turn
+        # Install a mock LLM client so the auto-kicked setup turn
         # on session creation never reaches the real Anthropic API.
-        c.app.state.llm.set_transport(MockAnthropic({}).messages)
+        install_mock_chat_client(c)
         yield c
 
 
@@ -1000,7 +1000,7 @@ def test_ws_set_ready_quorum_close_drives_play_turn(client: TestClient) -> None:
     never starts the AI call, so the UI's "AI is thinking" indicator
     spins indefinitely."""
 
-    from tests.mock_anthropic import MockAnthropic, _ContentBlock, _Response
+    from tests.mock_chat_client import llm_result, tool_block
 
     seats = asyncio.run(_seat_two_role_session(client))
     sid = seats["session_id"]
@@ -1018,25 +1018,12 @@ def test_ws_set_ready_quorum_close_drives_play_turn(client: TestClient) -> None:
 
     asyncio.run(_narrow())
 
-    play_response = _Response(
-        content=[
-            _ContentBlock(
-                type="tool_use",
-                name="broadcast",
-                input={"message": "Got it. Move to containment."},
-                id="tu_b",
-            ),
-            _ContentBlock(
-                type="tool_use",
-                name="set_active_roles",
-                input={"role_groups": [[seats["other_id"]]]},
-                id="tu_y",
-            ),
-        ],
+    play_response = llm_result(
+        tool_block("broadcast", {"message": "Got it. Move to containment."}, block_id="tu_b"),
+        tool_block("set_active_roles", {"role_groups": [[seats["other_id"]]]}, block_id="tu_y"),
         stop_reason="tool_use",
     )
-    mock = MockAnthropic({"play": [play_response]})
-    client.app.state.llm.set_transport(mock.messages)
+    mock = install_mock_chat_client(client, {"play": [play_response]})
 
     with client.websocket_connect(
         f"/ws/sessions/{sid}?token={seats['other_token']}"
@@ -1057,9 +1044,7 @@ def test_ws_set_ready_quorum_close_drives_play_turn(client: TestClient) -> None:
         assert ack["ready_to_advance"] is True
 
     # The mock LLM was called exactly once for the play tier.
-    play_calls = [
-        c for c in mock.messages.calls if "play" in c.get("model", "")
-    ]
+    play_calls = [c for c in mock.calls if c.get("tier") == "play"]
     assert len(play_calls) == 1, (
         "set_ready quorum-close must drive run_play_turn exactly once; "
         f"got {len(play_calls)} play call(s)"

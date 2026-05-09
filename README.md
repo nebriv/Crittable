@@ -34,10 +34,11 @@ runs the room while your team responds. The after-action report drafts
 itself while the room is still warm.
 
 > **Status.** Phase 1 + Phase 2 shipped. Multi-provider LLM support
-> shipped (issue #193) — flip `LLM_BACKEND=litellm` to route through
-> Azure OpenAI / AWS Bedrock / Vertex AI / OpenRouter / vLLM / etc.
-> Phase 3 in design (Redis pub/sub for multi-process WS fan-out).
-> Authoritative architecture: [`docs/PLAN.md`](docs/PLAN.md).
+> shipped — every call routes through LiteLLM, so set `LLM_MODEL_<TIER>`
+> to any of ~100 providers (Anthropic, Azure OpenAI, AWS Bedrock,
+> Vertex AI, OpenRouter, vLLM, …). Phase 3 in design (Redis pub/sub
+> for multi-process WS fan-out). Authoritative architecture:
+> [`docs/PLAN.md`](docs/PLAN.md).
 
 ## What it does
 
@@ -214,7 +215,7 @@ matter day-to-day. Everything else has a working default.
 
 | Var | Why |
 |---|---|
-| `LLM_API_KEY` | The app refuses to start without it. Also accepts an Anthropic-compatible endpoint via `LLM_API_BASE`, or **flip `LLM_BACKEND=litellm` to route through LiteLLM and bring your own provider** — Azure OpenAI, AWS Bedrock, Vertex AI, OpenRouter, OpenAI direct, vLLM/Ollama, etc. See [`docs/llm_providers.md`](docs/llm_providers.md). |
+| `LLM_API_KEY` | Required when any tier targets the `anthropic/` family (the default). Bring your own provider via `LLM_MODEL_<TIER>=openai/...` / `bedrock/...` / `azure/...` / `vertex_ai/...` / `ollama/...` etc. — every call routes through LiteLLM so the provider-native env var (`OPENAI_API_KEY`, `AWS_*`, `AZURE_API_KEY`, `GOOGLE_APPLICATION_CREDENTIALS`) is what authenticates. Use `LLM_API_BASE` to point at a non-default endpoint (Anthropic-compatible proxy, internal LLM gateway, OpenAI-compatible local server). See [`docs/llm_providers.md`](docs/llm_providers.md). |
 
 ### Required before any non-toy deployment
 

@@ -15,7 +15,7 @@ from fastapi.testclient import TestClient
 
 from app.config import reset_settings_cache
 from tests.conftest import default_settings_body
-from tests.mock_anthropic import MockAnthropic
+from tests.mock_chat_client import install_mock_chat_client
 
 _FIXTURE_DIR = Path(__file__).parent / "_fixture_scenarios"
 
@@ -124,7 +124,7 @@ def test_play_no_token_required_when_dev_tools_enabled(
     for this environment.
     """
 
-    client.app.state.llm.set_transport(MockAnthropic({}).messages)
+    install_mock_chat_client(client)
     resp = client.post("/api/dev/scenarios/fixture/play")
     assert resp.status_code == 200, resp.text
 
@@ -172,7 +172,7 @@ def test_play_drives_session_to_end(client: TestClient) -> None:
     background runner drives play to completion; the test polls.
     """
 
-    client.app.state.llm.set_transport(MockAnthropic({}).messages)
+    install_mock_chat_client(client)
     resp = client.post("/api/dev/scenarios/fixture/play")
     assert resp.status_code == 200, resp.text
     body = resp.json()
@@ -191,7 +191,7 @@ def test_record_creates_replayable_scenario(client: TestClient) -> None:
     should be a valid Scenario shape with roster + play_turns extracted
     from the live session state."""
 
-    client.app.state.llm.set_transport(MockAnthropic({}).messages)
+    install_mock_chat_client(client)
     play_resp = client.post("/api/dev/scenarios/fixture/play").json()
     session_id = play_resp["session_id"]
     creator_id = play_resp["role_label_to_id"]["creator"]

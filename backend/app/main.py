@@ -24,7 +24,6 @@ from .config import Settings, get_settings
 from .devtools.api import register_devtools_routes
 from .extensions import EnvLoader, freeze_bundle
 from .extensions.dispatch import ExtensionDispatcher
-from .llm.client import LLMClient
 from .llm.clients.litellm_client import LiteLLMChatClient
 from .llm.dispatch import ToolDispatcher
 from .llm.guardrail import InputGuardrail
@@ -39,18 +38,15 @@ from .ws.connection_manager import ConnectionManager
 
 
 def _build_chat_client(settings: Settings) -> ChatClient:
-    """Construct the ``ChatClient`` for the selected backend.
+    """Construct the production ``ChatClient`` (LiteLLM-routed).
 
-    ``LLM_BACKEND=anthropic`` (default) → ``LLMClient`` (Anthropic SDK direct).
-    ``LLM_BACKEND=litellm`` → ``LiteLLMChatClient`` (~100 providers via LiteLLM).
-
-    Settings validation in ``config.py`` rejects unknown values, so this
-    function only sees the two known backends.
+    All LLM calls go through ``LiteLLMChatClient``, which supports
+    ~100 providers (Azure OpenAI, AWS Bedrock, Vertex AI, OpenRouter,
+    OpenAI-direct, internal LLM gateways, etc.). The Anthropic-direct
+    backend was removed in #195 — see ``docs/llm_providers.md``.
     """
 
-    if settings.llm_backend == "litellm":
-        return LiteLLMChatClient(settings=settings)
-    return LLMClient(settings=settings)
+    return LiteLLMChatClient(settings=settings)
 
 
 @asynccontextmanager
@@ -74,7 +70,6 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     repository = InMemoryRepository(max_sessions=settings.max_sessions)
     connections = ConnectionManager()
     llm = _build_chat_client(settings)
-    logger.info("llm_backend_selected", backend=settings.llm_backend)
     # Wire the connection manager into the LLM client so every LLM call
     # boundary (begin / end) fans out an ``ai_thinking`` WS event. Without
     # this, the participant + creator UIs only saw the indicator when
@@ -198,32 +193,25 @@ def create_app(
     # ``configure_logging`` is idempotent; the lifespan re-runs it harmlessly.
     configure_logging(cfg)
     _bootstrap_log = get_logger("startup")
-    # ``LLM_BACKEND=anthropic`` (default) reads ``LLM_API_KEY`` directly;
-    # missing-at-boot is fail-fast. ``LLM_BACKEND=litellm`` may route to
-    # OpenAI / Bedrock / Vertex / etc. — those providers ship their own
-    # env-var conventions (``OPENAI_API_KEY``, ``AWS_*``,
-    # ``GOOGLE_APPLICATION_CREDENTIALS``) and don't need ``LLM_API_KEY``
-    # at all. We only require it when at least one tier targets the
-    # ``anthropic/`` family in the LiteLLM-routed configuration.
-    if cfg.llm_backend == "anthropic":
+    # LiteLLM may route to Anthropic / OpenAI / Bedrock / Vertex / etc.
+    # Each provider ships its own env-var convention (``OPENAI_API_KEY``,
+    # ``AWS_*``, ``GOOGLE_APPLICATION_CREDENTIALS``); LiteLLM auto-
+    # discovers them at first call. ``LLM_API_KEY`` is required only
+    # when at least one tier targets the ``anthropic/`` family.
+    from .llm.clients.litellm_client import _resolves_to_anthropic
+
+    if _resolves_to_anthropic(cfg):
         cfg.require_llm_api_key()
         _bootstrap_log.info("llm_api_key_present")
     else:
-        from .llm.clients.litellm_client import _resolves_to_anthropic
-
-        if _resolves_to_anthropic(cfg):
-            cfg.require_llm_api_key()
-            _bootstrap_log.info("llm_api_key_present", backend="litellm")
-        else:
-            _bootstrap_log.info(
-                "llm_api_key_skipped",
-                backend="litellm",
-                note=(
-                    "no tier targets anthropic/ — LiteLLM will auto-discover "
-                    "the provider-native key (OPENAI_API_KEY, AWS_*, "
-                    "GOOGLE_APPLICATION_CREDENTIALS, etc.) at first call"
-                ),
-            )
+        _bootstrap_log.info(
+            "llm_api_key_skipped",
+            note=(
+                "no tier targets anthropic/ — LiteLLM will auto-discover "
+                "the provider-native key (OPENAI_API_KEY, AWS_*, "
+                "GOOGLE_APPLICATION_CREDENTIALS, etc.) at first call"
+            ),
+        )
     if cfg.dev_tools_enabled:
         # Loud-on-startup so an accidental prod deploy with the dev
         # flag set shows up in operator log scans. The endpoints

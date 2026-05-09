@@ -15,9 +15,9 @@ lifecycle (setup → play → end → AAR) while the dev watches.
 (runner-level lifecycle + deterministic-replay fidelity) and
 `backend/tests/scenarios/test_scenario_api.py` (HTTP gating + async
 play + record). Both go through the same `ScenarioRunner` the dev
-mode panel uses, against the deterministic `MockAnthropic` transport.
-Together they're the regression net that catches contract drift
-between scenarios and the engine.
+mode panel uses, against a deterministic `MockChatClient` installed
+on `app.state.llm`. Together they're the regression net that catches
+contract drift between scenarios and the engine.
 
 **From the CLI:** the `app.devtools.runner.ScenarioRunner` is a plain
 async class — drive it from a notebook or a one-off script if you want

@@ -1,12 +1,10 @@
 # Testing LLM-driven code
 
-How to write tests for code that talks to the LLM client. Two mock
-systems coexist transitionally; this page documents both, calls the
-preferred path, and lays out the migration plan.
+How to write tests for code that talks to the LLM client.
 
 ## TL;DR
 
-For new tests, use `MockChatClient` from `tests.mock_chat_client`:
+Use `MockChatClient` from `tests.mock_chat_client`:
 
 ```python
 from tests.mock_chat_client import (
@@ -44,25 +42,8 @@ def test_my_feature(client):
 
 `MockChatClient` is a sibling implementation of the `ChatClient` ABC.
 It plugs in via `app.state.llm = mock` (handled by
-`install_mock_chat_client`) and works regardless of which backend
-(`LLM_BACKEND=anthropic` or `litellm`) the lifespan would otherwise
-have built.
-
-The legacy `MockAnthropic` from `tests.mock_anthropic` (still used by
-~18 existing test files) mocks the Anthropic SDK transport via
-`LLMClient.set_transport(MockAnthropic(scripts).messages)`. It works
-only with `LLM_BACKEND=anthropic`. Migration to `MockChatClient` is
-mechanical and tracked in the follow-up cleanup issue.
-
-## When to use which mock
-
-| Situation | Use |
-|---|---|
-| Writing a new test (any kind) | `MockChatClient` |
-| Touching an existing test that uses `MockAnthropic` and you have time to migrate | `MockChatClient` (migrate it; it's a few-line change per test, see the worked example below) |
-| Touching a test that uses `MockAnthropic` and you DON'T have time to migrate | Leave `MockAnthropic` as-is (still works under default backend) |
-| Testing the `ChatClient` ABC contract directly (e.g. lifecycle, in-flight tracking) | `MockChatClient` |
-| Testing transport-level Anthropic SDK behavior | `MockAnthropic` (this category is going away when `LLMClient` is deleted) |
+`install_mock_chat_client`) so tests don't depend on the production
+`LiteLLMChatClient` ever instantiating.
 
 ## Worked examples
 
@@ -131,8 +112,7 @@ client.post(f"/api/sessions/{sid}/start?token={tok}")
 ```
 
 The helper returns scripts for `setup`, `play`, and `aar` tiers in one
-call. It mirrors the legacy `mock_anthropic.setup_then_play_script` for
-parity during the transition.
+call.
 
 ### Inspecting what the model was asked
 
@@ -148,6 +128,13 @@ assert mock.calls[0]["tier"] == "play"
 assert mock.calls[0]["tool_choice"] == {"type": "any"}
 assert {t["name"] for t in mock.calls[0]["tools"]} == {"broadcast", "address_role"}
 ```
+
+### Exhausted-script auto-end
+
+When the script for a tier is empty, `MockChatClient` returns a benign
+`end_session` tool_use so the play-tier driver advances to ENDED instead
+of looping. Tests that drive a session through play without a full
+script still terminate cleanly.
 
 ## Why `install_mock_chat_client` (not `app.state.llm = mock`)
 
@@ -175,67 +162,6 @@ def install_mock_chat_client(test_client, scripts=None):
     return mock
 ```
 
-The legacy `MockAnthropic` + `set_transport` pattern sidestepped this
-problem because it modified the *internals* of a single `LLMClient`
-instance shared by all reference holders. `MockChatClient` is a
-sibling class — replacing it requires touching every holder.
-
-## Migrating an existing test from MockAnthropic
-
-The change is mechanical. Old:
-
-```python
-from tests.mock_anthropic import MockAnthropic, setup_then_play_script
-
-mock = MockAnthropic(scripts)
-client.app.state.llm.set_transport(mock.messages)
-# …
-assert mock.messages.calls[0]["tier"] == "play"
-```
-
-New:
-
-```python
-from tests.mock_chat_client import (
-    MockChatClient,
-    install_mock_chat_client,
-    setup_then_play_script,
-)
-
-mock = install_mock_chat_client(client, scripts)
-# …
-assert mock.calls[0]["tier"] == "play"
-```
-
-Three substitutions:
-
-1. `from tests.mock_anthropic import MockAnthropic` → `from tests.mock_chat_client import MockChatClient, install_mock_chat_client`
-2. `client.app.state.llm.set_transport(MockAnthropic(scripts).messages)` → `install_mock_chat_client(client, scripts)`
-3. `mock.messages.calls` → `mock.calls`
-
-For tests that build `_Response`/`_ContentBlock` directly:
-
-```python
-# Old
-from tests.mock_anthropic import _Response, _ContentBlock
-interject = _Response(
-    content=[_ContentBlock(type="tool_use", name="broadcast",
-                           input={"message": "Hi"}, id="tu_b")],
-    stop_reason="tool_use",
-)
-mock = MockAnthropic({"play": [interject]})
-
-# New
-from tests.mock_chat_client import (
-    MockChatClient, install_mock_chat_client, llm_result, tool_block,
-)
-interject = llm_result(
-    tool_block("broadcast", {"message": "Hi"}, block_id="tu_b"),
-    stop_reason="tool_use",
-)
-mock = install_mock_chat_client(client, {"play": [interject]})
-```
-
 ## Testing the LLM client itself
 
 Unit tests for the wire-format translators (Anthropic ↔ OpenAI shape
@@ -247,21 +173,16 @@ the goal is to test the translator in isolation, not at the ABC layer.
 Integration tests for `LiteLLMChatClient` end-to-end behavior live in
 `tests/test_llm_backend_seam.py` (factory selection, hardening,
 in-flight tracking, cost-cap registration, etc.). These instantiate
-the real client with `Settings(LLM_BACKEND="litellm")` and exercise
-behavior that doesn't require a live API call.
+the real client with `Settings()` and exercise behavior that doesn't
+require a live API call.
 
 Live API tests that hit the real provider live in `tests/live/`. They
-use the production code path through whichever backend `LLM_BACKEND`
-selects — when in doubt, run them under both backends:
+use the production code path through `LiteLLMChatClient`.
 
 ```bash
-LLM_API_KEY=$LIVE_TEST_LLM_API_KEY pytest tests/live/  # default backend
-LLM_API_KEY=$LIVE_TEST_LLM_API_KEY LLM_BACKEND=litellm pytest tests/live/
+backend/scripts/run-live-tests.sh                # full suite
+backend/scripts/run-live-tests.sh -k test_aar    # pytest filter
 ```
-
-Both pass against the same Anthropic API in their respective shapes —
-the LiteLLM migration itself was validated end-to-end this way (issue
-#193); only mechanical legacy-path cleanup remains in #195.
 
 ## Common gotchas
 
@@ -272,19 +193,12 @@ instead of `install_mock_chat_client(client, ...)`. The captured
 references in the manager / guardrail still point at the lifespan-
 built real client. See "Why `install_mock_chat_client`" above.
 
-### "My test doesn't pass with `LLM_BACKEND=litellm`"
-
-If it uses `MockAnthropic.set_transport`, that's expected — the
-legacy mock targets the Anthropic-direct path only. Migrate to
-`MockChatClient` (see the worked example above) or skip the test
-under the LiteLLM backend.
-
 ### "I'm assert-ing on `mock.messages.calls` and getting AttributeError"
 
 `MockChatClient` doesn't have `.messages` — use `mock.calls`
-directly. The `messages` indirection was an artifact of mocking the
-`AsyncAnthropic.messages` SDK surface; at the ABC layer, the mock
-client itself records the calls.
+directly. (The `.messages` indirection was an artifact of the legacy
+`MockAnthropic` mock that targeted the Anthropic SDK transport
+surface; that mock is gone as of #195.)
 
 ### "I need to mock streaming"
 
@@ -313,4 +227,3 @@ For tool-only responses (no text), `astream` skips straight to the
 - Mock tests: [`backend/tests/test_mock_chat_client.py`](../backend/tests/test_mock_chat_client.py)
 - Translator unit tests: [`backend/tests/test_litellm_translators.py`](../backend/tests/test_litellm_translators.py)
 - ABC contract: [`backend/app/llm/protocol.py`](../backend/app/llm/protocol.py)
-- Migration tracking: GitHub issue #195

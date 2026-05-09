@@ -45,7 +45,7 @@ from app.sessions.models import (
     SessionState,
     Turn,
 )
-from tests.mock_anthropic import MockAnthropic
+from tests.mock_chat_client import install_mock_chat_client
 
 
 @pytest.fixture
@@ -53,7 +53,7 @@ def client() -> TestClient:
     reset_settings_cache()
     app = create_app()
     with TestClient(app) as c:
-        c.app.state.llm.set_transport(MockAnthropic({}).messages)
+        install_mock_chat_client(c)
         yield c
 
 

@@ -245,11 +245,11 @@ class Scenario(BaseModel):
     currently configured (real Anthropic in dev, the test fixture's
     mock in pytest).
 
-    The script shape matches the existing ``tests/mock_anthropic.py``
-    contract: ``{"setup": [...], "play": [...], "aar": [...]}`` where
-    each entry is a list of ``Response`` blocks. We keep the
-    serialised form opaque (``dict[str, Any]``) so scenario recording
-    can stash anything ``MockAnthropic`` would accept.
+    The script shape matches ``tests/mock_chat_client.py``:
+    ``{"setup": [...], "play": [...], "aar": [...]}`` where each entry
+    is an ``LLMResult``-shaped block. We keep the serialised form
+    opaque (``dict[str, Any]``) so scenario recording can stash
+    anything ``MockChatClient`` would accept.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -306,8 +306,8 @@ class Scenario(BaseModel):
     # / tool_name / body, which only the recorder can guarantee).
     #
     # ``engine`` — call the live LLM for every play turn (or the
-    # ``MockAnthropic`` transport an external test installed on the
-    # manager). AI messages drift across runs; use this for prompt
+    # ``MockChatClient`` an external test installed on the manager).
+    # AI messages drift across runs; use this for prompt
     # experimentation and live-LLM regression tests.
     #
     # The default is ``deterministic`` only when the scenario actually

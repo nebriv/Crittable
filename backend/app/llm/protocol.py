@@ -3,14 +3,12 @@
 Defines the abstract base class every LLM client implementation extends, plus
 the data types that flow across the seam (``LLMResult``, ``InFlightCall``).
 
-Two production implementations live behind this seam:
+The production implementation that lives behind this seam:
 
-  * ``app.llm.client.LLMClient`` — talks to Anthropic-direct via the official SDK.
   * ``app.llm.clients.litellm_client.LiteLLMChatClient`` — routes via LiteLLM
     (~100 providers: Azure OpenAI, Bedrock, Vertex, OpenRouter, …).
 
-Selected at startup by ``LLM_BACKEND``. See `docs/llm_providers.md` and
-issue #193.
+See `docs/llm_providers.md` for the configuration story.
 
 # Design choices
 

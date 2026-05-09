@@ -1,14 +1,9 @@
-"""Phase-1 ABC-seam regression tests (issue #193).
+"""ABC-seam regression tests for the LiteLLM-routed chat client.
 
-Locks in the contracts the Phase 1 commit established:
+Locks in the contracts the multi-provider migration established:
 
-  * ``LLM_BACKEND`` env var validation rejects unknown values cleanly.
-  * The factory in ``app.main`` resolves the right concrete class for
-    each backend value.
-  * ``LiteLLMChatClient`` is a real ``ChatClient`` subclass and its
-    Phase-1 skeleton methods raise ``NotImplementedError`` rather than
-    silently mis-behaving — so a hypothetical premature operator
-    flipping the flag gets a loud, traceable failure.
+  * The factory in ``app.main`` always returns a ``LiteLLMChatClient``.
+  * ``LiteLLMChatClient`` is a real ``ChatClient`` subclass.
   * ``litellm`` is hardened on import: the nine callback registries
     listed in the security audit are empty, ``LITELLM_MODE`` is set to
     ``"PRODUCTION"``, and ``telemetry`` is off. Any one of these
@@ -34,47 +29,14 @@ import pytest
 
 from app.config import Settings, get_settings
 
-# -- LLM_BACKEND validator -------------------------------------------------
-
-
-def test_llm_backend_default_is_anthropic(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("LLM_BACKEND", raising=False)
-    get_settings.cache_clear()
-    settings = get_settings()
-    assert settings.llm_backend == "anthropic"
-
-
-def test_llm_backend_accepts_litellm(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("LLM_BACKEND", "litellm")
-    get_settings.cache_clear()
-    settings = get_settings()
-    assert settings.llm_backend == "litellm"
-
-
-def test_llm_backend_rejects_unknown(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("LLM_BACKEND", "openai")
-    get_settings.cache_clear()
-    with pytest.raises(Exception, match="LLM_BACKEND"):
-        get_settings()
-
-
 # -- Factory ---------------------------------------------------------------
-
-
-def test_factory_resolves_anthropic_backend() -> None:
-    from app.llm.client import LLMClient
-    from app.main import _build_chat_client
-
-    settings = Settings(LLM_BACKEND="anthropic", LLM_API_KEY="dummy")
-    client = _build_chat_client(settings)
-    assert isinstance(client, LLMClient)
 
 
 def test_factory_resolves_litellm_backend() -> None:
     from app.llm.clients.litellm_client import LiteLLMChatClient
     from app.main import _build_chat_client
 
-    settings = Settings(LLM_BACKEND="litellm", LLM_API_KEY="dummy")
+    settings = Settings(LLM_API_KEY="dummy")
     client = _build_chat_client(settings)
     assert isinstance(client, LiteLLMChatClient)
 
@@ -418,7 +380,7 @@ def test_resolve_wire_model_rejects_unknown_bare_name() -> None:
         LLM_API_KEY="dummy",
         LLM_MODEL_GUARDRAIL="my-finetuned-model",
     ))
-    with pytest.raises(RuntimeError, match="provider-qualified model id"):
+    with pytest.raises(RuntimeError, match="provider-qualified"):
         client._resolve_wire_model("guardrail")
 
 
@@ -851,7 +813,6 @@ def test_build_call_kwargs_omits_api_key_for_non_anthropic_wire_model(
 
     monkeypatch.setenv("LLM_API_KEY", "anthropic-key")
     monkeypatch.setenv("LLM_MODEL", "openai/gpt-4.1-mini")
-    monkeypatch.setenv("LLM_BACKEND", "litellm")
     get_settings.cache_clear()
     client = LiteLLMChatClient(settings=get_settings())
     kwargs, wire_model = client._build_call_kwargs(
@@ -885,7 +846,6 @@ def test_build_call_kwargs_for_non_anthropic_works_with_no_llm_api_key(
 
     monkeypatch.delenv("LLM_API_KEY", raising=False)
     monkeypatch.setenv("LLM_MODEL", "openai/gpt-4.1-mini")
-    monkeypatch.setenv("LLM_BACKEND", "litellm")
     get_settings.cache_clear()
     client = LiteLLMChatClient(settings=get_settings())
     kwargs, _ = client._build_call_kwargs(
@@ -902,7 +862,7 @@ def test_build_call_kwargs_for_non_anthropic_works_with_no_llm_api_key(
 
 def test_resolves_to_anthropic_helper(monkeypatch: pytest.MonkeyPatch) -> None:
     """The startup gate uses ``_resolves_to_anthropic`` to decide
-    whether to require ``LLM_API_KEY`` under ``LLM_BACKEND=litellm``.
+    whether to require ``LLM_API_KEY`` under ``litellm-routed``.
     """
 
     from app.llm.clients.litellm_client import _resolves_to_anthropic
@@ -951,7 +911,7 @@ def test_resolves_to_anthropic_helper(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_create_app_skips_llm_api_key_gate_for_non_anthropic_litellm(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """End-to-end startup gate: ``LLM_BACKEND=litellm`` + every tier
+    """End-to-end startup gate: ``litellm-routed`` + every tier
     targeting a non-Anthropic provider must boot with no ``LLM_API_KEY``
     set. Pre-fix the ``cfg.require_llm_api_key()`` in ``create_app``
     raised at import time, breaking the whole non-Anthropic deployment
@@ -962,7 +922,6 @@ def test_create_app_skips_llm_api_key_gate_for_non_anthropic_litellm(
     from app.main import create_app
 
     monkeypatch.delenv("LLM_API_KEY", raising=False)
-    monkeypatch.setenv("LLM_BACKEND", "litellm")
     monkeypatch.setenv("LLM_MODEL", "openai/gpt-4.1-mini")
     for tier in ("PLAY", "SETUP", "AAR", "GUARDRAIL"):
         monkeypatch.setenv(f"LLM_MODEL_{tier}", "openai/gpt-4.1-mini")
@@ -975,7 +934,7 @@ def test_create_app_skips_llm_api_key_gate_for_non_anthropic_litellm(
 def test_create_app_still_requires_llm_api_key_for_anthropic_via_litellm(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """``LLM_BACKEND=litellm`` with at least one tier on ``anthropic/...``
+    """``litellm-routed`` with at least one tier on ``anthropic/...``
     still requires ``LLM_API_KEY`` — LiteLLM looks for ``ANTHROPIC_API_KEY``
     by default but our convention is the provider-agnostic
     ``LLM_API_KEY``, so the gate must catch a missing one before the
@@ -986,7 +945,6 @@ def test_create_app_still_requires_llm_api_key_for_anthropic_via_litellm(
     from app.main import create_app
 
     monkeypatch.delenv("LLM_API_KEY", raising=False)
-    monkeypatch.setenv("LLM_BACKEND", "litellm")
     monkeypatch.setenv("LLM_MODEL", "anthropic/claude-haiku-4-5")
     for tier in ("PLAY", "SETUP", "AAR", "GUARDRAIL"):
         monkeypatch.delenv(f"LLM_MODEL_{tier}", raising=False)
@@ -1149,8 +1107,6 @@ async def test_acomplete_pipes_cost_through_unified_helper(
         cache_read_input_tokens=0,
         prompt_tokens_details=None,
     )
-
-    monkeypatch.setenv("LLM_BACKEND", "litellm")
     monkeypatch.setenv("LLM_MODEL", "openai/gpt-4.1-mini")
     monkeypatch.delenv("LLM_API_KEY", raising=False)
     get_settings.cache_clear()

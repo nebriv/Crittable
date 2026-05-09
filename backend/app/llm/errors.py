@@ -12,12 +12,12 @@ copy implies an app-side bug; the right operator response is
 This module classifies the SDK exception into a category the WS
 event + frontend banner can key on, so the creator sees an
 actionable banner (with a status-page link) instead of generic copy.
-The category set is identical across both supported backends
-(Anthropic-direct and LiteLLM-routed) — both SDKs expose parallel
-exception hierarchies (``APIError`` / ``APIConnectionError`` /
-``APITimeoutError`` / ``RateLimitError`` / ``InternalServerError``)
-with the same ``status_code`` / ``request_id`` / ``response.headers``
-attributes, so a single duck-typed classifier works for both.
+The classifier is duck-typed against parallel exception hierarchies
+exposed by every LiteLLM-routed provider (``APIError`` /
+``APIConnectionError`` / ``APITimeoutError`` / ``RateLimitError`` /
+``InternalServerError``) — they all carry the same ``status_code`` /
+``request_id`` / ``response.headers`` attributes, so a single
+classifier covers Anthropic, OpenAI, Bedrock, Vertex, etc.
 
 Out of scope (see issue #191): app-level retry beyond what the SDK
 already does — masking the operator's awareness of the outage and

@@ -220,22 +220,22 @@ def test_scrub_path_passthrough_for_unrelated_paths() -> None:
     assert _scrub_path_bytes(b"") == ""
 
 
-# --------------------------- LLMClient kwargs contract --------------------
+# --------------------------- LiteLLMChatClient kwargs contract -----------
 
 
 def test_llm_client_omits_temperature_and_top_p_when_unset(monkeypatch) -> None:
-    """The Anthropic SDK is forgiving but this contract matters when the
-    operator points ``LLM_API_BASE`` at a stricter Anthropic-shaped
-    proxy (some validate-then-reject unknown keys). Pin it: when no
-    per-tier env override is set, the kwargs dict passed to
-    ``messages.create`` must NOT contain ``temperature`` (for tiers
-    where the default is ``None``) or ``top_p``."""
+    """When no per-tier env override is set, the kwargs dict passed to
+    ``litellm.acompletion`` must NOT contain ``temperature`` (for tiers
+    where the default is ``None``) or ``top_p``. This contract matters
+    when the operator points ``LLM_API_BASE`` at a stricter
+    Anthropic-shaped proxy (some validate-then-reject unknown keys)."""
 
     import asyncio
+    from typing import Any
+    from unittest.mock import AsyncMock, MagicMock, patch
 
     from app.config import Settings
-    from app.llm.client import LLMClient
-    from tests.mock_anthropic import MockAnthropic
+    from app.llm.clients.litellm_client import LiteLLMChatClient
 
     # Defaults: play+setup temperature is None, top_p is None for all tiers.
     for key in (
@@ -246,24 +246,43 @@ def test_llm_client_omits_temperature_and_top_p_when_unset(monkeypatch) -> None:
     ):
         monkeypatch.delenv(key, raising=False)
     monkeypatch.setenv("LLM_API_KEY", "test-key")
+    monkeypatch.setenv("LLM_MODEL", "claude-haiku-4-5")
     s = Settings()
-    mock = MockAnthropic({"play": [], "setup": []})
-    llm = LLMClient(settings=s)
-    llm.set_transport(mock.messages)
+    llm = LiteLLMChatClient(settings=s)
+
+    fake_response = MagicMock()
+    fake_response.choices = [MagicMock()]
+    fake_response.choices[0].message = MagicMock(content="ok", tool_calls=None)
+    fake_response.choices[0].finish_reason = "stop"
+    fake_response.usage = MagicMock(
+        prompt_tokens=10,
+        completion_tokens=5,
+        cache_creation_input_tokens=0,
+        cache_read_input_tokens=0,
+        prompt_tokens_details=None,
+    )
+    captured: dict[str, Any] = {}
+
+    async def _fake_acompletion(**kwargs: Any) -> Any:
+        captured.update(kwargs)
+        return fake_response
 
     async def _go() -> None:
-        await llm.acomplete(
-            tier="play",
-            system_blocks=[{"type": "text", "text": "x"}],
-            messages=[{"role": "user", "content": "hi"}],
-        )
+        with patch(
+            "app.llm.clients.litellm_client.litellm.acompletion",
+            new=AsyncMock(side_effect=_fake_acompletion),
+        ):
+            await llm.acomplete(
+                tier="play",
+                system_blocks=[{"type": "text", "text": "x"}],
+                messages=[{"role": "user", "content": "hi"}],
+            )
 
     asyncio.run(_go())
-    kwargs = mock.messages.calls[0]
-    assert "temperature" not in kwargs
-    assert "top_p" not in kwargs
+    assert "temperature" not in captured
+    assert "top_p" not in captured
     # max_tokens always present + comes from the per-tier default.
-    assert kwargs["max_tokens"] == 1024
+    assert captured["max_tokens"] == 1024
 
 
 def test_strict_retry_max_default_and_override(monkeypatch) -> None:
@@ -328,36 +347,56 @@ def test_timeout_for_uses_per_tier_defaults(monkeypatch) -> None:
 
 
 def test_llm_client_forwards_temperature_when_set(monkeypatch) -> None:
-    """Counter-example: when the env knob IS set, the value must reach the
-    Anthropic kwargs."""
+    """Counter-example: when the env knob IS set, the value must reach
+    the litellm kwargs."""
 
     import asyncio
+    from typing import Any
+    from unittest.mock import AsyncMock, MagicMock, patch
 
     from app.config import Settings
-    from app.llm.client import LLMClient
-    from tests.mock_anthropic import MockAnthropic
+    from app.llm.clients.litellm_client import LiteLLMChatClient
 
     monkeypatch.setenv("LLM_API_KEY", "test-key")
+    monkeypatch.setenv("LLM_MODEL", "claude-haiku-4-5")
     monkeypatch.setenv("LLM_TEMPERATURE_PLAY", "0.3")
     monkeypatch.setenv("LLM_TOP_P_PLAY", "0.85")
     monkeypatch.setenv("LLM_MAX_TOKENS_PLAY", "777")
     s = Settings()
-    mock = MockAnthropic({"play": []})
-    llm = LLMClient(settings=s)
-    llm.set_transport(mock.messages)
+    llm = LiteLLMChatClient(settings=s)
+
+    fake_response = MagicMock()
+    fake_response.choices = [MagicMock()]
+    fake_response.choices[0].message = MagicMock(content="ok", tool_calls=None)
+    fake_response.choices[0].finish_reason = "stop"
+    fake_response.usage = MagicMock(
+        prompt_tokens=10,
+        completion_tokens=5,
+        cache_creation_input_tokens=0,
+        cache_read_input_tokens=0,
+        prompt_tokens_details=None,
+    )
+    captured: dict[str, Any] = {}
+
+    async def _fake_acompletion(**kwargs: Any) -> Any:
+        captured.update(kwargs)
+        return fake_response
 
     async def _go() -> None:
-        await llm.acomplete(
-            tier="play",
-            system_blocks=[{"type": "text", "text": "x"}],
-            messages=[{"role": "user", "content": "hi"}],
-        )
+        with patch(
+            "app.llm.clients.litellm_client.litellm.acompletion",
+            new=AsyncMock(side_effect=_fake_acompletion),
+        ):
+            await llm.acomplete(
+                tier="play",
+                system_blocks=[{"type": "text", "text": "x"}],
+                messages=[{"role": "user", "content": "hi"}],
+            )
 
     asyncio.run(_go())
-    kwargs = mock.messages.calls[0]
-    assert kwargs["temperature"] == 0.3
-    assert kwargs["top_p"] == 0.85
-    assert kwargs["max_tokens"] == 777
+    assert captured["temperature"] == 0.3
+    assert captured["top_p"] == 0.85
+    assert captured["max_tokens"] == 777
 
 
 def test_empty_env_vars_fall_back_to_defaults(

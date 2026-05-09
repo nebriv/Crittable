@@ -182,38 +182,60 @@ def test_bare_text_allowed_per_tier() -> None:
 
 
 def test_llm_client_drops_forbidden_tools(monkeypatch) -> None:
-    """End-to-end: ``LLMClient.acomplete`` filters the ``tools``
-    list against the tier's policy before forwarding to Anthropic.
+    """End-to-end: ``LiteLLMChatClient.acomplete`` filters the ``tools``
+    list against the tier's policy before forwarding to litellm.
     Pre-fix a misbehaving caller could pass setup-tier tools to a
     play call and the model would have access to ``ask_setup_question``
     mid-exercise."""
 
     import asyncio
+    from typing import Any
+    from unittest.mock import AsyncMock, MagicMock, patch
 
     from app.config import Settings
-    from app.llm.client import LLMClient
-    from tests.mock_anthropic import MockAnthropic
+    from app.llm.clients.litellm_client import LiteLLMChatClient
 
     monkeypatch.setenv("LLM_API_KEY", "test-key")
+    monkeypatch.setenv("LLM_MODEL", "claude-haiku-4-5")
     s = Settings()
-    mock = MockAnthropic({"play": []})
-    llm = LLMClient(settings=s)
-    llm.set_transport(mock.messages)
+    llm = LiteLLMChatClient(settings=s)
+
+    fake_response = MagicMock()
+    fake_response.choices = [MagicMock()]
+    fake_response.choices[0].message = MagicMock(content="ok", tool_calls=None)
+    fake_response.choices[0].finish_reason = "stop"
+    fake_response.usage = MagicMock(
+        prompt_tokens=10,
+        completion_tokens=5,
+        cache_creation_input_tokens=0,
+        cache_read_input_tokens=0,
+        prompt_tokens_details=None,
+    )
+
+    captured: dict[str, Any] = {}
+
+    async def _fake_acompletion(**kwargs: Any) -> Any:
+        captured.update(kwargs)
+        return fake_response
 
     async def _go() -> None:
-        await llm.acomplete(
-            tier="play",
-            system_blocks=[{"type": "text", "text": "x"}],
-            messages=[{"role": "user", "content": "hi"}],
-            tools=[
-                {"name": "broadcast", "input_schema": {}},
-                {"name": "ask_setup_question", "input_schema": {}},
-            ],
-        )
+        with patch(
+            "app.llm.clients.litellm_client.litellm.acompletion",
+            new=AsyncMock(side_effect=_fake_acompletion),
+        ):
+            await llm.acomplete(
+                tier="play",
+                system_blocks=[{"type": "text", "text": "x"}],
+                messages=[{"role": "user", "content": "hi"}],
+                tools=[
+                    {"name": "broadcast", "input_schema": {}},
+                    {"name": "ask_setup_question", "input_schema": {}},
+                ],
+            )
 
     asyncio.run(_go())
-    sent_tools = mock.messages.calls[0].get("tools", [])
-    sent_names = {t["name"] for t in sent_tools}
+    sent_tools = captured.get("tools", [])
+    sent_names = {t["function"]["name"] for t in sent_tools}
     # ``ask_setup_question`` was dropped at the engine boundary; only
-    # ``broadcast`` reached Anthropic.
+    # ``broadcast`` reached the wire.
     assert sent_names == {"broadcast"}
