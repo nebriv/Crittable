@@ -569,7 +569,7 @@ export function RolesPanel({
                       flips for 2s. The audible confirmation comes
                       from the panel-level live region below. */}
                   <span aria-hidden="true">
-                    {copiedRoleIds.has(r.id) ? "COPIED!" : "COPY LINK"}
+                    {copiedRoleIds.has(r.id) ? "COPIED" : "COPY LINK"}
                   </span>
                 </button>
                 <button

@@ -336,3 +336,73 @@ def test_with_cache_recovery_shape_marks_only_first_block() -> None:
     assert out[0]["cache_control"] == {"type": "ephemeral"}
     assert "cache_control" not in out[1]
     assert "cache_control" not in out[2]
+
+
+def test_every_concrete_chatclient_subclass_calls_harden_litellm_globals() -> None:
+    """Class-level: any concrete ``ChatClient`` implementation must run
+    ``harden_litellm_globals()`` from its constructor.
+
+    The ``_shared`` module runs it once at import time, but a third
+    party that imports ``litellm`` and re-populates a callback list
+    between that import and our boot slips past the import-time guard.
+    Re-running the (idempotent) call from each backend's ``__init__``
+    closes that window.
+
+    The May 2026 bug-scrub M4 was the asymmetric case:
+    ``LiteLLMChatClient`` called it; ``LLMClient`` (Anthropic-direct)
+    didn't. This test catches a future *third* backend lacking the
+    call. Walks every concrete subclass under ``app.llm.``, instantiates
+    it under a spy, and asserts the spy fires.
+    """
+
+    import importlib
+    import inspect
+    import pkgutil
+    from unittest.mock import patch
+
+    from app.config import Settings
+    from app.llm.protocol import ChatClient
+
+    # Eagerly import every backend module so ``ChatClient.__subclasses__``
+    # sees them. Walks ``app.llm.clients.*`` and the top-level
+    # ``app.llm.client`` (which is the Anthropic-direct backend).
+    importlib.import_module("app.llm.client")
+    import app.llm.clients as clients_pkg
+    for _, name, _ in pkgutil.iter_modules(clients_pkg.__path__):
+        importlib.import_module(f"{clients_pkg.__name__}.{name}")
+
+    concrete: list[type[ChatClient]] = [
+        cls
+        for cls in ChatClient.__subclasses__()
+        if not inspect.isabstract(cls) and cls.__module__.startswith("app.llm.")
+    ]
+    assert len(concrete) >= 2, (
+        f"Expected at least two concrete ChatClient subclasses (Anthropic-"
+        f"direct + LiteLLM); found {len(concrete)}. The discovery walk in "
+        f"this test or the protocol module changed; update accordingly."
+    )
+
+    settings = Settings(llm_api_key="dummy-test-key")
+    failures: list[str] = []
+    for cls in concrete:
+        # Each backend imports ``harden_litellm_globals`` into its own
+        # module namespace; patch on the class's own module path.
+        target = f"{cls.__module__}.harden_litellm_globals"
+        try:
+            with patch(target) as spy:
+                cls(settings=settings)
+                if spy.call_count < 1:
+                    failures.append(
+                        f"{cls.__module__}.{cls.__name__} does not call "
+                        f"harden_litellm_globals() in __init__"
+                    )
+        except AttributeError:
+            failures.append(
+                f"{cls.__module__}.{cls.__name__}: module-level symbol "
+                f"``harden_litellm_globals`` is not imported. Add the "
+                f"import and call it from __init__ for parity."
+            )
+
+    assert not failures, (
+        "ChatClient harden-symmetry violations:\n  " + "\n  ".join(failures)
+    )

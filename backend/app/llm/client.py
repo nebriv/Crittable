@@ -33,6 +33,7 @@ from ..config import ModelTier, Settings
 from ..logging_setup import get_logger
 from ._shared import (
     compute_cost_usd,
+    harden_litellm_globals,
     reconcile_tool_choice,
     strip_deprecated_sampling_params,
     validate_tool_choice,
@@ -58,6 +59,12 @@ class LLMClient(ChatClient):
 
     def __init__(self, *, settings: Settings) -> None:
         super().__init__()
+        # Defense-in-depth: re-zero litellm callback registries here too.
+        # _shared.py runs them once at import time, but this constructor
+        # symmetry with LiteLLMChatClient guards against a third party
+        # that imported litellm and re-populated a list between the
+        # _shared import and our boot. Idempotent.
+        harden_litellm_globals()
         self._settings = settings
         self._client: Any | None = None
         self._lock = asyncio.Lock()

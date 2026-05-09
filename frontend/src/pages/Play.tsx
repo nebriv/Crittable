@@ -593,6 +593,7 @@ export function Play({ sessionId, token }: Props) {
         setWsStatus("session-gone");
         return;
       }
+      console.warn("[play] refresh_snapshot_failed", msg, err);
       setError(msg);
     }
   }
@@ -647,7 +648,9 @@ export function Play({ sessionId, token }: Props) {
         );
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn("[play] submit_failed", msg, err);
+      setError(msg);
     }
   }
 
@@ -2279,11 +2282,11 @@ export function JoinIntro({
                   ? "The AI is preparing the scenario brief…"
                   : sessionState === "READY"
                     ? joinedDisplayName
-                      ? `Welcome, ${joinedDisplayName} — your facilitator is finalising the lobby and will start shortly…`
-                      : "Your facilitator is finalising the lobby and will start shortly…"
+                      ? `${joinedDisplayName} seated · facilitator is finalizing the lobby · session starts shortly…`
+                      : "Facilitator is finalizing the lobby · session starts shortly…"
                     : joinedDisplayName
-                      ? `Welcome, ${joinedDisplayName} — waiting for your facilitator to start the scenario…`
-                      : "Waiting for your facilitator to start the scenario…"}
+                      ? `${joinedDisplayName} seated · waiting for facilitator to start…`
+                      : "Waiting for facilitator to start…"}
               </h2>
             </div>
             {roleLabel ? (
@@ -2336,8 +2339,7 @@ export function JoinIntro({
             </label>
             {roleExistingDisplayName ? (
               <p className="mono text-[11px] uppercase tracking-[0.04em] text-ink-400">
-                Welcome back — your saved name is pre-filled. Click BEGIN
-                to rejoin.
+                Display name pre-filled from your last visit. BEGIN to rejoin.
               </p>
             ) : null}
             <input

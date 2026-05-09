@@ -214,7 +214,7 @@ describe("Play page e2e — state transitions", () => {
     ).toBeInTheDocument();
   });
 
-  it("READY: surfaces the lobby-finalising waiting variant (no chat shell)", async () => {
+  it("READY: surfaces the lobby-finalizing waiting variant (no chat shell)", async () => {
     // Pre-fix the player jumped straight into the chat shell when
     // state hit READY (creator approved plan, lobby open) and then
     // got yanked BACK to a waiting screen the moment the creator
@@ -227,7 +227,7 @@ describe("Play page e2e — state transitions", () => {
     await waitFor(() => {
       expect(screen.getByTestId("join-intro-waiting")).toBeInTheDocument();
     });
-    expect(screen.getByText(/finalising the lobby/i)).toBeInTheDocument();
+    expect(screen.getByText(/finalizing the lobby/i)).toBeInTheDocument();
     // Composer must NOT render — the player can't act in READY.
     expect(screen.queryByPlaceholderText(/type your response/i)).toBeNull();
   });

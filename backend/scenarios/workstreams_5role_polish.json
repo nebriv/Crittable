@@ -2,17 +2,39 @@
   "meta": {
     "name": "Workstream-tagged 5-role replay (chat-declutter polish)",
     "description": "Deterministic 5-role replay with three workstreams pre-declared (containment / comms / legal). Exercises the iter-4 chat-declutter UI: colored track-bar stripes, per-message workstream tags, structural @-mentions on AI broadcasts (including CISO addressing), critical-inject lifecycle, and mixed active-set narrowing across three play turns. Useful for QA-ing the polish PR without driving a real LLM. No live model calls — every AI message is baked in.",
-    "tags": ["chat-declutter", "workstreams", "5role", "deterministic", "polish"]
+    "tags": [
+      "chat-declutter",
+      "workstreams",
+      "5role",
+      "deterministic",
+      "polish"
+    ]
   },
   "scenario_prompt": "Ransomware via compromised vendor portal, mid-size bank.",
   "creator_label": "CISO",
   "creator_display_name": "Alex (CISO)",
   "skip_setup": true,
   "roster": [
-    { "label": "IR Lead",     "display_name": "Jordan (IR Lead)", "kind": "player" },
-    { "label": "SOC Analyst", "display_name": "Bo (SOC)",         "kind": "player" },
-    { "label": "Legal",       "display_name": "Casey (Legal)",    "kind": "player" },
-    { "label": "Comms",       "display_name": "Dana (Comms)",     "kind": "player" }
+    {
+      "label": "IR Lead",
+      "display_name": "Jordan (IR Lead)",
+      "kind": "player"
+    },
+    {
+      "label": "SOC Analyst",
+      "display_name": "Bo (SOC)",
+      "kind": "player"
+    },
+    {
+      "label": "Legal",
+      "display_name": "Casey (Legal)",
+      "kind": "player"
+    },
+    {
+      "label": "Comms",
+      "display_name": "Dana (Comms)",
+      "kind": "player"
+    }
   ],
   "setup_replies": [],
   "play_turns": [
@@ -22,16 +44,22 @@
         {
           "kind": "ai_text",
           "tool_name": "broadcast",
-          "tool_args": { "message": "EXERCISE START. Beat 1 — Detection & Triage. Jordan and Bo own this beat." },
+          "tool_args": {
+            "message": "EXERCISE START. Beat 1 — Detection & Triage. Jordan and Bo own this beat."
+          },
           "body": "**EXERCISE START — 03:14 UTC, Wednesday**\n\nYour EDR fired ransomware-encryption signatures across a cluster of finance-team laptops. At least four file shares are now serving back `.lockbit`-suffixed files. Initial intel links to a shared service account tied to a third-party billing-portal vendor breached two weeks ago — the password was never rotated.\n\nMonth-end finance close is in progress. No ground-truth on data exfiltration yet.\n\n**Beat 1 — Detection & Triage**\n\nTwo questions the team needs answered right now:\n\n1. **Which hosts are actively encrypting?** Scope, patient zero, lateral indicators.\n2. **Is the service account still live?** Has it authenticated anywhere else in the last 24 hours?\n\n**Jordan (IR Lead)** — take point on triage. What's your first action?\n\n**Bo (SOC)** — pull EDR alert queue + service account auth logs.",
           "role_label": null,
           "is_interjection": false,
           "visibility": "all",
           "workstream_id": null,
-          "mentions": ["IR Lead", "SOC Analyst"],
+          "mentions": [
+            "IR Lead",
+            "SOC Analyst"
+          ],
           "ts": "2026-05-04T17:00:00+00:00"
         }
-      ]
+      ],
+      "active_role_label_groups": []
     },
     {
       "submissions": [
@@ -52,7 +80,9 @@
         {
           "kind": "ai_text",
           "tool_name": "broadcast",
-          "tool_args": { "message": "Beat 2 — Scope Assessment & Containment Decision. Two threads opening." },
+          "tool_args": {
+            "message": "Beat 2 — Scope Assessment & Containment Decision. Two threads opening."
+          },
           "body": "**Beat 2 — Scope Assessment & Containment Decision**\n\nGood read on triage. Two threads now run in parallel:",
           "role_label": null,
           "is_interjection": false,
@@ -73,7 +103,9 @@
           "is_interjection": false,
           "visibility": "all",
           "workstream_id": "containment",
-          "mentions": ["IR Lead"],
+          "mentions": [
+            "IR Lead"
+          ],
           "ts": "2026-05-04T17:02:05+00:00"
         },
         {
@@ -88,7 +120,9 @@
           "is_interjection": false,
           "visibility": "all",
           "workstream_id": "legal",
-          "mentions": ["Legal"],
+          "mentions": [
+            "Legal"
+          ],
           "ts": "2026-05-04T17:02:08+00:00"
         },
         {
@@ -106,6 +140,14 @@
           "mentions": [],
           "ts": "2026-05-04T17:02:12+00:00"
         }
+      ],
+      "active_role_label_groups": [
+        [
+          "IR Lead"
+        ],
+        [
+          "SOC Analyst"
+        ]
       ]
     },
     {
@@ -144,7 +186,9 @@
         {
           "kind": "ai_text",
           "tool_name": "broadcast",
-          "tool_args": { "message": "Beat 3 — Stakeholder Briefing & Comms Posture. The exfil changes the calculus." },
+          "tool_args": {
+            "message": "Beat 3 — Stakeholder Briefing & Comms Posture. The exfil changes the calculus."
+          },
           "body": "**Beat 3 — Stakeholder Briefing & Comms Posture**\n\nThe HR file share exfil changes the calculus. We now have a confirmed PII disclosure event, not just a containment problem. Three calls need to land in the next 15 minutes of simulated time.",
           "role_label": null,
           "is_interjection": false,
@@ -165,7 +209,9 @@
           "is_interjection": false,
           "visibility": "all",
           "workstream_id": "legal",
-          "mentions": ["CISO"],
+          "mentions": [
+            "CISO"
+          ],
           "ts": "2026-05-04T17:04:15+00:00"
         },
         {
@@ -180,7 +226,9 @@
           "is_interjection": false,
           "visibility": "all",
           "workstream_id": "comms",
-          "mentions": ["Comms"],
+          "mentions": [
+            "Comms"
+          ],
           "ts": "2026-05-04T17:04:18+00:00"
         },
         {
@@ -195,9 +243,19 @@
           "is_interjection": false,
           "visibility": "all",
           "workstream_id": "legal",
-          "mentions": ["Legal"],
+          "mentions": [
+            "Legal"
+          ],
           "ts": "2026-05-04T17:04:21+00:00"
         }
+      ],
+      "active_role_label_groups": [
+        [
+          "IR Lead"
+        ],
+        [
+          "Legal"
+        ]
       ]
     },
     {
@@ -225,7 +283,9 @@
         {
           "kind": "ai_text",
           "tool_name": "broadcast",
-          "tool_args": { "message": "Decisions logged. Beat 4 closed; exercise wrap-up at the operator's command." },
+          "tool_args": {
+            "message": "Decisions logged. Beat 4 closed; exercise wrap-up at the operator's command."
+          },
           "body": "**Decisions logged.**\n\n- **Disclosure timing**: regulator at hour 4, full filing at hour 20.\n- **Comms**: internal memo released at hour 3; holding statement queued for press, gated on Legal sign-off.\n- **Law enforcement**: engaged via outside counsel.\n- **Containment**: 6 of 9 laptops contained; 3 pending (executive travel — remote wipe in motion).\n\nThis closes Beat 3. The team has a written disclosure posture, a Legal filing in flight, and a containment trajectory. The exercise is at a natural wrap point — end the session when ready.",
           "role_label": null,
           "is_interjection": false,
@@ -234,6 +294,17 @@
           "mentions": [],
           "ts": "2026-05-04T17:05:30+00:00"
         }
+      ],
+      "active_role_label_groups": [
+        [
+          "CISO"
+        ],
+        [
+          "Comms"
+        ],
+        [
+          "Legal"
+        ]
       ]
     }
   ],

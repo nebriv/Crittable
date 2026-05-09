@@ -96,8 +96,8 @@ describe("RolesPanel — issue #82 (no on-screen tokens)", () => {
     );
 
     // Token must NEVER appear in the rendered DOM.
-    expect(screen.queryByText(/secret-token-do-not-show/)).toBeNull();    // Visual badge transitions to COPIED! (mono uppercase).
-    expect(button.textContent).toMatch(/Copied!/i);
+    expect(screen.queryByText(/secret-token-do-not-show/)).toBeNull();    // Visual badge transitions to COPIED (mono uppercase).
+    expect(button.textContent).toMatch(/Copied/i);
     // Bottom-of-panel success toast confirms for users with eyes elsewhere.
     expect(screen.getByTestId("roles-panel-hint").textContent).toMatch(
       /Join link for SOC Analyst copied/,

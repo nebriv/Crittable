@@ -2,7 +2,11 @@
   "meta": {
     "name": "Smoke test — 2 role ransomware",
     "description": "Minimal CISO + SOC analyst exercise. Skips the AI setup dialogue (drops the default plan) and runs three player turns before ending. Useful for verifying the full session lifecycle without burning model tokens on setup.",
-    "tags": ["smoke", "2role", "fast"]
+    "tags": [
+      "smoke",
+      "2role",
+      "fast"
+    ]
   },
   "scenario_prompt": "Ransomware via vendor portal — finance laptops impacted at 03:14 Wed.",
   "creator_label": "CISO",
@@ -27,6 +31,14 @@
           "role_label": "SOC Analyst",
           "content": "Acknowledged — disabling the vendor account and pulling Defender event timeline now. Will report back in 5."
         }
+      ],
+      "active_role_label_groups": [
+        [
+          "CISO"
+        ],
+        [
+          "SOC Analyst"
+        ]
       ]
     },
     {
@@ -39,6 +51,14 @@
           "role_label": "SOC Analyst",
           "content": "Initial scope: 3 laptops in finance, all behind the vendor portal. No lateral movement seen yet."
         }
+      ],
+      "active_role_label_groups": [
+        [
+          "CISO"
+        ],
+        [
+          "SOC Analyst"
+        ]
       ]
     },
     {
@@ -51,6 +71,14 @@
           "role_label": "SOC Analyst",
           "content": "Recovery plan: re-image laptops from clean backups, rotate VPN creds, audit vendor-portal access logs for the past 90 days."
         }
+      ],
+      "active_role_label_groups": [
+        [
+          "CISO"
+        ],
+        [
+          "SOC Analyst"
+        ]
       ]
     }
   ],

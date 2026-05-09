@@ -9,22 +9,21 @@ import { ScenarioPlan } from "../../api/client";
  * Default: title, executive_summary, key_objectives, guardrails,
  * success_criteria, and out_of_scope are visible. ``narrative_arc`` and
  * ``injects`` are spoiler-hidden behind a Reveal toggle whose state is
- * persisted in localStorage so it carries across reloads. Per-session
- * scoping (via ``sessionId``) makes each new exercise reset to the safe
- * (hidden) default while still respecting the user's choice within the
- * current session — without it, a creator screen-sharing with their
- * team after a previous solo test would silently spoil the next plan.
+ * persisted in localStorage. ``sessionId`` is REQUIRED so each new
+ * exercise resets to the safe (hidden) default while still respecting
+ * the user's choice within the current session. A previous design
+ * fell back to a global key when sessionId was absent, which would
+ * silently leak prior-session reveal state into a new exercise — the
+ * exact spoiler-leak the spoiler-hide exists to prevent.
  */
 export function PlanView({
   plan,
   sessionId,
 }: {
   plan: ScenarioPlan;
-  sessionId?: string;
+  sessionId: string;
 }) {
-  const storageKey = sessionId
-    ? `atf-plan-reveal:${sessionId}`
-    : "atf-plan-reveal";
+  const storageKey = `atf-plan-reveal:${sessionId}`;
   const [reveal, setReveal] = useState<boolean>(() => {
     try {
       return window.localStorage.getItem(storageKey) === "1";
@@ -148,15 +147,15 @@ export function PlanView({
             <button
               type="button"
               onClick={toggleReveal}
-              className="rounded border border-warn px-2 py-0.5 text-xs font-semibold text-warn hover:bg-warn-bg"
+              className="mono rounded-r-1 border border-warn px-2 py-0.5 text-[10px] font-bold uppercase tracking-widest text-warn hover:bg-warn-bg"
               aria-pressed={reveal}
               title={
                 reveal
-                  ? "Switch to participant mode — hide upcoming injects so you can play fresh."
-                  : "Switch to facilitator mode — show upcoming injects so you can pace the meeting."
+                  ? "Hide upcoming injects so you can play fresh (participant mode)."
+                  : "Show upcoming injects so you can pace the meeting (facilitator mode)."
               }
             >
-              {reveal ? "Switch to participant mode" : "Switch to facilitator mode"}
+              {reveal ? "HIDE INJECTS" : "SHOW INJECTS"}
             </button>
           </header>
           {!reveal ? (

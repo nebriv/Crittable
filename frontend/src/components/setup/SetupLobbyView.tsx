@@ -191,8 +191,8 @@ export function SetupLobbyView(props: Props) {
           }}
         >
           Share each role's join link. Players land on a per-role
-          briefing — they don't pick a seat from a list. Add or remove
-          seats here too; the change is live for everyone in the lobby.
+          briefing (no seat picker). Add or remove seats here — the
+          change is live for everyone in the lobby.
         </p>
         {props.plan ? (
           <details
@@ -528,7 +528,7 @@ function LobbyRow({
             }}
             title="Re-mint and copy this role's join link."
           >
-            {copied ? "COPIED!" : joined ? "COPY LINK" : "+ COPY INVITE"}
+            {copied ? "COPIED" : joined ? "COPY LINK" : "+ COPY INVITE"}
           </button>
           {joined ? (
             <button

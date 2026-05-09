@@ -34,6 +34,14 @@
           "content": "Acknowledged — disabling the vendor account, pulling Defender event timeline, scoping for lateral movement. Will report in 5.",
           "ready_after": true
         }
+      ],
+      "active_role_label_groups": [
+        [
+          "SOC Analyst"
+        ],
+        [
+          "CISO"
+        ]
       ]
     },
     {
@@ -53,6 +61,14 @@
           "content": "Initial scope: 3 laptops in finance, all behind the vendor portal. No lateral movement seen yet. Exfil check: pulling proxy logs now, ETA 10 min.",
           "ready_after": true
         }
+      ],
+      "active_role_label_groups": [
+        [
+          "CISO"
+        ],
+        [
+          "SOC Analyst"
+        ]
       ]
     }
   ],

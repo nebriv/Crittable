@@ -405,12 +405,12 @@ describe("AarReportView", () => {
     await waitFor(() =>
       expect(screen.getByText("CISO")).toBeInTheDocument(),
     );
-    // The legend tells a first-time creator (a) the rows are
-    // tappable and (b) what each letter actually means. Without it
+    // The legend tells a first-time creator (a) the rows can be
+    // expanded and (b) what each letter actually means. Without it
     // the bare "B" carries no anchoring.
     expect(
       screen.getByText(
-        /Tap a row for the breakdown.*A exemplary.*B above bar.*C at bar.*D below bar.*F critical/,
+        /Open a row for the breakdown.*A exemplary.*B above bar.*C at bar.*D below bar.*F critical/,
       ),
     ).toBeInTheDocument();
   });
@@ -520,6 +520,127 @@ describe("AarReportView", () => {
     // falls back to 0; gradeForScore renders "—" in neutral ink.
     const toggle = screen.getByText("ABSENT").closest("button")!;
     expect(toggle.getAttribute("aria-label")).toMatch(/overall —/);
+
+    // Bug-scrub M3: a sub-score of 0 must NOT render in crit (red)
+    // tone. The previous toneForScore(0) returned "crit"; ScoreCard
+    // had an isEmpty override that papered over it. Now toneForScore
+    // returns "neutral" directly, mapped to ink-500 / ink-600. With
+    // the prompt now intentionally telling the model 0 = "no
+    // observable evidence", a skipped sub-score appearing in red
+    // would make the report look harsh on roles that simply weren't
+    // active in that dimension. Pin the tone class.
+    const headlineSpan = within(toggle).getByText("—");
+    // Headline span carries either text-* or border-* classes from
+    // toneClass. With a "neutral" tone these must be ink-500 (text)
+    // — never text-crit.
+    expect(headlineSpan.className).not.toMatch(/text-crit/);
+    expect(headlineSpan.className).toMatch(/text-ink-500/);
+  });
+
+  it.each([
+    // Class-level: pin the score → tone band relationship across
+    // the full 0–5 range so a future tone-band reshuffle can't
+    // re-introduce the M3 bug ("0 = no evidence" rendered in crit
+    // red). The headline grade letter carries the tone via a text-*
+    // class; crit-red is reserved for genuinely failing scores
+    // (0 < s < 3), not for "no observable evidence" (score=0).
+    { score: 0, expected: /text-ink-500/, forbidden: /text-crit/, name: "0 (skipped → neutral)" },
+    { score: 1, expected: /text-crit/, forbidden: null, name: "1 (critical → crit)" },
+    { score: 2, expected: /text-crit/, forbidden: null, name: "2 (below bar → crit)" },
+    { score: 3, expected: /text-warn/, forbidden: /text-crit/, name: "3 (at bar → warn)" },
+    { score: 4, expected: /text-signal/, forbidden: /text-crit/, name: "4 (above bar → signal)" },
+    { score: 5, expected: /text-signal/, forbidden: /text-crit/, name: "5 (exemplary → signal)" },
+  ])(
+    "per-role headline tone band: $name",
+    async ({ score, expected, forbidden }) => {
+      // Drive the tone via the per-role overall (avg of three
+      // identical sub-scores). All-zero exercises the 0 = "neutral"
+      // branch; all-non-zero exercises crit/warn/signal.
+      _mockFetch(
+        200,
+        _report([
+          {
+            role_id: `role-tone-${score}`,
+            decision_quality: score,
+            communication: score,
+            speed: score,
+            decisions: 1,
+            rationale: "tone-band probe",
+            label: `T${score}`,
+            display_name: null,
+          },
+        ]),
+      );
+      render(
+        <AarReportView
+          sessionId="s1"
+          token="tok"
+          downloadMdHref="/x.md"
+          downloadJsonHref="/x.json"
+        />,
+      );
+      await waitFor(() =>
+        expect(screen.getByText(`T${score}`)).toBeInTheDocument(),
+      );
+      const toggle = screen.getByText(`T${score}`).closest("button")!;
+      // Grade letter span sits last inside the toggle button. With
+      // score=0 the grade is "—"; otherwise it's a letter A-F. Find
+      // it by class shape (mono + tabular-nums + the score letter).
+      const gradeSpan = within(toggle)
+        .getAllByText(score === 0 ? "—" : /^[A-F]$/)
+        .find((el) => el.classList.contains("mono"));
+      expect(gradeSpan, "grade letter span not found").toBeTruthy();
+      expect(gradeSpan!.className).toMatch(expected);
+      if (forbidden) {
+        expect(gradeSpan!.className).not.toMatch(forbidden);
+      }
+    },
+  );
+
+  it("a 0 sub-score renders the DECISION cell in neutral ink, not crit (red)", async () => {
+    // Bug-scrub M3 regression: with skip-zero mainstreamed in the
+    // prompt rubric, the per-cell tone for a 0 sub-score must be
+    // neutral. Previously the cell used toneForScore(0) → crit, then
+    // an isEmpty override at the call site swapped to ink-500. The
+    // override is gone; toneForScore now returns "neutral" directly.
+    _mockFetch(
+      200,
+      _report([
+        {
+          role_id: "role-partial-tone",
+          decision_quality: 0,
+          communication: 5,
+          speed: 5,
+          decisions: 2,
+          rationale: "Skipped decision dimension.",
+          label: "PTONE",
+          display_name: "T",
+        },
+      ]),
+    );
+    render(
+      <AarReportView
+        sessionId="s1"
+        token="tok"
+        downloadMdHref="/x.md"
+        downloadJsonHref="/x.json"
+      />,
+    );
+    await waitFor(() =>
+      expect(screen.getByText("PTONE")).toBeInTheDocument(),
+    );
+    const toggle = screen.getByText("PTONE").closest("button")!;
+    fireEvent.click(toggle);
+    // The DECISION cell label sits next to a value span. With value=0
+    // the value span shows "—" and must carry text-ink-500 / not
+    // text-crit. Two "—" can appear (headline + cell); scope to the
+    // expanded breakdown via the parent <li>.
+    const row = within(toggle.closest("li")!);
+    const dashes = row.getAllByText("—");
+    // Every "—" we render in this row must be neutral ink, never crit.
+    for (const node of dashes) {
+      expect(node.className).not.toMatch(/text-crit/);
+    }
   });
 
   it("expanded row without a rationale falls back to a placeholder line", async () => {

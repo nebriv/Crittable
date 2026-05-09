@@ -472,15 +472,25 @@ def _usage_to_normalized_dict(usage: Any) -> dict[str, int]:
         return {"input": 0, "output": 0, "cache_read": 0, "cache_creation": 0}
 
     details = getattr(usage, "prompt_tokens_details", None)
-    cache_read = (
-        int(getattr(details, "cached_tokens", 0) or 0)
-        or int(getattr(usage, "cache_read_input_tokens", 0) or 0)
-        or int(getattr(usage, "_cache_read_input_tokens", 0) or 0)
+    # Truthy-or chains skip a legitimate 0 ("no cache hit on this call"),
+    # so prefer the first attribute that is *present* (not None) over the
+    # first that is non-zero. ``getattr(..., None)`` returns None when
+    # absent; an explicit 0 stops the fallback chain correctly.
+    def _first_present(*candidates: int | None) -> int:
+        for value in candidates:
+            if value is not None:
+                return int(value)
+        return 0
+
+    cache_read = _first_present(
+        getattr(details, "cached_tokens", None),
+        getattr(usage, "cache_read_input_tokens", None),
+        getattr(usage, "_cache_read_input_tokens", None),
     )
-    cache_creation = (
-        int(getattr(details, "cache_creation_tokens", 0) or 0)
-        or int(getattr(usage, "cache_creation_input_tokens", 0) or 0)
-        or int(getattr(usage, "_cache_creation_input_tokens", 0) or 0)
+    cache_creation = _first_present(
+        getattr(details, "cache_creation_tokens", None),
+        getattr(usage, "cache_creation_input_tokens", None),
+        getattr(usage, "_cache_creation_input_tokens", None),
     )
     prompt_tokens = int(getattr(usage, "prompt_tokens", 0) or 0)
     # Subtract cache reads + writes to recover the Anthropic-shape
