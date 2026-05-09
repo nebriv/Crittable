@@ -39,8 +39,6 @@ Pairs with:
 from __future__ import annotations
 
 import asyncio
-import json
-import time
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -274,6 +272,18 @@ def test_set_ready_idempotent_remark_does_not_burn_flip_cap(
     # audit log + broadcast surface by re-sending the current state.
     assert turn.ready_flip_count_by_role[seats["other_id"]] == 1
 
+    # The audit log surface is the second DoS vector — a regression
+    # that emits ``ready_changed`` on the idempotent path would
+    # double the audit row count for a noisy reconnecting client.
+    # Pin the emission count: exactly one ``ready_changed`` for the
+    # first toggle, zero for the re-mark.
+    audit_dump = manager.audit().dump(seats["session_id"])
+    ready_changes = [e for e in audit_dump if e.kind == "ready_changed"]
+    assert len(ready_changes) == 1, (
+        f"idempotent re-mark must NOT emit a second ready_changed row; "
+        f"got {len(ready_changes)} (kinds: {[e.kind for e in audit_dump]})"
+    )
+
 
 # ----------------------------------------------------------------------
 # Per-role flip cap
@@ -416,6 +426,16 @@ def test_set_ready_debounce_drops_burst_toggles_silently(
     assert role_id in turn.ready_role_ids
     # Flip counter only ticked once.
     assert turn.ready_flip_count_by_role[role_id] == 1
+    # Audit-log surface bounded too: the debounced toggle emits NO
+    # ``ready_changed`` row. A regression that audited the
+    # silent-accept path would re-introduce the DoS vector the
+    # debounce was added to close.
+    audit_dump = manager.audit().dump(seats["session_id"])
+    ready_changes = [e for e in audit_dump if e.kind == "ready_changed"]
+    assert len(ready_changes) == 1, (
+        f"debounced toggle must NOT emit a second ready_changed row; "
+        f"got {len(ready_changes)}"
+    )
 
 
 # ----------------------------------------------------------------------
@@ -479,6 +499,11 @@ def test_set_ready_non_creator_cannot_impersonate_another_role(
     turn = session.current_turn
     assert turn is not None
     assert seats["creator_id"] not in turn.ready_role_ids
+    # The flip cap must NOT tick on rejections — a future bug that
+    # incremented the counter before the auth check would let an
+    # attacker DoS another role's per-turn flip budget without
+    # actually flipping state. Locks the auth-then-mutate ordering.
+    assert turn.ready_flip_count_by_role.get(seats["creator_id"], 0) == 0
 
 
 # ----------------------------------------------------------------------
@@ -520,6 +545,13 @@ def test_set_ready_rejects_role_not_in_active_set(client: TestClient) -> None:
     assert outcome.accepted is False
     assert outcome.reason == "not_active_role"
     assert outcome.client_seq == 3
+    # Rejection MUST NOT tick the flip cap — see authz test for the
+    # threat model. Same gate, different rejection path.
+    session = asyncio.run(manager.get_session(seats["session_id"]))
+    turn = session.current_turn
+    assert turn is not None
+    assert seats["other_id"] not in turn.ready_role_ids
+    assert turn.ready_flip_count_by_role.get(seats["other_id"], 0) == 0
 
 
 # ----------------------------------------------------------------------
@@ -610,6 +642,11 @@ def test_set_ready_rejects_unknown_role_id(client: TestClient) -> None:
     assert outcome.accepted is False
     assert outcome.reason == "role_not_found"
     assert outcome.client_seq == 13
+    # Rejection MUST NOT tick the flip cap.
+    session = asyncio.run(manager.get_session(seats["session_id"]))
+    turn = session.current_turn
+    assert turn is not None
+    assert turn.ready_flip_count_by_role == {}
 
 
 def test_set_ready_rejects_when_no_current_turn(client: TestClient) -> None:
@@ -693,6 +730,21 @@ def test_set_ready_false_removes_role_and_flips_cap(client: TestClient) -> None:
     # Two real flips — both ticked the cap.
     assert turn.ready_flip_count_by_role[seats["other_id"]] == 2
 
+    # Walk-back fires a dedicated ``ready_walk_back`` audit kind
+    # alongside the generic ``ready_changed`` row so the creator's
+    # /activity panel can surface "X walked back ready N times" — a
+    # griefing detection signal the high-volume toggle stream would
+    # otherwise bury (manager.py:1307-1319). Pin the audit emission
+    # so a refactor that drops the dedicated row fails loud.
+    audit_dump = manager.audit().dump(seats["session_id"])
+    walk_backs = [e for e in audit_dump if e.kind == "ready_walk_back"]
+    assert len(walk_backs) == 1, (
+        f"walk-back must emit exactly one ready_walk_back audit row; "
+        f"got {len(walk_backs)} (kinds seen: {[e.kind for e in audit_dump]})"
+    )
+    assert walk_backs[0].payload["actor_role_id"] == seats["other_id"]
+    assert walk_backs[0].payload["subject_role_id"] == seats["other_id"]
+
 
 # ----------------------------------------------------------------------
 # WS routing — directed frames + spectator gate
@@ -701,12 +753,23 @@ def test_set_ready_false_removes_role_and_flips_cap(client: TestClient) -> None:
 
 def _drain(ws: Any, *, kinds: tuple[str, ...], cap: int = 64) -> dict[str, Any] | None:
     """Receive WS events until one of ``kinds`` shows up or the cap
-    is reached. Returns the matching event or ``None``."""
+    is reached. Returns the matching event or ``None``.
+
+    Exceptions raised by ``receive_json`` (closed socket, JSON decode
+    failure) are logged before swallowing so the test failure points
+    at the protocol problem rather than reporting a confusing
+    "matching event never arrived". Per CLAUDE.md "Logging rules" —
+    swallowed exceptions are bug-amplifiers in test infra too.
+    """
 
     for _ in range(cap):
         try:
             evt = ws.receive_json()
-        except Exception:
+        except Exception as exc:
+            print(
+                f"[test_set_ready] _drain: socket error before "
+                f"{kinds!r} arrived: {exc!r}"
+            )
             return None
         if evt.get("type") in kinds:
             return evt
@@ -779,30 +842,47 @@ def test_ws_set_ready_rejects_malformed_payload(client: TestClient) -> None:
     seats = asyncio.run(_seat_two_role_session(client))
     sid = seats["session_id"]
 
-    with client.websocket_connect(
-        f"/ws/sessions/{sid}?token={seats['other_token']}"
-    ) as ws:
-        # Boolean ``client_seq`` — stale / buggy clients have shipped
-        # this; the handler must reject loud.
-        ws.send_json(
-            {"type": "set_ready", "ready": True, "client_seq": True}
-        )
-        evt = _drain(ws, kinds=("error", "set_ready_ack", "set_ready_rejected"))
-    assert evt is not None
-    assert evt["type"] == "error"
-    assert evt["scope"] == "set_ready"
+    def _assert_only_error(payload: dict[str, Any]) -> None:
+        """Send the malformed payload, assert ``error{scope=set_ready}``
+        landed AND no ``set_ready_ack`` / ``set_ready_rejected`` frame
+        leaked after it. The leaked-frame check guards against a
+        future regression where the handler logs the error but falls
+        through into ``manager.set_role_ready`` anyway — the manager
+        would then echo the boolean ``client_seq`` back through the
+        ack frame, defeating the type-coercion guard.
+        """
+        with client.websocket_connect(
+            f"/ws/sessions/{sid}?token={seats['other_token']}"
+        ) as ws:
+            ws.send_json(payload)
+            evt = _drain(
+                ws, kinds=("error", "set_ready_ack", "set_ready_rejected")
+            )
+            assert evt is not None
+            assert evt["type"] == "error"
+            assert evt["scope"] == "set_ready"
+            # Drain a few more events to confirm no late ack leaked.
+            # The handler ``continue``s the loop after the error so
+            # only unrelated traffic (presence, etc.) should follow.
+            for _ in range(8):
+                try:
+                    extra = ws.receive_json(mode="text", timeout=0.2)
+                except Exception:
+                    break
+                assert extra.get("type") not in (
+                    "set_ready_ack",
+                    "set_ready_rejected",
+                ), (
+                    f"malformed payload leaked a stateful set_ready frame "
+                    f"after the error: {extra!r}"
+                )
 
-    with client.websocket_connect(
-        f"/ws/sessions/{sid}?token={seats['other_token']}"
-    ) as ws:
-        # String ``ready`` — common stale-client mistake.
-        ws.send_json(
-            {"type": "set_ready", "ready": "true", "client_seq": 1}
-        )
-        evt = _drain(ws, kinds=("error", "set_ready_ack", "set_ready_rejected"))
-    assert evt is not None
-    assert evt["type"] == "error"
-    assert evt["scope"] == "set_ready"
+    # Boolean ``client_seq`` — stale / buggy clients have shipped this;
+    # ``isinstance(True, int)`` is True so the handler uses
+    # ``type(client_seq_raw) is not int`` to reject (PR #209 Copilot).
+    _assert_only_error({"type": "set_ready", "ready": True, "client_seq": True})
+    # String ``ready`` — common stale-client mistake.
+    _assert_only_error({"type": "set_ready", "ready": "true", "client_seq": 1})
 
 
 def test_ws_set_ready_rejects_spectator_token(client: TestClient) -> None:
@@ -841,8 +921,13 @@ def test_ws_set_ready_rejects_spectator_token(client: TestClient) -> None:
         for _ in range(64):
             try:
                 evt = ws.receive_json()
-            except Exception:
+            except Exception as exc:
+                print(f"[test_set_ready] spectator drain socket error: {exc!r}")
                 break
+            # Match on (type, scope) — a future regression that swaps
+            # the rejection to a different scope (say, ``auth``) must
+            # NOT be silently accepted by this test. Tighten to the
+            # exact scope this branch produces.
             if evt.get("type") == "error" and evt.get("scope") == "set_ready":
                 saw_error = True
                 break
@@ -986,9 +1071,3 @@ def test_submit_response_does_not_touch_ready_role_ids(client: TestClient) -> No
     assert session.state == SessionState.AWAITING_PLAYERS
 
 
-# Silence the unused-import sentinel for ``json`` / ``time`` — both
-# are kept for future cases that need them (raw event dump on a flake
-# investigation, or a real wall-clock debounce test). Cheap to keep,
-# and removing them would force a re-import on the next debug pass.
-_ = json
-_ = time
