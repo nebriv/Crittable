@@ -161,14 +161,23 @@ export function BottomActionBar(props: Props) {
       )}
       {props.phase === "play" && (
         <>
+          {/* The FORCE-ADVANCE button used to be ``border-ink-500
+              text-ink-200 font-semibold`` — a gray-on-gray chip that
+              blended into the surrounding telemetry row. Now warn-
+              tinted (orange) outline + bold text + arrow affordance
+              so the operator's eye lands on it during a stuck turn.
+              Outline-only (no fill) on purpose: the END SESSION
+              button alongside is also outline (crit), and filling
+              FORCE-ADVANCE would invert the destructive-action
+              hierarchy. UI/UX review M1. */}
           <button
             type="button"
             onClick={props.onForceAdvance}
             disabled={props.busy}
-            className="mono rounded-r-1 border border-ink-500 px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-ink-200 hover:border-signal hover:text-signal focus-visible:outline focus-visible:outline-2 focus-visible:outline-signal disabled:opacity-50"
+            className="mono rounded-r-1 border border-warn px-3 py-1 text-[10px] font-bold uppercase tracking-[0.16em] text-warn hover:bg-warn-bg focus-visible:outline focus-visible:outline-2 focus-visible:outline-warn disabled:opacity-50"
             title="Hand the turn to the AI now."
           >
-            FORCE-ADVANCE
+            FORCE-ADVANCE TURN →
           </button>
           <button
             type="button"

@@ -313,4 +313,83 @@ describe("<MarkReadyButton/>", () => {
       ).toBe("self");
     });
   });
+
+  describe("disabledLabel override", () => {
+    it("disabled + disabledLabel shows the override on the button face instead of MARK READY", () => {
+      render(
+        <MarkReadyButton
+          isReady={false}
+          enabled={false}
+          onToggle={vi.fn()}
+          variant="self"
+          disabledLabel="NOT YOUR TURN"
+          disabledReason="You aren't on the active turn — Mark Ready isn't your call this beat."
+        />,
+      );
+      const btn = screen.getByTestId("mark-ready");
+      expect(btn.textContent).toMatch(/NOT YOUR TURN/);
+      expect(btn.textContent).not.toMatch(/MARK READY/);
+      expect(btn.getAttribute("title")).toMatch(/active turn/i);
+    });
+
+    it("enabled + disabledLabel keeps the default MARK READY face — override only applies while disabled", () => {
+      render(
+        <MarkReadyButton
+          isReady={false}
+          enabled={true}
+          onToggle={vi.fn()}
+          variant="self"
+          disabledLabel="NOT YOUR TURN"
+        />,
+      );
+      const btn = screen.getByTestId("mark-ready");
+      expect(btn.textContent).toMatch(/MARK READY/);
+      expect(btn.textContent).not.toMatch(/NOT YOUR TURN/);
+    });
+
+    it("disabled without disabledLabel falls back to MARK READY (legacy callers unchanged)", () => {
+      render(
+        <MarkReadyButton
+          isReady={false}
+          enabled={false}
+          onToggle={vi.fn()}
+          variant="self"
+        />,
+      );
+      const btn = screen.getByTestId("mark-ready");
+      expect(btn.textContent).toMatch(/MARK READY/);
+    });
+  });
+
+  describe("undo hint gating on enabled", () => {
+    // ``showUndoHint`` was previously gated on ``variant === "self" && isReady``.
+    // The hint suggested "tap to undo" — but if the button was disabled
+    // the user couldn't actually undo, so the hint lied. Tighten the
+    // gate to also require ``enabled``.
+    it("disabled + isReady=true does NOT render the 'tap to undo' hint", () => {
+      render(
+        <MarkReadyButton
+          isReady={true}
+          enabled={false}
+          onToggle={vi.fn()}
+          variant="self"
+        />,
+      );
+      const btn = screen.getByTestId("mark-ready");
+      expect(btn.textContent).not.toMatch(/tap to undo/i);
+    });
+
+    it("enabled + isReady=true still renders the 'tap to undo' hint (regression net)", () => {
+      render(
+        <MarkReadyButton
+          isReady={true}
+          enabled={true}
+          onToggle={vi.fn()}
+          variant="self"
+        />,
+      );
+      const btn = screen.getByTestId("mark-ready");
+      expect(btn.textContent).toMatch(/tap to undo/i);
+    });
+  });
 });

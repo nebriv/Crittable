@@ -102,10 +102,6 @@ export function Play({ sessionId, token }: Props) {
     recovery?: string | null;
     forRoleId?: string | null;
   } | null>(null);
-  // 3-second client-side cooldown on force-advance — paired with the
-  // backend in-flight gate. Prevents the triple-banner cascade from a
-  // double/triple click (issue #63).
-  const [forceAdvanceCooldown, setForceAdvanceCooldown] = useState(false);
   // Wave 3 (issue #69) AI-pause toggle round-trip flag. Disables the
   // creator's "Pause AI / Resume AI" button while the POST is in
   // flight so a rapid double-click doesn't fire two contradictory
@@ -206,7 +202,6 @@ export function Play({ sessionId, token }: Props) {
     x: number;
     y: number;
   } | null>(null);
-  const forceAdvanceTimerRef = useRef<number | null>(null);
 
   // Determine self by inspecting snapshot.roles and matching the role with the
   // missing display_name (server doesn't echo our token; we use the snapshot
@@ -562,17 +557,6 @@ export function Play({ sessionId, token }: Props) {
     [messageCount],
   );
 
-  // Clean up the force-advance cooldown timer on unmount so a tab
-  // close mid-cooldown doesn't fire setState on an unmounted component.
-  useEffect(() => {
-    return () => {
-      if (forceAdvanceTimerRef.current !== null) {
-        window.clearTimeout(forceAdvanceTimerRef.current);
-        forceAdvanceTimerRef.current = null;
-      }
-    };
-  }, []);
-
   // Expire stale typing entries.
   useEffect(() => {
     const id = setInterval(() => {
@@ -761,31 +745,6 @@ export function Play({ sessionId, token }: Props) {
   // are React refs (stable identity across renders) — accessing ``.current``
   // inside the callback reads the latest value without needing them as deps.
   }, []);
-
-  function handleForceAdvance() {
-    if (forceAdvanceCooldown) {
-      console.warn("[play] force-advance suppressed (cooldown)");
-      return;
-    }
-    setForceAdvanceCooldown(true);
-    // Tracked in a ref so a tab-close mid-cooldown doesn't try to
-    // setState on an unmounted component.
-    forceAdvanceTimerRef.current = window.setTimeout(() => {
-      setForceAdvanceCooldown(false);
-      forceAdvanceTimerRef.current = null;
-    }, 3000);
-    // Pin the chat to the bottom so the participant sees the AI's next
-    // beat land. Mirrors Facilitator.tsx's force-advance behavior so
-    // the "consistent for the creator and the user" half of issue #79
-    // covers force-advance, not just submit.
-    forceScrollToBottom();
-    try {
-      wsRef.current?.send({ type: "request_force_advance" });
-    } catch (err) {
-      console.warn("[play] force-advance send failed", err);
-      setError(err instanceof Error ? err.message : String(err));
-    }
-  }
 
   function handleEnd() {
     // Issue #81: button is rendered only when the local participant is
@@ -1586,21 +1545,11 @@ export function Play({ sessionId, token }: Props) {
               {readyRejectionNotice}
             </div>
           ) : null}
-          <div className="flex flex-col gap-2 rounded-r-3 border border-ink-600 bg-ink-850 p-3">
-            <span className="mono text-[10px] font-bold uppercase tracking-[0.22em] text-ink-300">
-              ESCAPE HATCHES
-            </span>
-            <button
-              onClick={handleForceAdvance}
-              disabled={forceAdvanceCooldown}
-              aria-disabled={forceAdvanceCooldown}
-              className="mono rounded-r-1 border border-warn px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-warn hover:bg-warn-bg focus-visible:outline focus-visible:outline-2 focus-visible:outline-warn disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              {forceAdvanceCooldown
-                ? "Force-advance (cooling)"
-                : "Force-advance turn"}
-            </button>
-            {isSelfCreator ? (
+          {isSelfCreator ? (
+            <div className="flex flex-col gap-2 rounded-r-3 border border-ink-600 bg-ink-850 p-3">
+              <span className="mono text-[10px] font-bold uppercase tracking-[0.22em] text-ink-300">
+                ESCAPE HATCHES
+              </span>
               <button
                 onClick={() => handlePauseToggle(snapshot.ai_paused === true)}
                 disabled={pauseInFlight}
@@ -1610,16 +1559,14 @@ export function Play({ sessionId, token }: Props) {
               >
                 {snapshot.ai_paused === true ? "Resume AI" : "Pause AI"}
               </button>
-            ) : null}
-            {isSelfCreator ? (
               <button
                 onClick={handleEnd}
                 className="mono rounded-r-1 border border-crit px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-crit hover:bg-crit-bg focus-visible:outline focus-visible:outline-2 focus-visible:outline-crit"
               >
                 End session
               </button>
-            ) : null}
-          </div>
+            </div>
+          ) : null}
         </aside>
         <section className="flex min-w-0 flex-col gap-2 lg:min-h-0 lg:overflow-hidden">
           {/*
