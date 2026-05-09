@@ -554,25 +554,23 @@ def test_resumed_facilitator_message_does_not_get_silenced_indicator(
 # -----------------------------------------------------------------------
 
 
-@pytest.mark.skip(
-    reason="Test asserts the legacy intent=ready auto-advance contract; "
-    "needs rewrite to explicit set_role_ready calls (PR #209 follow-up)."
-)
 def test_pause_does_not_gate_ready_quorum_submissions(
     client: TestClient,
 ) -> None:
     """Decision in #69: pause silences interjects only. The normal
     ready-quorum gate is independent — a player can still submit
-    with ``intent="ready"`` while the session is paused, the
-    submission lands, and ``submit_response`` reports the advance
-    when the quorum is met.
+    while the session is paused, then mark ready, and the quorum
+    closes regardless of ``ai_paused``.
 
-    This test asserts the structural invariant directly via the
-    submission pipeline — exercising the WS-driven full play-turn
-    dispatch is the job of ``test_e2e_session.py``. Without this
-    boundary, an unrelated change to the routing branch could
-    accidentally start gating ``run_play_turn`` on ``ai_paused``
-    and lock paused sessions out of progress."""
+    PR #209 split ready away from submission, so this test exercises
+    both halves explicitly: ``submit_response`` always returns False
+    (submissions never advance), and ``set_role_ready`` carries the
+    quorum-close signal via ``ready_to_advance``. The structural
+    invariant being pinned here is that *neither* of those is gated
+    on ``ai_paused`` — without it, an unrelated change to the routing
+    branch could accidentally start gating ``run_play_turn`` on
+    ``ai_paused`` and lock paused sessions out of progress.
+    """
 
     from app.sessions.submission_pipeline import (
         prepare_and_submit_player_response,
@@ -589,39 +587,51 @@ def test_pause_does_not_gate_ready_quorum_submissions(
     manager = client.app.state.manager
 
     async def _drive() -> tuple[Any, Any]:
-        # First player submits ready. ``advanced`` should still be
-        # False (waiting on the second player). ``ai_paused`` is
-        # invisible to this code path.
+        # PR #209: ``submit_response`` always returns False — the
+        # ready quorum is no longer flipped by the message itself.
         outcome_a = await prepare_and_submit_player_response(
             manager=manager,
             session_id=sid,
             role_id=creator_id,
             content="Initiating containment",
-
             mentions=[],
         )
-        # Second player submits ready. ``advanced`` flips True
-        # because the quorum is now met.
+        ready_a = await manager.set_role_ready(
+            session_id=sid,
+            actor_role_id=creator_id,
+            subject_role_id=creator_id,
+            ready=True,
+            client_seq=1,
+        )
         outcome_b = await prepare_and_submit_player_response(
             manager=manager,
             session_id=sid,
             role_id=soc_id,
             content="Pulling logs",
-
             mentions=[],
         )
-        return outcome_a, outcome_b
+        ready_b = await manager.set_role_ready(
+            session_id=sid,
+            actor_role_id=soc_id,
+            subject_role_id=soc_id,
+            ready=True,
+            client_seq=1,
+        )
+        return (outcome_a, ready_a), (outcome_b, ready_b)
 
-    outcome_a, outcome_b = asyncio.run(_drive())
+    (outcome_a, ready_a), (outcome_b, ready_b) = asyncio.run(_drive())
 
-    assert outcome_a.advanced is False, (
-        "first ready submission should not advance — second player "
-        "hasn't submitted yet"
+    assert outcome_a.advanced is False
+    assert outcome_b.advanced is False
+    assert ready_a.accepted, "first set_ready must be accepted under pause"
+    assert ready_a.ready_to_advance is False, (
+        "first ready alone must not close a two-role quorum"
     )
-    assert outcome_b.advanced is True, (
+    assert ready_b.accepted, "second set_ready must be accepted under pause"
+    assert ready_b.ready_to_advance is True, (
         "pause must NOT halt the ready-quorum gate; once both "
-        "players submit ready, submit_response should report the "
-        "advance regardless of ai_paused"
+        "players mark ready, the second set_role_ready must report "
+        "ready_to_advance regardless of ai_paused"
     )
 
     # Sanity: session is still paused after the submissions — the
