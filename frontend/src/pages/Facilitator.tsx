@@ -383,6 +383,9 @@ export function Facilitator() {
   // Chat-declutter polish: workstream-override contextmenu state. The
   // creator can re-tag any message; the menu is rendered in this page
   // so its position survives transcript scroll. Closed when ``null``.
+  // Issue #162: the same menu also carries the per-message "hidden
+  // from AI" mute toggle. The mute checked-state is NOT snapshotted
+  // here — see the matching block in Play.tsx.
   const [overrideMenu, setOverrideMenu] = useState<{
     messageId: string;
     workstreamId: string | null;
@@ -805,6 +808,16 @@ export function Facilitator() {
         console.info(
           "[facilitator] message workstream changed",
           { id: evt.message_id, workstream_id: evt.workstream_id },
+        );
+        refreshSnapshot();
+        break;
+      case "message_hidden_from_ai_changed":
+        // Issue #162: per-message AI mute. Snapshot refresh converges
+        // every peer tab on the new ``hidden_from_ai`` field so the
+        // bubble's badge updates without a turn boundary.
+        console.info(
+          "[facilitator] message hidden_from_ai changed",
+          { id: evt.message_id, hidden_from_ai: evt.hidden_from_ai },
         );
         refreshSnapshot();
         break;
@@ -2225,6 +2238,31 @@ export function Facilitator() {
           } catch (err) {
             const text = err instanceof Error ? err.message : String(err);
             console.warn("[facilitator] workstream override failed", text);
+            setError(text);
+          }
+        }}
+        // Sub-agent UI/UX review HIGH H-2: read ``hidden_from_ai``
+        // off the live snapshot at render time, not the
+        // click-time snapshotted ``overrideMenu.hiddenFromAi`` —
+        // see the matching block in Play.tsx for the rationale.
+        hiddenFromAi={
+          overrideMenu
+            ? snapshot.messages.find((m) => m.id === overrideMenu.messageId)
+                ?.hidden_from_ai === true
+            : false
+        }
+        onToggleHiddenFromAi={async (next) => {
+          if (!overrideMenu) return;
+          try {
+            await api.setMessageHiddenFromAi(
+              state.sessionId,
+              state.token,
+              overrideMenu.messageId,
+              next,
+            );
+          } catch (err) {
+            const text = err instanceof Error ? err.message : String(err);
+            console.warn("[facilitator] hidden-from-ai toggle failed", text);
             setError(text);
           }
         }}

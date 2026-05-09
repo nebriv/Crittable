@@ -196,6 +196,13 @@ export function Play({ sessionId, token }: Props) {
   // Chat-declutter polish: workstream-override contextmenu state. The
   // menu is rendered as a portal-like fixed div in this page so its
   // position survives transcript scroll. Closed when ``null``.
+  // Issue #162: the same menu also carries the per-message "hidden
+  // from AI" mute toggle. The mute checked-state is NOT snapshotted
+  // here — it's looked up live from ``snapshot.messages`` at render
+  // time so a peer-tab toggle that lands while the menu is open
+  // doesn't leave the toggle showing a stale value (sub-agent UI/UX
+  // review HIGH H-2). See the ``hiddenFromAi`` prop on
+  // ``<WorkstreamMenu>`` below.
   const [overrideMenu, setOverrideMenu] = useState<{
     messageId: string;
     workstreamId: string | null;
@@ -385,6 +392,16 @@ export function Play({ sessionId, token }: Props) {
         console.info(
           "[play] message workstream changed",
           { id: evt.message_id, workstream_id: evt.workstream_id },
+        );
+        refreshSnapshot();
+        break;
+      case "message_hidden_from_ai_changed":
+        // Issue #162: per-message AI mute. Snapshot refresh converges
+        // every peer tab on the new ``hidden_from_ai`` field so the
+        // bubble's badge appears/disappears without a turn boundary.
+        console.info(
+          "[play] message hidden_from_ai changed",
+          { id: evt.message_id, hidden_from_ai: evt.hidden_from_ai },
         );
         refreshSnapshot();
         break;
@@ -1820,6 +1837,37 @@ export function Play({ sessionId, token }: Props) {
           } catch (err) {
             const text = err instanceof Error ? err.message : String(err);
             console.warn("[play] workstream override failed", text);
+            setError(text);
+          }
+        }}
+        // Sub-agent UI/UX review HIGH H-2: read ``hidden_from_ai``
+        // off the live snapshot at render time, not the
+        // click-time snapshotted ``overrideMenu.hiddenFromAi``.
+        // Without this, a peer-tab toggle that lands while the
+        // menu is open would leave the toggle's checked state
+        // stale and the next click would *invert the new server
+        // state* — silently flipping it back. The
+        // ``message_hidden_from_ai_changed`` WS handler refreshes
+        // ``snapshot.messages`` in place, so reading from there
+        // always reflects the latest server state.
+        hiddenFromAi={
+          overrideMenu
+            ? snapshot.messages.find((m) => m.id === overrideMenu.messageId)
+                ?.hidden_from_ai === true
+            : false
+        }
+        onToggleHiddenFromAi={async (next) => {
+          if (!overrideMenu) return;
+          try {
+            await api.setMessageHiddenFromAi(
+              sessionId,
+              token,
+              overrideMenu.messageId,
+              next,
+            );
+          } catch (err) {
+            const text = err instanceof Error ? err.message : String(err);
+            console.warn("[play] hidden-from-ai toggle failed", text);
             setError(text);
           }
         }}

@@ -226,6 +226,22 @@ export type ServerEvent =
       workstream_id: string | null;
       actor_role_id: string;
     }
+  /**
+   * Issue #162: per-message "hidden from AI" mute. The creator or
+   * message-author flipped the mute state via the right-click
+   * contextmenu / REST endpoint. ``record=False`` server-side: the
+   * field lives on the persisted message, so reconnecting tabs
+   * pick the new state up from their snapshot fetch — this WS
+   * frame is only a live-tab nudge that prompts peer clients to
+   * refresh their snapshot so the "hidden from AI" badge updates
+   * without waiting for a turn boundary.
+   */
+  | {
+      type: "message_hidden_from_ai_changed";
+      message_id: string;
+      hidden_from_ai: boolean;
+      actor_role_id: string;
+    }
   // Decoupled-ready (PR #209): broadcast to every connected tab whenever
   // ANY role's ready state flips. Drives the ready dots in the roster
   // and the optimistic-flip reconciliation on the actor's own client.
@@ -558,6 +574,11 @@ export class WsClient {
           case "message_workstream_changed":
             safe.message_id = parsed.message_id;
             safe.workstream_id = parsed.workstream_id;
+            safe.actor_role_id = parsed.actor_role_id;
+            break;
+          case "message_hidden_from_ai_changed":
+            safe.message_id = parsed.message_id;
+            safe.hidden_from_ai = parsed.hidden_from_ai;
             safe.actor_role_id = parsed.actor_role_id;
             break;
           case "ready_changed":

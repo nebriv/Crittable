@@ -197,6 +197,21 @@ class WorkstreamOverrideBody(BaseModel):
         return v
 
 
+class MessageHiddenFromAiBody(BaseModel):
+    """POST /api/sessions/{id}/messages/{message_id}/hidden_from_ai.
+
+    Per-message "hidden from AI" mute (issue #162). Operator-controlled
+    visibility flip: when ``hidden_from_ai=true``, the message stays
+    in the human transcript with a "hidden from AI" badge but is
+    dropped from every LLM-tier user block (play / interject / AAR).
+    Authz lives in ``manager.set_message_hidden_from_ai``: creator
+    OR the message-of-record's role only.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+    hidden_from_ai: bool
+
+
 def _compute_turn_diagnostics(
     audit_events: list[Any],
     turn_id_to_index: dict[str, int],
@@ -634,6 +649,13 @@ def register_api_routes(app: FastAPI) -> None:
                     # no AI reply followed. Surfaced on the snapshot
                     # so the indicator survives a page reload.
                     "ai_paused_at_submit": m.ai_paused_at_submit,
+                    # Issue #162: per-message "hidden from AI" mute.
+                    # The transcript renders a "hidden from AI" badge
+                    # under the bubble; the LLM user-block builders
+                    # (play / interject / AAR) drop the message
+                    # entirely. Surfaced on the snapshot so the badge
+                    # survives a page reload.
+                    "hidden_from_ai": m.hidden_from_ai,
                 }
                 for m in session.visible_messages(token["role_id"])
             ],
@@ -1228,6 +1250,60 @@ def register_api_routes(app: FastAPI) -> None:
             # workstream-not-declared / other validation
             raise HTTPException(status.HTTP_400_BAD_REQUEST, text) from exc
         return {"ok": True}
+
+    # ---------------------------------------- per-message AI-mute (issue #162)
+    @router.post(
+        "/sessions/{session_id}/messages/{message_id}/hidden_from_ai",
+    )
+    async def set_message_hidden_from_ai(
+        session_id: str,
+        message_id: str,
+        body: MessageHiddenFromAiBody,
+        request: Request,
+    ) -> dict[str, Any]:
+        """Per-message "hidden from AI" mute (issue #162).
+
+        Toggles ``Message.hidden_from_ai``. When True, the message
+        stays visible to humans (with a "hidden from AI" badge) but
+        is filtered out of every LLM-tier user block (play /
+        interject / AAR). Authz: creator OR the message-of-record's
+        role only — enforced inside
+        ``manager.set_message_hidden_from_ai``; misaddressed attempts
+        map to 403.
+
+        Side effects: emits ``message_hidden_from_ai_changed`` audit +
+        fans out a ``message_hidden_from_ai_changed`` WS event that
+        nudges peer tabs to refresh their snapshot, so the badge
+        updates without waiting for a turn boundary.
+        """
+
+        manager = _manager(request)
+        token = await _bind_token(request, session_id)
+        try:
+            require_participant(token)
+            session = await manager.get_session(session_id)
+        except AuthorizationError as exc:
+            raise HTTPException(status.HTTP_403_FORBIDDEN, str(exc)) from exc
+        except SessionNotFoundError as exc:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "session not found") from exc
+
+        is_creator = token["role_id"] == session.creator_role_id
+        try:
+            await manager.set_message_hidden_from_ai(
+                session_id=session_id,
+                message_id=message_id,
+                hidden_from_ai=body.hidden_from_ai,
+                by_role_id=token["role_id"],
+                is_creator=is_creator,
+            )
+        except IllegalTransitionError as exc:
+            text = str(exc)
+            if text.startswith("message not found"):
+                raise HTTPException(status.HTTP_404_NOT_FOUND, text) from exc
+            if text.startswith("only the message"):
+                raise HTTPException(status.HTTP_403_FORBIDDEN, text) from exc
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, text) from exc
+        return {"ok": True, "hidden_from_ai": body.hidden_from_ai}
 
     # ---------------------------------------------------- shared notepad (#98)
     @router.post(

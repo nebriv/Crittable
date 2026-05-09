@@ -257,6 +257,11 @@ def _flag_chips(msg: Message) -> str:
         flags.append("INJECT")
     if msg.is_interjection:
         flags.append("SIDEBAR")
+    # Issue #162: per-message AI mute. Visible in the full record so
+    # the operator can grep "MUTED" to find every entry the AI
+    # didn't see during play / AAR.
+    if msg.hidden_from_ai:
+        flags.append("MUTED")
     if msg.tool_name:
         flags.append(f"tool:{msg.tool_name}")
     if msg.mentions:

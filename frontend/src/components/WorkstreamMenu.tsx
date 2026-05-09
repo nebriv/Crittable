@@ -15,6 +15,13 @@ interface Props {
   /** Called when the operator picks a target. ``null`` = move back to
    *  ``#main``. */
   onPick: (next: string | null) => void;
+  /** Issue #162: current "hidden from AI" state of the message. The
+   *  menu's mute toggle reads this for the checked state. */
+  hiddenFromAi: boolean;
+  /** Issue #162: invoked when the operator flips the mute toggle.
+   *  The page calls the REST endpoint and the WS broadcast lands a
+   *  ``message_hidden_from_ai_changed`` event for the local tab. */
+  onToggleHiddenFromAi: (next: boolean) => void;
   onClose: () => void;
 }
 
@@ -41,6 +48,8 @@ export function WorkstreamMenu({
   current,
   workstreams,
   onPick,
+  hiddenFromAi,
+  onToggleHiddenFromAi,
   onClose,
 }: Props) {
   const ref = useRef<HTMLDivElement | null>(null);
@@ -82,18 +91,37 @@ export function WorkstreamMenu({
   const declaredOrder = workstreams.map((w) => w.id);
 
   // Clamp the menu inside the viewport so a click near the right edge
-  // doesn't paint it off-screen.
-  const MENU_W = 220;
-  const MENU_H = Math.min(40 + (workstreams.length + 1) * 32, window.innerHeight - 16);
-  const left = Math.min(position.x, window.innerWidth - MENU_W - 8);
-  const top = Math.min(position.y, window.innerHeight - MENU_H - 8);
+  // doesn't paint it off-screen. Issue #162: the mute toggle adds one
+  // more row below the workstream list — height budget bumped to
+  // account for the extra section header + entry.
+  //
+  // Sub-agent review HIGH H-1: the prior `top = Math.min(...)` could
+  // resolve to a negative number on a viewport shorter than MENU_H
+  // (mobile / small popup window) — the header would paint above the
+  // top of the viewport. Wrap with ``Math.max(8, ...)`` so the menu
+  // is always at least 8px from the top edge; on a too-short viewport
+  // the bottom edge spills off, which is recoverable (scroll), unlike
+  // a clipped header.
+  const MENU_W = 240;
+  const MENU_H = Math.min(
+    80 + (workstreams.length + 1) * 32 + 32,
+    window.innerHeight - 16,
+  );
+  const left = Math.max(
+    8,
+    Math.min(position.x, window.innerWidth - MENU_W - 8),
+  );
+  const top = Math.max(
+    8,
+    Math.min(position.y, window.innerHeight - MENU_H - 8),
+  );
 
   return (
     <div
       ref={ref}
       role="menu"
-      aria-label="Move message to workstream"
-      className="fixed z-40 flex min-w-[200px] flex-col rounded-r-2 border border-ink-500 bg-ink-850 py-1 shadow-2xl"
+      aria-label="Message actions"
+      className="fixed z-40 flex min-w-[220px] flex-col rounded-r-2 border border-ink-500 bg-ink-850 py-1 shadow-2xl"
       style={{ left, top }}
     >
       <header className="mono px-3 py-1 text-[10px] font-bold uppercase tracking-[0.16em] text-ink-300">
@@ -135,6 +163,66 @@ export function WorkstreamMenu({
           No workstreams declared
         </p>
       ) : null}
+      {/* Issue #162: per-message AI mute toggle. Lives in the same
+          right-click menu so the operator's authz check (creator OR
+          message-author) and the trigger affordance stay consolidated.
+          The divider keeps the two sections visually distinct — moving
+          a message between workstreams is a categorization action, the
+          mute is a visibility action, and the menu treats them as
+          separate columns of the same surface. */}
+      <div
+        role="separator"
+        aria-orientation="horizontal"
+        className="my-1 border-t border-ink-700"
+      />
+      <header className="mono px-3 py-1 text-[10px] font-bold uppercase tracking-[0.16em] text-ink-300">
+        Visibility
+      </header>
+      <button
+        type="button"
+        role="menuitemcheckbox"
+        data-menuitem="1"
+        data-testid="hidden-from-ai-toggle"
+        aria-checked={hiddenFromAi}
+        onClick={() => {
+          onToggleHiddenFromAi(!hiddenFromAi);
+          onClose();
+        }}
+        onKeyDown={(e) => {
+          if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
+          e.preventDefault();
+          const root = e.currentTarget.closest("[role='menu']");
+          const items = Array.from(
+            root?.querySelectorAll<HTMLButtonElement>(
+              "button[data-menuitem='1']",
+            ) ?? [],
+          );
+          const idx = items.indexOf(e.currentTarget);
+          const nextIdx =
+            e.key === "ArrowDown"
+              ? (idx + 1) % items.length
+              : (idx - 1 + items.length) % items.length;
+          items[nextIdx]?.focus();
+        }}
+        className={`flex items-center gap-2 px-3 py-1.5 text-left text-xs hover:bg-ink-800 focus-visible:bg-ink-800 focus-visible:outline-none ${
+          hiddenFromAi ? "text-ink-050" : "text-ink-200"
+        }`}
+      >
+        <span
+          aria-hidden="true"
+          className={`mono inline-block h-2.5 w-2.5 shrink-0 rounded-r-0 border ${
+            hiddenFromAi
+              ? "border-signal bg-signal"
+              : "border-ink-400 bg-transparent"
+          }`}
+        />
+        <span className="flex-1">Hidden from AI</span>
+        {hiddenFromAi ? (
+          <span aria-hidden="true" className="mono text-[10px] text-signal">
+            ON
+          </span>
+        ) : null}
+      </button>
     </div>
   );
 }
