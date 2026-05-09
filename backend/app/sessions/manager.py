@@ -1356,6 +1356,22 @@ class SessionManager:
         # second call between our check and the state mutation,
         # producing the very race we're guarding against.
         async with await self._lock_for(session_id):
+            session = await self._repo.get(session_id)
+            # Creator-only gate (issue #215). Mirrors the equivalent
+            # check in ``end_session`` so the wire contract matches the
+            # UI contract: PR #214 removed the player-facing button, so
+            # any non-creator caller is either a buggy client or a
+            # probe and we surface it in the audit log.
+            if session.creator_role_id != by_role_id:
+                _logger.warning(
+                    "force_advance_unauthorized",
+                    session_id=session_id,
+                    by_role_id=by_role_id,
+                    creator_role_id=session.creator_role_id,
+                )
+                raise AuthorizationError(
+                    "only the creator can force-advance the session"
+                )
             in_flight = self._llm.in_flight_for(session_id)
             if any(c.tier == "play" for c in in_flight):
                 _logger.info(
@@ -1367,7 +1383,6 @@ class SessionManager:
                 raise IllegalTransitionError(
                     "AI is still processing — wait a few seconds before forcing advance"
                 )
-            session = await self._repo.get(session_id)
             turn = session.current_turn
             if turn is None:
                 raise IllegalTransitionError("nothing to force-advance")

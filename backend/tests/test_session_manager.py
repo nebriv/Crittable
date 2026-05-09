@@ -115,6 +115,103 @@ def test_force_advance_rejects_while_play_tier_call_in_flight(client: TestClient
             llm._in_flight.pop(seats["sid"], None)
 
 
+def test_force_advance_rejects_non_creator_at_manager(
+    client: TestClient, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Issue #215: defense-in-depth at the manager layer — even if a
+    non-creator slips past the route gate, ``force_advance`` must reject
+    them with ``AuthorizationError`` and emit a warning audit line.
+    structlog is configured with ``PrintLoggerFactory`` so log output
+    lands on stdout; ``capsys`` is the matching capture mechanism."""
+
+    import asyncio
+
+    from app.auth.authz import AuthorizationError
+
+    seats = _seat_two(client)
+    _drive_to_play(client, seats)
+    snap = client.get(f"/api/sessions/{seats['sid']}?token={seats['creator_token']}").json()
+    if snap["state"] != "AWAITING_PLAYERS":
+        pytest.skip("scripted setup did not yield to players")
+
+    manager = client.app.state.manager
+
+    async def _call_as_player() -> None:
+        await manager.force_advance(
+            session_id=seats["sid"], by_role_id=seats["other_role_id"]
+        )
+
+    # Drain stdout buffered up to this point so we only assert against
+    # the warning emitted inside the rejected call.
+    capsys.readouterr()
+    with pytest.raises(AuthorizationError, match="only the creator"):
+        asyncio.run(_call_as_player())
+    captured = capsys.readouterr().out
+    assert "force_advance_unauthorized" in captured, captured
+    assert seats["sid"] in captured
+    assert seats["other_role_id"] in captured
+    assert seats["creator_role_id"] in captured
+
+    # State unchanged.
+    snap2 = client.get(
+        f"/api/sessions/{seats['sid']}?token={seats['creator_token']}"
+    ).json()
+    assert snap2["state"] == "AWAITING_PLAYERS"
+
+
+def test_force_advance_rest_rejects_player_with_403(client: TestClient) -> None:
+    """Issue #215: REST gate — a player token must get 403, not 200."""
+
+    seats = _seat_two(client)
+    _drive_to_play(client, seats)
+    snap = client.get(f"/api/sessions/{seats['sid']}?token={seats['creator_token']}").json()
+    if snap["state"] != "AWAITING_PLAYERS":
+        pytest.skip("scripted setup did not yield to players")
+
+    r = client.post(
+        f"/api/sessions/{seats['sid']}/force-advance?token={seats['other_token']}"
+    )
+    assert r.status_code == 403, r.text
+
+    # State unchanged — a buggy route that 403's AND mutates would slip
+    # through without this check (QA review LOW-2).
+    snap2 = client.get(
+        f"/api/sessions/{seats['sid']}?token={seats['creator_token']}"
+    ).json()
+    assert snap2["state"] == "AWAITING_PLAYERS"
+
+
+def test_force_advance_ws_rejects_player_with_error_frame(client: TestClient) -> None:
+    """Issue #215: WS gate — a player frame must surface an error frame
+    (scope=force_advance) and not mutate session state."""
+
+    seats = _seat_two(client)
+    _drive_to_play(client, seats)
+    snap = client.get(f"/api/sessions/{seats['sid']}?token={seats['creator_token']}").json()
+    if snap["state"] != "AWAITING_PLAYERS":
+        pytest.skip("scripted setup did not yield to players")
+
+    sid = seats["sid"]
+    ptok = seats["other_token"]
+
+    with client.websocket_connect(f"/ws/sessions/{sid}?token={ptok}") as ws:
+        ws.send_json({"type": "request_force_advance"})
+        saw_rejection = False
+        for _ in range(64):
+            try:
+                evt = ws.receive_json()
+            except Exception:
+                break
+            if evt.get("type") == "error" and evt.get("scope") == "force_advance":
+                saw_rejection = True
+                break
+        assert saw_rejection, "player must be rejected on request_force_advance"
+
+    # State unchanged.
+    snap2 = client.get(f"/api/sessions/{sid}?token={seats['creator_token']}").json()
+    assert snap2["state"] == "AWAITING_PLAYERS"
+
+
 def test_force_advance_allowed_with_only_non_play_calls_in_flight(
     client: TestClient,
 ) -> None:

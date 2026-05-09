@@ -462,8 +462,15 @@ def test_plan_not_revealed_to_non_creator(client: TestClient) -> None:
     assert other_view["cost"] is None, "non-creator must not see the cost meter"
 
 
-def test_force_advance_from_any_participant(client: TestClient) -> None:
-    """Acceptance gate: any seated participant can force-advance a stalled turn."""
+def test_force_advance_creator_only(client: TestClient) -> None:
+    """Issue #215: only the creator can force-advance.
+
+    PR #214 hid the player-facing button; this gate enforces the same
+    contract on the wire so a player can't bypass via curl or a
+    hand-crafted WS frame. The creator-only check is duplicated at the
+    REST gate (``require_creator``) and inside ``manager.force_advance``
+    (defense in depth).
+    """
 
     seats = _create_and_seat(client, role_count=3)
     _install_mock_and_drive(
@@ -481,9 +488,19 @@ def test_force_advance_from_any_participant(client: TestClient) -> None:
     if snap["state"] != "AWAITING_PLAYERS":
         pytest.skip("first AI turn did not yield to players (mock variance)")
 
-    # Non-creator force-advances — should be allowed.
+    # Non-creator force-advance — rejected with 403.
     r = client.post(
         f"/api/sessions/{sid}/force-advance?token={non_creator}"
+    )
+    assert r.status_code == 403, r.text
+
+    # Session state is unchanged.
+    snap = client.get(f"/api/sessions/{sid}?token={cr}").json()
+    assert snap["state"] == "AWAITING_PLAYERS"
+
+    # Creator force-advance — allowed.
+    r = client.post(
+        f"/api/sessions/{sid}/force-advance?token={cr}"
     )
     assert r.status_code == 200, r.text
 
