@@ -29,6 +29,7 @@ from typing import Any
 from ..auth.audit import AuditEvent
 from ..extensions.registry import FrozenRegistry
 from ..llm.dispatch import DispatchOutcome
+from ..llm.errors import UpstreamLLMError, notify_creator_of_upstream_error
 from ..llm.prompts import (
     build_play_system_blocks,
     build_setup_system_blocks,
@@ -284,32 +285,45 @@ class TurnDriver:
                 # is passed through unchanged so the bare-text guard
                 # below still applies.
                 result: LLMResult | None = None
-                async for evt in llm.astream(
-                    tier="setup",
-                    system_blocks=build_setup_system_blocks(
-                        session,
-                        workstreams_enabled=self._manager.settings().workstreams_enabled,
-                    ),
-                    messages=messages,
-                    tool_choice=tool_choice_for("setup"),
-                    tools=setup_tools_for(
-                        workstreams_enabled=self._manager.settings().workstreams_enabled
-                    ),
-                    # Per-tier default from settings.max_tokens_for(tier) — call passes None.
-                    session_id=session.id,
-                ):
-                    etype = evt.get("type")
-                    if etype == "tool_use_start":
-                        if (
-                            not saw_plan_tool
-                            and evt.get("name") == "propose_scenario_plan"
-                        ):
-                            saw_plan_tool = True
-                            await self._broadcast_setup_drafting_plan(
-                                session.id, active=True
-                            )
-                    elif etype == "complete":
-                        result = evt.get("result")
+                try:
+                    async for evt in llm.astream(
+                        tier="setup",
+                        system_blocks=build_setup_system_blocks(
+                            session,
+                            workstreams_enabled=self._manager.settings().workstreams_enabled,
+                        ),
+                        messages=messages,
+                        tool_choice=tool_choice_for("setup"),
+                        tools=setup_tools_for(
+                            workstreams_enabled=self._manager.settings().workstreams_enabled
+                        ),
+                        # Per-tier default from settings.max_tokens_for(tier) — call passes None.
+                        session_id=session.id,
+                    ):
+                        etype = evt.get("type")
+                        if etype == "tool_use_start":
+                            if (
+                                not saw_plan_tool
+                                and evt.get("name") == "propose_scenario_plan"
+                            ):
+                                saw_plan_tool = True
+                                await self._broadcast_setup_drafting_plan(
+                                    session.id, active=True
+                                )
+                        elif etype == "complete":
+                            result = evt.get("result")
+                except UpstreamLLMError as upstream_exc:
+                    # Issue #191 — surface upstream provider blips to the
+                    # creator with a status-page link rather than letting
+                    # the API handler 500 silently. Re-raise so the
+                    # request handler still returns 500; the banner just
+                    # gives the creator the right framing in real time.
+                    await notify_creator_of_upstream_error(
+                        connections=self._manager.connections(),
+                        session=session,
+                        err=upstream_exc,
+                    )
+                    raise
                 if result is None:
                     # ``astream`` is contracted to emit a terminal
                     # ``complete`` event carrying the LLMResult. Absent
@@ -579,15 +593,35 @@ class TurnDriver:
                     tools = PLAY_TOOLS + dispatcher_extension_specs(registry)
                     tool_choice = None
 
-                result = await self._streamed_play_call(
-                    session=session,
-                    turn=turn,
-                    tier="play",
-                    system_blocks=system_blocks,
-                    messages=messages,
-                    tools=tools,
-                    tool_choice=tool_choice,
-                )
+                try:
+                    result = await self._streamed_play_call(
+                        session=session,
+                        turn=turn,
+                        tier="play",
+                        system_blocks=system_blocks,
+                        messages=messages,
+                        tools=tools,
+                        tool_choice=tool_choice,
+                    )
+                except UpstreamLLMError as upstream_exc:
+                    # Issue #191 — Anthropic 529 / 5xx / sustained 429 /
+                    # connection timeout after the SDK's retries.
+                    # Mark the turn errored, broadcast the structured
+                    # banner to the creator (players keep seeing
+                    # "AI is thinking" — they can't act on the
+                    # outage), and bail out cleanly. The creator's
+                    # Force-advance / Retry path is unchanged.
+                    turn.status = "errored"
+                    turn.error_reason = (
+                        f"upstream_{upstream_exc.category}: "
+                        f"{upstream_exc.message}"
+                    )[:500]
+                    await notify_creator_of_upstream_error(
+                        connections=self._manager.connections(),
+                        session=session,
+                        err=upstream_exc,
+                    )
+                    return session
                 await self._apply_cost(session.id, result)
                 self._check_truncation(
                     session_id=session.id, tier="play", result=result, turn_id=turn.id
@@ -944,15 +978,29 @@ class TurnDriver:
             tools = [t for t in PLAY_TOOLS if t["name"] in allowed]
             tool_choice: dict[str, Any] = {"type": "any"}
 
-            result = await self._streamed_play_call(
-                session=session,
-                turn=turn,
-                tier="play",
-                system_blocks=system_blocks,
-                messages=messages,
-                tools=tools,
-                tool_choice=tool_choice,
-            )
+            try:
+                result = await self._streamed_play_call(
+                    session=session,
+                    turn=turn,
+                    tier="play",
+                    system_blocks=system_blocks,
+                    messages=messages,
+                    tools=tools,
+                    tool_choice=tool_choice,
+                )
+            except UpstreamLLMError as upstream_exc:
+                # Issue #191 — interject path. Quietly bail out rather
+                # than wedging the session: state is still
+                # AWAITING_PLAYERS, the player's submission still
+                # counts toward the active turn, the creator just sees
+                # the upstream banner and knows why the @facilitator
+                # got no reply.
+                await notify_creator_of_upstream_error(
+                    connections=self._manager.connections(),
+                    session=session,
+                    err=upstream_exc,
+                )
+                return session
             await self._apply_cost(session.id, result)
 
             tool_uses = _tool_uses(result)

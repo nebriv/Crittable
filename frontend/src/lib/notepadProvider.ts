@@ -251,7 +251,7 @@ export class WsYjsProvider {
             );
             break;
           }
-          this.onError(evt.message);
+          this.onError(evt.message ?? "Unknown error");
         }
         break;
       default:

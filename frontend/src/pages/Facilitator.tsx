@@ -13,6 +13,7 @@ import { confirmLeaveSession } from "../lib/leaveGuard";
 import { AarReportView } from "../components/AarReport";
 import { Composer } from "../components/Composer";
 import { CriticalEventBanner } from "../components/CriticalEventBanner";
+import { UpstreamLlmErrorBanner } from "../components/UpstreamLlmErrorBanner";
 import { DecisionLogPanel } from "../components/DecisionLogPanel";
 import { ExportsPanel } from "../components/ExportsPanel";
 import { GodModePanel } from "../components/GodModePanel";
@@ -266,6 +267,12 @@ export function Facilitator() {
   }, []);
   const [setupReply, setSetupReply] = useState("");
   const [error, setError] = useState<string | null>(null);
+  // Issue #191 — most recent ``{type: "error", scope: "upstream_llm"}``
+  // event. Creator-only; players never receive these. Cleared by the
+  // banner's Dismiss button or replaced by a fresher upstream event.
+  const [upstreamLlmError, setUpstreamLlmError] = useState<
+    Extract<ServerEvent, { type: "error" }> | null
+  >(null);
   const [busy, setBusy] = useState(false);
   const [busyMessage, setBusyMessage] = useState<string | null>(null);
   // Prominent in-chat indicator with the LOOKS-READY-specific label
@@ -933,7 +940,22 @@ export function Facilitator() {
         console.info("[facilitator] submission truncated", evt);
         break;
       case "error":
-        setError(evt.message);
+        // Issue #191: ``upstream_llm`` events get the dedicated
+        // status-page banner; everything else falls back to the
+        // generic inline error message. Don't double-route — a
+        // generic ``setError`` for the upstream case would dump the
+        // raw provider message into the chat region too.
+        if (evt.scope === "upstream_llm") {
+          console.warn("[facilitator] upstream LLM error", {
+            category: evt.category,
+            status_code: evt.status_code,
+            request_id: evt.request_id,
+            retry_hint_seconds: evt.retry_hint_seconds,
+          });
+          setUpstreamLlmError(evt);
+          break;
+        }
+        setError(evt.message ?? "Unknown error");
         if (evt.scope === "set_ready") {
           console.warn("[facilitator] set_ready protocol error", evt);
         }
@@ -1712,10 +1734,21 @@ export function Facilitator() {
 
   return (
     <main className="flex min-h-screen flex-col lg:h-screen lg:min-h-0 lg:overflow-hidden">
+      {/* Critical-event ack is in-fiction urgency (an inject the AI
+          fired); upstream-LLM banner is infrastructure noise. Mount
+          critical first so it claims the top slot when both are
+          live, and the operator's eye lands on the action that
+          matters most for the exercise. */}
       {criticalBanner ? (
         <CriticalEventBanner
           {...criticalBanner}
           onAcknowledge={() => setCriticalBanner(null)}
+        />
+      ) : null}
+      {upstreamLlmError ? (
+        <UpstreamLlmErrorBanner
+          event={upstreamLlmError}
+          onDismiss={() => setUpstreamLlmError(null)}
         />
       ) : null}
       {/* Issue #62 (round 2): consolidated top bar — debug telemetry +
