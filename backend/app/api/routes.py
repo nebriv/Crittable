@@ -1272,8 +1272,9 @@ def register_api_routes(app: FastAPI) -> None:
         map to 403.
 
         Side effects: emits ``message_hidden_from_ai_changed`` audit +
-        fans out a ``message_hidden_from_ai_changed`` WS event so
-        peer tabs update the badge without a snapshot round-trip.
+        fans out a ``message_hidden_from_ai_changed`` WS event that
+        nudges peer tabs to refresh their snapshot, so the badge
+        updates without waiting for a turn boundary.
         """
 
         manager = _manager(request)

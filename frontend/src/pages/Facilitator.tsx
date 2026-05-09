@@ -384,11 +384,11 @@ export function Facilitator() {
   // creator can re-tag any message; the menu is rendered in this page
   // so its position survives transcript scroll. Closed when ``null``.
   // Issue #162: the same menu also carries the per-message "hidden
-  // from AI" mute toggle — see the matching block in Play.tsx.
+  // from AI" mute toggle. The mute checked-state is NOT snapshotted
+  // here — see the matching block in Play.tsx.
   const [overrideMenu, setOverrideMenu] = useState<{
     messageId: string;
     workstreamId: string | null;
-    hiddenFromAi: boolean;
     x: number;
     y: number;
   } | null>(null);
@@ -1935,8 +1935,8 @@ export function Facilitator() {
                 )}
                 roles={snapshot.roles}
                 workstreams={snapshot.workstreams ?? []}
-                onMessageContextMenu={({ messageId, workstreamId, hiddenFromAi, x, y }) =>
-                  setOverrideMenu({ messageId, workstreamId, hiddenFromAi, x, y })
+                onMessageContextMenu={({ messageId, workstreamId, x, y }) =>
+                  setOverrideMenu({ messageId, workstreamId, x, y })
                 }
                 viewerIsCreator={true}
                 selfAuthoredRoleIds={null}

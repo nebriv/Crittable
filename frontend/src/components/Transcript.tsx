@@ -91,11 +91,6 @@ interface Props {
   onMessageContextMenu?: (args: {
     messageId: string;
     workstreamId: string | null;
-    /** Issue #162: current "hidden from AI" state of the bubble at
-     *  the click site. Lets the page render the menu's mute toggle
-     *  in the right initial position without a separate snapshot
-     *  lookup. */
-    hiddenFromAi: boolean;
     x: number;
     y: number;
   }) => void;
@@ -352,7 +347,6 @@ export function Transcript({
     onMessageContextMenu?.({
       messageId: m.id,
       workstreamId: m.workstream_id,
-      hiddenFromAi: m.hidden_from_ai === true,
       x: e.clientX,
       y: e.clientY,
     });
@@ -626,7 +620,6 @@ export function Transcript({
                           onMessageContextMenu?.({
                             messageId: m.id,
                             workstreamId: m.workstream_id,
-                            hiddenFromAi: m.hidden_from_ai === true,
                             x,
                             y,
                           })
@@ -798,7 +791,6 @@ export function Transcript({
                         onMessageContextMenu?.({
                           messageId: m.id,
                           workstreamId: m.workstream_id,
-                          hiddenFromAi: m.hidden_from_ai === true,
                           x,
                           y,
                         })

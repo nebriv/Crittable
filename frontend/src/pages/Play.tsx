@@ -197,13 +197,15 @@ export function Play({ sessionId, token }: Props) {
   // menu is rendered as a portal-like fixed div in this page so its
   // position survives transcript scroll. Closed when ``null``.
   // Issue #162: the same menu also carries the per-message "hidden
-  // from AI" mute toggle — its current state lives on
-  // ``overrideMenu.hiddenFromAi`` so the toggle's checked indicator
-  // matches the bubble at click time without a snapshot lookup.
+  // from AI" mute toggle. The mute checked-state is NOT snapshotted
+  // here — it's looked up live from ``snapshot.messages`` at render
+  // time so a peer-tab toggle that lands while the menu is open
+  // doesn't leave the toggle showing a stale value (sub-agent UI/UX
+  // review HIGH H-2). See the ``hiddenFromAi`` prop on
+  // ``<WorkstreamMenu>`` below.
   const [overrideMenu, setOverrideMenu] = useState<{
     messageId: string;
     workstreamId: string | null;
-    hiddenFromAi: boolean;
     x: number;
     y: number;
   } | null>(null);
@@ -1634,8 +1636,8 @@ export function Play({ sessionId, token }: Props) {
               typingRoleIds={Object.keys(typing).filter((rid) => rid !== selfRoleId)}
               highlightLastAi={isMyTurn}
               selfRoleId={selfRoleId}
-              onMessageContextMenu={({ messageId, workstreamId, hiddenFromAi, x, y }) =>
-                setOverrideMenu({ messageId, workstreamId, hiddenFromAi, x, y })
+              onMessageContextMenu={({ messageId, workstreamId, x, y }) =>
+                setOverrideMenu({ messageId, workstreamId, x, y })
               }
               selfAuthoredRoleIds={
                 selfRoleId ? new Set([selfRoleId]) : null

@@ -232,8 +232,9 @@ export type ServerEvent =
    * contextmenu / REST endpoint. ``record=False`` server-side: the
    * field lives on the persisted message, so reconnecting tabs
    * pick the new state up from their snapshot fetch — this WS
-   * frame is only a live-tab nudge so peer clients update the
-   * "hidden from AI" badge without a snapshot round-trip.
+   * frame is only a live-tab nudge that prompts peer clients to
+   * refresh their snapshot so the "hidden from AI" badge updates
+   * without waiting for a turn boundary.
    */
   | {
       type: "message_hidden_from_ai_changed";
