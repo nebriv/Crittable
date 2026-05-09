@@ -84,15 +84,19 @@ def client() -> TestClient:
 
 
 async def _seat_two_role_session(client: TestClient) -> dict[str, Any]:
-    """Build a two-role session in ``AWAITING_PLAYERS`` with both
-    roles on a single ASK group.
+    """Build a two-role session in ``AWAITING_PLAYERS`` with each
+    role in its own singleton ASK group.
 
     The creator is the first role and is flagged ``is_creator=True``;
     the second role is a normal player. Both roles land in
-    ``active_role_groups[[creator, other]]`` so the test can drive
-    every set_ready branch (own-toggle, creator-impersonation,
-    not-active-role) against this same fixture without tearing it
-    down.
+    ``active_role_groups=[[creator_id], [other_id]]`` (two singleton
+    groups, NOT a single combined group) so the quorum gate requires
+    BOTH roles to mark ready before the turn advances. A combined
+    ``[[creator_id, other_id]]`` group would close on the first
+    toggle — any-member-ready closes a group (issue #168) — and
+    would mask the multi-role quorum-gate tests below. The
+    quorum-closing test explicitly narrows to a single-role group
+    when it needs deterministic single-toggle advance.
     """
     resp = client.post(
         "/api/sessions",
@@ -751,9 +755,24 @@ def test_set_ready_false_removes_role_and_flips_cap(client: TestClient) -> None:
 # ----------------------------------------------------------------------
 
 
-def _drain(ws: Any, *, kinds: tuple[str, ...], cap: int = 64) -> dict[str, Any] | None:
+def _drain(
+    ws: Any,
+    *,
+    kinds: tuple[str, ...],
+    cap: int = 64,
+    timeout: float = 2.0,
+) -> dict[str, Any] | None:
     """Receive WS events until one of ``kinds`` shows up or the cap
     is reached. Returns the matching event or ``None``.
+
+    Starlette's ``WebSocketTestSession.receive_json`` does NOT accept
+    a ``timeout`` kwarg — it blocks indefinitely on the underlying
+    queue. Without an external bound, a regression that drops the
+    expected frame would hang CI on this drain (Copilot review on
+    PR #218). We bound each call by running it in a daemon thread
+    and ``join(timeout=...)``-ing — if the thread is still alive
+    after the timeout we abandon it (daemon, so it dies with the
+    test) and return ``None`` so the caller's assertion fails fast.
 
     Exceptions raised by ``receive_json`` (closed socket, JSON decode
     failure) are logged before swallowing so the test failure points
@@ -762,15 +781,35 @@ def _drain(ws: Any, *, kinds: tuple[str, ...], cap: int = 64) -> dict[str, Any] 
     swallowed exceptions are bug-amplifiers in test infra too.
     """
 
-    for _ in range(cap):
+    import threading
+
+    def _recv(holder: dict[str, Any]) -> None:
         try:
-            evt = ws.receive_json()
+            holder["evt"] = ws.receive_json()
         except Exception as exc:
+            holder["err"] = exc
+
+    for _ in range(cap):
+        result_holder: dict[str, Any] = {}
+        t = threading.Thread(
+            target=_recv, args=(result_holder,), daemon=True
+        )
+        t.start()
+        t.join(timeout=timeout)
+        if t.is_alive():
+            # Daemon thread will die with the test process.
             print(
-                f"[test_set_ready] _drain: socket error before "
-                f"{kinds!r} arrived: {exc!r}"
+                f"[test_set_ready] _drain: timed out after {timeout}s "
+                f"waiting for {kinds!r}"
             )
             return None
+        if "err" in result_holder:
+            print(
+                f"[test_set_ready] _drain: socket error before "
+                f"{kinds!r} arrived: {result_holder['err']!r}"
+            )
+            return None
+        evt = result_holder["evt"]
         if evt.get("type") in kinds:
             return evt
     return None
@@ -1003,8 +1042,16 @@ def test_ws_set_ready_quorum_close_drives_play_turn(client: TestClient) -> None:
         f"/ws/sessions/{sid}?token={seats['other_token']}"
     ) as ws:
         ws.send_json({"type": "set_ready", "ready": True, "client_seq": 1})
-        # Drain until we see the AI's broadcast — the play turn must
-        # have run from the WS dispatch site.
+        # Drain for the directed ``set_ready_ack`` carrying
+        # ``ready_to_advance=True``. The post-condition assertions
+        # below (mock play-call count + transcript broadcast) prove
+        # the WS dispatch site actually fired ``run_play_turn``; the
+        # ack only confirms the manager flipped the gate. We don't
+        # try to drain the ``message_complete`` broadcast over this
+        # socket because ``run_play_turn`` is awaited inline by the
+        # WS handler before the ack is sent, and the broadcast may
+        # have already landed (and been replayed) before the WS
+        # context exits.
         ack = _drain(ws, kinds=("set_ready_ack",))
         assert ack is not None
         assert ack["ready_to_advance"] is True
