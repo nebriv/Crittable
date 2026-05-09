@@ -1887,6 +1887,7 @@ class SessionManager:
         task.add_done_callback(self._bg_tasks.discard)
 
     async def _generate_aar_bg(self, session_id: str) -> None:
+        from ..llm.errors import UpstreamLLMError, notify_creator_of_upstream_error
         from ..llm.export import AARGenerator
 
         async with await self._lock_for(session_id):
@@ -1919,6 +1920,54 @@ class SessionManager:
         try:
             generator = AARGenerator(llm=self._llm, audit=self._audit)
             markdown, report = await generator.generate(target)
+        except UpstreamLLMError as upstream_exc:
+            # Issue #191 — AAR pipeline upstream blip. Surface the
+            # banner to the creator with the status-page link before
+            # falling through to the regular ``failed`` path so the
+            # operator knows it's an upstream issue (and that
+            # re-triggering AAR generation in a minute will likely
+            # succeed) rather than a Crittable bug.
+            await notify_creator_of_upstream_error(
+                connections=self._connections,
+                session=target,
+                err=upstream_exc,
+            )
+            _logger.exception(
+                "aar_generation_failed",
+                session_id=session_id,
+                error=str(upstream_exc),
+                upstream_category=upstream_exc.category,
+            )
+            async with await self._lock_for(session_id):
+                try:
+                    session = await self._repo.get(session_id)
+                except Exception as repo_exc:
+                    _logger.warning(
+                        "aar_failure_persist_aborted_repo_get_failed",
+                        session_id=session_id,
+                        original_error=str(upstream_exc),
+                        repo_error=str(repo_exc),
+                    )
+                    return
+                session.aar_status = "failed"
+                # ``aar_error`` is read by /activity, /export.md (425/500
+                # body), and rendered in SessionActivityPanel — must
+                # NOT carry the raw SDK exception text (Copilot review
+                # on PR #219). The sanitized summary keeps category +
+                # status + request_id; the raw message stays on the
+                # ``upstream_llm_error`` log line for ops.
+                session.aar_error = upstream_exc.sanitized_summary()[:500]
+                await self._repo.save(session)
+            # Audit payload's ``error`` field is creator-readable via
+            # /debug too; same sanitization rule applies.
+            self._emit(
+                "aar_failed", session, error=upstream_exc.sanitized_summary()
+            )
+            await self._connections.broadcast(
+                session_id, {"type": "aar_status_changed", "status": "failed"}
+            )
+            await self._broadcast_ai_status(session_id, phase=None)
+            return
         except Exception as exc:
             _logger.exception("aar_generation_failed", session_id=session_id, error=str(exc))
             async with await self._lock_for(session_id):

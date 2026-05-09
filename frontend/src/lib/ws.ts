@@ -260,7 +260,24 @@ export type ServerEvent =
       reason: string;
       client_seq: number;
     }
-  | { type: "error"; scope: string; message: string };
+  // Issue #191: ``scope: "upstream_llm"`` is sent to the creator only
+  // when the LLM provider returns a transient infrastructure error
+  // (529 / 5xx / 429 / connection timeout) after the SDK's retries
+  // are exhausted. The frontend renders a banner with the status-page
+  // link instead of the generic "AI failed to yield" copy. Other
+  // scopes (``turn``, ``set_ready``, …) keep the legacy shape.
+  // ``message`` is omitted for ``upstream_llm`` events — the banner
+  // renders category-specific copy, never the raw SDK exception
+  // string (no internal-hostname leak on misconfigured deploys).
+  | {
+      type: "error";
+      scope: string;
+      message?: string;
+      category?: "overloaded" | "rate_limited" | "server_error" | "timeout" | "unknown";
+      status_code?: number | null;
+      request_id?: string | null;
+      retry_hint_seconds?: number | null;
+    };
 
 export type ClientEvent =
   | {
@@ -504,6 +521,15 @@ export class WsClient {
           case "error":
             safe.scope = parsed.scope;
             safe.message = parsed.message;
+            // Issue #191 — surface the structured fields so a copy-
+            // pasted console dump from a creator's bug report carries
+            // the upstream provider trace_id straight to ops.
+            if (parsed.scope === "upstream_llm") {
+              safe.category = parsed.category;
+              safe.status_code = parsed.status_code;
+              safe.request_id = parsed.request_id;
+              safe.retry_hint_seconds = parsed.retry_hint_seconds;
+            }
             break;
           case "guardrail_blocked":
             safe.verdict = parsed.verdict;

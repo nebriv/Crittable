@@ -461,7 +461,19 @@ export function Play({ sessionId, token }: Props) {
         });
         break;
       case "error":
-        setError(evt.message);
+        // Issue #191: defense-in-depth — ``upstream_llm`` events are
+        // server-side ``send_to_role(creator)`` only, but if a stray
+        // event ever reached a player tab we'd still drop it
+        // silently. Players can't act on an upstream outage; the
+        // creator owns the Force-advance / Retry decision.
+        if (evt.scope === "upstream_llm") {
+          console.debug("[play] upstream LLM error suppressed (creator-only)", {
+            category: evt.category,
+            status_code: evt.status_code,
+          });
+          break;
+        }
+        setError(evt.message ?? "Unknown error");
         // ``submit_response`` rejections (e.g. "role cannot submit on
         // this turn" when a turn changes between composer-open and
         // hitting Submit) used to silently clear the textarea — the
