@@ -19,7 +19,7 @@ default. Three small layers above that:
 
 | Layer | Vars | When |
 |---|---|---|
-| **Required** | `LLM_API_KEY` | Always — the app refuses to start without it. |
+| **Required** | `LLM_API_KEY` | When any tier targets the `anthropic/` family (the default). Non-Anthropic deployments boot without it and let LiteLLM auto-discover the provider-native env var (`OPENAI_API_KEY` / `AWS_*` / `GOOGLE_APPLICATION_CREDENTIALS` / etc.). The startup gate in `app/main.py` decides which case applies and either fails fast or logs `llm_api_key_skipped`. |
 | **Before going public** | `SESSION_SECRET`, `CORS_ORIGINS`, `RATE_LIMIT_ENABLED` | Before anyone outside your machine touches the app. The app boots without these but warns loudly. See [the hardening checklist](#before-going-public--hardening-checklist). |
 | **Tweaks worth knowing** | `LLM_API_BASE`, `LLM_MODEL_<TIER>`, `LOG_LEVEL`, `MAX_TURNS_PER_SESSION`, `INPUT_GUARDRAIL_ENABLED` | When you want a different LLM provider, change models, see more logs, change cost caps, or disable the off-topic guardrail. See [`llm_providers.md`](llm_providers.md) for the multi-provider story. |
 | **Dev-only — never set in production** | `DEV_FAST_SETUP`, `DEV_TOOLS_ENABLED`, `AAR_INLINE_ON_END` | Iterating on the play UI / running scenario replays / running tests. Each one degrades security or correctness if left on. |
