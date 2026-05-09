@@ -1935,9 +1935,19 @@ class SessionManager:
                     )
                     return
                 session.aar_status = "failed"
-                session.aar_error = str(upstream_exc)[:500]
+                # ``aar_error`` is read by /activity, /export.md (425/500
+                # body), and rendered in SessionActivityPanel — must
+                # NOT carry the raw SDK exception text (Copilot review
+                # on PR #219). The sanitized summary keeps category +
+                # status + request_id; the raw message stays on the
+                # ``upstream_llm_error`` log line for ops.
+                session.aar_error = upstream_exc.sanitized_summary()[:500]
                 await self._repo.save(session)
-            self._emit("aar_failed", session, error=str(upstream_exc)[:500])
+            # Audit payload's ``error`` field is creator-readable via
+            # /debug too; same sanitization rule applies.
+            self._emit(
+                "aar_failed", session, error=upstream_exc.sanitized_summary()
+            )
             await self._connections.broadcast(
                 session_id, {"type": "aar_status_changed", "status": "failed"}
             )

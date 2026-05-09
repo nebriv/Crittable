@@ -611,11 +611,17 @@ class TurnDriver:
                     # "AI is thinking" — they can't act on the
                     # outage), and bail out cleanly. The creator's
                     # Force-advance / Retry path is unchanged.
+                    #
+                    # ``error_reason`` is exposed via /activity and
+                    # rendered in SessionActivityPanel — must NOT
+                    # carry the raw SDK exception text (an
+                    # ``APIConnectionError`` message can include the
+                    # resolved internal-gateway hostname on a
+                    # misconfigured LLM_API_BASE deploy). Use the
+                    # sanitized summary; the raw message stays on the
+                    # ``upstream_llm_error`` log line.
                     turn.status = "errored"
-                    turn.error_reason = (
-                        f"upstream_{upstream_exc.category}: "
-                        f"{upstream_exc.message}"
-                    )[:500]
+                    turn.error_reason = upstream_exc.sanitized_summary()[:500]
                     await notify_creator_of_upstream_error(
                         connections=self._manager.connections(),
                         session=session,

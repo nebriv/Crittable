@@ -62,6 +62,31 @@ class UpstreamLLMError(Exception):
         self.retry_hint_seconds = retry_hint_seconds
         self.message = message
 
+    def sanitized_summary(self) -> str:
+        """Return a UI-safe summary string suitable for persisting on
+        operator-visible session fields (``turn.error_reason``,
+        ``session.aar_error``) that leak through ``/activity`` /
+        ``/export.md`` / ``SessionActivityPanel``.
+
+        Drops ``self.message`` (the raw ``str(exc)``) for the same
+        reason ``to_event_payload`` does — Anthropic's
+        ``APIConnectionError`` carries the resolved hostname in its
+        message, which on a misconfigured ``LLM_API_BASE`` deploy
+        leaks an internal gateway URL into the creator UI. Keep raw
+        details on the ``upstream_llm_error`` log line for ops; UI
+        surfaces get the structured summary only.
+        """
+
+        bits = [f"upstream_{self.category}"]
+        meta: list[str] = []
+        if self.status_code is not None:
+            meta.append(f"status={self.status_code}")
+        if self.request_id:
+            meta.append(f"req={self.request_id}")
+        if meta:
+            bits.append("(" + " ".join(meta) + ")")
+        return " ".join(bits)
+
     def to_event_payload(self) -> dict[str, Any]:
         """Serialise into the ``{type: "error", scope: "upstream_llm", …}``
         WS event shape consumed by ``frontend/src/pages/Facilitator.tsx``.

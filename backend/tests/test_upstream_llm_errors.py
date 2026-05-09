@@ -211,6 +211,44 @@ def test_retry_hint_non_numeric_is_dropped() -> None:
 # -------------------------------------------------------------- payload shape
 
 
+def test_sanitized_summary_excludes_raw_message() -> None:
+    """``sanitized_summary`` is what ``turn.error_reason`` and
+    ``session.aar_error`` are persisted as — both leak via
+    ``/activity`` / ``/export.md`` / ``SessionActivityPanel`` to the
+    creator UI. It MUST NOT carry the raw SDK exception string,
+    same security rationale as the WS payload (Copilot review on
+    PR #219). Format: ``upstream_<category> (status=N req=R)``."""
+
+    err = UpstreamLLMError(
+        category="overloaded",
+        status_code=529,
+        request_id="req_xyz",
+        retry_hint_seconds=None,
+        message="Connection error: HTTPSConnectionPool(host='internal-gw.corp', port=443)",
+    )
+    summary = err.sanitized_summary()
+    assert summary == "upstream_overloaded (status=529 req=req_xyz)"
+    # Defense-in-depth: the precise hostname format above is the
+    # canonical leak vector. Spot-check that nothing remotely
+    # exception-shaped survives the sanitization.
+    assert "internal-gw" not in summary
+    assert "HTTPSConnectionPool" not in summary
+
+
+def test_sanitized_summary_drops_optional_fields_cleanly() -> None:
+    """A timeout error (no status_code, no request_id) collapses to
+    just the category — no empty parens, no trailing whitespace."""
+
+    err = UpstreamLLMError(
+        category="timeout",
+        status_code=None,
+        request_id=None,
+        retry_hint_seconds=None,
+        message="Connection error.",
+    )
+    assert err.sanitized_summary() == "upstream_timeout"
+
+
 def test_event_payload_locks_wire_keys() -> None:
     """Pin the event payload exactly — frontend ``ws.ts`` ``ServerEvent``
     union asserts on these fields. Adding / renaming a key here is a
@@ -510,8 +548,17 @@ def test_play_turn_529_marks_errored_and_targets_creator_only() -> None:
     assert status_ == "errored", (
         f"expected turn.status='errored' on upstream blip; got {status_!r}"
     )
-    assert reason is not None and reason.startswith("upstream_overloaded:"), (
+    # Sanitized format: ``upstream_<category> (status=N req=...)``.
+    # Critically must NOT contain the raw SDK message — it leaks via
+    # /activity and SessionActivityPanel (Copilot review on PR #219).
+    assert reason is not None and reason.startswith("upstream_overloaded"), (
         f"expected upstream_overloaded prefix; got {reason!r}"
+    )
+    assert "Overloaded" not in reason, (
+        f"raw SDK exception text leaked into turn.error_reason: {reason!r}"
+    )
+    assert "req=req_int_test_529" in reason, (
+        f"expected request_id in sanitized reason; got {reason!r}"
     )
 
     # -------- assertion 2: the creator got the structured banner
