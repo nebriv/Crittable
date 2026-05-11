@@ -240,7 +240,7 @@ jobs:
         # Security tab and can be triaged from there instead of
         # disappearing with the failed run.
         if: always()
-        uses: github/codeql-action/upload-sarif@v3
+        uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: trivy-results.sarif
           category: trivy-image-scan
