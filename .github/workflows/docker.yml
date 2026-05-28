@@ -264,7 +264,7 @@ jobs:
         # Always upload, even if the gate failed — findings land in the
         # Security tab and can be triaged from there.
         if: always()
-        uses: github/codeql-action/upload-sarif@v3
+        uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: trivy-results.sarif
           category: trivy-image-scan
