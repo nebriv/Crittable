@@ -51,11 +51,18 @@ dependencies = [
     # build never regresses below the fix for GHSA-mf9w-mj56-hr94
     # (CVE-2026-28684) — symlink-following file overwrite in
     # ``set_key`` when the .env path is a symlink across filesystems.
-    # We never call ``set_key`` ourselves (only ``load_dotenv`` via
-    # litellm), but Trivy reports this as HIGH/CRITICAL from a
-    # non-GitHub vendor and gates the runtime-image push on it. Fix
-    # landed in python-dotenv 1.2.2. litellm's own constraint stays
-    # at ``>=1.0.0,<2.0`` so this is a deliberate floor lift.
+    # We never call ``set_key`` ourselves, and we also never call
+    # ``load_dotenv`` — ``app/llm/_shared.py`` sets
+    # ``LITELLM_MODE=PRODUCTION`` before ``import litellm`` precisely
+    # to skip litellm's import-time ``dotenv.load_dotenv()``. So the
+    # runtime attack surface from this CVE is zero for us. The pin
+    # exists because Trivy flags the *installed package* regardless
+    # of whether the vulnerable code path runs, reports it as
+    # HIGH/CRITICAL from a non-GitHub vendor, and gates the runtime-
+    # image push on it. Fix landed in python-dotenv 1.2.2; litellm's
+    # own constraint stays at ``>=1.0.0,<2.0``, so this is a
+    # deliberate floor lift to keep the gate green without changing
+    # behavior.
     "python-dotenv>=1.2.2",
 ]
 

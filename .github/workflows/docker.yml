@@ -275,6 +275,17 @@ jobs:
         # this is a near-instant cache hit — no real rebuild happens.
         # Skipped automatically if the Trivy step failed because steps
         # default to ``if: success()``.
+        #
+        # ``build-args`` must match the scan step exactly. ``CACHEBUST``
+        # is referenced inside the apt RUN, so it's part of every
+        # downstream layer's cache key. If we omit it here, this step
+        # defaults to ``CACHEBUST=1`` (the Dockerfile fallback), which
+        # is a different cache key than ``CACHEBUST=${{ github.run_id }}``
+        # — pip and apt layers would rebuild, possibly hitting older
+        # cached layers that have CVEs we just gated against. Passing
+        # the same value guarantees a cache hit on the layers the
+        # scan validated, so what we push is byte-identical to what
+        # Trivy approved.
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -284,3 +295,5 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
+          build-args: |
+            CACHEBUST=${{ github.run_id }}
