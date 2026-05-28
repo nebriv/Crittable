@@ -9,10 +9,17 @@ breakpoint sits on its end, giving near-100% cache hits across the session.
 from __future__ import annotations
 
 import json
+from datetime import UTC
 from typing import Any
 
 from ..extensions.registry import FrozenRegistry
-from ..sessions.models import RosterSize, Session, SessionFeatures, SessionState
+from ..sessions.models import (
+    MessageKind,
+    RosterSize,
+    Session,
+    SessionFeatures,
+    SessionState,
+)
 
 _IDENTITY = (
     "You are an AI cybersecurity tabletop facilitator running an interactive "
@@ -1087,6 +1094,14 @@ def build_play_system_blocks(
     stable_blocks: list[str] = [
         "## Block 1 — Identity\n" + _IDENTITY,
         "## Block 2 — Mission\n" + _MISSION,
+        # Block 2b slots between Mission and Plan adherence (mirrors the
+        # Block 5b lettered-insertion pattern) so existing Block-number
+        # cross-references in code, prompts, and docs stay stable. The
+        # exercise clock is foundational framing — the model reads it
+        # before the plan (Block 7) and the realism/telemetry rail
+        # (Block 5b), so any dated content it generates downstream is
+        # anchored. Frozen per session → stays in the cached prefix.
+        "## Block 2b — Exercise clock\n" + _exercise_clock_block(session),
         "## Block 3 — Plan adherence\n" + _PLAN_ADHERENCE,
         "## Block 4 — Hard boundaries\n" + _HARD_BOUNDARIES,
         "## Block 5 — Style\n" + style,
@@ -1109,6 +1124,12 @@ def build_play_system_blocks(
         + seated_table
         + unseated_block
         + roster_rules,
+        # Block 10b — computed participation + pacing telemetry. Sits next
+        # to the roster (Block 10 = who's seated/present; 10b = what
+        # they've contributed). VOLATILE — every count changes turn-to-
+        # turn — so it stays in the suffix, never the cached prefix.
+        "## Block 10b — Exercise telemetry\n"
+        + _exercise_telemetry_block(session),
         "## Block 11 — Open per-role follow-ups\n" + _build_followup_block(session),
         # Block 12 — creator-selected scenario tuning. Frozen at session
         # creation so the block's contents are byte-identical across
@@ -1431,6 +1452,210 @@ assert set(_FEATURE_FIELDS) == _SESSION_FEATURE_FIELDS, (
 )
 
 
+# Locale-independent month / weekday names. ``strftime('%A'/'%B')``
+# resolves against the process ``LC_TIME`` locale — a deployment with a
+# non-C ``LC_TIME`` (e.g. ``de_DE.UTF-8``) would render "Donnerstag, Mai"
+# into the *cached* system prompt (and fragment the cache / break the
+# pinned test). Indexing fixed English tuples keeps the anchor identical
+# regardless of deployment locale. Digits (``%H:%M``, day, year) are
+# locale-stable, so only the names need this treatment.
+_WEEKDAY_NAMES = (
+    "Monday", "Tuesday", "Wednesday", "Thursday",
+    "Friday", "Saturday", "Sunday",
+)
+_MONTH_NAMES = (
+    "January", "February", "March", "April", "May", "June",
+    "July", "August", "September", "October", "November", "December",
+)
+
+
+def _exercise_clock_block(session: Session) -> str:
+    """Render the exercise's temporal anchor for the system prompt.
+
+    The model has no inherent sense of the current date — left
+    ungrounded, the timestamps it invents for synthetic scenario
+    telemetry don't line up with each other or with any "now" the team
+    can reason about. The 2026-05 report: a ``share_data`` brief
+    headed "Sign-In Log — Last 30 Days" whose only hit was dated months
+    outside that window. This block tells every tier what day it is and
+    makes internal date consistency an explicit rule.
+
+    Anchored on ``session.created_at`` (frozen at session creation), NOT
+    a live ``datetime.now()`` per call, so the three tiers share ONE
+    "now": setup freezes the plan and its inject timeline, then players
+    may sit in the lobby for hours before play renders live data against
+    that plan. A live clock would drift between the setup that built the
+    timeline and the play turns that fill it in, desyncing the two. One
+    frozen anchor keeps the plan, the live briefs, and the AAR coherent.
+
+    Lives in the play tier's STABLE (cached) prefix because it is
+    byte-identical across every turn of a session — re-billing it in the
+    volatile suffix would defeat the prompt cache for no benefit.
+    """
+
+    dt = session.created_at
+    # Defensive: a fixture / legacy row could carry a tz-naive value.
+    dt = dt.replace(tzinfo=UTC) if dt.tzinfo is None else dt.astimezone(UTC)
+    # ``dt.day`` / ``dt.year`` are ints (no leading zero); names come from
+    # the locale-independent tuples above, not ``%A``/``%B``.
+    human = f"{_WEEKDAY_NAMES[dt.weekday()]}, {_MONTH_NAMES[dt.month - 1]} {dt.day}, {dt.year}"
+    clock = f"{dt:%H:%M} UTC"
+    return (
+        f"This exercise takes place on **{human}** — treat this date as "
+        'the present day ("now") the team is operating in, UNLESS the '
+        "creator's scenario seed pins a specific in-fiction date or period, "
+        'in which case that is "now" instead. Either way, every date and '
+        "time you generate must be internally consistent with whichever "
+        "anchor applies.\n"
+        f"- The session opened at about **{clock}**; use that as the "
+        "exercise's starting clock and let in-fiction time move forward "
+        'from there (an inject may jump it ahead — "two hours later…"), '
+        "never backward into stale dates or an unrelated year.\n"
+        "- Every timestamp you invent for scenario content — sign-in and "
+        "auth logs, EDR/SIEM telemetry, IOC first-seen stamps, alert "
+        'times, breach/dwell timelines, inject timing, "last N days" '
+        "windows — must line up with that anchor. Recent events are recent "
+        '*relative to today*; a "last 30 days" window ends today and '
+        "starts ~30 days back, not in some unrelated month.\n"
+        '- When you say how long ago something happened ("three days ago", '
+        '"this morning", "back in Q1"), compute it against today so the '
+        "timeline stays self-consistent across the whole exercise and the "
+        "AAR."
+    )
+
+
+def _participation_tally(
+    session: Session,
+) -> tuple[dict[str, int], dict[str, int], dict[str, int], int, int]:
+    """Single pass over visible player messages → per-role tallies.
+
+    Returns ``(submissions, words, last_turn_index, total_player_msgs,
+    critical_injects)``. ``hidden_from_ai`` messages are excluded so the
+    counts match the transcript the model actually sees — otherwise the
+    model is told "this role sent 5" while the visible history shows 4,
+    and it can't reconcile. Shared by the play telemetry block and the
+    AAR roster so both tiers report identical numbers.
+
+    Out-of-turn interjections (``is_interjection``) are counted as
+    participation — the role did communicate — and are not separated
+    out; the play tier already sees the ``[OUT-OF-TURN]`` marker on the
+    message itself if it needs that nuance.
+    """
+
+    turn_index_by_id = {t.id: t.index for t in session.turns}
+    submissions: dict[str, int] = {}
+    words: dict[str, int] = {}
+    last_turn: dict[str, int] = {}
+    total_player_msgs = 0
+    criticals = 0
+    for m in session.messages:
+        if m.kind == MessageKind.CRITICAL_INJECT:
+            criticals += 1
+        if m.kind != MessageKind.PLAYER or m.role_id is None or m.hidden_from_ai:
+            continue
+        rid = m.role_id
+        total_player_msgs += 1
+        submissions[rid] = submissions.get(rid, 0) + 1
+        # Whitespace token count — approximate by design (markdown / code
+        # tokens count as "words"); the column is labeled ``~words`` and
+        # framed as a volume signal, not an exact metric.
+        words[rid] = words.get(rid, 0) + len(m.body.split())
+        t_idx = turn_index_by_id.get(m.turn_id) if m.turn_id else None
+        if t_idx is not None:
+            last_turn[rid] = max(last_turn.get(rid, -1), t_idx)
+    return submissions, words, last_turn, total_player_msgs, criticals
+
+
+def _exercise_telemetry_block(session: Session) -> str:
+    """Computed participation + pacing metrics for the play tier.
+
+    The model is unreliable at counting across a long transcript — how
+    many times each role has spoken, who's gone quiet, how far into the
+    time-box the exercise is. It infers these badly and inconsistently
+    (the same class of failure as not knowing the date). We compute them
+    in code and hand them over as ground truth so the AI can balance the
+    floor (draw in a *present* quiet role when the beat needs it, curb a
+    dominant one), sanity-check participation for the AAR (a role with 0
+    messages had no observable input — but volume is a presence floor,
+    NOT a quality measure), and read where it is in the time-box.
+
+    Every count changes as the turn advances, so this is VOLATILE — it
+    lives in the volatile suffix, never the cached prefix.
+    """
+
+    turns = session.turns
+    cur = session.current_turn
+    cur_index = cur.index if cur is not None else 0
+
+    # Real elapsed from play start (first turn) to this turn's start.
+    # Computed from stored turn timestamps, so it's deterministic per
+    # build (no wall-clock call) and unit-testable.
+    elapsed_min = 0
+    if turns and cur is not None:
+        delta = cur.started_at - turns[0].started_at
+        elapsed_min = max(0, round(delta.total_seconds() / 60))
+    target_min = session.settings.duration_minutes
+
+    submissions, words, last_turn, total_player_msgs, criticals = _participation_tally(
+        session
+    )
+
+    rows = ["| role | messages | ~words | last spoke |", "|---|---|---|---|"]
+    for r in session.roles:
+        if r.kind != "player":
+            continue
+        n = submissions.get(r.id, 0)
+        w = words.get(r.id, 0)
+        if r.id in last_turn:
+            ago = cur_index - last_turn[r.id]
+            spoke = "this turn" if ago <= 0 else f"{ago} turn{'s' if ago != 1 else ''} ago"
+        else:
+            spoke = "— never"
+        # Sanitize creator-supplied label before it lands in a
+        # ``|``-delimited cell — same threat (and same defense) as the
+        # Block 10 seated table: a label with an embedded ``|`` / newline
+        # would otherwise smuggle a forged row into the model's view.
+        rows.append(
+            f"| {_sanitize_table_cell(r.label)} | {n} | {w} | {spoke} |"
+        )
+    table = "\n".join(rows)
+
+    pacing = (
+        f"Pacing: ~{elapsed_min} min elapsed of {target_min} min target · "
+        f"turn {cur_index} · {total_player_msgs} player "
+        f"message{'' if total_player_msgs == 1 else 's'} so far · "
+        f"{criticals} critical inject{'' if criticals == 1 else 's'} fired."
+    )
+    return (
+        pacing + "\n\n" + table + "\n\n"
+        "These are exact counts from the transcript — authoritative; do not "
+        "re-tally by scanning history. They are PRIVATE context for your "
+        "judgment, never surfaced to players as numbers OR paraphrase: do not "
+        'tell a role it has "been quiet" / "talked the most" / "not weighed '
+        'in", and do not announce you are balancing participation. Act on it '
+        "silently through who the next in-fiction beat addresses (Block 6), "
+        "the way you redirect in-character under Block 3.\n"
+        "- **Floor-balancing.** If a role Block 10 marks as PRESENT has gone "
+        "several turns without speaking AND the current or next beat "
+        "plausibly needs its function, fold it in via a natural in-fiction "
+        "handoff; don't let one role dominate. Never address a seat Block 10 "
+        "marks not-joined (a `— never` row may simply be an empty seat), and "
+        "don't call on a present role just to even the counts — silence can "
+        "be right for the phase. This shapes who you fold into a planned "
+        "beat; it does not override Block 6's yield mechanics.\n"
+        "- **AAR floor only.** A role with 0 messages had no observable input "
+        "to score — but these counts are NOT a quality signal. A terse, "
+        "decisive message outscores a verbose one; never let message or word "
+        "volume inflate a role's communication or speed.\n"
+        "- **Pacing.** The elapsed/target figures tell you where you are in "
+        "the time-box; feed them into Block 12's pacing policy. Pacing serves "
+        "the plan (Blocks 3 & 7) — if beats remain when time is short, "
+        "compress or consolidate them, don't abandon the arc to beat the "
+        "clock. Elapsed counts idle gaps (lobby waits, AFK), so treat it as a "
+        "soft signal, not a countdown."
+    )
+
+
 def _build_session_settings_block(session: Session) -> str:
     """Render the creator-selected difficulty / duration / feature
     toggles as a system-prompt block. Surfaced verbatim into both
@@ -1495,6 +1720,10 @@ def build_setup_system_blocks(
     text = "\n\n".join(
         [
             "## Identity\n" + _IDENTITY,
+            # The clock anchors the plan the setup tier is about to freeze
+            # — its narrative_arc / inject timeline inherit this "now", so
+            # the play tier's live data briefs line up with the plan.
+            "## Exercise clock\n" + _exercise_clock_block(session),
             "## Hard boundaries\n" + _HARD_BOUNDARIES,
             "## Setup-phase instructions\n" + setup_block,
             "## Seated roster\n" + _setup_roster_block(session),
@@ -1522,6 +1751,11 @@ def build_aar_system_blocks(session: Session) -> list[dict[str, Any]]:
     # include the AI Facilitator + any spectators here only as
     # negative context ("don't score these") — same list the markdown
     # exporter uses, so the model sees one source of truth.
+    # Participation counts (computed, not the model's tally) so the
+    # communication / speed sub-scores rest on objective volume — a role
+    # that sent 0 messages can't have communicated well, and the model
+    # is poor at re-counting this from a long transcript itself.
+    submissions, words, _last, _total, _crit = _participation_tally(session)
     roster_lines: list[str] = []
     for role in session.roles:
         kind = getattr(role.kind, "value", str(role.kind))
@@ -1530,18 +1764,34 @@ def build_aar_system_blocks(session: Session) -> list[dict[str, Any]]:
             " · score this" if kind == "player" else f" · do NOT score (kind={kind})"
         )
         dn = f' — "{role.display_name}"' if role.display_name else ""
+        # Volume signal on scored (player) rows only.
+        tally = (
+            f" · {submissions.get(role.id, 0)} msgs, ~{words.get(role.id, 0)} words"
+            if kind == "player"
+            else ""
+        )
         roster_lines.append(
-            f"  - id={role.id} · label={role.label}{dn}{creator_tag}{score_tag}"
+            f"  - id={role.id} · label={role.label}{dn}{creator_tag}{score_tag}{tally}"
         )
     roster_text = (
         "Use these exact `id` values in `per_role_scores[].role_id` — any "
-        "other value is dropped silently:\n" + "\n".join(roster_lines)
+        "other value is dropped silently:\n" + "\n".join(roster_lines) + "\n\n"
+        "The `N msgs, ~W words` on each row shows only whether a role "
+        "PARTICIPATED — it is not a quality measure. Score communication on "
+        "substance: a terse, decisive message outscores a verbose one, and "
+        "brevity is never a penalty. Use the counts to catch a silent role "
+        "(score on evidence, not assumption), not to reward whoever typed "
+        "the most."
         if roster_lines
         else "(no roster — emit an empty per_role_scores list)"
     )
     text = "\n\n".join(
         [
             "## AAR — system instructions\n" + _AAR_SYSTEM,
+            # Same anchor the play turns used, so any date the report
+            # references (or invents) lines up with the transcript it
+            # summarizes rather than drifting into an unrelated month.
+            "## Exercise clock\n" + _exercise_clock_block(session),
             "## Roster (canonical IDs)\n" + roster_text,
             # Difficulty + features calibrate scoring expectations: a
             # team that played at ``hard`` should not be penalized for

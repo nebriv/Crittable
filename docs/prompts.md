@@ -8,8 +8,9 @@ prompt is composed at runtime.
 **Prompt caching.** `build_play_system_blocks` returns the system
 prompt as **two text blocks** — a stable prefix (Blocks 1–9, ~85% of
 play-tier system tokens) and a volatile suffix (Block 10 roster +
-presence column, Block 11 follow-ups, conditional Block 12 rate-limit
-notice). `with_system_cache` (in `app.llm._shared`, called by both
+presence column, Block 10b computed participation/pacing telemetry,
+Block 11 follow-ups, conditional Block 13 rate-limit notice).
+`with_system_cache` (in `app.llm._shared`, called by both
 backends) plants an `ephemeral` cache breakpoint on the stable prefix
 so the entire ~5–7k-token preamble (plus the deterministic tool list
 rendered before it) cache-reads at ~10% of input price on every
@@ -126,6 +127,29 @@ prefix; volatile content stays out of the cache key so per-turn flips
 > Drive a realistic, on-topic, educational exercise that produces a
 > useful after-action report. Assess each role's decisions on quality,
 > communication, and speed. Keep the exercise tense but professional.
+
+### Block 2b — Exercise clock
+
+Rendered by `_exercise_clock_block(session)`, anchored on
+`session.created_at` (frozen at session creation). Tells the model what
+day/time it is and makes internal date consistency an explicit rule:
+every timestamp it invents for synthetic scenario content (sign-in
+logs, EDR/SIEM telemetry, IOC first-seen stamps, inject timing, "last N
+days" windows) must be consistent with this anchor, and "N days ago"
+phrasings are computed against it. Origin: a `share_data` brief headed
+"Sign-In Log — Last 30 Days" whose only hit was dated months outside
+that window, because the model had no notion of "now".
+
+Anchored on `created_at` (not a live clock per call) so the three tiers
+share **one** "now": setup freezes the plan + its inject timeline, then
+players may sit in the lobby for hours before play renders live data
+against that plan — a live clock would drift the two apart. The same
+block is emitted into the setup and AAR tiers for the same reason.
+
+Slotted as a lettered block between Block 2 and Block 3 (mirrors the
+Block 5b pattern) so existing Block-number cross-references stay stable.
+It is **frozen per session**, so it lives in the cached stable prefix,
+not the volatile suffix.
 
 ### Block 3 — Plan adherence
 
@@ -304,6 +328,46 @@ Two sub-tables:
   the briefing turn; the contingent-mention escape applies mid-
   session only.
 
+### Block 10b — Exercise telemetry
+
+Rendered by `_exercise_telemetry_block(session)`; sits next to the
+roster (Block 10 = who's seated/present, 10b = what they've
+contributed). **Computed** metrics the model is unreliable at inferring
+from a long transcript, handed over as ground truth:
+
+- **Pacing line** — `~N min elapsed of T min target · turn K · M player
+  messages so far · C critical injects fired`. Elapsed is derived from
+  stored turn timestamps (`current_turn.started_at - turns[0].started_at`),
+  so it's deterministic per build — no wall-clock call.
+- **Per-role table** — `role | messages | ~words | last spoke` for each
+  **player** role (spectators excluded). `last spoke` is `this turn` /
+  `N turns ago` / `— never`. The role label is run through
+  `_sanitize_table_cell` (same `|`/newline-injection defense as the Block
+  10 table). Counts come from `_participation_tally`, which excludes
+  `hidden_from_ai` messages so the numbers match the transcript the model
+  actually sees (out-of-turn interjections *are* counted as participation).
+
+The directive (tightened after sub-agent review) tells the model to treat
+the counts as **authoritative** (don't re-tally) but **private** — never
+surfaced to players as numbers *or* paraphrase ("you've been quiet"),
+acting on them silently through in-fiction beat selection (Block 6 / Block
+3). Three uses, each scoped to avoid a known failure mode:
+
+- **Floor-balancing** is restricted to roles Block 10 marks **present** and
+  to beats that plausibly need the role — never address a `not-joined`
+  seat (a `— never` row may be an empty seat), never call on someone just
+  to even the counts. It shapes *who you fold into a planned beat*, never
+  overriding Block 6's yield mechanics.
+- **AAR floor only** — volume is a *presence* signal, **not** quality; a
+  terse decisive message outscores a verbose one (mirrored in the AAR
+  roster guard, below).
+- **Pacing** feeds Block 12's policy and stays subordinate to the plan
+  (Blocks 3/7); elapsed counts idle gaps, so it's a soft signal.
+
+**Volatile** (every count changes turn-to-turn), so it lives in the
+suffix, never the cached prefix. Same `_participation_tally` feeds the
+AAR roster's per-player volume (see AAR-tier section).
+
 ### Block 11 — Open per-role follow-ups
 
 Per-role todo list the AI maintains across turns via
@@ -311,7 +375,16 @@ Per-role todo list the AI maintains across turns via
 hint nudging the AI to start tracking; populated state echoes the
 list back so the model can pick up unanswered asks.
 
-### Block 12 — Critical-event budget (CONDITIONAL)
+### Block 12 — Session settings
+
+Rendered by `_build_session_settings_block(session)` — the creator-frozen
+difficulty / target-duration / feature toggles, surfaced verbatim so the
+AI tunes facilitation without re-asking. Byte-identical across turns but
+kept in the volatile suffix (the cache already rebreaks earlier, on Block
+10's presence column and Block 10b's counts). Also surfaced into the
+setup and AAR tiers.
+
+### Block 13 — Critical-event budget (CONDITIONAL)
 
 Only appended when `session.critical_inject_rate_limit_until` is set
 (i.e. the AI's previous critical-event call was rejected by the rate
@@ -349,6 +422,10 @@ The new multi-section intro (`SCENARIO BRIEF` / `TEAM` /
 `scenario_prompt` payload by the frontend; the setup model sees it as
 the seed user message. Rich seeds shorten the dialogue (sometimes to
 zero questions if the operator pre-fills everything).
+
+The setup block also carries the **Exercise clock** (see Block 2b) so
+the plan it freezes — and the inject timeline inside it — is anchored
+to the same "now" the play tier renders live data against.
 
 ---
 
@@ -398,6 +475,17 @@ sentences, narrative 4–8 paragraphs / 600–1200 words, scoring rubric
 anchors 1–5 with concrete behaviors, citation format) so the AAR
 output is consistent regardless of model temperature. See
 [`prompts.py::_AAR_SYSTEM`](../backend/app/llm/prompts.py).
+
+It also carries the **Exercise clock** (see Block 2b) — the same anchor
+the play turns used — so any date the report references or invents
+lines up with the transcript it summarizes.
+
+The canonical-roster block appends **per-player participation volume**
+(`N msgs, ~W words`, from the same `_participation_tally` the play-tier
+telemetry uses) to each scored row. The communication / speed sub-scores
+rest on objective counts rather than the model's own (unreliable)
+re-tally of a long transcript — a role that sent 0 messages can't have
+communicated well, and the volume is on the record.
 
 ---
 
