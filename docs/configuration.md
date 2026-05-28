@@ -160,6 +160,7 @@ Defaults preserve historical behavior so unset = no change.
 | `CORS_ORIGINS` | `*` | Comma-separated allowlist. **Set explicitly before going public.** |
 | `RATE_LIMIT_ENABLED` | `false` | Toggle the rate-limit middleware |
 | `RATE_LIMIT_REQ_PER_MIN` | `60` | Per-IP request cap when enabled |
+| `INVITE_CODE` | unset (no gate) | Soft anti-strangers gate on `POST /api/sessions`. When set to a non-empty value, the creator must supply a matching code on the wizard's invite gate before a session can be created; the wizard caches a validated code in `localStorage` so refreshes don't re-prompt. Player join links don't need it — they already carry per-role HMAC tokens. This is NOT a security boundary; it's a stopgap so a public-URL deploy doesn't burn LLM tokens on every drive-by. **Pair with `RATE_LIMIT_ENABLED=true`** so a brute-forcer can't grind through the code via the cheap `GET /api/invite/status?code=…` probe or the heavier `POST /api/sessions` path. Comparison is constant-time and surrounding whitespace is stripped so a copy-paste with a trailing newline still matches. The value is redacted from access logs and the browser-console request wrapper. App emits `invite_code_gate_enabled` at boot (or `invite_code_set_without_rate_limit` WARNING if the rate-limit middleware isn't on). |
 
 ## Extensions
 

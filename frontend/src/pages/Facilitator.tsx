@@ -1,6 +1,7 @@
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   api,
+  ApiError,
   CostSnapshot,
   DecisionLogEntry,
   DEFAULT_SESSION_FEATURES,
@@ -35,6 +36,12 @@ import { CollapsibleRailPanel } from "../components/brand/CollapsibleRailPanel";
 import { HudGauges } from "../components/brand/HudGauges";
 import { TurnStateRail } from "../components/brand/TurnStateRail";
 import { SetupWizard, type SetupRoleSlot } from "../components/setup/SetupWizard";
+import { InviteGate } from "../components/InviteGate";
+import {
+  clearStoredInviteCode,
+  readStoredInviteCode,
+} from "../lib/inviteCodeStorage";
+import { SiteHeader } from "../components/brand/SiteHeader";
 import { SetupLobbyView } from "../components/setup/SetupLobbyView";
 import { SetupReviewView } from "../components/setup/SetupReviewView";
 import { PlanView } from "../components/setup/PlanView";
@@ -265,6 +272,81 @@ export function Facilitator() {
       canceled = true;
     };
   }, []);
+  // Soft anti-strangers gate on session creation (env: ``INVITE_CODE``).
+  // Tri-state: ``null`` while the mount-time probe is in flight (we
+  // render a tiny loader rather than flashing the wizard then snapping
+  // to the gate); ``false`` once the server confirms no gate; ``true``
+  // when the server confirms a gate AND we haven't already validated a
+  // code below. The probe answers both questions in one round-trip —
+  // is the gate on, and (if there's a localStorage code) is it still
+  // valid — so a returning visitor whose code was rotated mid-night
+  // lands on the gate directly instead of after filling out the whole
+  // wizard. Backend re-validates on ``POST /api/sessions`` regardless,
+  // so a stale localStorage value or a missed probe still get caught
+  // there; the front-side gate is the UX layer, not the security
+  // boundary.
+  const [inviteRequired, setInviteRequired] = useState<boolean | null>(null);
+  const [inviteCode, setInviteCode] = useState<string | null>(null);
+  const [staleInviteNotice, setStaleInviteNotice] = useState<string | null>(
+    null,
+  );
+  useEffect(() => {
+    let canceled = false;
+    (async () => {
+      const stored = readStoredInviteCode();
+      try {
+        // One round-trip resolves both questions:
+        // - status.required → is the gate on?
+        // - status.valid (when ?code= passed) → is the stored code still valid?
+        const status = await api.getInviteStatus(stored ?? undefined);
+        if (canceled) return;
+        if (!status.required) {
+          // Server isn't gating; drop any stale stored value so a
+          // later flip back to gated doesn't accept a now-untrusted
+          // leftover.
+          clearStoredInviteCode();
+          setInviteCode(null);
+          setInviteRequired(false);
+          return;
+        }
+        if (stored && status.valid === true) {
+          // Returning visitor with a still-valid code: skip the gate.
+          setInviteCode(stored);
+          setInviteRequired(true);
+          return;
+        }
+        // Either no stored code, or the stored one no longer matches.
+        // Drop it so the next render shows the gate cleanly.
+        if (stored && status.valid !== true) {
+          clearStoredInviteCode();
+          console.info(
+            "[facilitator] stored invite code is no longer valid; re-prompting",
+          );
+        }
+        setInviteCode(null);
+        setInviteRequired(true);
+      } catch (err) {
+        // Fall open rather than soft-bricking the page on a transient
+        // network error — the backend re-validates on
+        // ``POST /api/sessions`` regardless, so a real gate still
+        // closes there. Log so the audit trail explains why the gate
+        // didn't render. Carry any stored code forward so a session
+        // create can still succeed when the wifi recovers.
+        console.warn(
+          "[facilitator] invite-status probe failed; assuming gate off",
+          err,
+        );
+        if (!canceled) {
+          setInviteRequired(false);
+          if (stored) setInviteCode(stored);
+        }
+      }
+    })();
+    return () => {
+      canceled = true;
+    };
+  }, []);
+
   const [setupReply, setSetupReply] = useState("");
   const [error, setError] = useState<string | null>(null);
   // Issue #191 — most recent ``{type: "error", scope: "upstream_llm"}``
@@ -631,6 +713,11 @@ export function Facilitator() {
           duration_minutes: durationMinutes,
           features,
         },
+        // Soft anti-strangers gate. ``null`` when the server has no
+        // ``INVITE_CODE`` set; populated from <InviteGate/> via
+        // localStorage when it does. The backend re-validates and
+        // returns 403 if it doesn't match (handled below).
+        ...(inviteCode != null ? { invite_code: inviteCode } : {}),
       });
       // Don't log the response object — it carries the creator token in
       // ``creator_token`` and ``creator_join_url``. Log only non-secret IDs.
@@ -696,8 +783,27 @@ export function Facilitator() {
       setSnapshot(snap);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      console.warn("[facilitator] create_session_failed", msg, err);
-      setError(msg);
+      // Stale-invite recovery: the gate is the only path that returns
+      // 403 from POST /api/sessions, so a status check is enough — no
+      // substring-matching the detail string, which would collide
+      // with any future error mentioning "invitee" (the codebase
+      // already has ``invitee_roles`` / ``failed_invitees``). Wipe
+      // the stored code, surface a stale-code notice on the gate
+      // itself (the wizard is about to unmount, so an error string in
+      // the wizard's error slot wouldn't reach the user), and let the
+      // <InviteGate/> render path show.
+      if (err instanceof ApiError && err.status === 403) {
+        console.warn("[facilitator] create_session_invite_rejected", msg);
+        clearStoredInviteCode();
+        setInviteCode(null);
+        setInviteRequired(true);
+        setStaleInviteNotice(
+          "Your invite code is no longer valid — likely rotated by the operator. Enter the current code to continue.",
+        );
+      } else {
+        console.warn("[facilitator] create_session_failed", msg, err);
+        setError(msg);
+      }
     } finally {
       setBusy(false);
       setBusyMessage(null);
@@ -1513,6 +1619,45 @@ export function Facilitator() {
   };
 
   if (phase === "intro") {
+    // While the mount-time probe is in flight (``inviteRequired ===
+    // null``) we render a tiny <SiteHeader> + <DieLoader> rather
+    // than flashing the wizard then snapping to the gate. The probe
+    // is one round-trip (~50–200 ms) and the spinner is honest about
+    // it. UI/UX review HIGH H1.
+    if (inviteRequired === null) {
+      return (
+        <main
+          className="grid min-h-screen grid-cols-1"
+          style={{ background: "var(--ink-900)" }}
+        >
+          <SiteHeader />
+          <section
+            className="flex flex-1 items-center justify-center"
+            style={{ minHeight: 0 }}
+            aria-busy="true"
+            aria-label="Checking access"
+          >
+            <DieLoader />
+          </section>
+        </main>
+      );
+    }
+    // Gate enforced when the server requires it AND we haven't
+    // validated a code yet. The backend re-validates on POST
+    // ``/api/sessions`` regardless, so a desync between probe and
+    // POST still gets caught at the boundary.
+    if (inviteRequired && inviteCode === null) {
+      return (
+        <InviteGate
+          staleNotice={staleInviteNotice}
+          onValidated={(code) => {
+            console.info("[facilitator] invite gate validated");
+            setStaleInviteNotice(null);
+            setInviteCode(code);
+          }}
+        />
+      );
+    }
     return (
       <SetupWizard
         phase="intro"

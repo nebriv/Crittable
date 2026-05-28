@@ -6,7 +6,7 @@ import json
 import re
 from typing import Any, Literal
 
-from fastapi import APIRouter, FastAPI, HTTPException, Request, status
+from fastapi import APIRouter, FastAPI, HTTPException, Query, Request, status
 from fastapi.responses import PlainTextResponse, Response
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -86,6 +86,12 @@ class CreateSessionBody(BaseModel):
     # avoids the wasted auto-greet LLM call (and the bare-text leak
     # bug it can produce). Used by the frontend's "Dev mode" toggle.
     skip_setup: bool = False
+    # Soft anti-strangers gate. Required when the ``INVITE_CODE`` env
+    # var is set on the server; ignored when it isn't. The check is
+    # constant-time and the value is never logged. Player join links
+    # don't need this — they already carry their own HMAC tokens —
+    # so only the creator path is gated.
+    invite_code: str | None = Field(default=None, max_length=128)
     # Creator-selected scenario tuning (difficulty, target duration,
     # feature toggles) chosen on the new-session wizard's "shaping"
     # step. Frozen at creation; surfaced into setup + play system
@@ -362,8 +368,57 @@ def register_api_routes(app: FastAPI) -> None:
         return payload
 
     # ---------------------------------------------------- routes
+    @router.get("/invite/status")
+    async def invite_status(
+        request: Request,
+        # Length-cap the query so an attacker can't grind ``?code=<5MB>``
+        # against ``hmac.compare_digest`` and chew CPU when the
+        # rate-limit middleware is off. Mirrors the
+        # ``CreateSessionBody.invite_code`` cap. Path scrubber in
+        # ``logging_setup._scrub_path_bytes`` redacts the value before
+        # it reaches the access log.
+        code: str | None = Query(default=None, max_length=128),
+    ) -> dict[str, Any]:
+        """Tell the frontend whether the gate is on, and (optionally)
+        whether a supplied code passes.
+
+        ``GET /api/invite/status`` (no ``?code=``) returns
+        ``{"required": bool, "valid": null}`` so the wizard knows
+        whether to render the gate at all.
+
+        ``GET /api/invite/status?code=XYZ`` additionally returns
+        ``{"valid": bool}`` so the gate can confirm the code without
+        going through the full create-session path. Failures are
+        logged at WARNING so brute-force attempts are visible in
+        ``/healthz``-style log scans; the code itself is never logged.
+        """
+
+        settings = request.app.state.settings
+        log = get_logger("api")
+        if not settings.invite_code_required():
+            return {"required": False, "valid": None}
+        if code is None:
+            return {"required": True, "valid": None}
+        valid = settings.verify_invite_code(code)
+        if valid:
+            log.info("invite_validate_ok")
+        else:
+            log.warning("invite_validate_rejected")
+        return {"required": True, "valid": valid}
+
     @router.post("/sessions")
     async def create_session(body: CreateSessionBody, request: Request) -> dict[str, Any]:
+        settings = request.app.state.settings
+        if settings.invite_code_required() and not settings.verify_invite_code(
+            body.invite_code
+        ):
+            # WARNING not INFO so a brute-force shows up in the same
+            # log-level scans operators use for other auth failures.
+            # The candidate is intentionally never logged.
+            get_logger("api").warning("create_session_invite_rejected")
+            raise HTTPException(
+                status.HTTP_403_FORBIDDEN, "invite code required"
+            )
         manager = _manager(request)
         try:
             session, token = await manager.create_session(
@@ -462,10 +517,11 @@ def register_api_routes(app: FastAPI) -> None:
                 ok_count=len(invitee_role_ids),
             )
 
-        settings = request.app.state.settings
         # Either env (``DEV_FAST_SETUP``) or per-request (``skip_setup``)
         # triggers the no-auto-greet path. Per-request wins: an operator
         # might want dev mode for one session and full setup for another.
+        # ``settings`` was already pulled at the top of the handler for the
+        # invite-code gate.
         skip_setup = body.skip_setup or bool(settings.dev_fast_setup)
 
         if skip_setup:

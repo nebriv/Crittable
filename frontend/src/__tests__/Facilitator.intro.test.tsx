@@ -9,9 +9,14 @@ import { api } from "../api/client";
 // wizard advanced two NEXT clicks. ``advanceToRoles`` runs the
 // navigation; the creator-label-collision test sets the label on
 // step 1 first, then advances.
-function advanceToRoles() {
+async function advanceToRoles() {
+  // The intro wizard renders only after the mount-time invite-code
+  // probe resolves (one round-trip in real life, one microtask in
+  // tests with the spy in ``beforeEach``). ``findByRole`` polls
+  // until the first NEXT button appears, then the synchronous
+  // chain runs.
   fireEvent.click(
-    screen.getByRole("button", { name: /NEXT · ENVIRONMENT/i }),
+    await screen.findByRole("button", { name: /NEXT · ENVIRONMENT/i }),
   );
   fireEvent.click(screen.getByRole("button", { name: /NEXT · ROLES/i }));
 }
@@ -25,15 +30,19 @@ describe("Facilitator intro — Roles step (issue #61, redesign)", () => {
     Object.assign(navigator, {
       clipboard: { writeText: vi.fn().mockResolvedValue(undefined) },
     });
+    vi.spyOn(api, "getInviteStatus").mockResolvedValue({
+      required: false,
+      valid: null,
+    });
   });
 
   afterEach(() => {
     vi.restoreAllMocks();
   });
 
-  it("seeds the 5 mockup-defined builtin role slots", () => {
+  it("seeds the 5 mockup-defined builtin role slots", async () => {
     render(<Facilitator />);
-    advanceToRoles();
+    await advanceToRoles();
     const fs = getRolesFieldset();
     // All 5 builtin labels must render as rows regardless of toggle state.
     expect(within(fs).getByText("Incident Commander")).toBeInTheDocument();
@@ -43,9 +52,9 @@ describe("Facilitator intro — Roles step (issue #61, redesign)", () => {
     expect(within(fs).getByText("Executive Sponsor")).toBeInTheDocument();
   });
 
-  it("all 5 builtin roles default to ACTIVE", () => {
+  it("all 5 builtin roles default to ACTIVE", async () => {
     render(<Facilitator />);
-    advanceToRoles();
+    await advanceToRoles();
     // ACTIVE pill on every default-active row is pressed. After the
     // user-agent review flagged "OFF default for Comms/Legal /
     // Executive Sponsor reads as broken without STANDBY context",
@@ -65,9 +74,9 @@ describe("Facilitator intro — Roles step (issue #61, redesign)", () => {
     }
   });
 
-  it("toggling ACTIVE on a default-OFF row flips to active (direct off→active)", () => {
+  it("toggling ACTIVE on a default-OFF row flips to active (direct off→active)", async () => {
     render(<Facilitator />);
-    advanceToRoles();
+    await advanceToRoles();
     // Toggle Executive Sponsor OFF first (since defaults are now all
     // active), then toggle ACTIVE to verify the off→active direction
     // works on the same handler.
@@ -88,9 +97,9 @@ describe("Facilitator intro — Roles step (issue #61, redesign)", () => {
     ).toHaveAttribute("aria-pressed", "false");
   });
 
-  it("disables ROLL SESSION + shows warning when zero invitees are active", () => {
+  it("disables ROLL SESSION + shows warning when zero invitees are active", async () => {
     render(<Facilitator />);
-    advanceToRoles();
+    await advanceToRoles();
     // Toggle every builtin OFF.
     for (const label of [
       "Incident Commander",
@@ -113,9 +122,9 @@ describe("Facilitator intro — Roles step (issue #61, redesign)", () => {
     ).toBeInTheDocument();
   });
 
-  it("removes a builtin row via the × button (every row is removable)", () => {
+  it("removes a builtin row via the × button (every row is removable)", async () => {
     render(<Facilitator />);
-    advanceToRoles();
+    await advanceToRoles();
     // Builtin rows now have a remove control too — the previous
     // "toggle-only" treatment frustrated operators who didn't want
     // a given builtin in their list at all.
@@ -125,9 +134,9 @@ describe("Facilitator intro — Roles step (issue #61, redesign)", () => {
     ).not.toBeInTheDocument();
   });
 
-  it("toggling OFF on an active builtin row flips the pill state", () => {
+  it("toggling OFF on an active builtin row flips the pill state", async () => {
     render(<Facilitator />);
-    advanceToRoles();
+    await advanceToRoles();
     const offBtn = screen.getByRole("button", {
       name: /Incident Commander off/i,
     });
@@ -138,9 +147,9 @@ describe("Facilitator intro — Roles step (issue #61, redesign)", () => {
     ).toHaveAttribute("aria-pressed", "false");
   });
 
-  it("adds a custom role row via the Add role button", () => {
+  it("adds a custom role row via the Add role button", async () => {
     render(<Facilitator />);
-    advanceToRoles();
+    await advanceToRoles();
     const draft = screen.getByLabelText("New role label") as HTMLInputElement;
     fireEvent.change(draft, { target: { value: "Threat Intel" } });
     fireEvent.click(screen.getByRole("button", { name: "Add role" }));
@@ -150,10 +159,10 @@ describe("Facilitator intro — Roles step (issue #61, redesign)", () => {
     expect(draft.value).toBe("");
   });
 
-  it("adds via Enter without submitting the form", () => {
+  it("adds via Enter without submitting the form", async () => {
     const createSpy = vi.spyOn(api, "createSession");
     render(<Facilitator />);
-    advanceToRoles();
+    await advanceToRoles();
     const draft = screen.getByLabelText("New role label") as HTMLInputElement;
     fireEvent.change(draft, { target: { value: "Threat Intel" } });
     fireEvent.keyDown(draft, { key: "Enter" });
@@ -163,9 +172,9 @@ describe("Facilitator intro — Roles step (issue #61, redesign)", () => {
     expect(createSpy).not.toHaveBeenCalled();
   });
 
-  it("typing an existing label re-activates the existing slot instead of duplicating", () => {
+  it("typing an existing label re-activates the existing slot instead of duplicating", async () => {
     render(<Facilitator />);
-    advanceToRoles();
+    await advanceToRoles();
     // Toggle OFF, then add the same label via the form — should flip
     // back to ACTIVE on the same row, no duplicate row.
     fireEvent.click(
@@ -182,9 +191,9 @@ describe("Facilitator intro — Roles step (issue #61, redesign)", () => {
     ).toHaveAttribute("aria-pressed", "true");
   });
 
-  it("ignores blank / whitespace-only role labels", () => {
+  it("ignores blank / whitespace-only role labels", async () => {
     render(<Facilitator />);
-    advanceToRoles();
+    await advanceToRoles();
     const draft = screen.getByLabelText("New role label") as HTMLInputElement;
     const addButton = screen.getByRole("button", { name: "Add role" });
     expect(addButton).toBeDisabled();
@@ -196,9 +205,9 @@ describe("Facilitator intro — Roles step (issue #61, redesign)", () => {
     ).not.toBeInTheDocument();
   });
 
-  it("removes a custom row via the × button", () => {
+  it("removes a custom row via the × button", async () => {
     render(<Facilitator />);
-    advanceToRoles();
+    await advanceToRoles();
     const draft = screen.getByLabelText("New role label") as HTMLInputElement;
     fireEvent.change(draft, { target: { value: "Threat Intel" } });
     fireEvent.click(screen.getByRole("button", { name: "Add role" }));
@@ -208,9 +217,9 @@ describe("Facilitator intro — Roles step (issue #61, redesign)", () => {
     ).not.toBeInTheDocument();
   });
 
-  it("warns when the creator label collides with an active invitee row", () => {
+  it("warns when the creator label collides with an active invitee row", async () => {
     render(<Facilitator />);
-    advanceToRoles();
+    await advanceToRoles();
     const labelInput = screen.getByPlaceholderText(
       /Your role label/i,
     ) as HTMLInputElement;
@@ -221,9 +230,9 @@ describe("Facilitator intro — Roles step (issue #61, redesign)", () => {
     ).toBeInTheDocument();
   });
 
-  it("collision warning clears when the colliding row is toggled OFF", () => {
+  it("collision warning clears when the colliding row is toggled OFF", async () => {
     render(<Facilitator />);
-    advanceToRoles();
+    await advanceToRoles();
     const labelInput = screen.getByPlaceholderText(
       /Your role label/i,
     ) as HTMLInputElement;
@@ -280,7 +289,7 @@ const baseProps = {
 };
 
 describe("BottomActionBar — phase CTAs (issue #62)", () => {
-  it("renders START SESSION disabled when plan not finalized", () => {
+  it("renders START SESSION disabled when plan not finalized", async () => {
     render(
       <BottomActionBar
         {...baseProps}
@@ -294,7 +303,7 @@ describe("BottomActionBar — phase CTAs (issue #62)", () => {
     expect(btn).toBeDisabled();
   });
 
-  it("renders START SESSION disabled when fewer than 2 players", () => {
+  it("renders START SESSION disabled when fewer than 2 players", async () => {
     render(
       <BottomActionBar
         {...baseProps}
@@ -309,7 +318,7 @@ describe("BottomActionBar — phase CTAs (issue #62)", () => {
     ).toBeDisabled();
   });
 
-  it("enables START SESSION when plan finalized and ≥2 players", () => {
+  it("enables START SESSION when plan finalized and ≥2 players", async () => {
     render(
       <BottomActionBar
         {...baseProps}
@@ -325,7 +334,7 @@ describe("BottomActionBar — phase CTAs (issue #62)", () => {
     expect(baseProps.onStart).toHaveBeenCalled();
   });
 
-  it("renders FORCE-ADVANCE + END SESSION buttons during play", () => {
+  it("renders FORCE-ADVANCE + END SESSION buttons during play", async () => {
     render(
       <BottomActionBar
         {...baseProps}
@@ -346,7 +355,7 @@ describe("BottomActionBar — phase CTAs (issue #62)", () => {
     ).not.toBeInTheDocument();
   });
 
-  it("renders VIEW AAR when ended phase + AAR ready", () => {
+  it("renders VIEW AAR when ended phase + AAR ready", async () => {
     render(
       <BottomActionBar
         {...baseProps}
@@ -361,7 +370,7 @@ describe("BottomActionBar — phase CTAs (issue #62)", () => {
     ).toBeInTheDocument();
   });
 
-  it("surfaces turn / message / rationale / tabs / cost telemetry chips", () => {
+  it("surfaces turn / message / rationale / tabs / cost telemetry chips", async () => {
     render(
       <BottomActionBar
         {...baseProps}
@@ -389,7 +398,7 @@ describe("BottomActionBar — phase CTAs (issue #62)", () => {
     expect(screen.getByText("Cost: $0.0234")).toBeInTheDocument();
   });
 
-  it("renders dash placeholders when telemetry is null", () => {
+  it("renders dash placeholders when telemetry is null", async () => {
     render(
       <BottomActionBar
         {...baseProps}
@@ -405,7 +414,7 @@ describe("BottomActionBar — phase CTAs (issue #62)", () => {
     expect(screen.getByText(/Last: —/)).toBeInTheDocument();
   });
 
-  it("renders 'Last: <Ns' once a lastEventAt timestamp is set", () => {
+  it("renders 'Last: <Ns' once a lastEventAt timestamp is set", async () => {
     const fiveSecondsAgo = Date.now() - 5_500;
     render(
       <BottomActionBar
@@ -420,7 +429,7 @@ describe("BottomActionBar — phase CTAs (issue #62)", () => {
     expect(screen.getByText(/Last: 5s/)).toBeInTheDocument();
   });
 
-  it("renders 'LLM: idle' when no LLM calls are in flight", () => {
+  it("renders 'LLM: idle' when no LLM calls are in flight", async () => {
     render(
       <BottomActionBar
         {...baseProps}
@@ -433,7 +442,7 @@ describe("BottomActionBar — phase CTAs (issue #62)", () => {
     expect(screen.getByText("LLM: idle")).toBeInTheDocument();
   });
 
-  it("renders 'LLM: <tier>' when a single tier is active", () => {
+  it("renders 'LLM: <tier>' when a single tier is active", async () => {
     render(
       <BottomActionBar
         {...baseProps}
@@ -448,7 +457,7 @@ describe("BottomActionBar — phase CTAs (issue #62)", () => {
     expect(screen.queryByText("LLM: idle")).not.toBeInTheDocument();
   });
 
-  it("joins multiple concurrent tiers with '+' (e.g. guardrail + play)", () => {
+  it("joins multiple concurrent tiers with '+' (e.g. guardrail + play)", async () => {
     render(
       <BottomActionBar
         {...baseProps}
@@ -468,7 +477,7 @@ describe("BottomActionBar — phase CTAs (issue #62)", () => {
   // operationally-distinct state that used to read as "LLM: idle"
   // and was the diagnostic gap behind the silent-yield 5-hour log
   // dive.
-  it("renders 'LLM: idle (paused)' when the AI is paused with no calls in flight", () => {
+  it("renders 'LLM: idle (paused)' when the AI is paused with no calls in flight", async () => {
     render(
       <BottomActionBar
         {...baseProps}
@@ -482,7 +491,7 @@ describe("BottomActionBar — phase CTAs (issue #62)", () => {
     expect(screen.getByText("LLM: idle (paused)")).toBeInTheDocument();
   });
 
-  it("renders 'LLM: waiting for players' on AWAITING_PLAYERS with no calls in flight", () => {
+  it("renders 'LLM: waiting for players' on AWAITING_PLAYERS with no calls in flight", async () => {
     render(
       <BottomActionBar
         {...baseProps}
@@ -498,7 +507,7 @@ describe("BottomActionBar — phase CTAs (issue #62)", () => {
     ).toBeInTheDocument();
   });
 
-  it("renders 'LLM: recovering N/M (kind)' during a recovery cascade", () => {
+  it("renders 'LLM: recovering N/M (kind)' during a recovery cascade", async () => {
     render(
       <BottomActionBar
         {...baseProps}
@@ -520,7 +529,7 @@ describe("BottomActionBar — phase CTAs (issue #62)", () => {
     ).toBeInTheDocument();
   });
 
-  it("appends 'last attempt' when recovery hits the budget (UI/UX HIGH #2)", () => {
+  it("appends 'last attempt' when recovery hits the budget (UI/UX HIGH #2)", async () => {
     render(
       <BottomActionBar
         {...baseProps}
@@ -540,7 +549,7 @@ describe("BottomActionBar — phase CTAs (issue #62)", () => {
     ).toBeInTheDocument();
   });
 
-  it("appends '· paused' to the in-flight chip when paused mid-recovery (User Agent MEDIUM #6)", () => {
+  it("appends '· paused' to the in-flight chip when paused mid-recovery (User Agent MEDIUM #6)", async () => {
     render(
       <BottomActionBar
         {...baseProps}
@@ -561,7 +570,7 @@ describe("BottomActionBar — phase CTAs (issue #62)", () => {
     ).toBeInTheDocument();
   });
 
-  it("renders crit 'LLM: recovery FAILED' when the current turn errored (User Agent HIGH #3)", () => {
+  it("renders crit 'LLM: recovery FAILED' when the current turn errored (User Agent HIGH #3)", async () => {
     render(
       <BottomActionBar
         {...baseProps}
@@ -579,7 +588,7 @@ describe("BottomActionBar — phase CTAs (issue #62)", () => {
     // the moment the strict-retry loop exits.
   });
 
-  it("turnErrored wins over recoveryStatus + activeTiers (priority order)", () => {
+  it("turnErrored wins over recoveryStatus + activeTiers (priority order)", async () => {
     render(
       <BottomActionBar
         {...baseProps}
@@ -597,7 +606,7 @@ describe("BottomActionBar — phase CTAs (issue #62)", () => {
     expect(screen.queryByText("LLM: play")).not.toBeInTheDocument();
   });
 
-  it("expands the cost chip to show the token breakdown", () => {
+  it("expands the cost chip to show the token breakdown", async () => {
     render(
       <BottomActionBar
         {...baseProps}
@@ -621,7 +630,7 @@ describe("BottomActionBar — phase CTAs (issue #62)", () => {
     expect(screen.getByText("6,789")).toBeInTheDocument();
   });
 
-  it("always renders '+ NEW SESSION' regardless of phase", () => {
+  it("always renders '+ NEW SESSION' regardless of phase", async () => {
     for (const phase of ["setup", "ready", "play", "ended"] as const) {
       const { unmount } = render(
         <BottomActionBar
@@ -643,7 +652,7 @@ describe("BottomActionBar — phase CTAs (issue #62)", () => {
 describe("TopBar — brand chrome (post-redesign)", () => {
   const minimalProps = { ...baseProps };
 
-  it("renders the AAR-generating status when ended phase + AAR pending", () => {
+  it("renders the AAR-generating status when ended phase + AAR pending", async () => {
     render(
       <TopBar
         {...minimalProps}
@@ -659,7 +668,7 @@ describe("TopBar — brand chrome (post-redesign)", () => {
     ).not.toBeInTheDocument();
   });
 
-  it("renders the VIEW AAR button when ended phase + AAR ready", () => {
+  it("renders the VIEW AAR button when ended phase + AAR ready", async () => {
     render(
       <TopBar
         {...minimalProps}

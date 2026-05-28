@@ -15,6 +15,7 @@ Conventions
 
 from __future__ import annotations
 
+import hmac
 import secrets
 import warnings
 from functools import lru_cache
@@ -295,6 +296,17 @@ class Settings(BaseSettings):
     cors_origins: str = Field(default="*", alias="CORS_ORIGINS")
     rate_limit_enabled: bool = Field(default=False, alias="RATE_LIMIT_ENABLED")
     rate_limit_req_per_min: int = Field(default=60, alias="RATE_LIMIT_REQ_PER_MIN", ge=1)
+    # Soft "anti-strangers" gate on ``POST /api/sessions``. When set to
+    # a non-empty value, the creator must supply a matching ``invite_code``
+    # on session creation; the player-side join links still work without
+    # it because they already carry per-role HMAC tokens. When unset
+    # (the default), no gate runs — local dev stays frictionless. This
+    # is NOT a security boundary against motivated attackers; it's a
+    # rate-limit-style stopgap to keep random web traffic from spending
+    # LLM tokens on a public deploy. Pair with ``RATE_LIMIT_ENABLED=true``
+    # so a brute-forcer can't grind through the code at thousands of
+    # requests per minute. See ``docs/configuration.md`` § Security.
+    invite_code: SecretStr | None = Field(default=None, alias="INVITE_CODE")
 
     # ---- Audit ---------------------------------------------------------
     audit_ring_size: int = Field(default=2000, alias="AUDIT_RING_SIZE", ge=10)
@@ -484,6 +496,38 @@ class Settings(BaseSettings):
             stacklevel=2,
         )
         return secrets.token_urlsafe(32)
+
+    def invite_code_required(self) -> bool:
+        """True iff a non-empty ``INVITE_CODE`` is configured.
+
+        Empty / whitespace-only / unset all mean "no gate" — local dev
+        and toy deploys boot frictionless. Operators on a public URL
+        set ``INVITE_CODE`` to gate session creation against random
+        web traffic.
+        """
+
+        if self.invite_code is None:
+            return False
+        return bool(self.invite_code.get_secret_value().strip())
+
+    def verify_invite_code(self, candidate: str | None) -> bool:
+        """Constant-time compare ``candidate`` against ``INVITE_CODE``.
+
+        Returns ``True`` when no gate is configured (``INVITE_CODE``
+        unset) so callers can use a single check. Whitespace is stripped
+        from both sides before compare so an operator who pastes the
+        code with a trailing newline doesn't lock themselves out.
+        ``hmac.compare_digest`` avoids the timing-side-channel that a
+        plain ``==`` would expose on a short invite code.
+        """
+
+        if not self.invite_code_required():
+            return True
+        if not candidate:
+            return False
+        assert self.invite_code is not None  # narrowed by ``invite_code_required``
+        expected = self.invite_code.get_secret_value().strip()
+        return hmac.compare_digest(expected, candidate.strip())
 
     def require_llm_api_key(self) -> str:
         """Return ``LLM_API_KEY`` or raise.
