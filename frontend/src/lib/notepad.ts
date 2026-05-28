@@ -12,6 +12,8 @@
  */
 import type { Editor } from "@tiptap/core";
 
+import { formatErrorDetail } from "../api/errorDetail";
+
 export interface NotepadTemplate {
   id: string;
   label: string;
@@ -40,8 +42,13 @@ async function notepadFetch(
     console.warn(tag);
     let detail = `${res.status}`;
     try {
-      const json = (await res.clone().json()) as { detail?: string };
-      detail = json.detail ?? detail;
+      // Must go through the shared formatter, NOT ``detail as string``:
+      // ``pushSnapshot`` can trip the markdown length cap, which returns
+      // a Pydantic 422 whose ``detail`` is an array — casting it to a
+      // string and throwing it gave the user "[object Object]". Same bug
+      // class as the create-session wizard; fenced by errorDetail.test.ts.
+      const json = (await res.clone().json()) as { detail?: unknown };
+      detail = formatErrorDetail(json.detail, res.status);
     } catch {
       /* response wasn't JSON; keep status */
     }

@@ -3,6 +3,8 @@
  * routes. Errors throw with the server's `detail` field if available.
  */
 
+import { formatErrorDetail } from "./errorDetail";
+
 export interface SessionSnapshot {
   id: string;
   state: string;
@@ -277,69 +279,6 @@ export class ApiError extends Error {
   }
 }
 
-/**
- * Turn a Pydantic ``loc`` array into a field name a human recognises.
- * Drops the protocol-noise ``body`` / ``query`` / ``path`` prefix and
- * numeric array indices, then humanises the field's snake_case into
- * sentence case: ``["body","creator_label"]`` → ``"Creator label"``,
- * ``["body","invitee_roles",0,"label"]`` → ``"Label"``. A raw schema id
- * like ``creator_label`` means nothing to an operator staring at a form
- * field labelled "CREATOR ROLE"; "Creator label" at least lands in the
- * right ballpark without coupling this generic wrapper to any one form.
- */
-function _humanizeLoc(loc: unknown[]): string {
-  const segs = loc.filter(
-    (s) => s !== "body" && s !== "query" && s !== "path",
-  );
-  // The field is the last *string* segment; trailing numeric segments
-  // are array indices (noise). Fall back to the dotted path if there's
-  // no string segment at all.
-  const field = [...segs].reverse().find((s) => typeof s === "string");
-  if (typeof field !== "string") return segs.join(".");
-  const spaced = field.replace(/_/g, " ").trim();
-  return spaced ? spaced.charAt(0).toUpperCase() + spaced.slice(1) : "";
-}
-
-/**
- * FastAPI's ``detail`` field arrives in two shapes: a plain string for
- * a hand-thrown ``HTTPException(detail="…")``, and an **array** of
- * ``{loc, msg, type, …}`` objects for a Pydantic 422 request-body
- * validation failure. The old code did ``json.detail as string`` and
- * threw the result straight into the UI — for the array shape that
- * stringifies to the infamous ``"[object Object]"`` (e.g. an
- * over-length ``scenario_prompt`` rendered a useless red blob in the
- * setup wizard). Normalise both shapes here, at the single boundary
- * every ``api.*`` call funnels through, so no call site has to know
- * the difference.
- *
- * For the array shape each entry becomes ``"<Field>: <msg>"`` with the
- * field humanised (see ``_humanizeLoc``). Multiple errors join with
- * ``"; "``. Entry count and per-message length are clamped so a
- * pathological 422 body can't build a multi-KB alert string (defence in
- * depth — the real backend can't currently produce one). Anything we
- * can't parse falls back to the HTTP status.
- */
-function _formatErrorDetail(detail: unknown, status: number): string {
-  if (typeof detail === "string" && detail.trim().length > 0) return detail;
-  if (Array.isArray(detail)) {
-    const parts = detail
-      .slice(0, 10)
-      .map((entry): string => {
-        if (entry && typeof entry === "object") {
-          const e = entry as { loc?: unknown; msg?: unknown };
-          const field = Array.isArray(e.loc) ? _humanizeLoc(e.loc) : "";
-          const rawMsg = typeof e.msg === "string" ? e.msg : "";
-          const msg = rawMsg.length > 200 ? `${rawMsg.slice(0, 200)}…` : rawMsg;
-          return field && msg ? `${field}: ${msg}` : msg || field;
-        }
-        return typeof entry === "string" ? entry : "";
-      })
-      .filter((s) => s.length > 0);
-    if (parts.length > 0) return parts.join("; ");
-  }
-  return `${status}`;
-}
-
 async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
   const safePath = _scrub(path);
   console.debug(`[api] ${method} ${safePath}`, body ?? "");
@@ -354,7 +293,7 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
     let detail = `${res.status}`;
     try {
       const json = await res.json();
-      detail = _formatErrorDetail(json.detail, res.status);
+      detail = formatErrorDetail(json.detail, res.status);
     } catch {
       /* ignore */
     }

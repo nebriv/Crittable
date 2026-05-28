@@ -243,6 +243,52 @@ When adding a new LLM-driven feature, the checklist is:
 **`backend/app/llm/export.py::_extract_report`** is the reference shape.
 Read it before adding a new structured-output tool.
 
+## Error-rendering boundary (the `[object Object]` class — read before touching any fetch call site)
+
+Anything rendered to the user as a string must **be a string at
+runtime**. The detrimental failure mode is coercing a non-string value
+(object / array) into a display string — it surfaces as the
+meaningless, unrecoverable `[object Object]` (or
+`[object Object],[object Object]` for arrays) with no way for the user
+to know what went wrong. It is a UX dead-end and it has shipped **twice**
+in this repo (the create-session wizard and the notepad fetch), both
+from the same root cause:
+
+> A FastAPI error `detail` is **two shapes** — a plain string for
+> `HTTPException(detail="…")`, and an **array** of `{loc, msg, type}`
+> objects for a Pydantic 422 body-validation failure. Code that did
+> `json.detail as string` and threw it into the DOM stringified the
+> array to `[object Object]`.
+
+Rules:
+
+1. **One normalisation helper.** `frontend/src/api/errorDetail.ts`
+   (`formatErrorDetail(detail, status)`) is the single source of truth.
+   `api/client.ts` and `lib/notepad.ts` both route through it. **Any new
+   fetch boundary** that reads an error body MUST call it — never type or
+   cast a response `detail` as `string` (`as { detail?: string }`,
+   `.detail as string`). A 422 detail is an array; the cast is a lie that
+   `tsc` can't catch (that's what `as` does).
+2. **The grep guard.** `frontend/src/__tests__/errorDetail.test.ts`
+   source-greps `src/` for the banned cast shapes and fails CI if anyone
+   re-introduces them (same idiom as backend `test_live_fixtures.py`).
+   When you add a legitimately-different parse, route it through the
+   helper; don't weaken the guard.
+3. **TS `as` is not validation.** `x as string` performs **zero** runtime
+   checks. When the runtime type is genuinely unknown (`.json()` returns
+   `any`), narrow with a `typeof`/`Array.isArray` guard, not a cast.
+4. **Caught errors are already safe** *because* the boundary is fixed:
+   `ApiError.message` is always a clean string, so the ubiquitous
+   `err instanceof Error ? err.message : String(err)` downstream pattern
+   is correct — do **not** add per-call-site coercion (that's a monkey
+   patch; fix the boundary instead, per the model-output-trust-boundary
+   rule above).
+
+**Sub-agent reviewers (UI/UX + Security):** treat any new `res.json()` /
+fetch error path that assumes a string `detail`, or any object/array
+rendered as a React child, as **BLOCK** — it's the `[object Object]`
+class. Audit grep: `grep -rEn '\.detail\s+as\s+string|as\s*\{[^}]*detail' frontend/src`.
+
 ## Coding conventions
 
 - Python: `ruff` (config in `backend/pyproject.toml`), `mypy --strict`. No `print` or stdlib `logging` in business code — use `structlog`.
