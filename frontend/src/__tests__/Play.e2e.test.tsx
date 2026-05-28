@@ -247,6 +247,13 @@ describe("Play page e2e — state transitions", () => {
     const textarea = await screen.findByRole("combobox");
     expect(textarea).toBeInTheDocument();
     expect(textarea).not.toBeDisabled();
+    // Golden-path lock for the "you're on the hook" cue: when the
+    // viewer is active AND not yet ready, the top "● YOUR TURN"
+    // banner must render. A future over-broad fix that hides the
+    // chip in all states would slip past the negative-only test
+    // below — this assertion makes the bidirectional contract
+    // explicit. QA review LOW.
+    expect(screen.getAllByText(/YOUR TURN/).length).toBeGreaterThan(0);
     // The AI's prior broadcast renders.
     expect(
       screen.getByText(/what does the alert queue actually show/i),
@@ -283,7 +290,7 @@ describe("Play page e2e — state transitions", () => {
     expect(textarea).not.toBeDisabled();
   });
 
-  it("AWAITING_PLAYERS with self ready: hides the YOUR TURN cues but keeps the composer editable", async () => {
+  it("AWAITING_PLAYERS with self ready (no submission yet): hides the YOUR TURN cues but keeps the composer editable", async () => {
     // Regression for the "Awaiting your response" / "● YOUR TURN"
     // chips sticking around after a player marks themselves ready.
     // The chips cue "you are on the hook" — once the viewer signals
@@ -291,6 +298,12 @@ describe("Play page e2e — state transitions", () => {
     // waiting on the rest of the active set) and the chips must
     // hide. The composer itself stays editable so post-ready
     // interjections still land.
+    //
+    // Marked-ready-without-typing path: ``submitted_role_ids`` is
+    // empty. The placeholder should acknowledge the ready action
+    // with "Marked ready. Add a follow-up…" instead of falling
+    // through to the generic non-active "Add a comment anytime…"
+    // copy a never-acted-bystander would see.
     const readySnap = _playSnapshot();
     readySnap.current_turn = {
       ...readySnap.current_turn!,
@@ -306,12 +319,51 @@ describe("Play page e2e — state transitions", () => {
     // now flips false once the viewer is ready.
     expect(screen.queryByText(/YOUR TURN/)).toBeNull();
     // Placeholder must NOT read as "It's your turn — make your
-    // decision." once the viewer is ready. The post-ready copy
-    // ("Submitted. You can add a follow-up…" / "Add a comment
-    // anytime…") falls through from the same gate.
+    // decision." once the viewer is ready.
     expect(
       screen.queryByPlaceholderText(/it's your turn/i),
     ).toBeNull();
+    // Placeholder should acknowledge the ready signal.
+    expect(
+      screen.getByPlaceholderText(/marked ready/i),
+    ).toBeInTheDocument();
+    // Browser-tab title must not advertise "● Your turn" once the
+    // viewer is ready — same UX bug class, just leaked into the
+    // tab strip. The ``useSessionTitle`` hook drops the pending
+    // marker (``●``) when ``titleSignal.pending`` flips false.
+    expect(document.title).not.toMatch(/●\s*Your turn/);
+  });
+
+  it("AWAITING_PLAYERS with self submitted AND ready: hides the YOUR TURN cues, shows SUBMITTED chip", async () => {
+    // The user's literal reported scenario: a message has been
+    // submitted AND the role is marked ready. The page should
+    // surface the "✓ SUBMITTED AS …" chip (gated on
+    // ``iHaveSubmitted``, which "Submitted" wins over "Ready" in
+    // the title-signal priority) and hide every YOUR TURN cue.
+    const submittedReadySnap = _playSnapshot();
+    submittedReadySnap.current_turn = {
+      ...submittedReadySnap.current_turn!,
+      submitted_role_ids: ["role-soc"],
+      ready_role_ids: ["role-soc"],
+    };
+    vi.spyOn(api, "getSession").mockImplementation(
+      async () => submittedReadySnap,
+    );
+    render(<Play sessionId="s-test" token={_socToken()} />);
+    const textarea = await screen.findByRole("combobox");
+    expect(textarea).not.toBeDisabled();
+    // No YOUR TURN cues.
+    expect(screen.queryByText(/YOUR TURN/)).toBeNull();
+    expect(
+      screen.queryByPlaceholderText(/it's your turn/i),
+    ).toBeNull();
+    // "✓ SUBMITTED AS …" chip is the post-submit positive-feedback
+    // affordance — must be visible so the user knows their message
+    // landed and the AI is just waiting on the rest of the room.
+    expect(screen.getByText(/SUBMITTED AS/)).toBeInTheDocument();
+    // Browser-tab title carries the "Submitted" label, no pending
+    // marker.
+    expect(document.title).not.toMatch(/●\s*Your turn/);
   });
 
   it("ENDED: renders the after-action review surface", async () => {

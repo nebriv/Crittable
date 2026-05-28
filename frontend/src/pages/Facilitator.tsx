@@ -653,12 +653,21 @@ export function Facilitator() {
     }
     const activeIds = snapshot.current_turn?.active_role_ids ?? [];
     const submittedIds = snapshot.current_turn?.submitted_role_ids ?? [];
+    // Decoupled-ready (PR #209 follow-up): the browser-tab pending
+    // marker must hide once the creator signals ready, otherwise a
+    // backgrounded tab keeps shouting "● Your turn" at someone who
+    // already discharged their turn — same UX class of bug as the
+    // in-page "Awaiting your response" banner. Gate on the ready
+    // set so the dot drops at the same boundary the in-page cues do.
+    const readyIds = snapshot.current_turn?.ready_role_ids ?? [];
     const creatorRoleId = state?.creatorRoleId ?? null;
     const iAmActive =
       creatorRoleId !== null && activeIds.includes(creatorRoleId);
     const iHaveSubmitted =
       creatorRoleId !== null && submittedIds.includes(creatorRoleId);
-    const myTurn = iAmActive && !iHaveSubmitted && !aiThinking;
+    const iAmReady =
+      creatorRoleId !== null && readyIds.includes(creatorRoleId);
+    const myTurn = iAmActive && !iAmReady && !aiThinking;
     if (myTurn) return { pending: true, state: "Your turn" };
     // BRIEFING is a sub-state of aiThinking (the AI is composing the
     // briefing) — surface the more specific label before the generic
@@ -668,6 +677,7 @@ export function Facilitator() {
     }
     if (aiThinking) return { pending: false, state: "AI thinking" };
     if (iHaveSubmitted) return { pending: false, state: "Submitted" };
+    if (iAmReady) return { pending: false, state: "Ready" };
     if (snapshot.state === "AWAITING_PLAYERS") {
       return { pending: false, state: "Waiting on roles" };
     }
