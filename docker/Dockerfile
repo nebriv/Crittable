@@ -11,6 +11,17 @@ RUN npm run build
 # ---------- Stage 2: python runtime ----------
 FROM python:3.14-slim AS runtime
 
+# Cache-bust the apt + pip layers below on every CI run. Without this,
+# the GHA buildx cache replays whatever package versions a build from
+# weeks ago captured — so even after a debian-security patch lands
+# upstream, the layer reused from cache still ships the unpatched
+# version and the Trivy gate stays red forever. CI passes
+# ``--build-arg CACHEBUST=${{ github.run_id }}`` so each run gets a
+# unique value, invalidating this ARG and every subsequent layer.
+# Local ``docker build`` without ``--build-arg`` defaults to ``1`` and
+# behaves as before (full cache reuse).
+ARG CACHEBUST=1
+
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \

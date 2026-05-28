@@ -95,6 +95,14 @@ jobs:
           # shouldn't be able to write into a cache that main's
           # subsequent build then consumes.
           cache-from: type=gha
+          # ``CACHEBUST=<run id>`` invalidates the apt + pip layers in
+          # the Dockerfile so debian-security updates and pip's
+          # latest-compatible resolution actually take effect on every
+          # build, instead of the GHA cache replaying a layer captured
+          # weeks ago. The base-image FROM still hits cache; only the
+          # apt/pip layers below the ARG are forced to rebuild.
+          build-args: |
+            CACHEBUST=${{ github.run_id }}
 
       - name: Trivy image scan (HIGH,CRITICAL) — prints CVEs AND gates merge
         # Single gating step. ``format: table`` writes the CVE table
@@ -103,7 +111,19 @@ jobs:
         # Security tab, which PR runs don't even populate) to find
         # which CVE blocked the merge. ``exit-code: "1"`` makes any
         # HIGH/CRITICAL finding fail the PR check.
-        uses: aquasecurity/trivy-action@v0.36.0
+        #
+        # SHA pin (resolves to v0.36.0) per the recommendation in
+        # GHSA-69fq-xp46-6x23 / CVE-2026-33634 (the March 2026
+        # supply-chain compromise that force-pushed 76 of 77
+        # ``trivy-action`` tags to malicious commits with an
+        # infostealer). v0.36.0 itself is in the post-incident safe
+        # range (v0.35.0+ are v-prefixed and clean), but a SHA pin
+        # forecloses on any future tag-move attack — the only way
+        # this resolves to malicious code now is if the SHA itself
+        # is poisoned, which would require a fundamentally different
+        # attack. Dependabot still bumps this; the comment is the
+        # human-readable version label.
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25  # v0.36.0
         with:
           image-ref: ${{ steps.scan-target.outputs.ref }}
           format: table
@@ -187,6 +207,11 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+          # See pr-validate's matching comment: ``CACHEBUST`` forces
+          # the apt + pip layers to rebuild on every run so security
+          # patches actually land in the published image.
+          build-args: |
+            CACHEBUST=${{ github.run_id }}
 
       - name: Trivy image scan (HIGH,CRITICAL) — prints CVEs AND gates the push
         # Single gating step. ``format: table`` writes the CVE table
@@ -201,8 +226,10 @@ jobs:
         # ``ignore-unfixed`` keeps the gate from blocking on CVEs with
         # no upstream patch — the scheduled security.yml run is the
         # catch-all for "still no fix after a week" tracking.
+        # SHA pinned per GHSA-69fq-xp46-6x23 / CVE-2026-33634 — see
+        # pr-validate's matching comment for the supply-chain context.
         id: trivy
-        uses: aquasecurity/trivy-action@v0.36.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25  # v0.36.0
         with:
           image-ref: ${{ steps.scan-target.outputs.ref }}
           format: table
@@ -221,7 +248,9 @@ jobs:
         # populated (SARIF → upload-sarif) without the two responsibilities
         # leaking into each other.
         if: always()
-        uses: aquasecurity/trivy-action@v0.36.0
+        # SHA pinned per GHSA-69fq-xp46-6x23 / CVE-2026-33634 — see
+        # pr-validate's matching comment for the supply-chain context.
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25  # v0.36.0
         with:
           image-ref: ${{ steps.scan-target.outputs.ref }}
           format: sarif
