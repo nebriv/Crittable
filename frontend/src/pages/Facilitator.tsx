@@ -1720,12 +1720,17 @@ export function Facilitator() {
   })();
   const activeRoleIdsSet = new Set(activeRoleIds);
   const iAmActive = activeRoleIdsSet.has(state.creatorRoleId);
-  // Decoupled-ready (PR #209 follow-up): "My turn" simplifies to "I
-  // am on the active role set." Ready is its own concern, closed via
-  // the rail's per-role Mark Ready buttons (own row + impersonation
-  // rows). The creator can drop comments / interjections at any
-  // ``AWAITING_PLAYERS`` or ``AI_PROCESSING`` state.
-  const isMyTurn = iAmActive;
+  const iAmReady = displayedReadyRoleIdsSet.has(state.creatorRoleId);
+  // Decoupled-ready (PR #209 follow-up): "My turn" means "on the
+  // hook for this turn" = active AND not yet ready. Once the
+  // creator signals ready (via the rail Mark Ready), the AI is just
+  // waiting on the rest of the active set, so the "Awaiting your
+  // response" banner + active-role composer cues stop firing —
+  // keeping them up would misread as "you still need to act." The
+  // composer itself stays editable across AWAITING_PLAYERS /
+  // AI_PROCESSING so post-ready interjections still land; only the
+  // "you're on the hook" affordances dim.
+  const isMyTurn = iAmActive && !iAmReady;
   // Tooltip surfaced when Mark Ready is disabled. Single computation
   // shared across all rail rows. User-persona HIGH H3 + UI/UX H5:
   // celebrate when the local participant just closed the quorum;

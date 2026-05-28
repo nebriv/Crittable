@@ -283,6 +283,37 @@ describe("Play page e2e — state transitions", () => {
     expect(textarea).not.toBeDisabled();
   });
 
+  it("AWAITING_PLAYERS with self ready: hides the YOUR TURN cues but keeps the composer editable", async () => {
+    // Regression for the "Awaiting your response" / "● YOUR TURN"
+    // chips sticking around after a player marks themselves ready.
+    // The chips cue "you are on the hook" — once the viewer signals
+    // ready via the rail, they're off the hook (the AI is just
+    // waiting on the rest of the active set) and the chips must
+    // hide. The composer itself stays editable so post-ready
+    // interjections still land.
+    const readySnap = _playSnapshot();
+    readySnap.current_turn = {
+      ...readySnap.current_turn!,
+      ready_role_ids: ["role-soc"],
+    };
+    vi.spyOn(api, "getSession").mockImplementation(async () => readySnap);
+    render(<Play sessionId="s-test" token={_socToken()} />);
+    // Composer mounts and stays writable.
+    const textarea = await screen.findByRole("combobox");
+    expect(textarea).not.toBeDisabled();
+    // Neither the top "● YOUR TURN" banner nor the composer-edge
+    // chip should render — both are gated on ``isMyTurn`` which
+    // now flips false once the viewer is ready.
+    expect(screen.queryByText(/YOUR TURN/)).toBeNull();
+    // Placeholder must NOT read as "It's your turn — make your
+    // decision." once the viewer is ready. The post-ready copy
+    // ("Submitted. You can add a follow-up…" / "Add a comment
+    // anytime…") falls through from the same gate.
+    expect(
+      screen.queryByPlaceholderText(/it's your turn/i),
+    ).toBeNull();
+  });
+
   it("ENDED: renders the after-action review surface", async () => {
     vi.spyOn(api, "getSession").mockImplementation(async () => _endedSnapshot());
     render(<Play sessionId="s-test" token={_socToken()} />);

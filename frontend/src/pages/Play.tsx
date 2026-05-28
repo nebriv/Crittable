@@ -1222,14 +1222,18 @@ export function Play({ sessionId, token }: Props) {
   })();
   const iAmActive = selfRoleId !== null && activeRoleIds.includes(selfRoleId);
   const iHaveSubmitted = selfRoleId !== null && submittedRoleIds.includes(selfRoleId);
-  // Decoupled-ready (PR #209 follow-up): "My turn" simplifies to "I
-  // am on the active role set." The ready quorum is no longer a
-  // composer concern — it's closed via the rail Mark Ready button.
-  // The per-role ``READY ✓`` tag is rendered inside ``<RoleRoster>``
-  // straight from ``displayedReadyRoleIds``; we don't need a local
-  // ``iAmReady`` variable any more (was used by the old composer's
-  // ``isCurrentlyReady`` prop, which is gone).
-  const isMyTurn = iAmActive;
+  const iAmReady = selfRoleId !== null && displayedReadyRoleIds.has(selfRoleId);
+  // Decoupled-ready (PR #209 follow-up): "My turn" means "on the
+  // hook for this turn" = active AND not yet ready. Once the local
+  // viewer signals ready via the rail Mark Ready, the AI is just
+  // waiting on the rest of the active set, so the top "● YOUR
+  // TURN" banner, the composer-edge chip, and the active-role
+  // composer cues stop firing — keeping them up would misread as
+  // "you still need to act." The composer itself stays editable so
+  // post-ready interjections still land; only the "you're on the
+  // hook" affordances dim. The per-role ``READY ✓`` tag in the
+  // rail is rendered separately from ``displayedReadyRoleIds``.
+  const isMyTurn = iAmActive && !iAmReady;
   const myRole = snapshot.roles.find((r) => r.id === selfRoleId);
   // Fail closed: an undefined ``myRole`` (token's role_id missing from
   // snapshot.roles, e.g. mid-rehydrate) must NOT light up the composer.
