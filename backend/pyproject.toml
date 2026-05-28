@@ -34,6 +34,16 @@ dependencies = [
     # Anthropic prompt-caching round-trips cleanly (validated in PoC,
     # see issue #193 Phase 0).
     "litellm>=1.83",
+    # Transitive of litellm, pinned to the patched range here so a
+    # build never regresses below the fix for GHSA-mf9w-mj56-hr94
+    # (CVE-2026-28684) — symlink-following file overwrite in
+    # ``set_key`` when the .env path is a symlink across filesystems.
+    # We never call ``set_key`` ourselves (only ``load_dotenv`` via
+    # litellm), but Trivy reports this as HIGH/CRITICAL from a
+    # non-GitHub vendor and gates the runtime-image push on it. Fix
+    # landed in python-dotenv 1.2.2. litellm's own constraint stays
+    # at ``>=1.0.0,<2.0`` so this is a deliberate floor lift.
+    "python-dotenv>=1.2.2",
 ]
 
 [project.optional-dependencies]
