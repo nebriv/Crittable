@@ -9,7 +9,16 @@ COPY frontend/ ./
 RUN npm run build
 
 # ---------- Stage 2: python runtime ----------
-FROM python:3.14-slim AS runtime
+# Pinned to 3.13-slim, NOT 3.14-slim, because litellm — our single
+# LLM transport — has ``requires_python = "<3.14,>=3.10"`` on every
+# release through 1.87.0rc2 (latest stable 1.86.2 at time of writing,
+# 2026-05). On 3.14, pip backtracks to litellm 1.83.0 which carries
+# 4 unpatched CVEs (CVE-2026-42208 CRITICAL SQL injection,
+# CVE-2026-40217 / 42203 / 42271 HIGH arbitrary code / command
+# execution). With 3.13 pip resolves to litellm 1.86.2 (CVE-free).
+# When upstream litellm publishes a release that lifts the ``<3.14``
+# upper bound, bump this back via the Dependabot docker ecosystem.
+FROM python:3.13-slim AS runtime
 
 # Cache-bust the apt + pip layers below on every CI run. Without this,
 # the GHA buildx cache replays whatever package versions a build from
@@ -29,7 +38,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 # ``apt-get upgrade -y`` pulls every available debian-security update
 # at build time. Without it, the runtime image inherits whatever
-# package versions were baked into the upstream ``python:3.14-slim``
+# package versions were baked into the upstream ``python:3.13-slim``
 # at its last rebuild — typically weeks behind debian-security. As of
 # 2026-05 that's 11 HIGH/CRITICAL CVEs in the base (libgnutls30t64
 # CVE-2026-33845/42010 CRITICAL, libk5* / libcap2 / libnghttp2-14

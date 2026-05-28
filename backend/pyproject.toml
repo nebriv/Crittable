@@ -33,7 +33,20 @@ dependencies = [
     # lazily; the import-time footprint is small. Pinned to >=1.83 so
     # Anthropic prompt-caching round-trips cleanly (validated in PoC,
     # see issue #193 Phase 0).
-    "litellm>=1.83",
+    #
+    # The ``>=1.83.10`` lower bound is the security floor — every
+    # release before it has at least one of the four 2026-05 CVEs
+    # (CVE-2026-42208 CRITICAL SQL injection in the proxy path,
+    # CVE-2026-40217 HIGH bytecode-rewriting code execution,
+    # CVE-2026-42203 HIGH unsandboxed prompt-template code execution,
+    # CVE-2026-42271 HIGH MCP stdio command execution). 1.83.7 fixes
+    # three of them; 1.83.10 fixes the last. Without this floor, on
+    # ``python:3.14-slim`` pip silently backtracks to 1.83.0 (because
+    # litellm 1.83.10+ pins ``requires_python = "<3.14"``) and the
+    # vulnerable version ships. The Dockerfile pin to ``python:3.13``
+    # is what actually lets pip resolve to 1.86.2; this constraint is
+    # the belt to that Dockerfile's braces.
+    "litellm>=1.83.10",
     # Transitive of litellm, pinned to the patched range here so a
     # build never regresses below the fix for GHSA-mf9w-mj56-hr94
     # (CVE-2026-28684) — symlink-following file overwrite in
