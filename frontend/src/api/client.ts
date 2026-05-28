@@ -247,11 +247,34 @@ export interface DevScenarioList {
 }
 
 /**
- * Strip query-string secrets ({@code token=...}) from a path before logging.
- * Tokens are bearer credentials — leaking them via console is a real bug.
+ * Strip query-string secrets ({@code token=...}, {@code code=...},
+ * {@code invite_code=...}) from a path before logging. These are
+ * bearer credentials of varying sensitivity — leaking them via the
+ * browser console is a real bug. The matching backend scrubber lives
+ * at ``backend/app/logging_setup.py::_scrub_path_bytes``; keep the
+ * two regex sets in sync.
  */
 function _scrub(path: string): string {
-  return path.replace(/([?&]token=)[^&]+/gi, "$1***");
+  return path
+    .replace(/([?&]token=)[^&]+/gi, "$1***")
+    .replace(/([?&](?:code|invite_code)=)[^&]+/gi, "$1***");
+}
+
+/**
+ * Error thrown by {@link request} for any non-2xx response. Carries
+ * the HTTP ``status`` so callers can branch on the precise rejection
+ * (e.g. a 403 invite-gate rejection vs. a generic 400) without
+ * substring-matching the ``message`` — substring matches collide as
+ * soon as a sibling endpoint uses an overlapping word (e.g.
+ * ``invitee_roles`` failures alongside ``invite`` gate failures).
+ */
+export class ApiError extends Error {
+  status: number;
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+  }
 }
 
 async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
@@ -273,7 +296,7 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
       /* ignore */
     }
     console.warn(`[api] ${method} ${safePath} → ${res.status} (${ms}ms)`, detail);
-    throw new Error(detail);
+    throw new ApiError(detail, res.status);
   }
   const out = (await res.json()) as T;
   console.debug(`[api] ${method} ${safePath} → ${res.status} (${ms}ms)`);
@@ -309,7 +332,33 @@ export const DEFAULT_SESSION_FEATURES: SessionFeatures = {
   media_pressure: false,
 };
 
+/** Shape returned by ``GET /api/invite/status``. ``required`` reflects
+ *  whether the server has the ``INVITE_CODE`` env var set; ``valid``
+ *  is ``null`` when no ``?code=`` was supplied or when no gate runs.
+ *  The frontend hits this on the facilitator page mount to decide
+ *  whether to show the gate UI, and again on submit to validate the
+ *  user's entry without going through the heavier create-session
+ *  path. */
+export interface InviteStatus {
+  required: boolean;
+  valid: boolean | null;
+}
+
 export const api = {
+  /** Probe the soft anti-strangers gate.
+   *
+   *  ``code`` is optional: without it, the response just says
+   *  whether the gate is on. With it, ``valid`` reports whether the
+   *  supplied code matches. The backend logs rejected probes at
+   *  WARNING so brute-force attempts surface in normal log scans;
+   *  the code is never logged. */
+  async getInviteStatus(code?: string): Promise<InviteStatus> {
+    const qs = code != null && code.length > 0
+      ? `?code=${encodeURIComponent(code)}`
+      : "";
+    return request("GET", `/api/invite/status${qs}`);
+  },
+
   async createSession(body: {
     scenario_prompt: string;
     creator_label: string;
@@ -332,6 +381,11 @@ export const api = {
       duration_minutes: number;
       features: SessionFeatures;
     };
+    /** Soft anti-strangers gate. Required when the server has
+     *  ``INVITE_CODE`` set; ignored otherwise. The gate UI on the
+     *  facilitator page reads it from localStorage and threads it
+     *  through here. Player join links don't need it. */
+    invite_code?: string;
   }): Promise<{
     session_id: string;
     creator_role_id: string;

@@ -442,3 +442,16 @@ html, body {
   outline-offset: 4px;
   border-radius: 2px;
 }
+
+/*
+ * Invite gate — a11y BLOCK from the UI/UX review. The card is a
+ * single-control surface; without a focus ring keyboard users get
+ * zero feedback. Both the input and submit need it; the input also
+ * unsets the default outline so the ring lives only on
+ * ``:focus-visible`` (not on mouse-click focus).
+ */
+.invite-input:focus-visible,
+.invite-submit:focus-visible {
+  outline: 2px solid var(--signal);
+  outline-offset: 2px;
+}

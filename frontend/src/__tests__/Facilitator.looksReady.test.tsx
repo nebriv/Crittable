@@ -111,6 +111,17 @@ describe("Facilitator — handleLooksReady doesn't auto-finalize (regression)", 
     Object.assign(navigator, {
       clipboard: { writeText: vi.fn().mockResolvedValue(undefined) },
     });
+    // Resolve the mount-time invite-code probe to "no gate" so the
+    // wizard renders after a microtask flush instead of staying on
+    // the loader. The test mounts <Facilitator/> and reaches for
+    // wizard fields synchronously; without this mock the probe
+    // rejects (no fetch handler in jsdom) and the catch flips
+    // ``inviteRequired`` to false eventually — but ``findBy*``
+    // already polls, so an explicit mock is simpler.
+    vi.spyOn(api, "getInviteStatus").mockResolvedValue({
+      required: false,
+      valid: null,
+    });
   });
 
   afterEach(() => {
@@ -150,7 +161,9 @@ describe("Facilitator — handleLooksReady doesn't auto-finalize (regression)", 
 
     // Walk the intro wizard: scenario textarea (Step 1) → next →
     // next → ROLL SESSION. The creator label pre-fills to "CISO".
-    const scenarioBox = screen.getByPlaceholderText(
+    // Wait for the wizard to render after the invite-code probe
+    // resolves (the probe is a microtask flush in tests).
+    const scenarioBox = await screen.findByPlaceholderText(
       /What happened, when, at what severity/i,
     );
     fireEvent.change(scenarioBox, {

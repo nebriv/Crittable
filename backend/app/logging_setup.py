@@ -38,13 +38,29 @@ from .config import Settings
 
 _TOKEN_QUERY_RE = re.compile(rb"([?&]token=)[^&]+", re.IGNORECASE)
 _TOKEN_PATH_RE = re.compile(rb"(/play/[^/?#]+/)[^/?#]+", re.IGNORECASE)
+# Invite-code gate (``GET /api/invite/status?code=…``). The candidate
+# is a low-sensitivity bearer secret — leaks in the access-log line
+# would contradict the WARNING line in ``routes.py`` that promises the
+# value is never logged. Scrubbed alongside the older token patterns.
+_INVITE_CODE_QUERY_RE = re.compile(
+    rb"([?&](?:code|invite_code)=)[^&]+", re.IGNORECASE
+)
 
 
 def _scrub_path_bytes(raw: bytes) -> str:
-    """Strip ``?token=…`` / ``/play/<sid>/<token>`` fragments before logging."""
+    """Strip bearer-secret query / path fragments before logging.
+
+    Covers:
+      * ``?token=…`` — join tokens on every authenticated REST path.
+      * ``/play/<sid>/<token>`` — the path-style token in the
+        share-with-player URL.
+      * ``?code=…`` / ``?invite_code=…`` — the soft anti-strangers
+        gate on ``GET /api/invite/status``.
+    """
 
     scrubbed = _TOKEN_QUERY_RE.sub(rb"\1***", raw)
     scrubbed = _TOKEN_PATH_RE.sub(rb"\1***", scrubbed)
+    scrubbed = _INVITE_CODE_QUERY_RE.sub(rb"\1***", scrubbed)
     try:
         return scrubbed.decode("ascii", errors="replace")
     except Exception:

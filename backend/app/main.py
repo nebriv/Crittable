@@ -235,6 +235,25 @@ def create_app(
                 "tests-only convenience; never enable in production."
             ),
         )
+    # Boot-time confirmation that the soft anti-strangers gate is on,
+    # plus a loud warning if the operator forgot to pair it with the
+    # rate-limit middleware. Without the warn an operator can think
+    # "INVITE_CODE is set, I'm safe" and miss that an attacker can
+    # grind ``GET /api/invite/status?code=…`` at thousands of probes
+    # per second to brute the value.
+    if cfg.invite_code_required():
+        _bootstrap_log.info("invite_code_gate_enabled")
+        if not cfg.rate_limit_enabled:
+            _bootstrap_log.warning(
+                "invite_code_set_without_rate_limit",
+                note=(
+                    "INVITE_CODE is set but RATE_LIMIT_ENABLED=false; "
+                    "an attacker can brute the code via "
+                    "GET /api/invite/status?code=… or "
+                    "POST /api/sessions without throttling. "
+                    "Enable RATE_LIMIT_ENABLED=true for any public deploy."
+                ),
+            )
 
     app = FastAPI(
         title="Crittable",
