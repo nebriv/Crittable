@@ -356,6 +356,7 @@ export function SetupWizard(props: Props) {
             current={current}
             content={props.postCreationContent}
             error={props.error}
+            hasPlan={props.snapshot?.plan != null}
           />
         )}
       </section>
@@ -367,10 +368,18 @@ function PostCreationBody({
   current,
   content,
   error,
+  hasPlan,
 }: {
   current: WizardStepId;
   content: ReactNode;
   error: string | null;
+  /** Whether a scenario plan has landed on the session. Step 04 spans
+   *  the whole SETUP phase, so its title must reflect plan state: the
+   *  AI can draft a plan on its first turn (even with zero setup
+   *  questions), after which "AI is drafting the plan" is stale and
+   *  contradicts the finished plan shown alongside it — the headline
+   *  was the loudest "is it stuck?" signal once the plan arrived. */
+  hasPlan: boolean;
 }) {
   const titles: Record<WizardStepId, { eyebrow: string; title: string }> = {
     1: { eyebrow: "STEP 01 · SCENARIO", title: "Scenario" },
@@ -378,7 +387,7 @@ function PostCreationBody({
     3: { eyebrow: "STEP 03 · ROLES", title: "Roles" },
     4: {
       eyebrow: "STEP 04 · INJECTS & SCHEDULE",
-      title: "AI is drafting the plan",
+      title: hasPlan ? "Review the scenario plan" : "AI is drafting the plan",
     },
     5: { eyebrow: "STEP 05 · INVITE PLAYERS", title: "Invite players" },
     6: { eyebrow: "STEP 06 · REVIEW & LAUNCH", title: "Review & launch" },

@@ -337,8 +337,12 @@ the model MUST emit a setup tool call.
 > You are setting up a cybersecurity tabletop exercise with the
 > creator. Use `ask_setup_question` to gather org background, team
 > composition, capabilities, environment, and scenario shaping. Cap
-> setup at ~6 questions total — fewer if the creator's seed prompt
-> already covers the basics. Ask one question per turn. After the
+> setup at ~5 questions total — fewer if the creator's seed prompt
+> already covers the basics, **but never zero**: even on a rich seed,
+> open your first turn with one or two short *confirming* questions
+> (echo back the specifics you inferred and ask the creator to confirm
+> or amend) before you draft. Only skip if the seed/reply explicitly
+> says to draft immediately. Ask one question per turn. After the
 > creator answers your last needed question (or proactively says
 > "that's enough, draft the plan"), call `propose_scenario_plan`
 > directly. When the creator approves, call `finalize_setup`. After
@@ -347,8 +351,13 @@ the model MUST emit a setup tool call.
 The new multi-section intro (`SCENARIO BRIEF` / `TEAM` /
 `ENVIRONMENT` / `CONSTRAINTS / AVOID`) is bundled into a single
 `scenario_prompt` payload by the frontend; the setup model sees it as
-the seed user message. Rich seeds shorten the dialogue (sometimes to
-zero questions if the operator pre-fills everything).
+the seed user message. Rich seeds shorten the dialogue toward the
+floor — one or two confirming questions — rather than to zero, so the
+creator always interacts with (and can correct) the AI's read of the
+seed before a plan is drafted. The lone carve-out is an explicit
+"skip setup / draft now" instruction in the seed. The frontend still
+handles a genuinely zero-note plan (that carve-out) gracefully — see
+`SetupView` in `Facilitator.tsx`.
 
 ---
 

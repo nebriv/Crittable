@@ -22,7 +22,22 @@ import {
  * CLAUDE.md "for UI changes, drive the dev server in a browser" rule.
  */
 
-function fakeSnapshot(plan: ScenarioPlan | null): SessionSnapshot {
+// ``notes`` defaults to a single AI question so the existing plan-panel
+// tests keep their non-empty transcript. Pass ``[]`` to exercise the
+// empty-notes branches (genuine first-question wait vs. AI drafting a
+// plan directly with zero ``ask_setup_question`` calls).
+function fakeSnapshot(
+  plan: ScenarioPlan | null,
+  notes: SessionSnapshot["setup_notes"] = [
+    {
+      ts: "2026-05-05T00:00:01Z",
+      speaker: "ai",
+      content: "What's your industry?",
+      topic: null,
+      options: null,
+    },
+  ],
+): SessionSnapshot {
   return {
     id: "session_test",
     state: plan ? "SETUP" : "SETUP",
@@ -39,15 +54,7 @@ function fakeSnapshot(plan: ScenarioPlan | null): SessionSnapshot {
     roles: [],
     current_turn: null,
     messages: [],
-    setup_notes: [
-      {
-        ts: "2026-05-05T00:00:01Z",
-        speaker: "ai",
-        content: "What's your industry?",
-        topic: null,
-        options: null,
-      },
-    ],
+    setup_notes: notes,
     cost: null,
     workstreams: [],
   };
@@ -367,5 +374,119 @@ describe("SetupView — busy without draftingPlan keeps banner hidden", () => {
       />,
     );
     expect(screen.queryByTestId("drafting-plan-banner")).not.toBeInTheDocument();
+  });
+});
+
+/**
+ * Regression for the "stuck on setup" report: the setup-tier model can
+ * draft a plan on its very first turn without ever calling
+ * ``ask_setup_question`` (the backend prompt permits this when the seed
+ * prompt already covers org / capabilities / shaping). That yields
+ * ``setup_notes: []`` alongside a populated ``plan``. Pre-fix, the
+ * empty-notes warning ("No setup messages yet · check your
+ * LLM_API_KEY") rendered right next to the finished plan, reading as a
+ * failure even though the LLM had succeeded. The ``hasPlan`` guard
+ * swaps that warning for an accurate next-step note; the genuine
+ * first-question wait (no plan yet) must still surface the warning.
+ */
+describe("SetupView — plan drafted directly (zero setup notes)", () => {
+  it("shows the 'plan drafted directly' note instead of the LLM_API_KEY warning when a plan exists with no notes", () => {
+    render(<SetupView snapshot={fakeSnapshot(fakePlan(), [])} {...baseProps()} />);
+
+    // Accurate next-step note is shown.
+    expect(screen.getByText(/Plan drafted without setup questions/i)).toBeInTheDocument();
+    expect(screen.getByText(/drafted directly from your brief/i)).toBeInTheDocument();
+
+    // The alarming empty-state must NOT render — it contradicted the
+    // finished plan and falsely implicated a missing key.
+    expect(screen.queryByText(/No setup messages yet/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/LLM_API_KEY/)).not.toBeInTheDocument();
+    // Gate guard: SetupChat is unmounted at zero notes, so its own
+    // "Setup hasn't started yet" placeholder must not duplicate /
+    // contradict the info box. (Pre-fix SetupChat mounted always and
+    // showed this even with a finished plan present.)
+    expect(
+      screen.queryByText(/Setup hasn't started yet/i),
+    ).not.toBeInTheDocument();
+
+    // The plan panel + Approve button still render alongside the note.
+    const aside = screen.getByRole("complementary", { name: /Proposed plan/i });
+    expect(
+      within(aside).getByRole("button", { name: /APPROVE & START LOBBY/i }),
+    ).toBeInTheDocument();
+  });
+
+  it("still shows the LLM_API_KEY warning when there is no plan and no notes (genuine first-question wait)", () => {
+    render(<SetupView snapshot={fakeSnapshot(null, [])} {...baseProps()} />);
+
+    expect(screen.getByText(/No setup messages yet/i)).toBeInTheDocument();
+    expect(screen.getByText(/LLM_API_KEY/)).toBeInTheDocument();
+
+    // The direct-draft note is plan-specific; it must not appear here.
+    expect(
+      screen.queryByText(/Plan drafted without setup questions/i),
+    ).not.toBeInTheDocument();
+    // Gate guard: the warn box owns the empty state here, so SetupChat's
+    // placeholder must not also render (pre-fix both showed — a
+    // redundant double "waiting" message).
+    expect(
+      screen.queryByText(/Setup hasn't started yet/i),
+    ).not.toBeInTheDocument();
+  });
+
+  it("keeps the info box (not the warning) when a revision is in flight: plan + zero notes + busy", () => {
+    // Pins the branch ORDER: ``notes.length === 0 && hasPlan`` is
+    // evaluated before the ``!busy`` warn branch, so a busy revision
+    // with a drafted plan must keep showing the info box, never the
+    // alarming "No setup messages yet" warning. Reordering the ternary
+    // (or adding ``&& !busy`` to the hasPlan branch) would resurface
+    // the exact contradiction this PR fixes.
+    render(
+      <SetupView snapshot={fakeSnapshot(fakePlan(), [])} {...baseProps()} busy />,
+    );
+    expect(screen.getByText(/Plan drafted without setup questions/i)).toBeInTheDocument();
+    expect(screen.queryByText(/No setup messages yet/i)).not.toBeInTheDocument();
+  });
+
+  it("renders no empty-state box while the first setup turn is in flight: no plan + zero notes + busy", () => {
+    // The common just-submitted-the-seed state. None of the three
+    // empty-state boxes should render — the in-flight signal is owned
+    // by the parent (BusyChip / drafting banner), surfaced here via
+    // ``busyMessage``. Locks this deliberate silent-empty behavior so a
+    // future refactor of any of the three conditions can't silently
+    // resurrect a contradictory placeholder.
+    render(
+      <SetupView
+        snapshot={fakeSnapshot(null, [])}
+        {...baseProps()}
+        busy
+        busyMessage="AI is thinking — drafting the next setup question…"
+      />,
+    );
+    // The in-flight signal IS present (parent-owned)...
+    expect(
+      screen.getByText(/AI is thinking — drafting the next setup question/i),
+    ).toBeInTheDocument();
+    // ...and none of the three empty-state boxes render.
+    expect(screen.queryByText(/No setup messages yet/i)).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(/Plan drafted without setup questions/i),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(/Setup hasn't started yet/i),
+    ).not.toBeInTheDocument();
+  });
+
+  it("mounts the transcript when a note exists (and hides both empty-state boxes)", () => {
+    // With a real note the conversation renders; neither empty-state
+    // box shows. (The zero-notes cases above guard the gate itself —
+    // this guards the populated path.)
+    render(<SetupView snapshot={fakeSnapshot(fakePlan())} {...baseProps()} />);
+
+    expect(screen.getByText(/What's your industry\?/i)).toBeInTheDocument();
+    expect(screen.queryByText(/No setup messages yet/i)).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(/Plan drafted without setup questions/i),
+    ).not.toBeInTheDocument();
   });
 });

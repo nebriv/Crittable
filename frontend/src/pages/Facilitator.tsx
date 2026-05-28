@@ -2936,7 +2936,31 @@ export function SetupView({
   // layout.
   const chatGroup = (
     <div className="flex min-w-0 flex-col gap-3">
-      {notes.length === 0 && !busy ? (
+      {notes.length === 0 && hasPlan ? (
+        // The setup-tier model drafted a plan straight from the seed
+        // prompt without asking any ``ask_setup_question`` — permitted
+        // when the seed already covers org / capabilities / shaping
+        // (see backend/app/llm/prompts.py). That leaves ``setup_notes``
+        // empty while ``session.plan`` is populated. Without this
+        // branch the empty-notes warning below ("Waiting for the AI's
+        // first question · check your LLM_API_KEY") renders right next
+        // to a finished plan — the contradiction that read as "stuck"
+        // even though the LLM clearly succeeded (it produced the
+        // plan). Show the accurate next step instead.
+        <div className="flex flex-col items-start gap-2 rounded-r-3 border border-signal-deep bg-signal-tint p-4">
+          <p className="mono text-[11px] uppercase tracking-[0.06em] text-signal">
+            Plan drafted without setup questions
+          </p>
+          <p className="text-sm text-ink-100">
+            The AI drafted directly from your brief. Review it and click{" "}
+            <span className="font-semibold text-ink-050">
+              Approve &amp; start lobby
+            </span>
+            , or reply below to request changes — or to have the AI ask
+            clarifying questions before you commit.
+          </p>
+        </div>
+      ) : notes.length === 0 && !busy ? (
         <div className="flex flex-col items-center gap-3 rounded-r-3 border border-warn bg-warn-bg p-6">
           <DieLoader label="Waiting for the AI's first question" size={64} />
           <p className="mono text-[11px] uppercase tracking-[0.06em] text-warn">
@@ -2958,13 +2982,22 @@ export function SetupView({
           over, otherwise mirror ``busy`` so regular back-and-forth
           replies show the small typing dots. The two flags are
           deliberately split — combining them would silently
-          re-enable chip clicks during the draft. */}
-      <SetupChat
-        notes={notes}
-        busy={busy}
-        aiTyping={busy && !bannerVisible}
-        onPickOption={onPickOption}
-      />
+          re-enable chip clicks during the draft.
+
+          Only mount the transcript once there's at least one note.
+          With zero notes the conversation hasn't happened yet (the AI
+          is composing its first question, or it drafted the plan
+          directly) — SetupChat's own "Setup hasn't started yet"
+          placeholder would duplicate or contradict the empty-state
+          boxes above, so those boxes own the empty case. */}
+      {notes.length > 0 ? (
+        <SetupChat
+          notes={notes}
+          busy={busy}
+          aiTyping={busy && !bannerVisible}
+          onPickOption={onPickOption}
+        />
+      ) : null}
 
       {/* Brand DieLoader as a named in-chat wait state for the
           plan-drafting step. The DieLoader itself supplies

@@ -137,6 +137,28 @@ describe("SetupWizard — phase routing (issue #113)", () => {
     expect(screen.getByTestId("setup-slot")).toBeInTheDocument();
   });
 
+  it("setup with a drafted plan: title switches to 'Review the scenario plan' (no stale 'drafting')", () => {
+    // The setup-tier model can propose a plan on its first turn (even
+    // with zero setup questions), so the SETUP-phase headline must
+    // reflect plan state. Pre-fix it stayed "AI is drafting the plan"
+    // — a 32px present-tense headline contradicting the finished plan
+    // in the panel, the loudest "is it stuck?" signal once the plan
+    // landed.
+    render(
+      <SetupWizard
+        phase="setup"
+        {...baseProps()}
+        snapshot={fakeSnapshot({ state: "SETUP", plan: fakePlan() })}
+        playerCount={1}
+        postCreationContent={<div data-testid="setup-slot">setup-slot</div>}
+      />,
+    );
+    expect(screen.getByText(/Review the scenario plan/i)).toBeInTheDocument();
+    expect(
+      screen.queryByText(/AI is drafting the plan/i),
+    ).not.toBeInTheDocument();
+  });
+
   it("ready + no plan: highlights step 05 (Invite players)", () => {
     render(
       <SetupWizard
