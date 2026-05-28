@@ -41,6 +41,11 @@ import {
   clearStoredInviteCode,
   readStoredInviteCode,
 } from "../lib/inviteCodeStorage";
+import {
+  clearStoredSessionDraft,
+  readStoredSessionDraft,
+  writeStoredSessionDraft,
+} from "../lib/sessionDraftStorage";
 import { SiteHeader } from "../components/brand/SiteHeader";
 import { SetupLobbyView } from "../components/setup/SetupLobbyView";
 import { SetupReviewView } from "../components/setup/SetupReviewView";
@@ -128,20 +133,49 @@ function _composeScenarioPrompt(parts: typeof DEV_SETUP_PREFILL): string {
 export function Facilitator() {
   const [state, setState] = useState<CreatorState | null>(null);
   const [snapshot, setSnapshot] = useState<SessionSnapshot | null>(null);
+  // Refresh-recovery for the wizard. Read sessionStorage ONCE at
+  // mount so each ``useState`` lazy initializer below can pull its
+  // default from the stored draft without each one repeating the
+  // JSON.parse + validation. Returns ``null`` when nothing was
+  // stored or storage is unavailable; each field falls back to its
+  // hard-coded default in that case. See lib/sessionDraftStorage.ts
+  // for the validation contract — an unrecognized field is dropped
+  // silently so a schema bump never soft-bricks the form.
+  const [restoredDraft] = useState(() => {
+    const stored = readStoredSessionDraft();
+    if (stored) {
+      // Log only the non-secret shape so the next operator chasing
+      // "why is the wizard pre-populated?" finds a breadcrumb. The
+      // scenario brief can contain operator-typed PII; log a
+      // presence flag rather than the body.
+      console.info("[facilitator] restored draft from sessionStorage", {
+        introStep: stored.introStep,
+        hasScenario: stored.setupParts.scenario.length > 0,
+        roleSlotCount: stored.setupRoleSlots.length,
+      });
+    }
+    return stored;
+  });
   // Multi-section setup intro. Each section is optional except
   // ``scenario`` which is required by the backend. The four sections
   // are combined into a single ``scenario_prompt`` string at submit
   // time so the API surface doesn't need to change. Pre-fix the intro
   // had a single textarea; operators were either leaving the AI to
   // ask 5+ setup questions OR pasting a wall of text into one box.
-  const [setupParts, setSetupParts] = useState({
-    scenario: "",
-    team: "",
-    environment: "",
-    constraints: "",
-  });
-  const [creatorLabel, setCreatorLabel] = useState("CISO");
-  const [creatorDisplayName, setCreatorDisplayName] = useState("");
+  const [setupParts, setSetupParts] = useState(() =>
+    restoredDraft?.setupParts ?? {
+      scenario: "",
+      team: "",
+      environment: "",
+      constraints: "",
+    },
+  );
+  const [creatorLabel, setCreatorLabel] = useState(
+    () => restoredDraft?.creatorLabel ?? "CISO",
+  );
+  const [creatorDisplayName, setCreatorDisplayName] = useState(
+    () => restoredDraft?.creatorDisplayName ?? "",
+  );
   // Issue #61 + roles-page redesign: roles to invite, declared
   // *before* the session is created so the operator doesn't add seats
   // one-by-one in the lobby AND the AI sees the full roster on its
@@ -206,21 +240,45 @@ export function Facilitator() {
       builtin: true,
     },
   ];
-  const [setupRoleSlots, setSetupRoleSlots] = useState<SetupRoleSlot[]>(() =>
-    SETUP_ROLE_BUILTINS.map((s) => ({ ...s })),
+  const [setupRoleSlots, setSetupRoleSlots] = useState<SetupRoleSlot[]>(() => {
+    // Respect an explicit empty roster on restore — the operator may
+    // have deliberately removed every builtin row, and silently
+    // re-seeding them would contradict the "don't lose what I just
+    // typed" contract. Step 3's "Add role" input is always available
+    // so the operator can recover from an empty list. Only fall back
+    // to the canonical builtins when there was no stored draft at all
+    // (fresh visit).
+    if (restoredDraft) return restoredDraft.setupRoleSlots;
+    return SETUP_ROLE_BUILTINS.map((s) => ({ ...s }));
+  });
+  const [setupRoleDraft, setSetupRoleDraft] = useState(
+    () => restoredDraft?.setupRoleDraft ?? "",
   );
-  const [setupRoleDraft, setSetupRoleDraft] = useState("");
+  // Wizard step index. Lifted from <SetupWizard/> so a refresh on
+  // Step 2 or Step 3 lands the operator back on the same step rather
+  // than dropping them at Step 1 with the rest of their data
+  // restored — which would look like the persistence partially
+  // failed. Defaulted to 1 for first-load.
+  const [introStep, setIntroStep] = useState<1 | 2 | 3>(
+    () => restoredDraft?.introStep ?? 1,
+  );
   // Creator-selected scenario tuning (issue #33). Picked on the
   // wizard's step 2 alongside environment / constraints — the UI
   // calls them "TUNING" — and frozen at session creation. Defaults
   // mirror the backend's ``SessionSettings`` (standard, 60min,
   // adversary + time + executive ON, media OFF) so an operator who
   // ignores the panel still gets a sensible balanced tabletop.
-  const [difficulty, setDifficulty] = useState<Difficulty>("standard");
-  const [durationMinutes, setDurationMinutes] = useState<number>(60);
-  const [features, setFeatures] = useState<SessionFeatures>(() => ({
-    ...DEFAULT_SESSION_FEATURES,
-  }));
+  const [difficulty, setDifficulty] = useState<Difficulty>(
+    () => restoredDraft?.difficulty ?? "standard",
+  );
+  const [durationMinutes, setDurationMinutes] = useState<number>(
+    () => restoredDraft?.durationMinutes ?? 60,
+  );
+  const [features, setFeatures] = useState<SessionFeatures>(() =>
+    restoredDraft?.features
+      ? { ...restoredDraft.features }
+      : { ...DEFAULT_SESSION_FEATURES },
+  );
   // Step 5 → 6 advance flag for the post-creation wizard. Default
   // ``false``: after the plan is finalised the wizard lands on step
   // 5 (Invite players) so the creator can share join links and watch
@@ -245,6 +303,20 @@ export function Facilitator() {
   // for any individual session.
   const [devMode, setDevMode] = useState(false);
   useEffect(() => {
+    // Refresh-recovery: when a draft was restored, skip the auto-flip
+    // to avoid the visual flicker where the operator briefly sees
+    // their pre-filled textareas with the "Dev mode" toggle showing
+    // OFF before the async probe lands and snaps it on. The operator
+    // can still toggle devMode manually if they want the prefills
+    // and the scenario picker. ``devMode`` itself is intentionally
+    // not part of the persisted draft — it's a deployment-default
+    // signal, not user content.
+    if (restoredDraft) {
+      console.debug(
+        "[facilitator] skipping dev-tools probe (restored draft)",
+      );
+      return;
+    }
     let canceled = false;
     (async () => {
       try {
@@ -271,7 +343,11 @@ export function Facilitator() {
     return () => {
       canceled = true;
     };
-  }, []);
+    // ``restoredDraft`` is set once via a lazy ``useState`` initializer
+    // and never re-set, so it's stable for the lifetime of the
+    // component — listing it in deps is for correctness, not because
+    // the effect needs to re-run.
+  }, [restoredDraft]);
   // Soft anti-strangers gate on session creation (env: ``INVITE_CODE``).
   // Tri-state: ``null`` while the mount-time probe is in flight (we
   // render a tiny loader rather than flashing the wizard then snapping
@@ -554,6 +630,41 @@ export function Facilitator() {
   // "only if near bottom" rule still applies for incoming messages
   // from other roles.
 
+  // Refresh-recovery sync: persist the in-progress wizard draft on
+  // every change while the operator is still in the pre-creation
+  // form (``state === null``). Once the session has been created the
+  // form is no longer the operator's working surface — a stale draft
+  // restored after a refresh-into-session would surprise them — so
+  // we stop syncing the moment ``state`` lands. The matching
+  // ``clearStoredSessionDraft()`` call inside ``handleCreate`` wipes
+  // the entry on a successful create so a refresh-then-new-session
+  // flow starts fresh.
+  useEffect(() => {
+    if (state !== null) return;
+    writeStoredSessionDraft({
+      setupParts,
+      creatorLabel,
+      creatorDisplayName,
+      setupRoleSlots,
+      setupRoleDraft,
+      difficulty,
+      durationMinutes,
+      features,
+      introStep,
+    });
+  }, [
+    state,
+    setupParts,
+    creatorLabel,
+    creatorDisplayName,
+    setupRoleSlots,
+    setupRoleDraft,
+    difficulty,
+    durationMinutes,
+    features,
+    introStep,
+  ]);
+
   const phase: Phase = useMemo(() => {
     if (!snapshot) return "intro";
     if (snapshot.state === "ENDED") return "ended";
@@ -757,6 +868,12 @@ export function Facilitator() {
         creatorRoleId: created.creator_role_id,
         joinUrl: created.creator_join_url,
       });
+      // Refresh-recovery: the wizard's job is done. Drop the stored
+      // draft so a later refresh-into-session doesn't restore the
+      // now-frozen form fields (the session's settings are locked
+      // server-side at create time anyway) and so a fresh "new
+      // session" later in the tab lifecycle starts from defaults.
+      clearStoredSessionDraft();
       if (devMode) {
         // ``start_session`` requires ≥ 2 player roles. Dev mode adds a
         // SOC Analyst backstop ONLY when the operator didn't pre-declare
@@ -1364,6 +1481,34 @@ export function Facilitator() {
     console.info("[facilitator] reset to intro");
     wsRef.current?.close();
     wsRef.current = null;
+    // Reset wizard form state to defaults BEFORE flipping ``state``
+    // to null. The persistence effect re-fires the instant ``state``
+    // lands at null; without an explicit reset it would otherwise
+    // write the *previous session's* wizard values back to
+    // sessionStorage and a subsequent refresh would restore them —
+    // contradicting the operator's "+ New session" intent. Mirror
+    // the lazy-initializer defaults at the top of the component so a
+    // "+ New session" click feels the same as a fresh page load.
+    setSetupParts({
+      scenario: "",
+      team: "",
+      environment: "",
+      constraints: "",
+    });
+    setCreatorLabel("CISO");
+    setCreatorDisplayName("");
+    setSetupRoleSlots(SETUP_ROLE_BUILTINS.map((s) => ({ ...s })));
+    setSetupRoleDraft("");
+    setIntroStep(1);
+    setDifficulty("standard");
+    setDurationMinutes(60);
+    setFeatures({ ...DEFAULT_SESSION_FEATURES });
+    // Belt-and-suspenders clear: the persistence effect's next pass
+    // will overwrite with these reset values anyway, but clearing
+    // immediately means a refresh in the window between this call
+    // and the effect's commit lands on a clean form rather than the
+    // stale one.
+    clearStoredSessionDraft();
     setState(null);
     setSnapshot(null);
     setStreamingActive(false);
@@ -1683,6 +1828,8 @@ export function Facilitator() {
         setDurationMinutes={setDurationMinutes}
         features={features}
         setFeatures={setFeatures}
+        introStep={introStep}
+        setIntroStep={setIntroStep}
       />
     );
   }

@@ -1,4 +1,5 @@
 import "@testing-library/jest-dom/vitest";
+import { afterEach, beforeEach } from "vitest";
 
 // jsdom's Range implementation has no getBoundingClientRect; the
 // HighlightActionPopover (issue #98) calls it from a selectionchange
@@ -24,3 +25,22 @@ if (
     toJSON: () => ({}),
   });
 }
+
+// jsdom's localStorage / sessionStorage persist across tests in the
+// same file unless explicitly cleared. The wizard's draft persistence
+// (lib/sessionDraftStorage.ts) writes to sessionStorage every time
+// the operator touches a field, which would otherwise let one test's
+// draft restore on the next test's mount — e.g. tests advancing past
+// step 1 would land subsequent tests on step 2 or 3 instead of the
+// expected fresh-start step 1. Wipe both per-test so every render
+// starts from defaults; individual tests can re-seed storage in their
+// own setup if they need to.
+beforeEach(() => {
+  window.sessionStorage.clear();
+  window.localStorage.clear();
+});
+
+afterEach(() => {
+  window.sessionStorage.clear();
+  window.localStorage.clear();
+});

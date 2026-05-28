@@ -148,6 +148,16 @@ interface Props {
   /** Setter for ``advancedToReview`` so the rail clicks can drive
    *  step navigation without round-tripping through the parent. */
   setAdvancedToReview?: (v: boolean) => void;
+  /**
+   * Optional intro-step control. When provided, the wizard renders
+   * the parent-owned step value and forwards user navigation through
+   * ``setIntroStep`` — used by ``<Facilitator/>`` so the active step
+   * can be persisted across page refresh alongside the rest of the
+   * draft state. Falls back to internal ``useState`` when omitted so
+   * unit tests can render the wizard in isolation.
+   */
+  introStep?: 1 | 2 | 3;
+  setIntroStep?: (v: 1 | 2 | 3) => void;
 }
 
 // Stable React keys for custom-role rows the operator adds. We can't
@@ -164,7 +174,13 @@ export function SetupWizard(props: Props) {
   // Pre-creation step navigation. The user moves through 1 → 2 → 3,
   // and submitting step 3 triggers session creation. Once created
   // (phase != "intro"), the step is derived from backend state.
-  const [introStep, setIntroStep] = useState<1 | 2 | 3>(1);
+  // When the parent threads ``introStep`` / ``setIntroStep`` through,
+  // we render the controlled value so the step can be persisted to
+  // sessionStorage and survive a page refresh; otherwise we fall
+  // back to internal state for standalone unit-test renders.
+  const [localIntroStep, setLocalIntroStep] = useState<1 | 2 | 3>(1);
+  const introStep = props.introStep ?? localIntroStep;
+  const setIntroStep = props.setIntroStep ?? setLocalIntroStep;
   // Step 5 → 6 advance flag is owned by ``Facilitator`` so the
   // ``SetupReviewView`` (rendered into the ``postCreationContent``
   // slot below) can request a hop back to step 5 without props

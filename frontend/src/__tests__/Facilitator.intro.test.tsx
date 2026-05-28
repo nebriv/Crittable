@@ -1,8 +1,13 @@
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import { Facilitator, TopBar } from "../pages/Facilitator";
 import { BottomActionBar } from "../components/brand/BottomActionBar";
 import { api } from "../api/client";
+import {
+  SESSION_DRAFT_STORAGE_KEY,
+  writeStoredSessionDraft,
+} from "../lib/sessionDraftStorage";
+import { DEFAULT_SESSION_FEATURES } from "../api/client";
 
 // Setup wizard splits the form across 3 steps (Scenario → Environment
 // → Roles). Roles live on step 3, so every Roles assertion needs the
@@ -247,6 +252,199 @@ describe("Facilitator intro — Roles step (issue #61, redesign)", () => {
     expect(
       screen.queryByText(/won't be auto-added as a separate invitee/i),
     ).not.toBeInTheDocument();
+  });
+});
+
+// Refresh-recovery: filling out the wizard then "refreshing" (i.e.
+// unmounting + re-mounting <Facilitator/>) must restore the form
+// fields the operator already typed. Without this, an accidental
+// refresh wipes the entire setup — scenario brief, team, env,
+// constraints, tuning panel, role roster. Storage round-trip is
+// covered separately in sessionDraftStorage.test.ts; this block
+// covers the wiring inside <Facilitator/>.
+describe("Facilitator intro — refresh recovery", () => {
+  beforeEach(() => {
+    vi.spyOn(api, "getInviteStatus").mockResolvedValue({
+      required: false,
+      valid: null,
+    });
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("restores scenario brief + current step after re-mount", async () => {
+    const { unmount } = render(<Facilitator />);
+    // Find + fill scenario, then advance one step so we exercise
+    // both per-field persistence AND introStep persistence.
+    const scenario = await screen.findByLabelText(/SCENARIO BRIEF/i);
+    fireEvent.change(scenario, {
+      target: { value: "Ransomware end-quarter close" },
+    });
+    fireEvent.click(
+      screen.getByRole("button", { name: /NEXT · ENVIRONMENT/i }),
+    );
+    // Simulate a refresh by tearing down the React tree and rendering
+    // a fresh <Facilitator/>. sessionStorage survives the unmount.
+    unmount();
+    render(<Facilitator />);
+    // Step 2's environment header is the marker for "we landed on
+    // step 2, not step 1". On step 1 the page header reads "Set the
+    // scene"; on step 2 it reads "Shape the exercise".
+    expect(
+      await screen.findByText(/Shape the exercise/i),
+    ).toBeInTheDocument();
+    // The scenario brief value is preserved across the refresh
+    // even though step 2 doesn't render the SCENARIO textarea —
+    // navigate back to step 1 to confirm.
+    fireEvent.click(screen.getByRole("button", { name: /← BACK/i }));
+    const restored = (await screen.findByLabelText(
+      /SCENARIO BRIEF/i,
+    )) as HTMLTextAreaElement;
+    expect(restored.value).toBe("Ransomware end-quarter close");
+  });
+
+  it("restores role-roster edits after re-mount", async () => {
+    const { unmount } = render(<Facilitator />);
+    await advanceToRoles();
+    // Toggle a builtin OFF + add a custom row. The OFF pill is the
+    // one that flips an ACTIVE row off (the ACTIVE pill is a no-op
+    // when the row is already active).
+    fireEvent.click(
+      screen.getByRole("button", { name: /Executive Sponsor off/i }),
+    );
+    const draft = screen.getByLabelText("New role label") as HTMLInputElement;
+    fireEvent.change(draft, { target: { value: "Threat Intel" } });
+    fireEvent.click(screen.getByRole("button", { name: "Add role" }));
+    // Refresh.
+    unmount();
+    render(<Facilitator />);
+    // We're back on step 3 because introStep persisted.
+    expect(
+      await screen.findByRole("group", { name: /Roles to invite/i }),
+    ).toBeInTheDocument();
+    // Custom row survives the round-trip.
+    expect(
+      within(getRolesFieldset()).getByText("Threat Intel"),
+    ).toBeInTheDocument();
+    // Executive Sponsor stays OFF after the round-trip.
+    expect(
+      screen.getByRole("button", { name: /Executive Sponsor off/i }),
+    ).toHaveAttribute("aria-pressed", "true");
+  });
+
+  it("clears stored draft after a successful session create", async () => {
+    // QA review MEDIUM: regression net for the
+    // ``clearStoredSessionDraft()`` call inside ``handleCreate``.
+    // Without this test a future refactor that drops the clear
+    // would leave a stale draft in storage and a refresh after
+    // create would dump the operator back into the wizard with
+    // pre-populated form fields.
+    vi.spyOn(api, "createSession").mockResolvedValue({
+      session_id: "session_test",
+      creator_role_id: "role_creator",
+      creator_token: "tok_creator",
+      creator_join_url: "http://localhost/play/session_test/tok_creator",
+      failed_invitees: [],
+    });
+    vi.spyOn(api, "getSession").mockResolvedValue({
+      id: "session_test",
+      state: "SETUP",
+      created_at: "2026-05-05T00:00:00Z",
+      scenario_prompt: "scenario",
+      plan_title: null,
+      plan_summary: null,
+      settings: {
+        difficulty: "standard",
+        duration_minutes: 60,
+        features: { ...DEFAULT_SESSION_FEATURES },
+      },
+      plan: null,
+      roles: [],
+      current_turn: null,
+      messages: [],
+      setup_notes: [],
+      cost: null,
+      workstreams: [],
+    });
+    // Pre-seed a draft so we can assert it's gone after create.
+    writeStoredSessionDraft({
+      setupParts: {
+        scenario: "to-be-cleared",
+        team: "",
+        environment: "",
+        constraints: "",
+      },
+      creatorLabel: "CISO",
+      creatorDisplayName: "Alice",
+      setupRoleSlots: [
+        {
+          key: "IC",
+          code: "IC",
+          label: "Incident Commander",
+          active: true,
+          builtin: true,
+        },
+      ],
+      setupRoleDraft: "",
+      difficulty: "standard",
+      durationMinutes: 60,
+      features: { ...DEFAULT_SESSION_FEATURES },
+      introStep: 3,
+    });
+    expect(
+      window.sessionStorage.getItem(SESSION_DRAFT_STORAGE_KEY),
+    ).not.toBeNull();
+    render(<Facilitator />);
+    // Land on step 3 thanks to the restored introStep.
+    await screen.findByRole("group", { name: /Roles to invite/i });
+    const rollBtn = screen.getByRole("button", { name: /ROLL SESSION/i });
+    const form = rollBtn.closest("form");
+    if (!form) throw new Error("ROLL SESSION button not inside a form");
+    fireEvent.submit(form);
+    // Wait for the storage entry to drop. The clear happens
+    // synchronously inside ``handleCreate`` right after the
+    // ``setState`` for the creator info.
+    await waitFor(() => {
+      expect(
+        window.sessionStorage.getItem(SESSION_DRAFT_STORAGE_KEY),
+      ).toBeNull();
+    });
+  });
+
+  it("preserves an explicitly emptied roster instead of re-seeding builtins", async () => {
+    // QA review HIGH: if the operator deliberately removed every
+    // builtin row, refreshing must NOT silently restore the canonical
+    // 5. Step 3's Add-role input remains available so the operator
+    // can recover from an empty list — that's the affordance, not a
+    // paternalistic re-seed.
+    const { unmount } = render(<Facilitator />);
+    await advanceToRoles();
+    // Remove all 5 builtins via the × button on each row.
+    for (const label of [
+      "Incident Commander",
+      "Cybersecurity Manager",
+      "Cybersecurity Engineer",
+      "Comms / Legal",
+      "Executive Sponsor",
+    ]) {
+      fireEvent.click(screen.getByLabelText(`Remove ${label}`));
+    }
+    // ROLL SESSION button is disabled (no active invitees).
+    expect(screen.getByRole("button", { name: /ROLL SESSION/i })).toBeDisabled();
+    // Refresh.
+    unmount();
+    render(<Facilitator />);
+    // After refresh we're still on Step 3 with an empty roster — no
+    // builtin re-seed. The submit button stays disabled.
+    expect(
+      await screen.findByRole("group", { name: /Roles to invite/i }),
+    ).toBeInTheDocument();
+    expect(
+      within(getRolesFieldset()).queryByText("Incident Commander"),
+    ).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /ROLL SESSION/i })).toBeDisabled();
   });
 });
 
