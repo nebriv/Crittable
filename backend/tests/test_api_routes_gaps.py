@@ -470,3 +470,51 @@ def test_get_session_exposes_plan_title_summary_to_non_creator(
     assert cbody["plan"] is not None
     assert cbody["plan"]["title"] == plan.title
 
+
+# ---------------------------------------------------------------- scenario_prompt length cap
+
+
+def test_create_session_rejects_scenario_prompt_over_cap(client: TestClient) -> None:
+    """``scenario_prompt`` is capped at 16000 chars. One char over returns
+    a 422 whose ``detail`` is the Pydantic validation *array* — the exact
+    shape the frontend api-client now formats into a readable message
+    (the old code stringified the array and rendered ``[object Object]``
+    in the setup wizard). Locking the shape here keeps that contract
+    honest from the server side."""
+
+    r = client.post(
+        "/api/sessions",
+        json={
+            "scenario_prompt": "A" * 16001,
+            "creator_label": "CISO",
+            "creator_display_name": "Alex",
+            **default_settings_body(),
+        },
+    )
+    assert r.status_code == 422, r.text
+    detail = r.json()["detail"]
+    assert isinstance(detail, list)
+    entry = detail[0]
+    assert entry["loc"][-1] == "scenario_prompt"
+    assert entry["type"] == "string_too_long"
+    assert entry["ctx"]["max_length"] == 16000
+
+
+def test_create_session_accepts_scenario_prompt_at_cap(client: TestClient) -> None:
+    """A brief exactly at the 16000-char cap is accepted. A realistic
+    ~10.6k-char exercise (the one that tripped the old 8000 cap with an
+    unrecoverable error) sits comfortably under the new ceiling — assert
+    the boundary itself goes through so a future cap change can't silently
+    regress the headroom."""
+
+    r = client.post(
+        "/api/sessions",
+        json={
+            "scenario_prompt": "A" * 16000,
+            "creator_label": "CISO",
+            "creator_display_name": "Alex",
+            **default_settings_body(),
+        },
+    )
+    assert r.status_code == 200, r.text
+

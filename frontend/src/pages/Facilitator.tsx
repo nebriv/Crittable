@@ -36,6 +36,7 @@ import { CollapsibleRailPanel } from "../components/brand/CollapsibleRailPanel";
 import { HudGauges } from "../components/brand/HudGauges";
 import { TurnStateRail } from "../components/brand/TurnStateRail";
 import { SetupWizard, type SetupRoleSlot } from "../components/setup/SetupWizard";
+import { composeScenarioPrompt } from "../components/setup/scenarioPrompt";
 import { InviteGate } from "../components/InviteGate";
 import {
   clearStoredInviteCode,
@@ -105,25 +106,6 @@ const DEV_SETUP_PREFILL = {
     "(jurisdictional differences). Keep regulator framing US-state-AG " +
     "+ FFIEC / OCC. Do NOT ask the team to invent attacker attribution.",
 };
-
-/**
- * Combine the four setup sections into a single seed string the backend
- * already knows how to handle (``scenario_prompt``). Sections that the
- * operator left blank are dropped entirely so the AI doesn't see empty
- * headers it has to interpret.
- */
-function _composeScenarioPrompt(parts: typeof DEV_SETUP_PREFILL): string {
-  const sections: [string, string][] = [
-    ["SCENARIO BRIEF", parts.scenario],
-    ["TEAM", parts.team],
-    ["ENVIRONMENT", parts.environment],
-    ["CONSTRAINTS / AVOID", parts.constraints],
-  ];
-  return sections
-    .filter(([, body]) => body.trim().length > 0)
-    .map(([title, body]) => `${title}\n${body.trim()}`)
-    .join("\n\n");
-}
 
 export function Facilitator() {
   const [state, setState] = useState<CreatorState | null>(null);
@@ -693,7 +675,7 @@ export function Facilitator() {
         .map((s) => ({ label: s.label.trim() }))
         .filter((r) => r.label.length > 0);
       const created = await api.createSession({
-        scenario_prompt: _composeScenarioPrompt(setupParts),
+        scenario_prompt: composeScenarioPrompt(setupParts),
         creator_label: creatorLabel,
         creator_display_name: creatorDisplayName,
         invitee_roles: inviteeRoles,

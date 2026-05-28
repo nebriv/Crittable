@@ -19,7 +19,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { api } from "../api/client";
+import { api, ApiError } from "../api/client";
 
 type FetchInit = RequestInit | undefined;
 
@@ -100,6 +100,105 @@ describe("api/client — request wrapper", () => {
       }),
     );
     await expect(api.start("s1", "tok")).rejects.toThrow("session not yet ended");
+  });
+
+  it("formats a Pydantic 422 detail array into '<field>: <msg>' (never [object Object])", async () => {
+    // This is the bug the HAR captured: an over-length scenario_prompt
+    // returns ``detail: [{loc:["body","scenario_prompt"], msg:"…"}]``.
+    // The old ``json.detail as string`` stringified the array to
+    // "[object Object]" and rendered that red blob in the wizard.
+    _mockFetch(
+      async () =>
+        new Response(
+          JSON.stringify({
+            detail: [
+              {
+                type: "string_too_long",
+                loc: ["body", "scenario_prompt"],
+                msg: "String should have at most 16000 characters",
+                ctx: { max_length: 16000 },
+              },
+            ],
+          }),
+          { status: 422, headers: { "content-type": "application/json" } },
+        ),
+    );
+    const err = (await api
+      .createSession({
+        scenario_prompt: "x".repeat(20000),
+        creator_label: "CISO",
+        creator_display_name: "Alex",
+        settings: {
+          difficulty: "standard",
+          duration_minutes: 60,
+          features: {
+            active_adversary: true,
+            time_pressure: true,
+            executive_escalation: true,
+            media_pressure: false,
+          },
+        },
+      })
+      .catch((e) => e)) as ApiError;
+    expect(err).toBeInstanceOf(ApiError);
+    expect(err.status).toBe(422);
+    // Field name is humanised from the snake_case schema id so it reads
+    // like something on the form, and the [object Object] blob is gone.
+    expect(err.message).toBe(
+      "Scenario prompt: String should have at most 16000 characters",
+    );
+    expect(err.message).not.toContain("[object Object]");
+    expect(err.message).not.toContain("scenario_prompt");
+  });
+
+  it("joins multiple 422 validation errors with '; '", async () => {
+    _mockFetch(
+      async () =>
+        new Response(
+          JSON.stringify({
+            detail: [
+              { loc: ["body", "scenario_prompt"], msg: "too long" },
+              { loc: ["body", "creator_label"], msg: "field required" },
+            ],
+          }),
+          { status: 422, headers: { "content-type": "application/json" } },
+        ),
+    );
+    await expect(api.start("s1", "tok")).rejects.toThrow(
+      "Scenario prompt: too long; Creator label: field required",
+    );
+  });
+
+  it("humanises a nested loc with a numeric array index", async () => {
+    // A too-long invitee role label: loc carries the array index.
+    _mockFetch(
+      async () =>
+        new Response(
+          JSON.stringify({
+            detail: [
+              {
+                loc: ["body", "invitee_roles", 0, "label"],
+                msg: "String should have at most 64 characters",
+              },
+            ],
+          }),
+          { status: 422, headers: { "content-type": "application/json" } },
+        ),
+    );
+    await expect(api.start("s1", "tok")).rejects.toThrow(
+      "Label: String should have at most 64 characters",
+    );
+  });
+
+  it("falls back to ``<status>`` for an empty or unparseable detail array", async () => {
+    _mockFetch(
+      async () =>
+        new Response(JSON.stringify({ detail: [] }), {
+          status: 422,
+          headers: { "content-type": "application/json" },
+        }),
+    );
+    await expect(api.start("s1", "tok")).rejects.toThrow(/422/);
   });
 
   it("falls back to ``<status>`` when the error body isn't JSON", async () => {

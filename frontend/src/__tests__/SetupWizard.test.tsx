@@ -1,6 +1,11 @@
 import { fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { SetupWizard, type SetupParts } from "../components/setup/SetupWizard";
+import { SetupWizard } from "../components/setup/SetupWizard";
+import {
+  composeScenarioPrompt,
+  SCENARIO_PROMPT_MAX_CHARS,
+  type SetupParts,
+} from "../components/setup/scenarioPrompt";
 import {
   DEFAULT_SESSION_FEATURES,
   type ScenarioPlan,
@@ -400,5 +405,83 @@ describe("SetupWizard — error display (UI/UX HIGH#3)", () => {
     );
     const alert = screen.getByRole("alert");
     expect(alert).toHaveTextContent(/failed to copy join link/i);
+  });
+});
+
+describe("SetupWizard — brief length budget & submit gate", () => {
+  it("composeScenarioPrompt joins non-empty sections with headers and drops blanks", () => {
+    expect(
+      composeScenarioPrompt({
+        scenario: "S",
+        team: "",
+        environment: "E",
+        constraints: "",
+      }),
+    ).toBe("SCENARIO BRIEF\nS\n\nENVIRONMENT\nE");
+  });
+
+  it("renders the live brief-length counter on step 1", () => {
+    render(
+      <SetupWizard
+        phase="intro"
+        {...baseProps()}
+        setupParts={{ ...EMPTY_PARTS, scenario: "hello" }}
+      />,
+    );
+    expect(screen.getByText(/BRIEF LENGTH/i)).toBeInTheDocument();
+  });
+
+  it("disables the forward CTA and shows a trim reason when the brief overruns the cap", () => {
+    const over = "A".repeat(SCENARIO_PROMPT_MAX_CHARS + 50);
+    render(
+      <SetupWizard
+        phase="intro"
+        {...baseProps()}
+        setupParts={{ ...EMPTY_PARTS, scenario: over }}
+      />,
+    );
+    // Step 1's primary CTA is "NEXT · ENVIRONMENT →" — gated off-limit so
+    // the operator can't even reach the submit step over the cap.
+    const next = screen.getByRole("button", { name: /NEXT.*ENVIRONMENT/i });
+    expect(next).toBeDisabled();
+    // The inline reason tells the operator exactly how much to cut.
+    // "to continue" is unique to the NavRow reason (the counter says
+    // "· TRIM <n>"), so this won't collide across the two surfaces.
+    expect(screen.getByText(/to continue/i)).toBeInTheDocument();
+  });
+
+  it("leaves the forward CTA enabled for an in-budget brief", () => {
+    render(
+      <SetupWizard
+        phase="intro"
+        {...baseProps()}
+        setupParts={{ ...EMPTY_PARTS, scenario: "A reasonable brief." }}
+      />,
+    );
+    const next = screen.getByRole("button", { name: /NEXT.*ENVIRONMENT/i });
+    expect(next).not.toBeDisabled();
+    expect(screen.queryByText(/to continue/i)).not.toBeInTheDocument();
+  });
+
+  it("caps the creator-role / display-name / custom-role inputs at 64 chars", () => {
+    // Mirrors the backend's 64-char ``label`` / ``display_name`` caps so
+    // a verbose (e.g. LLM-proposed) role label can't last-click-422 on
+    // ROLL SESSION — the same failure class the brief gate prevents.
+    render(<SetupWizard phase="intro" {...baseProps()} />);
+    // Walk to step 3 (Roles) where these inputs live.
+    fireEvent.click(screen.getByRole("button", { name: /NEXT.*ENVIRONMENT/i }));
+    fireEvent.click(screen.getByRole("button", { name: /NEXT.*ROLES/i }));
+    expect(screen.getByPlaceholderText(/Your role label/i)).toHaveAttribute(
+      "maxLength",
+      "64",
+    );
+    expect(screen.getByPlaceholderText(/Your display name/i)).toHaveAttribute(
+      "maxLength",
+      "64",
+    );
+    expect(screen.getByPlaceholderText(/Add custom role/i)).toHaveAttribute(
+      "maxLength",
+      "64",
+    );
   });
 });
