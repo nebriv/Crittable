@@ -746,12 +746,21 @@ export function Facilitator() {
     }
     const activeIds = snapshot.current_turn?.active_role_ids ?? [];
     const submittedIds = snapshot.current_turn?.submitted_role_ids ?? [];
+    // Decoupled-ready (PR #209 follow-up): the browser-tab pending
+    // marker must hide once the creator signals ready, otherwise a
+    // backgrounded tab keeps shouting "● Your turn" at someone who
+    // already discharged their turn — same UX class of bug as the
+    // in-page "Awaiting your response" banner. Gate on the ready
+    // set so the dot drops at the same boundary the in-page cues do.
+    const readyIds = snapshot.current_turn?.ready_role_ids ?? [];
     const creatorRoleId = state?.creatorRoleId ?? null;
     const iAmActive =
       creatorRoleId !== null && activeIds.includes(creatorRoleId);
     const iHaveSubmitted =
       creatorRoleId !== null && submittedIds.includes(creatorRoleId);
-    const myTurn = iAmActive && !iHaveSubmitted && !aiThinking;
+    const iAmReady =
+      creatorRoleId !== null && readyIds.includes(creatorRoleId);
+    const myTurn = iAmActive && !iAmReady && !aiThinking;
     if (myTurn) return { pending: true, state: "Your turn" };
     // BRIEFING is a sub-state of aiThinking (the AI is composing the
     // briefing) — surface the more specific label before the generic
@@ -761,6 +770,7 @@ export function Facilitator() {
     }
     if (aiThinking) return { pending: false, state: "AI thinking" };
     if (iHaveSubmitted) return { pending: false, state: "Submitted" };
+    if (iAmReady) return { pending: false, state: "Ready" };
     if (snapshot.state === "AWAITING_PLAYERS") {
       return { pending: false, state: "Waiting on roles" };
     }
@@ -1849,12 +1859,17 @@ export function Facilitator() {
   })();
   const activeRoleIdsSet = new Set(activeRoleIds);
   const iAmActive = activeRoleIdsSet.has(state.creatorRoleId);
-  // Decoupled-ready (PR #209 follow-up): "My turn" simplifies to "I
-  // am on the active role set." Ready is its own concern, closed via
-  // the rail's per-role Mark Ready buttons (own row + impersonation
-  // rows). The creator can drop comments / interjections at any
-  // ``AWAITING_PLAYERS`` or ``AI_PROCESSING`` state.
-  const isMyTurn = iAmActive;
+  const iAmReady = displayedReadyRoleIdsSet.has(state.creatorRoleId);
+  // Decoupled-ready (PR #209 follow-up): "My turn" means "on the
+  // hook for this turn" = active AND not yet ready. Once the
+  // creator signals ready (via the rail Mark Ready), the AI is just
+  // waiting on the rest of the active set, so the "Awaiting your
+  // response" banner + active-role composer cues stop firing —
+  // keeping them up would misread as "you still need to act." The
+  // composer itself stays editable across AWAITING_PLAYERS /
+  // AI_PROCESSING so post-ready interjections still land; only the
+  // "you're on the hook" affordances dim.
+  const isMyTurn = iAmActive && !iAmReady;
   // Tooltip surfaced when Mark Ready is disabled. Single computation
   // shared across all rail rows. User-persona HIGH H3 + UI/UX H5:
   // celebrate when the local participant just closed the quorum;

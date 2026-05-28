@@ -670,11 +670,29 @@ export function Play({ sessionId, token }: Props) {
       // bounce off the empty sidebar with no path forward.
       if (!isMyTurn) {
         const willInterject = mentions.includes("facilitator");
-        setNotice(
-          willInterject
-            ? "Posted as a sidebar — @facilitator was tagged, so the AI will reply inline."
-            : "Posted as a sidebar — the AI will see this on its next turn. Need an answer now? Tag @facilitator (or @ai).",
-        );
+        // Distinguish the two ways ``isMyTurn`` goes false:
+        //   - Active + ready: the viewer is on the active set but has
+        //     marked themselves ready. Their submission still lands
+        //     before the AI advances (server-side ``is_interjection``
+        //     on AI_PROCESSING; a regular message during
+        //     AWAITING_PLAYERS) — calling it a "sidebar — the AI will
+        //     see this on its next turn" reads as "you missed your
+        //     window," which is wrong.
+        //   - Not on the active set: the legacy sidebar copy still
+        //     applies; the AI sees the message on its next pass.
+        if (iAmActive && iAmReady) {
+          setNotice(
+            willInterject
+              ? "Posted as a follow-up — @facilitator was tagged, so the AI will reply inline."
+              : "Posted as a follow-up — you've marked ready, so this lands before the AI advances.",
+          );
+        } else {
+          setNotice(
+            willInterject
+              ? "Posted as a sidebar — @facilitator was tagged, so the AI will reply inline."
+              : "Posted as a sidebar — the AI will see this on its next turn. Need an answer now? Tag @facilitator (or @ai).",
+          );
+        }
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -973,6 +991,14 @@ export function Play({ sessionId, token }: Props) {
     const iAmActive = selfRoleId !== null && activeIds.includes(selfRoleId);
     const iHaveSubmitted =
       selfRoleId !== null && submittedIds.includes(selfRoleId);
+    // Decoupled-ready (PR #209 follow-up): the browser-tab pending
+    // marker must hide once the viewer signals ready, otherwise a
+    // backgrounded tab keeps shouting "● Your turn" at someone who
+    // already discharged their turn — same UX class of bug as the
+    // top banner. Gate on the ready set so the dot drops at the
+    // same boundary the in-page cues do.
+    const readyIds = snapshot.current_turn?.ready_role_ids ?? [];
+    const iAmReady = selfRoleId !== null && readyIds.includes(selfRoleId);
     const aiThinking =
       snapshot.state !== "ENDED" &&
       snapshot.current_turn?.status !== "errored" &&
@@ -981,7 +1007,7 @@ export function Play({ sessionId, token }: Props) {
         snapshot.state === "AI_PROCESSING" ||
         snapshot.state === "BRIEFING" ||
         snapshot.current_turn?.status === "processing");
-    const pending = iAmActive && !iHaveSubmitted && !aiThinking;
+    const pending = iAmActive && !iAmReady && !aiThinking;
     let state: string | null = null;
     // Order matters: check ENDED first (terminal), then "your turn"
     // (highest-priority foreground signal), then phase-specific labels
@@ -997,6 +1023,7 @@ export function Play({ sessionId, token }: Props) {
     else if (snapshot.state === "BRIEFING") state = "Briefing";
     else if (aiThinking) state = "AI thinking";
     else if (iHaveSubmitted) state = "Submitted";
+    else if (iAmReady) state = "Ready";
     else if (snapshot.state === "AWAITING_PLAYERS") state = "Waiting on roles";
     else if (snapshot.state === "SETUP") state = "Setup";
     else if (snapshot.state === "READY") state = "Ready";
@@ -1222,14 +1249,18 @@ export function Play({ sessionId, token }: Props) {
   })();
   const iAmActive = selfRoleId !== null && activeRoleIds.includes(selfRoleId);
   const iHaveSubmitted = selfRoleId !== null && submittedRoleIds.includes(selfRoleId);
-  // Decoupled-ready (PR #209 follow-up): "My turn" simplifies to "I
-  // am on the active role set." The ready quorum is no longer a
-  // composer concern — it's closed via the rail Mark Ready button.
-  // The per-role ``READY ✓`` tag is rendered inside ``<RoleRoster>``
-  // straight from ``displayedReadyRoleIds``; we don't need a local
-  // ``iAmReady`` variable any more (was used by the old composer's
-  // ``isCurrentlyReady`` prop, which is gone).
-  const isMyTurn = iAmActive;
+  const iAmReady = selfRoleId !== null && displayedReadyRoleIds.has(selfRoleId);
+  // Decoupled-ready (PR #209 follow-up): "My turn" means "on the
+  // hook for this turn" = active AND not yet ready. Once the local
+  // viewer signals ready via the rail Mark Ready, the AI is just
+  // waiting on the rest of the active set, so the top "● YOUR
+  // TURN" banner, the composer-edge chip, and the active-role
+  // composer cues stop firing — keeping them up would misread as
+  // "you still need to act." The composer itself stays editable so
+  // post-ready interjections still land; only the "you're on the
+  // hook" affordances dim. The per-role ``READY ✓`` tag in the
+  // rail is rendered separately from ``displayedReadyRoleIds``.
+  const isMyTurn = iAmActive && !iAmReady;
   const myRole = snapshot.roles.find((r) => r.id === selfRoleId);
   // Fail closed: an undefined ``myRole`` (token's role_id missing from
   // snapshot.roles, e.g. mid-rehydrate) must NOT light up the composer.
@@ -1302,12 +1333,15 @@ export function Play({ sessionId, token }: Props) {
       secondary: r.display_name ?? undefined,
     }));
   // "Your turn" stays as the at-a-glance label only when this viewer
-  // is actually on the active set; otherwise we soften to "Add a
-  // comment" so a non-active player typing into the still-enabled
-  // composer doesn't read it as "this counts as my turn answer".
+  // is actually on the hook (active + not ready); otherwise we
+  // soften so a non-active or post-ready player typing into the
+  // still-enabled composer doesn't read it as "this counts as my
+  // turn answer". A post-ready viewer (active + ready, no text yet)
+  // gets "Add a follow-up" so the label acknowledges the action
+  // they just took, not the generic non-active "Add a comment".
   const composerLabel = isMyTurn
     ? "Your turn"
-    : iHaveSubmitted
+    : iAmReady || iHaveSubmitted
       ? "Add a follow-up"
       : composerEnabled
         ? "Add a comment"
@@ -1329,20 +1363,27 @@ export function Play({ sessionId, token }: Props) {
   // Plain-English placeholder copy — the user-persona review flagged
   // "interject" as jargon that reads as rude. We surface the
   // distinction (counts vs. sidebar) in the label + the post-submit
-  // toast instead.
+  // toast instead. The ``iAmReady && !iHaveSubmitted`` branch
+  // acknowledges the marked-ready-without-typing path so the cue
+  // doesn't fall through to the generic "Add a comment anytime"
+  // copy that reads as "you haven't done anything yet."
   const placeholder = isMyTurn
     ? "It's your turn — make your decision."
-    : iHaveSubmitted && otherPending.length > 0
-      ? `Submitted. You can add a follow-up while waiting on ${otherPending.join(", ")}.`
-      : iHaveSubmitted
-        ? "Submitted. You can add a follow-up while the AI replies."
-        : composerEnabled
-          ? otherPending.length > 0
-            ? `Add a comment anytime — waiting on ${otherPending.join(", ")}.`
-            : "Add a comment anytime — waiting for the AI."
-          : otherPending.length > 0
-            ? `Waiting for ${otherPending.join(", ")}.`
-            : "Waiting for the AI.";
+    : iAmReady && !iHaveSubmitted && otherPending.length > 0
+      ? `Marked ready. Add a follow-up while waiting on ${otherPending.join(", ")}.`
+      : iAmReady && !iHaveSubmitted
+        ? "Marked ready. Add a follow-up before the AI advances."
+        : iHaveSubmitted && otherPending.length > 0
+          ? `Submitted. You can add a follow-up while waiting on ${otherPending.join(", ")}.`
+          : iHaveSubmitted
+            ? "Submitted. You can add a follow-up while the AI replies."
+            : composerEnabled
+              ? otherPending.length > 0
+                ? `Add a comment anytime — waiting on ${otherPending.join(", ")}.`
+                : "Add a comment anytime — waiting for the AI."
+              : otherPending.length > 0
+                ? `Waiting for ${otherPending.join(", ")}.`
+                : "Waiting for the AI.";
 
   return (
     <main className="flex min-h-screen flex-col bg-ink-900 lg:h-screen lg:min-h-0 lg:overflow-hidden">
