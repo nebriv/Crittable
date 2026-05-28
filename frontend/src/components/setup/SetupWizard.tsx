@@ -16,6 +16,11 @@ import {
 } from "../../api/client";
 import { Eyebrow } from "../brand/Eyebrow";
 import { StatusChip } from "../brand/StatusChip";
+import {
+  composeScenarioPrompt,
+  SCENARIO_PROMPT_MAX_CHARS,
+  type SetupParts,
+} from "./scenarioPrompt";
 import { WizardRail } from "./WizardRail";
 import type { WizardStepId } from "./wizardSteps";
 
@@ -24,12 +29,13 @@ import type { WizardStepId } from "./wizardSteps";
  * controlled form over these fields. Each is the operator's free-text
  * answer to one of the wizard's first three pages.
  */
-export interface SetupParts {
-  scenario: string;
-  team: string;
-  environment: string;
-  constraints: string;
-}
+// ``SetupParts`` / ``composeScenarioPrompt`` / ``SCENARIO_PROMPT_MAX_CHARS``
+// live in ``./scenarioPrompt`` (a component-free module) so their value
+// exports don't trip ``react-refresh/only-export-components`` on this
+// component file. Re-export the *type* here so existing
+// ``import { type SetupParts } from ".../SetupWizard"`` call sites keep
+// working (a type-only re-export is invisible to Fast Refresh).
+export type { SetupParts } from "./scenarioPrompt";
 
 /**
  * One row in the step-3 roles list. ``builtin`` rows are the
@@ -447,6 +453,34 @@ function IntroStepBody(props: IntroBodyProps) {
     },
   };
   const t = titles[props.step];
+  // Gate the active primary button (NEXT on steps 1-2, ROLL SESSION on
+  // step 3) when the composed brief overruns the backend cap. We count
+  // the *composed* string — the exact value shipped as
+  // ``scenario_prompt`` — so the gate matches what the server
+  // validates byte-for-byte (headers + separators included). Catching
+  // it on the forward button means the operator can't even reach the
+  // submit step over-limit; the per-step <BriefBudget/> shows the
+  // running total so the wall is visible while they type, not a
+  // surprise 422 at the end.
+  const composedLen = composeScenarioPrompt(props.setupParts).length;
+  const briefOver = composedLen > SCENARIO_PROMPT_MAX_CHARS;
+  const noActiveInvitee =
+    props.step === 3 && activeInviteeCount(props.setupRoleSlots) === 0;
+  const primaryDisabled = briefOver || noActiveInvitee;
+  // The brief sections + the <BriefBudget/> counter only live on steps
+  // 1-2. A creator can still land on step 3 over-cap by jumping via the
+  // rail, where ROLL SESSION is correctly disabled but there's no brief
+  // field to fix — so on step 3 the reason names *where* to edit instead
+  // of an un-actionable "trim N to continue".
+  const trimAmount = (composedLen - SCENARIO_PROMPT_MAX_CHARS).toLocaleString();
+  const briefSizeReason = `Brief is ${composedLen.toLocaleString()} / ${SCENARIO_PROMPT_MAX_CHARS.toLocaleString()} characters — trim ${trimAmount}`;
+  const primaryDisabledReason = briefOver
+    ? props.step === 3
+      ? `${briefSizeReason}. Edit a brief section on step 1 or 2.`
+      : `${briefSizeReason} to continue.`
+    : noActiveInvitee
+      ? "Activate at least one invitee role before rolling."
+      : undefined;
   return (
     <>
       <header style={{ display: "flex", flexDirection: "column", gap: 6 }}>
@@ -511,20 +545,14 @@ function IntroStepBody(props: IntroBodyProps) {
           busy={props.busy}
           busyMessage={props.busyMessage}
           devMode={props.devMode}
-          // Step 3's primary CTA is gated on ≥1 active invitee. The
-          // creator counts as one of the two seats ``start_session``
-          // requires; we just need at least one invitee active so
-          // the lobby's gate clears without a second-trip retry.
-          submitDisabled={
-            props.step === 3 &&
-            activeInviteeCount(props.setupRoleSlots) === 0
-          }
-          submitDisabledReason={
-            props.step === 3 &&
-            activeInviteeCount(props.setupRoleSlots) === 0
-              ? "Activate at least one invitee role before rolling."
-              : undefined
-          }
+          // Gates the active primary button (NEXT on steps 1-2, ROLL
+          // SESSION on step 3). Two reasons, in priority order: the
+          // composed brief overran the cap (any step), or step 3 has no
+          // active invitee (the creator counts as one of the two seats
+          // ``start_session`` needs, so we only require ≥1 invitee here
+          // so the lobby's gate clears without a second-trip retry).
+          primaryDisabled={primaryDisabled}
+          primaryDisabledReason={primaryDisabledReason}
         />
       </form>
     </>
@@ -538,8 +566,8 @@ function NavRow({
   busy,
   busyMessage,
   devMode,
-  submitDisabled = false,
-  submitDisabledReason,
+  primaryDisabled = false,
+  primaryDisabledReason,
 }: {
   step: 1 | 2 | 3;
   onBack: () => void;
@@ -547,11 +575,12 @@ function NavRow({
   busy: boolean;
   busyMessage: string | null;
   devMode: boolean;
-  /** Step-3 only: disable the ROLL SESSION button and show the
-   *  reason inline. Used to gate "no active invitees" before the
-   *  setup turn fires. */
-  submitDisabled?: boolean;
-  submitDisabledReason?: string;
+  /** Disable the active primary button — NEXT on steps 1-2, ROLL
+   *  SESSION on step 3 — and show ``primaryDisabledReason`` inline.
+   *  Gates "brief over the cap" (any step) and "no active invitees"
+   *  (step 3) before the request fires. */
+  primaryDisabled?: boolean;
+  primaryDisabledReason?: string;
 }) {
   // The primary CTA is type="button" on steps 1-2 (it just advances
   // the wizard) and type="submit" on step 3 (where it actually
@@ -616,7 +645,7 @@ function NavRow({
       {busyMessage ? (
         <StatusChip label="WORKING" value={busyMessage} tone="signal" />
       ) : null}
-      {submitDisabledReason ? (
+      {primaryDisabledReason ? (
         <span
           role="status"
           className="mono"
@@ -626,16 +655,16 @@ function NavRow({
             letterSpacing: "0.04em",
           }}
         >
-          {submitDisabledReason}
+          {primaryDisabledReason}
         </span>
       ) : null}
       <div style={{ flex: 1 }} />
       {step === 3 ? (
         <button
           type="submit"
-          disabled={busy || submitDisabled}
-          aria-disabled={busy || submitDisabled}
-          title={submitDisabledReason}
+          disabled={busy || primaryDisabled}
+          aria-disabled={busy || primaryDisabled}
+          title={primaryDisabledReason}
           className="mono"
           style={{
             background: "var(--signal)",
@@ -646,8 +675,8 @@ function NavRow({
             fontSize: 11,
             fontWeight: 700,
             letterSpacing: "0.18em",
-            cursor: busy ? "not-allowed" : "pointer",
-            opacity: busy ? 0.6 : 1,
+            cursor: busy || primaryDisabled ? "not-allowed" : "pointer",
+            opacity: busy || primaryDisabled ? 0.6 : 1,
           }}
         >
           {primaryLabel}
@@ -656,7 +685,9 @@ function NavRow({
         <button
           type="button"
           onClick={onNext}
-          disabled={busy}
+          disabled={busy || primaryDisabled}
+          aria-disabled={busy || primaryDisabled}
+          title={primaryDisabledReason}
           className="mono"
           style={{
             background: "var(--signal)",
@@ -667,8 +698,8 @@ function NavRow({
             fontSize: 11,
             fontWeight: 700,
             letterSpacing: "0.18em",
-            cursor: busy ? "not-allowed" : "pointer",
-            opacity: busy ? 0.6 : 1,
+            cursor: busy || primaryDisabled ? "not-allowed" : "pointer",
+            opacity: busy || primaryDisabled ? 0.6 : 1,
           }}
         >
           {primaryLabel}
@@ -710,6 +741,7 @@ function Step1Body(props: IntroBodyProps) {
         onChange={(v) => props.setSetupParts((p) => ({ ...p, team: v }))}
         placeholder="Roles, seniority, on-call posture."
       />
+      <BriefBudget parts={props.setupParts} />
     </>
   );
 }
@@ -747,6 +779,7 @@ function Step2Body(props: IntroBodyProps) {
         }
         placeholder="Hard NOs, learning objectives, things to skip."
       />
+      <BriefBudget parts={props.setupParts} />
     </>
   );
 }
@@ -1239,6 +1272,9 @@ function Step3Body(props: IntroBodyProps) {
             value={props.creatorLabel}
             onChange={props.setCreatorLabel}
             placeholder="Your role label (e.g. CISO)"
+            // Matches the backend's ``creator_label`` ``max_length=64``
+            // so a verbose label can't last-click-422 on ROLL SESSION.
+            maxLength={64}
           />
           <MonoInput
             label="DISPLAY NAME"
@@ -1246,6 +1282,7 @@ function Step3Body(props: IntroBodyProps) {
             value={props.creatorDisplayName}
             onChange={props.setCreatorDisplayName}
             placeholder="Your display name"
+            maxLength={64}
           />
         </div>
       </fieldset>
@@ -1329,6 +1366,8 @@ function Step3Body(props: IntroBodyProps) {
               }
             }}
             placeholder="Add custom role (e.g. Threat Intel)"
+            // Matches the backend's invitee ``label`` ``max_length=64``.
+            maxLength={64}
             style={{
               flex: 1,
               background: "var(--ink-900)",
@@ -1829,6 +1868,59 @@ function WizardScenarioPicker() {
   );
 }
 
+/**
+ * Live character budget for the composed brief. Reads the same
+ * ``composeScenarioPrompt`` the wizard ships and the server validates,
+ * so the number the operator watches is byte-for-byte what
+ * ``scenario_prompt`` will be (headers + separators included).
+ * Rendered on steps 1 & 2 (the brief sections); the count goes
+ * ``warn`` past 90% and ``crit`` once over, mirroring the NavRow gate
+ * that disables the forward / ROLL SESSION button at the same
+ * threshold. Without this the cap was invisible until the server
+ * bounced the create with a 422.
+ */
+function BriefBudget({ parts }: { parts: SetupParts }) {
+  // ``.length`` counts UTF-16 code units; the backend's Pydantic
+  // ``max_length`` counts Unicode code points. UTF-16 units are always
+  // ≥ code points, so for astral chars (emoji) this counter reads a
+  // touch HIGH — i.e. the gate errs strict and can never let through a
+  // brief the server would 422. That conservative direction is exactly
+  // what we want; matching code-point semantics here would reopen the
+  // surprise-422 path this change closes.
+  const len = composeScenarioPrompt(parts).length;
+  const over = len > SCENARIO_PROMPT_MAX_CHARS;
+  const near = !over && len > SCENARIO_PROMPT_MAX_CHARS * 0.9;
+  // ``--ink-300`` (not ``--ink-400``) for the normal state: ink-400 on
+  // the ink-900 form bg is 3.37:1 — below WCAG AA for this 10px text.
+  const color = over ? "var(--crit)" : near ? "var(--warn)" : "var(--ink-300)";
+  return (
+    // Purely visual budget hint — deliberately NOT an aria-live region.
+    // A character counter that re-announces on every keystroke is hostile
+    // to screen-reader users; the over-limit state is announced once via
+    // the NavRow reason's ``role="status"`` instead.
+    <div
+      className="mono"
+      style={{
+        display: "flex",
+        justifyContent: "space-between",
+        alignItems: "baseline",
+        gap: 8,
+        fontSize: 10,
+        letterSpacing: "0.16em",
+        color,
+      }}
+    >
+      <span>BRIEF LENGTH (ALL SECTIONS)</span>
+      <span>
+        {len.toLocaleString()} / {SCENARIO_PROMPT_MAX_CHARS.toLocaleString()}
+        {over
+          ? ` · TRIM ${(len - SCENARIO_PROMPT_MAX_CHARS).toLocaleString()}`
+          : ""}
+      </span>
+    </div>
+  );
+}
+
 function BriefField({
   label,
   value,
@@ -1888,12 +1980,14 @@ function MonoInput({
   onChange,
   placeholder,
   required,
+  maxLength,
 }: {
   label: string;
   value: string;
   onChange: (v: string) => void;
   placeholder?: string;
   required?: boolean;
+  maxLength?: number;
 }) {
   return (
     <label style={{ display: "flex", flexDirection: "column", gap: 6 }}>
@@ -1917,6 +2011,7 @@ function MonoInput({
         onChange={(e) => onChange(e.target.value)}
         placeholder={placeholder}
         required={required}
+        maxLength={maxLength}
         style={{
           background: "var(--ink-900)",
           border: "1px solid var(--ink-600)",

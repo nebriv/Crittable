@@ -254,7 +254,11 @@ class Scenario(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
     meta: ScenarioMeta
-    scenario_prompt: str = Field(min_length=1, max_length=8000)
+    # Mirrors ``CreateSessionBody.scenario_prompt`` in ``app/api/routes.py``
+    # — keep the cap in lockstep so a real (10-16k) brief that creates
+    # fine via the API can also be recorded/replayed. (Was 8000; bumped
+    # with the route cap.)
+    scenario_prompt: str = Field(min_length=1, max_length=16000)
     creator_label: str = Field(min_length=1, max_length=64)
     creator_display_name: str = Field(min_length=1, max_length=64)
     # Creator-selected scenario tuning (frozen on the live ``Session``

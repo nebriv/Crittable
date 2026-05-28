@@ -126,6 +126,16 @@ Re-run the prompt to get a different scenario against the same
 environment; the bracketed setup is meant to be filled in once and
 re-used.
 
+Crittable combines the four sections into a single field capped at
+**16,000 characters** (headers and blank lines included). The prompt
+below tells your LLM to stay under that, and the setup wizard shows a
+live character counter — if you do overrun, the counter turns red and
+the forward button (NEXT, or ROLL SESSION on the final step) is disabled
+until you trim, so you'll never get bounced by the server after the
+fact. Role labels and display names are capped at 64 characters each
+(the wizard's role inputs stop you at the limit), and a session can have
+at most 32 invited roles.
+
 > Tip: name systems by product (Splunk, Defender, Okta, IRIS, PagerDuty),
 > not generic categories. The more concrete the environment, the more it
 > shows up in the AI's injects during play.
@@ -175,12 +185,24 @@ CONSTRAINTS:
   actually subject to"]
 - Time budget: [e.g. "60 minutes"]
 
+LIMITS (Crittable rejects the brief if you exceed these — stay inside
+them):
+
+- The four sections COMBINED must be under 16,000 characters total
+  (~2,500 words). Crittable joins them into one field with that hard
+  cap. Be vivid but tight — cut filler, not detail; if you're running
+  long, shorten prose before dropping facts.
+- Each role label (e.g. "IR Lead", "Comms") is at most 64 characters,
+  and so is each person's display name. Propose at most 32 roles.
+- Target duration must be between 15 and 180 minutes.
+
 Now draft the brief in EXACTLY these four sections, each under a clear
 header, no preamble, no closing summary. Pick the scenario yourself —
 surprise me — but make it realistic for the environment above
 (ransomware, BEC, OAuth phish, supply-chain compromise, leaked cloud
 creds, malicious insider, etc.). Include the plausible first signal
-that would land in our SIEM.
+that would land in our SIEM. Keep the whole thing under the 16,000-char
+limit above.
 
 [1] SCENARIO BRIEF
 What happened, when, at what severity. ~3–5 short bullets or a tight

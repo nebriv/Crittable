@@ -67,11 +67,21 @@ class InviteeRoleSpec(BaseModel):
 
 class CreateSessionBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    # Bumped from 4000 to 8000: the multi-prompt intro composes four
+    # Bumped 4000 → 8000 → 16000: the multi-prompt intro composes four
     # sections (scenario / team / environment / constraints) plus
-    # headers, which can run past 4000 chars on a richly-described
-    # exercise.
-    scenario_prompt: str = Field(min_length=1, max_length=8000)
+    # headers, and a richly-described real-world exercise (full team +
+    # environment + constraints + facilitator notes) routinely composes
+    # past 8000 — a genuine ~10.6k brief tripped the old cap with an
+    # unrecoverable 422. The prompt rides in the cached system block
+    # (cache_control: ephemeral), so the per-turn token cost of the
+    # extra headroom is paid once at cache creation, not every turn.
+    # Keep this in sync with ``SCENARIO_PROMPT_MAX_CHARS`` in
+    # ``frontend/src/components/setup/scenarioPrompt.ts`` (which drives
+    # the wizard's live counter + submit gate), the replay schema's
+    # ``scenario_prompt`` cap in ``app/devtools/scenario.py``, and the
+    # cap stated in the README's "Drafting a brief with your work's LLM"
+    # prompt template.
+    scenario_prompt: str = Field(min_length=1, max_length=16000)
     creator_label: str = Field(min_length=1, max_length=64)
     creator_display_name: str = Field(min_length=1, max_length=64)
     # Pre-declared invitee roles from the wizard's step 3. We add
