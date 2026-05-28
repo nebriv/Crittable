@@ -16,7 +16,18 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PIP_NO_CACHE_DIR=1
 
+# ``apt-get upgrade -y`` pulls every available debian-security update
+# at build time. Without it, the runtime image inherits whatever
+# package versions were baked into the upstream ``python:3.14-slim``
+# at its last rebuild — typically weeks behind debian-security. As of
+# 2026-05 that's 11 HIGH/CRITICAL CVEs in the base (libgnutls30t64
+# CVE-2026-33845/42010 CRITICAL, libk5* / libcap2 / libnghttp2-14
+# HIGH) that all have ``+deb13uN`` fixes available, but only if the
+# build actually fetches them. The Trivy gate in ``docker.yml``
+# rejects the push otherwise — this RUN keeps the gate green without
+# waiting on a Docker Inc. rebuild of the slim image.
 RUN apt-get update \
+ && apt-get upgrade -y \
  && apt-get install -y --no-install-recommends curl ca-certificates \
  && rm -rf /var/lib/apt/lists/*
 
