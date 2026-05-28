@@ -2805,16 +2805,15 @@ export function SetupView({
         // plan). Show the accurate next step instead.
         <div className="flex flex-col items-start gap-2 rounded-r-3 border border-signal-deep bg-signal-tint p-4">
           <p className="mono text-[11px] uppercase tracking-[0.06em] text-signal">
-            Plan drafted — no setup questions needed
+            Plan drafted without setup questions
           </p>
           <p className="text-sm text-ink-100">
-            The AI had enough from your scenario to draft a plan straight
-            away. Review it and click{" "}
+            The AI drafted directly from your brief. Review it and click{" "}
             <span className="font-semibold text-ink-050">
               Approve &amp; start lobby
             </span>
-            , or reply below to request changes or have the AI ask you
-            questions first.
+            , or reply below to request changes — or to have the AI ask
+            clarifying questions before you commit.
           </p>
         </div>
       ) : notes.length === 0 && !busy ? (

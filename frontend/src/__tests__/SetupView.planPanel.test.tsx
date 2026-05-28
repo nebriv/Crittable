@@ -394,8 +394,8 @@ describe("SetupView — plan drafted directly (zero setup notes)", () => {
     render(<SetupView snapshot={fakeSnapshot(fakePlan(), [])} {...baseProps()} />);
 
     // Accurate next-step note is shown.
-    expect(screen.getByText(/no setup questions needed/i)).toBeInTheDocument();
-    expect(screen.getByText(/draft a plan straight away/i)).toBeInTheDocument();
+    expect(screen.getByText(/Plan drafted without setup questions/i)).toBeInTheDocument();
+    expect(screen.getByText(/drafted directly from your brief/i)).toBeInTheDocument();
 
     // The alarming empty-state must NOT render — it contradicted the
     // finished plan and falsely implicated a missing key.
@@ -424,7 +424,7 @@ describe("SetupView — plan drafted directly (zero setup notes)", () => {
 
     // The direct-draft note is plan-specific; it must not appear here.
     expect(
-      screen.queryByText(/no setup questions needed/i),
+      screen.queryByText(/Plan drafted without setup questions/i),
     ).not.toBeInTheDocument();
     // Gate guard: the warn box owns the empty state here, so SetupChat's
     // placeholder must not also render (pre-fix both showed — a
@@ -444,7 +444,7 @@ describe("SetupView — plan drafted directly (zero setup notes)", () => {
     render(
       <SetupView snapshot={fakeSnapshot(fakePlan(), [])} {...baseProps()} busy />,
     );
-    expect(screen.getByText(/no setup questions needed/i)).toBeInTheDocument();
+    expect(screen.getByText(/Plan drafted without setup questions/i)).toBeInTheDocument();
     expect(screen.queryByText(/No setup messages yet/i)).not.toBeInTheDocument();
   });
 
@@ -470,7 +470,7 @@ describe("SetupView — plan drafted directly (zero setup notes)", () => {
     // ...and none of the three empty-state boxes render.
     expect(screen.queryByText(/No setup messages yet/i)).not.toBeInTheDocument();
     expect(
-      screen.queryByText(/no setup questions needed/i),
+      screen.queryByText(/Plan drafted without setup questions/i),
     ).not.toBeInTheDocument();
     expect(
       screen.queryByText(/Setup hasn't started yet/i),
@@ -486,7 +486,7 @@ describe("SetupView — plan drafted directly (zero setup notes)", () => {
     expect(screen.getByText(/What's your industry\?/i)).toBeInTheDocument();
     expect(screen.queryByText(/No setup messages yet/i)).not.toBeInTheDocument();
     expect(
-      screen.queryByText(/no setup questions needed/i),
+      screen.queryByText(/Plan drafted without setup questions/i),
     ).not.toBeInTheDocument();
   });
 });
