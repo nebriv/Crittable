@@ -37,7 +37,17 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 # build actually fetches them. The Trivy gate in ``docker.yml``
 # rejects the push otherwise — this RUN keeps the gate green without
 # waiting on a Docker Inc. rebuild of the slim image.
-RUN apt-get update \
+#
+# ``echo "$CACHEBUST"`` is load-bearing: BuildKit only treats an
+# ``ARG`` as part of a downstream RUN's cache key if that RUN
+# *references* the variable. A bare ``ARG CACHEBUST=1`` declaration
+# above doesn't invalidate this layer on its own; the cache key
+# depends on the RUN text and any referenced vars. So we echo the
+# bust value into the command itself — that makes ``CACHEBUST=<run id>``
+# from the workflow actually force this layer to rebuild every CI run,
+# which is the whole point.
+RUN echo "cache-bust: $CACHEBUST" \
+ && apt-get update \
  && apt-get upgrade -y \
  && apt-get install -y --no-install-recommends curl ca-certificates \
  && rm -rf /var/lib/apt/lists/*
