@@ -18,7 +18,7 @@ RUN npm run build
 # execution). With 3.13 pip resolves to litellm 1.86.2 (CVE-free).
 # When upstream litellm publishes a release that lifts the ``<3.14``
 # upper bound, bump this back via the Dependabot docker ecosystem.
-FROM python:3.13-slim AS runtime
+FROM python:3.14-slim AS runtime
 
 # Cache-bust the apt + pip layers below on every CI run. Without this,
 # the GHA buildx cache replays whatever package versions a build from
