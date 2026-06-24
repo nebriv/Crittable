@@ -23,6 +23,7 @@ directive factories in ``turn_validator.py``.
 
 from __future__ import annotations
 
+import math
 from datetime import UTC, datetime
 from typing import Any
 
@@ -926,6 +927,22 @@ class TurnDriver:
                 f"got {session.state.value!r}"
             )
 
+        # Cost/abuse C2: once the session has parked at
+        # ``MAX_TURNS_PER_SESSION`` (``_park_turn_limit_reached`` flipped
+        # the flag), refuse the interject's play-tier ``astream`` call.
+        # Without this an ``@facilitator``-ing player could drive
+        # unbounded play-tier spend past the cap — the entry guard in
+        # ``run_play_turn`` only covers the advancing turn, not the
+        # side-channel. A general per-turn interject rate cap is a
+        # separate concern; this gate is *only* the turn-limit park.
+        if session.turn_limit_reached:
+            _logger.info(
+                "interject_skipped_turn_limit_reached",
+                session_id=session.id,
+                turn_index=turn.index,
+            )
+            return session
+
         from ..llm.prompts import INTERJECT_NOTE
 
         dispatcher = self._manager.dispatcher()
@@ -1544,6 +1561,7 @@ class TurnDriver:
                     "progress_pct": compute_progress_pct(session),
                 },
             )
+            await self._maybe_warn_turn_limit(session, new_turn.index)
         else:
             # No yielding tool fired AND no end_session — the turn engine
             # stays in AI_PROCESSING. Intentional: the run_play_turn caller
@@ -1552,6 +1570,44 @@ class TurnDriver:
             # without a flicker) or mark the turn errored if both attempts
             # have been exhausted.
             await self._manager._repo.save(session)
+
+    async def _maybe_warn_turn_limit(
+        self, session: Session, new_index: int
+    ) -> None:
+        """Cost/abuse C2 (soft warning): fire a one-time
+        ``turn_limit_approaching`` nudge when a freshly-opened turn first
+        crosses ``AI_TURN_SOFT_WARN_PCT`` of the cap.
+
+        Idempotent via ``session.turn_limit_warned`` — only the first
+        crossing broadcasts; later turns up to the hard cap stay quiet so
+        the creator + players see a single "start wrapping up" notice.
+        """
+
+        if session.turn_limit_warned:
+            return
+        settings = self._manager.settings()
+        max_turns = settings.max_turns_per_session
+        threshold = math.ceil(max_turns * settings.ai_turn_soft_warn_pct / 100)
+        if new_index < threshold:
+            return
+        session.turn_limit_warned = True
+        turns_remaining = max_turns - new_index
+        _logger.info(
+            "turn_limit_approaching",
+            session_id=session.id,
+            new_index=new_index,
+            turns_remaining=turns_remaining,
+            max_turns=max_turns,
+        )
+        await self._manager._repo.save(session)
+        await self._manager.connections().broadcast(
+            session.id,
+            {
+                "type": "turn_limit_approaching",
+                "turns_remaining": turns_remaining,
+                "max_turns": max_turns,
+            },
+        )
 
     async def _park_turn_limit_reached(
         self, session: Session, turn: Turn

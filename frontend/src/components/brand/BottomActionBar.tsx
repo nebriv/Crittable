@@ -42,6 +42,10 @@ interface Props {
   aarStatus: string | null;
   busy: boolean;
   turnIndex: number | null;
+  /** Configured ``MAX_TURNS_PER_SESSION`` (from the ``cost_updated``
+   *  frame). When set, the ``T#`` badge shows "N / MAX" so the operator
+   *  can self-pace. Null until the first cost frame lands. */
+  maxTurns: number | null;
   rationaleCount: number;
   connectionCount: number | null;
   lastEventAt: number | null;
@@ -201,6 +205,9 @@ export function BottomActionBar(props: Props) {
 
       <span className="mono rounded-r-1 bg-ink-800 px-2 py-0.5 text-[10px] tabular-nums text-ink-200">
         T#{props.turnIndex ?? "—"}
+        {props.turnIndex != null && props.maxTurns != null
+          ? ` / ${props.maxTurns}`
+          : ""}
       </span>
       <span className="mono rounded-r-1 bg-ink-800 px-2 py-0.5 text-[10px] tabular-nums text-ink-200">
         {props.messageCount} msgs

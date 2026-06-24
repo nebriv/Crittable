@@ -528,6 +528,12 @@ class Session(BaseModel):
     # the creator still clicks "End"; a session that hit the cap stays
     # capped.
     turn_limit_reached: bool = False
+    # Cost/abuse C2 (soft warning): set True the first time a freshly-
+    # opened turn's index crosses ``AI_TURN_SOFT_WARN_PCT`` of
+    # ``MAX_TURNS_PER_SESSION``. Gates the one-time
+    # ``turn_limit_approaching`` WS nudge so the creator + players get a
+    # single "start wrapping up" notice rather than one per turn.
+    turn_limit_warned: bool = False
     # Cost/abuse M3: running count of setup-tier LLM calls made across
     # all ``/setup/reply`` invocations for this session. Capped at
     # ``MAX_SETUP_CALLS_PER_SESSION``; once reached, ``run_setup_turn``

@@ -294,8 +294,8 @@ export type ServerEvent =
       request_id?: string | null;
       retry_hint_seconds?: number | null;
     }
-  // Creator-only health signal. Sent (via ``send_to_role``) when the
-  // engine detects degraded upstream conditions (heavy load / slow
+  // Creator-only health signal. Sent (via ``broadcast_to_creator``) when
+  // the engine detects degraded upstream conditions (heavy load / slow
   // LLM responses). Players never receive it — it implies a wait the
   // player can't act on. Low-information by design: just a category +
   // a short human-readable message. The creator UI surfaces a subtle,
@@ -316,6 +316,18 @@ export type ServerEvent =
   // late-joining / reconnecting tab still learns the cap was reached.
   | {
       type: "turn_limit_reached";
+      max_turns: number;
+    }
+  // Broadcast to EVERY participant the first time a freshly-opened turn
+  // crosses ``AI_TURN_SOFT_WARN_PCT`` of ``max_turns`` (cost/abuse C2
+  // soft warning). Fires at most ONCE per session — the engine gates it
+  // behind ``session.turn_limit_warned``. Drives a brief, non-blocking
+  // "N turns left — start wrapping up" notice so the creator can self-
+  // pace before the hard cap parks the exercise. ``record=True`` so a
+  // late-joining tab still learns the session is near its cap.
+  | {
+      type: "turn_limit_approaching";
+      turns_remaining: number;
       max_turns: number;
     };
 
@@ -579,6 +591,10 @@ export class WsClient {
             safe.message = parsed.message;
             break;
           case "turn_limit_reached":
+            safe.max_turns = parsed.max_turns;
+            break;
+          case "turn_limit_approaching":
+            safe.turns_remaining = parsed.turns_remaining;
             safe.max_turns = parsed.max_turns;
             break;
           case "guardrail_blocked":

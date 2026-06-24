@@ -88,6 +88,8 @@ rationale for each default lives in `backend/app/config.py`
 
 | Var | Default | Effect |
 |---|---|---|
+| `LLM_MAX_CONCURRENCY` | `4` | Max simultaneous heavy LLM calls (play / setup / aar) against the key (cost/abuse H2). The guardrail tier runs in a **separate lane of the same size**, so the effective max in-flight ≈ 2×N. Set `0` to disable the cap. |
+| `LLM_ACQUIRE_TIMEOUT_S` | `30` | Max seconds a queued call waits for a concurrency slot before surfacing a retryable "overloaded" error. Only consulted when `LLM_MAX_CONCURRENCY > 0`. |
 | `LLM_STRICT_RETRY_MAX` | `2` | Per-turn recovery budget shared across all turn-validator violations (`missing_drive` + `missing_yield`). Default 2 covers the worst case (turn missing both) — drive recovery + yield recovery each consume one slot. Lift to `3+` for flakier models; set to `0` to disable recovery entirely (turns errored on first invalid response). |
 | `LLM_RECOVERY_DRIVE_REQUIRED` | `true` | When true, every yielding play turn must include a `broadcast` or `address_role`; missing-DRIVE spawns a recovery LLM call narrowed to `broadcast`. Set false to revert to the pre-validator "yield-only" rule (emergency kill-switch). |
 | `LLM_RECOVERY_DRIVE_SOFT_ON_OPEN_QUESTION` | `false` | Legacy carve-out kill-switch. When true, missing-DRIVE is downgraded to a warning if the most-recent un-replied player message ends in `?`. The original intent was "players are mid-discussion on the AI's open ask, so the AI yielding silently is fine," but the predicate (player's trailing `?`) actually matches the *opposite* case — a player asking the AI a direct question, exactly when DRIVE is mandatory. Default flipped to `false`; the current product design also doesn't include player-to-player discussion, so the carve-out's premise doesn't apply. Retained as an emergency rollback only — do not re-enable in production without also adding direction classification. **Deep dive in [`turn-lifecycle.md`](turn-lifecycle.md).** A startup warning fires (`legacy_carve_out_enabled` log line) if the flag is enabled. |
@@ -101,8 +103,9 @@ rationale for each default lives in `backend/app/config.py`
 |---|---|---|
 | `MAX_SESSIONS` | `10` | Hard cap on concurrent in-memory sessions |
 | `MAX_ROLES_PER_SESSION` | `24` | Hard cap on roles in a single session |
-| `MAX_TURNS_PER_SESSION` | `40` | Soft warning at 80%, hard stop at limit |
-| `AI_TURN_SOFT_WARN_PCT` | `80` | Threshold for the wrap-up nudge in the system prompt |
+| `MAX_TURNS_PER_SESSION` | `40` | Hard cap on play turns (cost/abuse C2). On reaching it the session **parks** — no further play-tier LLM call is made, a one-time `turn_limit_reached` banner asks the creator to End → AAR. Not an auto-end; the creator still clicks End. |
+| `AI_TURN_SOFT_WARN_PCT` | `80` | Percent of `MAX_TURNS_PER_SESSION` at which a one-time `turn_limit_approaching` "N turns left — start wrapping up" notice fires (creator + players). Also informs the wrap-up nudge in the system prompt. |
+| `MAX_SETUP_CALLS_PER_SESSION` | `12` | Per-session ceiling on total setup-tier LLM calls across all `/setup/reply` invocations (cost/abuse M3). On exhaustion the setup route refuses further turns and prompts the operator to finalize or skip. |
 | `MAX_CRITICAL_INJECTS_PER_5_TURNS` | `1` | Rate limit on `inject_critical_event` |
 | `EXPORT_RETENTION_MIN` | `60` | Minutes to keep an ENDED session's export available (covers AAR markdown, structured AAR JSON, **and the shared notepad** — `notepad/export.md` is reachable for the same window). |
 | `WS_HEARTBEAT_S` | `20` | WebSocket heartbeat interval |

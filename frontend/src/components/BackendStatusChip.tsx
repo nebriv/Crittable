@@ -65,7 +65,7 @@ export function BackendStatusChip({ message, nonce, ttlMs }: Props) {
       style={{ pointerEvents: "none" }}
     >
       <StatusChip
-        label="● BACKEND"
+        label="● SYSTEM"
         value={message}
         tone="warn"
         title={message}

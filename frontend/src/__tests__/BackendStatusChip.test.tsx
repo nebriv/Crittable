@@ -38,6 +38,9 @@ describe("BackendStatusChip", () => {
     const chip = screen.getByTestId("backend-status-chip");
     expect(chip).toBeInTheDocument();
     expect(chip).toHaveTextContent(/Heavy load — responses may be delayed\./);
+    // Label reads "SYSTEM" (not "BACKEND" — that read like infra-down).
+    expect(chip).toHaveTextContent(/SYSTEM/);
+    expect(chip).not.toHaveTextContent(/BACKEND/);
   });
 
   it("is non-blocking — pointer events pass through the chip", () => {

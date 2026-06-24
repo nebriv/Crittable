@@ -26,7 +26,12 @@ from app.main import create_app
 from app.sessions.models import MessageKind, Session, SessionState, Turn
 from app.sessions.turn_driver import TurnDriver
 from tests.conftest import default_settings_body
-from tests.mock_chat_client import install_mock_chat_client, setup_then_play_script
+from tests.mock_chat_client import (
+    install_mock_chat_client,
+    llm_result,
+    setup_then_play_script,
+    tool_block,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -218,3 +223,150 @@ async def test_run_play_turn_entry_guard_makes_no_llm_call_at_cap(
     assert any(m.kind == MessageKind.SYSTEM for m in result.messages)
     # The over-cap turn was NOT followed by a freshly-opened turn.
     assert result.turns[-1] is over_cap_turn
+
+
+# --------------------------------------------------------------------------
+# Integration: ``run_interject`` honours the park — an ``@facilitator``-ing
+# player can't drive unbounded play-tier calls past the cap.
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_run_interject_makes_no_llm_call_after_park(
+    client: TestClient,
+) -> None:
+    seats = _seat_two(client)
+    mock = _drive_to_play(client, seats)
+    sid = seats["sid"]
+
+    manager = client.app.state.manager
+    session = await manager.get_session(sid)
+    # Simulate the session having parked at the cap. The interject path
+    # makes a full play-tier ``astream`` call with NO advance-point guard
+    # of its own; the only thing standing between a repeat-``@facilitator``
+    # griefer and unbounded play spend is the ``turn_limit_reached`` gate.
+    session.state = SessionState.AWAITING_PLAYERS
+    session.turn_limit_reached = True
+    turn = session.current_turn
+    assert turn is not None
+
+    play_calls_before = sum(1 for c in mock.calls if c["tier"] == "play")
+    result = await TurnDriver(manager=manager).run_interject(
+        session=session, turn=turn, for_role_id=seats["other_role_id"]
+    )
+    play_calls_after = sum(1 for c in mock.calls if c["tier"] == "play")
+
+    # ZERO play-tier LLM calls — the guard returned before any astream.
+    assert play_calls_after == play_calls_before
+    assert result is session
+
+
+# --------------------------------------------------------------------------
+# Integration: the advance-point guard in ``_apply_play_outcome`` parks when
+# the (cap-1)th yielding turn would open a turn at the cap — exercising the
+# guard via the real drive path, not just the entry guard.
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_advance_guard_parks_when_opening_turn_at_cap(
+    client: TestClient,
+) -> None:
+    seats = _seat_two(client)
+    mock = _drive_to_play(client, seats)
+    sid = seats["sid"]
+
+    manager = client.app.state.manager
+    session = await manager.get_session(sid)
+    # After ``/start`` the session sits at turn index 1 (cap is 2) in
+    # AWAITING_PLAYERS. Drive that turn through a YIELDING play script:
+    # the AI yields with ``set_active_roles``, so ``_apply_play_outcome``
+    # reaches its advance point with ``new_index == 2 == cap`` and must
+    # PARK instead of opening turn 2 (the unbounded-cost path).
+    turn = session.current_turn
+    assert turn is not None
+    assert turn.index == 1
+
+    install_mock_chat_client(
+        client,
+        {
+            "play": [
+                llm_result(
+                    tool_block("broadcast", {"message": "Status check."}),
+                    tool_block(
+                        "set_active_roles",
+                        {"role_groups": [[seats["other_role_id"]]]},
+                    ),
+                    stop_reason="tool_use",
+                )
+            ]
+        },
+    )
+    mock = client.app.state.llm
+    session.state = SessionState.AI_PROCESSING
+
+    play_calls_before = sum(1 for c in mock.calls if c["tier"] == "play")
+    result = await TurnDriver(manager=manager).run_play_turn(
+        session=session, turn=turn
+    )
+    play_calls_after = sum(1 for c in mock.calls if c["tier"] == "play")
+
+    # Exactly one play call (this turn's drive); the parked advance opened
+    # NO further turn, so no second call.
+    assert play_calls_after == play_calls_before + 1
+    # Parked at the advance point: flag set, AWAITING_PLAYERS, no turn at
+    # index 2 ever opened.
+    assert result.turn_limit_reached is True
+    assert result.state == SessionState.AWAITING_PLAYERS
+    assert all(t.index < 2 for t in result.turns)
+
+
+# --------------------------------------------------------------------------
+# Soft warning: ``turn_limit_approaching`` fires exactly once when a freshly-
+# opened turn first crosses ``AI_TURN_SOFT_WARN_PCT`` of the cap.
+# --------------------------------------------------------------------------
+
+
+class _WarnConnections(_RecConnections):
+    """Adds ``send_to_role`` so the full ``_apply_play_outcome`` advance
+    path (which broadcasts a creator-only decision log) doesn't blow up."""
+
+    async def send_to_role(
+        self, session_id: str, role_id: str, event: dict[str, Any]
+    ) -> None:  # pragma: no cover - not asserted on
+        pass
+
+
+@pytest.mark.asyncio
+async def test_soft_warn_fires_once_when_crossing_threshold() -> None:
+    # Cap 10, warn at 80% → threshold turn index 8. Opening turn 8 fires
+    # the nudge; opening turn 9 must NOT re-fire (idempotent via the flag).
+    mgr = _ParkStubManager(max_turns=10)
+    mgr._conns = _WarnConnections()  # type: ignore[assignment]
+    mgr._settings.ai_turn_soft_warn_pct = 80  # type: ignore[attr-defined]
+    driver = TurnDriver(manager=mgr)  # type: ignore[arg-type]
+    session = Session(scenario_prompt="x")
+
+    # Below threshold (index 7): no event.
+    await driver._maybe_warn_turn_limit(session, 7)
+    assert session.turn_limit_warned is False
+    assert not [
+        e for e in mgr._conns.events if e.get("type") == "turn_limit_approaching"
+    ]
+
+    # First crossing (index 8): one event with turns_remaining = 10 - 8.
+    await driver._maybe_warn_turn_limit(session, 8)
+    assert session.turn_limit_warned is True
+    warn_events = [
+        e for e in mgr._conns.events if e.get("type") == "turn_limit_approaching"
+    ]
+    assert len(warn_events) == 1
+    assert warn_events[0]["turns_remaining"] == 2
+    assert warn_events[0]["max_turns"] == 10
+
+    # Next opened turn (index 9): flag already set → no second event.
+    await driver._maybe_warn_turn_limit(session, 9)
+    warn_events = [
+        e for e in mgr._conns.events if e.get("type") == "turn_limit_approaching"
+    ]
+    assert len(warn_events) == 1

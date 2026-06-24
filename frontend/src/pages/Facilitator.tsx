@@ -16,6 +16,7 @@ import { Composer } from "../components/Composer";
 import { CriticalEventBanner } from "../components/CriticalEventBanner";
 import { UpstreamLlmErrorBanner } from "../components/UpstreamLlmErrorBanner";
 import { BackendStatusChip } from "../components/BackendStatusChip";
+import { TurnLimitApproachingChip } from "../components/TurnLimitApproachingChip";
 import { TurnLimitBanner } from "../components/TurnLimitBanner";
 import { DecisionLogPanel } from "../components/DecisionLogPanel";
 import { ExportsPanel } from "../components/ExportsPanel";
@@ -431,6 +432,20 @@ export function Facilitator() {
   // banner. ``record=True`` server-side so a reconnecting creator tab
   // still learns the cap was reached.
   const [turnLimitMax, setTurnLimitMax] = useState<number | null>(null);
+  // The session's configured ``MAX_TURNS_PER_SESSION``, learned from the
+  // creator-only ``cost_updated`` frame (which carries ``max_turns``) and
+  // backstopped by the ``turn_limit_approaching`` nudge. Surfaced on the
+  // TURN chips ("TURN 7 / 40") so the operator can self-pace before the
+  // hard cap parks the exercise. Null until the first frame lands.
+  const [maxTurns, setMaxTurns] = useState<number | null>(null);
+  // One-time ``turn_limit_approaching`` soft-warning notice. ``nonce`` is
+  // bumped on each frame so the self-expiring info chip re-arms (the
+  // engine only fires this once per session, but the nonce keeps the
+  // chip pattern identical to <BackendStatusChip>). Null until fired.
+  const [turnLimitNotice, setTurnLimitNotice] = useState<{
+    turnsRemaining: number;
+    nonce: number;
+  }>({ turnsRemaining: 0, nonce: 0 });
   // Issue #191 — most recent ``{type: "error", scope: "upstream_llm"}``
   // event. Creator-only; players never receive these. Cleared by the
   // banner's Dismiss button or replaced by a fresher upstream event.
@@ -1123,6 +1138,8 @@ export function Facilitator() {
         break;
       case "cost_updated":
         setCost(evt.cost);
+        // Latch the configured cap so the TURN chips can render "N / MAX".
+        setMaxTurns(evt.max_turns);
         break;
       case "backend_status":
         // Creator-only degraded-health nudge. Bump the nonce so the
@@ -1144,6 +1161,22 @@ export function Facilitator() {
           max_turns: evt.max_turns,
         });
         setTurnLimitMax(evt.max_turns);
+        setMaxTurns(evt.max_turns);
+        break;
+      case "turn_limit_approaching":
+        // One-time soft warning (cost/abuse C2). Surface a brief,
+        // non-blocking "N turns left" notice so the creator can wrap up
+        // before the hard cap parks the exercise; also seed ``maxTurns``
+        // for the TURN chips in case no cost frame has landed yet.
+        console.info("[facilitator] turn_limit_approaching", {
+          turns_remaining: evt.turns_remaining,
+          max_turns: evt.max_turns,
+        });
+        setMaxTurns(evt.max_turns);
+        setTurnLimitNotice((prev) => ({
+          turnsRemaining: evt.turns_remaining,
+          nonce: prev.nonce + 1,
+        }));
         break;
       case "decision_logged":
         setDecisionLog((prev) => {
@@ -2059,12 +2092,13 @@ export function Facilitator() {
         {/* Backend-degraded chip also mounts during setup/ready — the
             ``backend_status`` event can fire while the AI is drafting
             the plan (setup-tier LLM calls). Same fixed, non-blocking,
-            self-expiring chip as the in-session render. */}
+            self-expiring chip as the in-session render (``bottom: 56``
+            to match — clears any bottom chrome). */}
         <div
           style={{
             position: "fixed",
             right: 12,
-            bottom: 12,
+            bottom: 56,
             zIndex: 30,
             pointerEvents: "none",
           }}
@@ -2139,15 +2173,17 @@ export function Facilitator() {
           onEnd={handleEnd}
         />
       ) : null}
-      {/* Subtle, self-expiring "backend degraded" chip — creator-only,
+      {/* Subtle, self-expiring "system degraded" chip — creator-only,
           non-blocking (pointer-events:none), auto-clears ~8 s after the
-          last frame. Fixed to the bottom-right so it never reflows the
-          layout or sits over a control. Renders nothing when idle. */}
+          last frame. Fixed to the bottom-right and lifted clear of the
+          48 px sticky <BottomActionBar> (``bottom: 56``) so it never
+          reflows the layout or sits over the action-bar counters.
+          Renders nothing when idle. */}
       <div
         style={{
           position: "fixed",
           right: 12,
-          bottom: 12,
+          bottom: 56,
           zIndex: 30,
           pointerEvents: "none",
         }}
@@ -2157,6 +2193,12 @@ export function Facilitator() {
           nonce={backendStatus.nonce}
         />
       </div>
+      {/* One-time soft warning when the session nears its turn cap —
+          owns its own fixed, non-blocking, self-expiring chrome. */}
+      <TurnLimitApproachingChip
+        turnsRemaining={turnLimitNotice.turnsRemaining}
+        nonce={turnLimitNotice.nonce}
+      />
       {/* Issue #62 (round 2): consolidated top bar — debug telemetry +
           phase CTA + meta actions on a single row. See ``TopBar`` for
           layout rationale. */}
@@ -2176,6 +2218,7 @@ export function Facilitator() {
         aarStatus={snapshot.aar_status ?? null}
         busy={busy}
         turnIndex={snapshot.current_turn?.index ?? null}
+        maxTurns={maxTurns}
         rationaleCount={decisionLog.length}
         connectionCount={connectionCount}
         lastEventAt={lastEventAt}
@@ -2677,6 +2720,7 @@ export function Facilitator() {
         aarStatus={snapshot.aar_status ?? null}
         busy={busy}
         turnIndex={snapshot.current_turn?.index ?? null}
+        maxTurns={maxTurns}
         rationaleCount={decisionLog.length}
         connectionCount={connectionCount}
         lastEventAt={lastEventAt}
@@ -2779,6 +2823,10 @@ export function TopBar(props: {
   // before the first WS frame / snapshot fetch lands.
   /** ``snapshot.current_turn?.index`` — null when no turn is active. */
   turnIndex: number | null;
+  /** Configured ``MAX_TURNS_PER_SESSION`` (from the ``cost_updated``
+   *  frame). When set, the TURN chip shows "N / MAX" so the operator can
+   *  self-pace. Null until the first cost frame lands. */
+  maxTurns: number | null;
   /** ``decisionLog.length`` — count of AI rationale entries logged. */
   rationaleCount: number;
   /** Server-pushed total open WS tabs on this session, or null if unknown. */
@@ -2869,7 +2917,11 @@ export function TopBar(props: {
         {props.turnIndex != null ? (
           <span className="mono inline-flex items-center gap-1 rounded-r-1 border border-ink-500 bg-ink-700 px-2 py-0.5 text-[11px] font-semibold uppercase">
             <span className="text-ink-300 opacity-70">TURN</span>
-            <span className="tabular-nums text-ink-100">{props.turnIndex}</span>
+            <span className="tabular-nums text-ink-100">
+              {props.maxTurns != null
+                ? `${props.turnIndex} / ${props.maxTurns}`
+                : props.turnIndex}
+            </span>
           </span>
         ) : null}
         <span className="mono inline-flex items-center gap-1 rounded-r-1 border border-ink-500 bg-ink-700 px-2 py-0.5 text-[11px] font-semibold uppercase">
