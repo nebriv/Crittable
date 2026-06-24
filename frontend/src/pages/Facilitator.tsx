@@ -1259,6 +1259,14 @@ export function Facilitator() {
         console.warn("[facilitator] guardrail blocked", evt.verdict, evt.message);
         setError(`Submission blocked (${evt.verdict}): ${evt.message}`);
         break;
+      case "guardrail_unverified":
+        // H5: the creator path is fail-OPEN, so the creator's own
+        // submissions shouldn't normally land here — but a proxied or
+        // future fail-closed path could. Surface the transient
+        // "couldn't verify, resend" without the accusatory wording.
+        console.warn("[facilitator] guardrail unverified — resend", evt.message);
+        setError(evt.message);
+        break;
       case "submission_truncated":
         // Don't escalate to error — the message DID post.
         console.info("[facilitator] submission truncated", evt);

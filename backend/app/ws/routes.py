@@ -730,18 +730,36 @@ async def _client_pump(
                         }
                     )
                 if outcome.blocked:
-                    await websocket.send_json(
-                        {
-                            "type": "guardrail_blocked",
-                            "verdict": outcome.blocked_verdict,
-                            "message": (
-                                "Your message looked like a prompt-injection "
-                                "attempt and was blocked. If that was a real "
-                                "in-character reply, rephrase without "
-                                "instructing the AI directly."
-                            ),
-                        }
-                    )
+                    if outcome.blocked_verdict == "unverified":
+                        # H5 fail-closed: the classifier couldn't render a
+                        # verdict (upstream error / timeout). This is a
+                        # transient, non-accusatory hold — prompt a resend
+                        # rather than telling the player they looked like
+                        # an attacker.
+                        await websocket.send_json(
+                            {
+                                "type": "guardrail_unverified",
+                                "verdict": outcome.blocked_verdict,
+                                "message": (
+                                    "Couldn't verify your message right now — "
+                                    "the safety check is briefly unavailable. "
+                                    "Please send it again."
+                                ),
+                            }
+                        )
+                    else:
+                        await websocket.send_json(
+                            {
+                                "type": "guardrail_blocked",
+                                "verdict": outcome.blocked_verdict,
+                                "message": (
+                                    "Your message looked like a prompt-injection "
+                                    "attempt and was blocked. If that was a real "
+                                    "in-character reply, rephrase without "
+                                    "instructing the AI directly."
+                                ),
+                            }
+                        )
                     continue
                 # Submissions never advance the turn — only ``set_ready``
                 # closes the quorum (handled in its own event branch

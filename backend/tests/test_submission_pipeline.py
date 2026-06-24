@@ -180,3 +180,65 @@ async def test_pipeline_passes_through_normal_content(
         and m.body == "Isolate the affected segment now."
         for m in session.messages
     )
+
+
+@pytest.mark.asyncio
+async def test_pipeline_holds_player_on_unverified(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """H5 fail-closed: when the guardrail returns ``unverified`` (it
+    errored / timed out), a non-creator PLAYER submission is HELD —
+    blocked with the ``unverified`` verdict, nothing in the transcript —
+    so a down classifier can't wave a possible injection through."""
+
+    seat = await _seat_two_role_session(client)
+    manager = client.app.state.manager
+
+    class _Unverified:
+        async def classify(self, *, message: str) -> str:
+            return "unverified"
+
+    monkeypatch.setattr(manager, "_guardrail", _Unverified())
+    outcome = await prepare_and_submit_player_response(
+        manager=manager,
+        session_id=seat["session_id"],
+        role_id=seat["soc_id"],
+        content="Contain the host.",
+    )
+    assert outcome.blocked is True
+    assert outcome.blocked_verdict == "unverified"
+    assert outcome.advanced is False
+    session = await manager.get_session(seat["session_id"])
+    assert all(m.role_id != seat["soc_id"] for m in session.messages)
+
+
+@pytest.mark.asyncio
+async def test_pipeline_creator_fail_open_on_unverified(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """H5: the creator path stays fail-OPEN — on ``unverified`` the
+    creator's own message still posts (locking the session owner out on
+    a flaky upstream is worse than the low residual risk of their own
+    message)."""
+
+    seat = await _seat_two_role_session(client)
+    manager = client.app.state.manager
+
+    class _Unverified:
+        async def classify(self, *, message: str) -> str:
+            return "unverified"
+
+    monkeypatch.setattr(manager, "_guardrail", _Unverified())
+    outcome = await prepare_and_submit_player_response(
+        manager=manager,
+        session_id=seat["session_id"],
+        role_id=seat["creator_id"],
+        content="Proceeding with isolation.",
+    )
+    assert outcome.blocked is False
+    session = await manager.get_session(seat["session_id"])
+    assert any(
+        m.role_id == seat["creator_id"]
+        and m.body == "Proceeding with isolation."
+        for m in session.messages
+    )
