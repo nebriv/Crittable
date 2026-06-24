@@ -1397,18 +1397,24 @@ class TurnDriver:
                 # display_name) because the AI Decision Log surface is
                 # operator-focused.
                 role_by_id = {r.id: r for r in session.roles}
+                # Fall back to the raw role_id when a reconciled id is no
+                # longer in the roster: the AI can yield a stale/invalid id
+                # (it lands in ``dropped``), or a role can be removed
+                # mid-turn. Without the fallback the label lists silently
+                # empty and the decision-log note loses which id moved
+                # (Copilot review on #250). Raw ids are safe to surface
+                # here — this is the operator-only decision log, never
+                # rendered to players as a name.
                 dropped_labels = [
-                    role_by_id[rid].label
+                    role_by_id[rid].label if rid in role_by_id else rid
                     for rid in narrow_result.dropped
-                    if rid in role_by_id
                 ]
                 promoted_labels = [
-                    role_by_id[rid].label
+                    role_by_id[rid].label if rid in role_by_id else rid
                     for rid in narrow_result.promoted
-                    if rid in role_by_id
                 ]
                 kept_group_labels = [
-                    [role_by_id[rid].label for rid in g if rid in role_by_id]
+                    [role_by_id[rid].label if rid in role_by_id else rid for rid in g]
                     for g in narrow_result.kept_groups
                 ]
                 _logger.info(
@@ -1440,22 +1446,14 @@ class TurnDriver:
                 # operator can see the engine's reasoning. Players
                 # never see this — exposing engine internals to them
                 # is confusing. The structlog line above is the
-                # canonical audit record. Render whichever direction(s)
-                # actually fired so the note reads true on drop-only,
-                # promote-only, and mixed turns.
-                parts: list[str] = []
-                if dropped_labels:
-                    parts.append(
-                        f"dropped {dropped_labels} (not addressed this turn)"
-                    )
-                if promoted_labels:
-                    parts.append(
-                        f"added {promoted_labels} (addressed but not yielded to)"
-                    )
-                rationale = (
-                    f"Reconciled active groups to {kept_group_labels}: "
-                    + "; ".join(parts)
-                    + "."
+                # canonical audit record. ``_build_reconcile_rationale``
+                # renders whichever direction(s) actually fired and is
+                # total: it never emits a dangling "...: ." even when
+                # both label lists are empty.
+                rationale = _build_reconcile_rationale(
+                    kept_group_labels=kept_group_labels,
+                    dropped_labels=dropped_labels,
+                    promoted_labels=promoted_labels,
                 )
                 entry = DecisionLogEntry(
                     turn_index=turn.index,
@@ -1750,6 +1748,34 @@ def _trim_rationale(text: str) -> str:
     if len(text) <= _RATIONALE_MAX_CHARS:
         return text
     return text[: _RATIONALE_MAX_CHARS - 1] + "…"
+
+
+def _build_reconcile_rationale(
+    *,
+    kept_group_labels: list[list[str]],
+    dropped_labels: list[str],
+    promoted_labels: list[str],
+) -> str:
+    """Compose the creator decision-log note for an active-set reconcile.
+
+    Pure and *total*: always returns a well-formed sentence, even when
+    both label lists are empty — it never emits the dangling
+    ``"Reconciled active groups to [...]: ."`` that the previous
+    unconditional ``": " + "; ".join(parts) + "."`` produced when a
+    reconciled role_id had left the roster (Copilot review on #250).
+    Callers pass labels that already fall back to raw role_ids, so in
+    practice ``parts`` is non-empty whenever a reconcile fired; the
+    empty-suffix guard is defensive against a future regression.
+    """
+
+    parts: list[str] = []
+    if dropped_labels:
+        parts.append(f"dropped {dropped_labels} (not addressed this turn)")
+    if promoted_labels:
+        parts.append(f"added {promoted_labels} (addressed but not yielded to)")
+    base = f"Reconciled active groups to {kept_group_labels}"
+    detail = "; ".join(parts)
+    return f"{base}: {detail}." if detail else f"{base}."
 
 
 def _merge_outcomes(target: DispatchOutcome, src: DispatchOutcome) -> None:
