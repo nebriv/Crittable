@@ -185,6 +185,35 @@ Defaults preserve historical behavior so unset = no change.
 > burn setup-tier LLM tokens. Local deploys (`CORS_ORIGINS="*"`) are
 > exempt. The pass case logs `session_create_front_door_ok`.
 
+> **Invite codes (`INVITE_CODES`) — worked `.env` examples.** The value
+> is a JSON **array**, so in your `.env` it must be a single line of
+> valid JSON. A single-code gate:
+>
+> ```
+> INVITE_CODES=[{"code":"hunter2"}]
+> ```
+>
+> Multiple groups, with optional `label` and `expires`:
+>
+> ```
+> INVITE_CODES=[{"code":"acme-7Fq2","label":"Acme Corp"},{"code":"globex-9z","label":"Globex","expires":"2026-12-31"}]
+> ```
+>
+> Gotchas: in a `.env` file paste the array **verbatim** (no surrounding
+> quotes); when **exporting from a shell** wrap it in **single** quotes so
+> the shell doesn't strip the `"`:
+> `export INVITE_CODES='[{"code":"hunter2"}]'`. `expires` is a
+> `YYYY-MM-DD` date evaluated in **UTC** and is **inclusive** of that day
+> (a code with `"expires":"2026-12-31"` works through all of 2026‑12‑31
+> UTC, then stops). The value is read **once at boot**: edit
+> `INVITE_CODES` in `.env` and **restart the container** for a change to
+> take effect — to kill a leaked code immediately, remove its entry and
+> restart (`docker compose up -d`). A malformed value (bad JSON, a
+> non-array, a typo'd key, a blank code) **aborts startup** with
+> `invite_codes_invalid` rather than silently ungating. `INVITE_CODES` is
+> wired into the `docker-compose.yml` `environment:` block, so
+> `docker compose up` propagates it from `.env`.
+
 > **Rate-limit proxy requirement & multi-worker note.** The per-IP
 > limiters only resolve a trustworthy client IP behind a proxy that
 > **overwrites** `X-Forwarded-For` (e.g. Cloudflare, a correctly-

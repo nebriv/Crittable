@@ -108,7 +108,7 @@ export function InviteGate({ onValidated, staleNotice }: Props) {
           >
             INVITE_CODES
           </code>{" "}
-          in your backend env (unset to disable this gate). The
+          array in your backend env (unset to disable this gate). The
           backend rate-limits invalid attempts.
         </p>
       </header>

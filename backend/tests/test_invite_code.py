@@ -426,3 +426,98 @@ def test_invite_status_query_is_scrubbed_from_access_log(
         assert "supersecret" not in out, out
     finally:
         client.close()
+
+
+# ---------------------------------------------------------------- config: hardening edges
+
+
+def test_invite_codes_non_string_code_does_not_leak_value(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A bare JSON number as ``code`` makes pydantic embed the raw value
+    in its error BEFORE SecretStr can mask it — and that string is logged
+    at boot. The parser must surface the bad entry by index + error type,
+    never the value (security audit PR3 / LOW-1)."""
+
+    _set_codes(monkeypatch, '[{"code": 12345678}]')
+    with pytest.raises(ValueError) as ei:
+        get_settings().invite_codes()
+    msg = str(ei.value)
+    assert "12345678" not in msg, msg
+    assert "entry #0" in msg, msg
+
+
+def test_invite_codes_oversize_array_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A fat misconfigured array would re-parse on the create path; it's
+    bounded so an oversize value fails loud at boot (security MEDIUM-1)."""
+
+    big = _codes_json(*[{"code": f"c{i}"} for i in range(257)])
+    _set_codes(monkeypatch, big)
+    with pytest.raises(ValueError, match="maximum is 256"):
+        get_settings().invite_codes()
+
+
+def test_invite_codes_datetime_expires_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``expires`` is a date; a datetime string fails loud at boot rather
+    than silently truncating to midnight. Lock the strict behavior so
+    nobody relaxes the field to ``datetime`` later (QA review)."""
+
+    _set_codes(
+        monkeypatch,
+        _codes_json({"code": "x", "expires": "2026-12-31T23:59:59"}),
+    )
+    with pytest.raises(ValueError):
+        get_settings().invite_codes()
+
+
+def test_match_invite_code_strips_configured_whitespace(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The configured code value is stripped too, so a stray space in the
+    .env entry doesn't lock out a correctly-typed candidate (QA review)."""
+
+    _set_codes(monkeypatch, _codes_json({"code": "  spacey  "}))
+    assert get_settings().match_invite_code("spacey") is not None
+
+
+def test_match_invite_code_duplicate_last_wins(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Two entries share a code value; the non-short-circuit match loop
+    keeps the LAST match, so the last entry's metadata wins. Pin it so a
+    loop refactor can't silently flip precedence (QA review)."""
+
+    _set_codes(
+        monkeypatch,
+        _codes_json(
+            {"code": "dup", "label": "First"},
+            {"code": "dup", "label": "Second"},
+        ),
+    )
+    m = get_settings().match_invite_code("dup")
+    assert m is not None and m.label == "Second"
+
+
+def test_create_invite_ok_unlabeled_logs_placeholder(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A successful create against a code with NO label logs the
+    ``(unlabeled)`` placeholder — the label-None branch of
+    create_session_invite_ok (QA review)."""
+
+    client = _client(monkeypatch, codes_json=_codes_json({"code": "nolabel"}))
+    try:
+        capsys.readouterr()  # drain boot noise
+        r = client.post("/api/sessions", json=_create_body(invite_code="nolabel"))
+        assert r.status_code == 200, r.text
+        out = capsys.readouterr().out
+        assert "create_session_invite_ok" in out, out
+        assert "(unlabeled)" in out, out
+        assert "nolabel" not in out, out  # code value never logged
+    finally:
+        client.close()

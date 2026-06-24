@@ -23,7 +23,14 @@ from datetime import UTC, date, datetime
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    SecretStr,
+    ValidationError,
+    field_validator,
+)
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 ModelTier = Literal["play", "setup", "aar", "guardrail"]
@@ -133,6 +140,13 @@ class InviteCode(BaseModel):
         if not v.get_secret_value().strip():
             raise ValueError("invite code must not be blank")
         return v
+
+
+# Defensive upper bound on the ``INVITE_CODES`` array. A real operator
+# has a handful of groups; anything past this is a misconfiguration, and
+# leaving it unbounded would let a fat array burn CPU re-parsing on the
+# (rate-limited) create path. Security audit PR3 / MEDIUM-1.
+_MAX_INVITE_CODES = 256
 
 
 class Settings(BaseSettings):
@@ -633,13 +647,21 @@ class Settings(BaseSettings):
         """Parse ``INVITE_CODES`` (a JSON array) into validated entries.
 
         Empty / whitespace-only / unset all mean "no gate" → ``()``.
-        Anything else MUST be a JSON array of code objects; malformed
-        JSON, a non-array top level, or a bad entry raises ``ValueError``
-        so a misconfigured gate fails **loudly at boot** instead of
-        silently ungating a deploy the operator believed was protected
-        (``app/main.py`` calls this during startup). Re-parses per call;
-        the input is tiny and the call sites are low-frequency (boot +
-        once per session create).
+        Anything else MUST be a JSON array (≤256 entries) of code objects;
+        malformed JSON, a non-array top level, an oversize array, or a bad
+        entry raises ``ValueError`` so a misconfigured gate fails **loudly
+        at boot** instead of silently ungating a deploy the operator
+        believed was protected (``app/main.py`` calls this during
+        startup). Re-parses per call; the input is bounded and the call
+        sites are low-frequency (boot + once per session create).
+
+        A bad entry's error is rebuilt from pydantic's per-error ``msg``
+        (a static template) + field location — never from ``str(exc)`` or
+        the raw ``input`` — because a non-string ``code`` (e.g. a bare
+        JSON number) makes pydantic embed the raw value *before*
+        ``SecretStr`` can mask it, and that string is logged at boot. This
+        keeps the loud, debuggable failure without leaking a mistyped code
+        value into the log (security audit PR3 / LOW-1).
         """
 
         raw = (self.invite_codes_json or "").strip()
@@ -654,7 +676,24 @@ class Settings(BaseSettings):
                 "INVITE_CODES must be a JSON array of code objects, e.g. "
                 '[{"code": "acme-7Fq2", "label": "Acme Corp"}]'
             )
-        return tuple(InviteCode.model_validate(item) for item in data)
+        if len(data) > _MAX_INVITE_CODES:
+            raise ValueError(
+                f"INVITE_CODES has {len(data)} entries; the maximum is "
+                f"{_MAX_INVITE_CODES}"
+            )
+        codes: list[InviteCode] = []
+        for i, item in enumerate(data):
+            try:
+                codes.append(InviteCode.model_validate(item))
+            except ValidationError as exc:
+                detail = "; ".join(
+                    f"{'.'.join(str(p) for p in e['loc']) or '(root)'}: {e['msg']}"
+                    for e in exc.errors()
+                )
+                raise ValueError(
+                    f"INVITE_CODES entry #{i} is invalid — {detail}"
+                ) from None
+        return tuple(codes)
 
     def invite_code_required(self) -> bool:
         """True iff at least one ``INVITE_CODES`` entry is configured.

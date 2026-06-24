@@ -272,7 +272,7 @@ is the long form.
 | `SESSION_SECRET` | randomly generated, with a startup warning | HMAC key for join tokens. Not setting this means tokens are invalidated on every restart. Use 32+ random bytes. |
 | `CORS_ORIGINS` | `*` | Comma-separated allowlist. Lock to your actual origin(s). |
 | `RATE_LIMIT_ENABLED` | `false` | Flip to `true` and tune `RATE_LIMIT_REQ_PER_MIN` (default 60). |
-| `INVITE_CODES` | _unset_ | Optional anti-strangers gate on session creation. A JSON array of code objects — `[{"code": "acme-7Fq2", "label": "Acme Corp", "expires": "2026-12-31"}]` (`label`/`expires` optional). Creators must supply a code matching one of the listed, non-expired entries; hand a distinct code to each group and rotate/revoke by editing the array. Player join links are unaffected (they carry their own HMAC tokens). Pair with `RATE_LIMIT_ENABLED` / `SESSION_CREATE_RATE_PER_MIN` on a public URL. See [`docs/configuration.md`](docs/configuration.md). |
+| `INVITE_CODES` | _unset_ | Optional anti-strangers gate on session creation. A JSON array of code objects — `[{"code": "acme-7Fq2", "label": "Acme Corp", "expires": "2026-12-31"}]` (`label`/`expires` optional). Creators must supply a code matching one of the listed, non-expired entries; hand a distinct code to each group and rotate/revoke by editing the array (read once at boot — **restart the container to apply**). Player join links are unaffected (they carry their own HMAC tokens). Pair with `RATE_LIMIT_ENABLED` / `SESSION_CREATE_RATE_PER_MIN` on a public URL. See [`docs/configuration.md`](docs/configuration.md) for worked `.env` examples. |
 
 ### Useful day-to-day
 
