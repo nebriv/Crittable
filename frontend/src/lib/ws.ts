@@ -293,6 +293,30 @@ export type ServerEvent =
       status_code?: number | null;
       request_id?: string | null;
       retry_hint_seconds?: number | null;
+    }
+  // Creator-only health signal. Sent (via ``send_to_role``) when the
+  // engine detects degraded upstream conditions (heavy load / slow
+  // LLM responses). Players never receive it — it implies a wait the
+  // player can't act on. Low-information by design: just a category +
+  // a short human-readable message. The creator UI surfaces a subtle,
+  // self-expiring chip (see ``BackendStatusChip``) that auto-clears a
+  // few seconds after the last one. ``record=False`` server-side — a
+  // stale "degraded" frame must not replay on reconnect and latch the
+  // chip on.
+  | {
+      type: "backend_status";
+      status: "degraded";
+      message: string;
+    }
+  // Broadcast to EVERY participant when the session hits its configured
+  // turn cap (``max_turns``). The exercise can't advance further; the
+  // creator must End the session to generate the after-action report.
+  // The creator UI makes the End action prominent; players see the
+  // same banner as informational. ``record=True`` server-side so a
+  // late-joining / reconnecting tab still learns the cap was reached.
+  | {
+      type: "turn_limit_reached";
+      max_turns: number;
     };
 
 export type ClientEvent =
@@ -546,6 +570,16 @@ export class WsClient {
               safe.request_id = parsed.request_id;
               safe.retry_hint_seconds = parsed.retry_hint_seconds;
             }
+            break;
+          case "backend_status":
+            // Creator-only health nudge. ``message`` is operator-facing
+            // copy by design (no secrets / no participant content), so
+            // it's safe to surface in the console for debuggability.
+            safe.status = parsed.status;
+            safe.message = parsed.message;
+            break;
+          case "turn_limit_reached":
+            safe.max_turns = parsed.max_turns;
             break;
           case "guardrail_blocked":
             safe.verdict = parsed.verdict;
