@@ -860,10 +860,12 @@ def register_api_routes(app: FastAPI) -> None:
             for evt in new_audit
             if evt.kind in {"tool_use_rejected", "llm_truncated"}
         ]
+        setup_budget = manager.settings().max_setup_calls_per_session
         return {
             "ok": True,
             "plan_proposed": after.plan is not None,
             "diagnostics": diagnostics,
+            "setup_budget_exhausted": after.setup_call_count >= setup_budget,
         }
 
     @router.post("/sessions/{session_id}/setup/skip")

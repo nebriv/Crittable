@@ -521,6 +521,19 @@ class Session(BaseModel):
     # and tests can flip it manually.
     ai_paused: bool = False
 
+    # Cost/abuse C2: set True when the session reaches
+    # ``MAX_TURNS_PER_SESSION``. Once set, the play loop stops opening /
+    # driving new turns (the unbounded play-tier-LLM-cost path) and the
+    # UI prompts the creator to end the session → AAR. Not an auto-end —
+    # the creator still clicks "End"; a session that hit the cap stays
+    # capped.
+    turn_limit_reached: bool = False
+    # Cost/abuse M3: running count of setup-tier LLM calls made across
+    # all ``/setup/reply`` invocations for this session. Capped at
+    # ``MAX_SETUP_CALLS_PER_SESSION``; once reached, ``run_setup_turn``
+    # stops calling the model and the creator must finalize or skip.
+    setup_call_count: int = 0
+
     aar_markdown: str | None = None
     aar_status: AARStatus = "pending"
     aar_error: str | None = None

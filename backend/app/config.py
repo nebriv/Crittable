@@ -148,6 +148,32 @@ class Settings(BaseSettings):
         default=600.0, alias="LLM_TIMEOUT_S", gt=0.0
     )
 
+    # ---- LLM concurrency governor (cost/abuse H2) ----------------------
+    # Global ceiling on simultaneous *heavy* LLM calls (play / setup /
+    # aar) across ALL sessions against the single provider key. Without
+    # it, several concurrent sessions each driving turns + interjects +
+    # a background Opus AAR fan out into many simultaneous upstream
+    # calls — spiking spend and tripping the provider's *account-level*
+    # rate limit (collateral 429s on the operator's other usage). The
+    # guardrail tier runs in a SEPARATE lane of the same size so cheap,
+    # latency-critical input screening never queues behind a long Opus
+    # AAR (head-of-line blocking). A call that can't get a slot waits —
+    # the player keeps seeing "AI is thinking"; see
+    # ``LLM_ACQUIRE_TIMEOUT_S`` for the bound. Set 0 to disable the cap
+    # entirely (the historical unbounded behavior).
+    llm_max_concurrency: int = Field(
+        default=4, alias="LLM_MAX_CONCURRENCY", ge=0
+    )
+    # Max seconds a queued LLM call waits for a concurrency slot before
+    # giving up and surfacing a retryable ``overloaded`` upstream error
+    # (the turn ends gracefully with the existing creator banner rather
+    # than hanging the per-session lock). Sized well above a typical
+    # play call so transient bursts absorb invisibly; only a sustained
+    # overload trips it. Only consulted when ``LLM_MAX_CONCURRENCY > 0``.
+    llm_acquire_timeout_s: float = Field(
+        default=30.0, alias="LLM_ACQUIRE_TIMEOUT_S", gt=0.0
+    )
+
     # ---- Per-tier sampling tunables ------------------------------------
     # Each tier has independent ``max_tokens``, ``temperature`` and
     # ``top_p`` knobs. ``None`` means "use the SDK default".
@@ -245,6 +271,19 @@ class Settings(BaseSettings):
     # → ``finalize_setup`` in one response cycle; the cap prevents an
     # infinite loop if the model never yields. Default 4. Upper bound 20.
     max_setup_turns: int = Field(default=4, alias="MAX_SETUP_TURNS", ge=1, le=20)
+    # Per-session ceiling on the TOTAL number of setup-tier LLM calls
+    # across all ``/setup/reply`` invocations (cost/abuse M3).
+    # ``MAX_SETUP_TURNS`` caps the chained-tool loop *within one reply*;
+    # this caps how many replies a creator can drive before the plan is
+    # finalized, so a creator token (which an anonymous caller obtains
+    # for free from ``POST /sessions`` today) can't hammer
+    # ``/setup/reply`` to burn the setup tier's large (12k-token) output
+    # budget indefinitely. On exhaustion the route refuses further setup
+    # turns and prompts the operator to finalize or skip. Generous
+    # default so a real intake dialogue never hits it.
+    max_setup_calls_per_session: int = Field(
+        default=12, alias="MAX_SETUP_CALLS_PER_SESSION", ge=1
+    )
     # Hard cap on the byte length of a participant submission (player
     # message). Mirrors the per-call backend cap that previously lived as
     # a magic ``[:2000]`` slice; tunable so operators with chatty teams
