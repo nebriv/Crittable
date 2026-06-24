@@ -68,7 +68,8 @@ interface Props {
    * "self" → the local participant is toggling their own ready state
    *   (label: ``MARK READY`` / ``READY ✓``).
    * "impersonate" → the creator is toggling on behalf of another active
-   *   role (label: ``MARK <ROLE> READY`` / ``<ROLE> READY ✓``).
+   *   role (label: ``READY ON <SUBJECT>'S BEHALF`` / ``<SUBJECT> READY ✓``,
+   *   where <SUBJECT> is the player's name passed via ``subjectLabel``).
    *
    * Distinct copy AND distinct tone (signal=self, info=impersonate)
    * so a creator scanning the rail can tell at a glance which row
@@ -128,8 +129,12 @@ export function MarkReadyButton({
     // still wins when the parent hasn't opted in (legacy call sites).
     if (!enabled && disabledLabel) return disabledLabel;
     if (variant === "impersonate") {
-      const target = trunc((subjectLabel ?? "role").toUpperCase());
-      return isReady ? `${target} READY ✓` : `MARK ${target} READY →`;
+      const target = trunc((subjectLabel ?? "this role").toUpperCase());
+      // "READY ON <NAME>'S BEHALF" (not the role-label "MARK <ROLE>
+      // READY"): the creator reads this as acting FOR another person,
+      // not toggling their own seat. Pairs with passing the player's
+      // display_name as subjectLabel from RolesPanel.
+      return isReady ? `${target} READY ✓` : `READY ON ${target}'S BEHALF →`;
     }
     return isReady ? "READY ✓" : "MARK READY →";
   })();
@@ -140,12 +145,20 @@ export function MarkReadyButton({
   // skip it when ``enabled=false`` because the button can't actually
   // undo right now — the hint would lie.
   const showUndoHint = variant === "self" && isReady && enabled;
+  // Persistent proxy caption — a constant lowercase reminder that the
+  // impersonate button marks SOMEONE ELSE ready, the textual half of the
+  // misclick guard (the visual half is the dashed/smaller/muted styling
+  // in ``cls``). Only when interactive; a disabled button shows its
+  // ``disabledLabel`` ("NOT YOUR TURN") instead and the caption would
+  // just add noise. Mutually exclusive with ``showUndoHint`` (that's
+  // self-only), so they share the one caption slot in the render.
+  const showProxyCaption = variant === "impersonate" && enabled;
   // ``aria-pressed`` is only meaningful on the self variant — it
   // describes the LOCAL participant's ready state. On the
   // impersonation variant the toggle reflects another role's state,
-  // so AT announcing "MARK SOC READY, pressed" would confuse the
+  // so AT announcing "READY ON SOC'S BEHALF, pressed" would confuse the
   // creator into thinking THEY are ready. The visual+textual label
-  // ("SOC READY ✓" vs "MARK SOC READY →") already disambiguates; we
+  // ("SOC READY ✓" vs "READY ON SOC'S BEHALF →") already disambiguates; we
   // drop ``aria-pressed`` for the impersonate variant and lean on
   // the explicit label instead. QA review HIGH.
   const ariaPressed = variant === "self" ? isReady : undefined;
@@ -162,23 +175,30 @@ export function MarkReadyButton({
       : "Mark yourself ready. The AI advances once every active role is ready.";
   })();
 
-  // Brand tones:
-  //   self+ready          → signal-filled (green); the dominant signal
-  //                         on the page when YOU are done.
-  //   self+not-ready      → ink-800 outline w/ signal-bright text;
-  //                         neutral primary affordance.
-  //   impersonate+ready   → info-tint (cyan); distinct from self-ready
-  //                         so the creator's eye locks onto their own
-  //                         row first when scanning.
-  //   impersonate+not-ready → ink-800 outline w/ info text; matches.
-  // Per User-persona review HIGH H2 — the visual distinction makes
-  // the self-vs-impersonation footgun (clicking the wrong row) a
-  // colour-discriminable mistake instead of a label-discriminable one.
+  // Brand tones AND visual hierarchy. The impersonate ("on behalf")
+  // button is deliberately rendered as a SECONDARY control so a creator
+  // reaching for their OWN ready button can't fat-finger a teammate's
+  // ("I don't want to accidentally mark John ready when going to click
+  // mine" — direct creator feedback). Colour alone (the prior guard)
+  // wasn't enough; six independent channels now separate the two so the
+  // distinction survives a quick glance, colour-blindness, and the
+  // narrow rail:
+  //   self        → SOLID border, bg-ink-800, text-[11px], font-bold,
+  //                 tracking-[0.18em], SIGNAL (green). The single bold,
+  //                 full-size PRIMARY affordance — "your" button.
+  //   impersonate → DASHED border, darker bg-ink-900, text-[10px],
+  //                 font-semibold, tighter tracking, INFO (cyan), muted
+  //                 opacity. Visibly quieter and structurally different
+  //                 (dashed vs solid) so it reads as a proxy action, not
+  //                 "your" button — paired with the lowercase
+  //                 "for them · not you" caption rendered below.
+  // Extends User-persona review HIGH H2 (colour-discriminable) to a
+  // shape/size/weight-discriminable distinction.
   const cls = (() => {
     if (variant === "impersonate") {
       return isReady
-        ? "mono w-full rounded-r-1 border border-info bg-info-bg px-3 py-1.5 text-[11px] font-bold uppercase tracking-[0.18em] text-info hover:bg-info/30 focus-visible:outline focus-visible:outline-2 focus-visible:outline-info disabled:cursor-not-allowed disabled:opacity-50"
-        : "mono w-full rounded-r-1 border border-info bg-ink-800 px-3 py-1.5 text-[11px] font-bold uppercase tracking-[0.18em] text-info hover:bg-ink-700 focus-visible:outline focus-visible:outline-2 focus-visible:outline-info disabled:cursor-not-allowed disabled:opacity-50";
+        ? "mono w-full rounded-r-1 border border-dashed border-info bg-info/10 px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-info hover:bg-info/20 focus-visible:outline focus-visible:outline-2 focus-visible:outline-info disabled:cursor-not-allowed disabled:opacity-50"
+        : "mono w-full rounded-r-1 border border-dashed border-info/60 bg-ink-900 px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-info/85 hover:border-info hover:text-info hover:bg-ink-800 focus-visible:outline focus-visible:outline-2 focus-visible:outline-info disabled:cursor-not-allowed disabled:opacity-50";
     }
     return isReady
       ? "mono w-full rounded-r-1 border border-signal bg-signal-tint px-3 py-1.5 text-[11px] font-bold uppercase tracking-[0.18em] text-signal hover:bg-signal/30 focus-visible:outline focus-visible:outline-2 focus-visible:outline-signal disabled:cursor-not-allowed disabled:opacity-50"
@@ -219,7 +239,7 @@ export function MarkReadyButton({
         }
         return isReady
           ? `Walk back ${subjectLabel ?? "this role"}'s ready signal`
-          : `Mark ${subjectLabel ?? "this role"} ready`;
+          : `Mark ready on ${subjectLabel ?? "this role"}'s behalf`;
       })()}
       title={title}
       data-tone={tone}
@@ -235,6 +255,10 @@ export function MarkReadyButton({
         {showUndoHint ? (
           <span className="mono text-[9px] font-normal tracking-[0.10em] opacity-70">
             tap to undo
+          </span>
+        ) : showProxyCaption ? (
+          <span className="mono text-[9px] font-normal normal-case tracking-[0.08em] opacity-75">
+            for them · not you
           </span>
         ) : null}
       </span>

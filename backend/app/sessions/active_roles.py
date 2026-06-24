@@ -8,10 +8,23 @@ has to force-advance to unstick. Prompt-only enforcement is fragile;
 this module is the load-bearing safety net.
 
 Contract: given the AI's ``set_active_roles`` output and the
-player-facing tool calls it emitted on the same turn, drop role_ids
-whose canonical name is *not addressed* in the text (and that aren't
-the explicit ``role_id`` argument of an addressing tool). Returns the
-kept set + the dropped set so the caller can audit.
+player-facing tool calls it emitted on the same turn, reconcile the
+yield to the set of roles actually *addressed* in the text (or named
+as the explicit ``role_id`` argument of an addressing tool). Two
+mirror-image moves:
+
+* **Drop** role_ids the AI yielded to but did NOT address — the
+  original wide-yield stall fix.
+* **Promote** role_ids the AI addressed but did NOT yield to — each
+  becomes its own singleton ASK group so an addressed role is never
+  locked out of the turn it was handed a task in. This is the inverse
+  failure mode: e.g. the model writes "John — pull the admin portal"
+  but its ``set_active_roles`` predates John joining mid-turn, so
+  ``[ben]`` ships without him and John gets "NOT YOUR TURN" despite a
+  direct ask. Promotion closes that gap deterministically.
+
+Returns the kept groups + the dropped set + the promoted set so the
+caller can audit and surface both directions to the creator.
 
 Heuristic — what counts as "addressed":
 
@@ -95,17 +108,25 @@ class NarrowResult:
       same-turn text; groups that empty out are removed entirely.
     * ``dropped`` — flat list of role_ids removed across all groups
       (un-addressed in the same-turn text).
+    * ``promoted`` — flat list of role_ids the matcher considered
+      addressed but that the AI did NOT yield to; each is appended to
+      ``kept_groups`` as its own singleton ASK so an addressed role is
+      never locked out of the turn it was handed a task in. The mirror
+      of ``dropped``.
     * ``addressed_role_ids`` — full set of roles the matcher considered
       addressed (whether or not the AI included them in its yield).
       Useful for diagnostics: a role appearing here but NOT in any of
-      the AI's groups means the AI under-yielded.
+      the AI's groups means the AI under-yielded (and is now promoted).
     * ``narrowed`` — convenience flag: ``True`` iff at least one role
-      was dropped or a group was elided.
+      was dropped or a group was elided. (Promotion does NOT set this;
+      check ``promoted`` separately — the two directions are reported
+      independently so the caller can render distinct creator notes.)
     * ``reason`` — short tag the audit logger / system note can render.
     """
 
     kept_groups: list[list[str]]
     dropped: list[str]
+    promoted: list[str]
     addressed_role_ids: set[str]
     narrowed: bool
     reason: str
@@ -130,9 +151,10 @@ def narrow_active_role_groups(
     appended_messages: list[Message],
     ai_groups: list[list[str]],
 ) -> NarrowResult:
-    """Drop role_ids from each group in ``ai_groups`` that aren't
-    addressed in the same-turn text. Groups that become empty are
-    elided entirely.
+    """Reconcile ``ai_groups`` to the roles actually addressed in the
+    same-turn text: drop role_ids that aren't addressed (empty groups
+    are elided), and promote addressed role_ids the AI failed to yield
+    to (each appended as its own singleton group).
 
     See module docstring for the heuristic. Pure function; the caller
     handles audit + transcript surfacing.
@@ -244,20 +266,31 @@ def narrow_active_role_groups(
 
     addressed = explicit_targets | addressed_in_text
 
-    # Phase 3: decide. If the AI's set has no overlap with the addressed
-    # set AND the addressed set is empty (no names at clause-start, no
-    # explicit tool targets), this is a generic team broadcast. Keep
-    # the AI's groups unchanged so we don't accidentally narrow to
-    # empty on legitimate "Team — your move?" turns.
+    # Phase 3: reconcile the AI's yield against the addressed set. The
+    # invariant we enforce — WHENEVER any role is addressed — is "active
+    # set == addressed set": every role the AI addressed at clause-start
+    # (or via an explicit tool target) is active, and no role it merely
+    # yielded-to-but-didn't-address is. (When NO role is addressed we
+    # can't infer an audience, so the AI's yield is kept verbatim; see
+    # the ``if not addressed`` branch immediately below.)
+    #
+    # If the addressed set is empty (no names at clause-start, no
+    # explicit tool targets), this is a generic team broadcast or a
+    # pure data brief — there's no textual audience to reconcile
+    # against. Keep the AI's groups unchanged so we don't accidentally
+    # narrow to empty on a legitimate "Team — your move?" turn.
     if not addressed:
         return NarrowResult(
             kept_groups=[list(g) for g in ai_groups],
             dropped=[],
+            promoted=[],
             addressed_role_ids=set(),
             narrowed=False,
             reason="no_addressed_roles_no_narrowing",
         )
 
+    # Phase 3a — DROP: within each yielded group keep only addressed
+    # role_ids; elide a group that empties out entirely.
     keep_set = addressed
     kept_groups: list[list[str]] = []
     dropped: list[str] = []
@@ -269,35 +302,54 @@ def narrow_active_role_groups(
         if kept_in_group:
             kept_groups.append(kept_in_group)
 
-    # Safety: never narrow to empty. If the heuristic would drop
-    # every group the AI yielded to, bail out and keep the original.
-    # This covers the rare case where the matcher misses every name
-    # (e.g. the model used a nickname not in the roster) and the AI's
-    # groups are at least directionally sensible.
-    if not kept_groups:
-        return NarrowResult(
-            kept_groups=[list(g) for g in ai_groups],
-            dropped=[],
-            addressed_role_ids=addressed,
-            narrowed=False,
-            reason="would_narrow_to_empty_kept_original",
-        )
+    # Phase 3b — PROMOTE: any role the AI addressed but forgot to yield
+    # to becomes its own singleton ASK group. This is the mirror of the
+    # drop pass above; together they force "active set == addressed
+    # set" (the AI's any-of grouping is preserved for addressed members
+    # it grouped together). The dominant trigger is a role that joined
+    # mid-turn and wasn't in the roster snapshot when the model drafted
+    # its yield: it addresses "John — pull the admin portal" but its
+    # ``set_active_roles`` predates John, so without promotion John is
+    # locked out of the very turn he was handed a task in. Promotion
+    # order is roster order for determinism (``addressed`` is an
+    # unordered set). Because promotion can only ADD a role the model
+    # already addressed in text, it cannot re-introduce the wide-yield
+    # stall the drop pass exists to prevent — a promoted role always has
+    # a real, clause-start ask waiting on it.
+    covered = {rid for group in kept_groups for rid in group}
+    promoted = [r.id for r in roles if r.id in addressed and r.id not in covered]
+    for rid in promoted:
+        kept_groups.append([rid])
 
-    if not dropped:
+    # ``kept_groups`` is now guaranteed non-empty: ``addressed`` is
+    # non-empty (guard above) and every addressed role is either kept in
+    # a surviving group or promoted as a singleton — so the old "would
+    # narrow to empty, keep original" bail-out is structurally
+    # unreachable and has been removed.
+    if not dropped and not promoted:
         return NarrowResult(
             kept_groups=kept_groups,
             dropped=[],
+            promoted=[],
             addressed_role_ids=addressed,
             narrowed=False,
             reason="ai_set_already_matches_addressed",
         )
 
+    if dropped and promoted:
+        reason = "reconciled_dropped_and_promoted"
+    elif dropped:
+        reason = "dropped_unaddressed_roles"
+    else:
+        reason = "promoted_addressed_roles"
+
     return NarrowResult(
         kept_groups=kept_groups,
         dropped=dropped,
+        promoted=promoted,
         addressed_role_ids=addressed,
-        narrowed=True,
-        reason="dropped_unaddressed_roles",
+        narrowed=bool(dropped),
+        reason=reason,
     )
 
 

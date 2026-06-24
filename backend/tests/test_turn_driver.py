@@ -387,3 +387,76 @@ def test_setup_drafting_plan_does_not_fire_on_ask_question(
     assert drafting == [], (
         f"setup_drafting_plan must not fire for ask_setup_question; got {drafting!r}"
     )
+
+
+class TestBuildReconcileRationale:
+    """``_build_reconcile_rationale`` is total — it never emits the
+    dangling ``"Reconciled active groups to [...]: ."`` the previous
+    inline string concat produced when a reconcile fired but every
+    dropped/promoted role_id had left the roster (so both label lists
+    came back empty). Copilot review on PR #250."""
+
+    def test_drop_only(self) -> None:
+        from app.sessions.turn_driver import _build_reconcile_rationale
+
+        assert _build_reconcile_rationale(
+            kept_group_labels=[["Ben"]],
+            dropped_labels=["Engineer"],
+            promoted_labels=[],
+        ) == (
+            "Reconciled active groups to [['Ben']]: "
+            "dropped ['Engineer'] (not addressed this turn)."
+        )
+
+    def test_promote_only(self) -> None:
+        from app.sessions.turn_driver import _build_reconcile_rationale
+
+        out = _build_reconcile_rationale(
+            kept_group_labels=[["Ben"], ["John"]],
+            dropped_labels=[],
+            promoted_labels=["John"],
+        )
+        assert "added ['John'] (addressed but not yielded to)" in out
+        assert out.endswith(".")
+        assert ": ." not in out
+
+    def test_drop_and_promote_join_both_clauses(self) -> None:
+        from app.sessions.turn_driver import _build_reconcile_rationale
+
+        out = _build_reconcile_rationale(
+            kept_group_labels=[["Ben"], ["John"]],
+            dropped_labels=["Engineer"],
+            promoted_labels=["John"],
+        )
+        assert "dropped ['Engineer']" in out
+        assert "added ['John']" in out
+        assert ";" in out  # the two clauses are joined, not overwritten
+        assert out.endswith(".")
+
+    def test_empty_labels_never_dangles(self) -> None:
+        # The regression: reconcile fired (block entered) but every
+        # dropped/promoted id had left the roster → both lists empty.
+        # Must NOT render the malformed "...: ." suffix.
+        from app.sessions.turn_driver import _build_reconcile_rationale
+
+        out = _build_reconcile_rationale(
+            kept_group_labels=[["Ben"]],
+            dropped_labels=[],
+            promoted_labels=[],
+        )
+        assert out == "Reconciled active groups to [['Ben']]."
+        assert ": ." not in out
+
+    def test_raw_id_fallback_is_surfaced(self) -> None:
+        # The caller falls back to the raw role_id when a role left the
+        # roster; the helper renders it verbatim so the note still names
+        # which id moved instead of silently dropping it.
+        from app.sessions.turn_driver import _build_reconcile_rationale
+
+        out = _build_reconcile_rationale(
+            kept_group_labels=[["Ben"]],
+            dropped_labels=["role_deadbeef"],
+            promoted_labels=[],
+        )
+        assert "role_deadbeef" in out
+        assert ": ." not in out

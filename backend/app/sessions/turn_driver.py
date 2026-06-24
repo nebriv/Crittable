@@ -1369,16 +1369,20 @@ class TurnDriver:
             return
 
         if outcome.set_active_role_groups is not None:
-            # Server-side audience-vs-yield safety net. The play-tier
-            # model habitually yields wider than its actual audience
-            # (broadcasts "Ben — your call?" and yields to [Ben, Eng]
-            # even though Eng wasn't asked anything), which used to
-            # stall the turn under the all-must-ready gate. Issue #168
-            # moved to the role-groups model; the narrower now drops
-            # un-addressed role_ids from each group AND elides any
-            # group that empties out, so a fake "[Eng]" group simply
-            # disappears from the yield instead of becoming a stuck
-            # quorum slot. Edge-case coverage:
+            # Server-side audience-vs-yield safety net, both directions.
+            # The play-tier model both over- and under-yields relative
+            # to its actual audience:
+            #   • over-yield — broadcasts "Ben — your call?" but yields
+            #     [Ben, Eng] even though Eng wasn't asked; the narrower
+            #     DROPS Eng and elides the empty group, so a fake
+            #     "[Eng]" group can't become a stuck quorum slot.
+            #   • under-yield — addresses "John — pull the portal" but
+            #     yields only [Ben] (e.g. John joined mid-turn, after
+            #     the yield was drafted); the narrower PROMOTES John
+            #     into his own ASK group so a directly-addressed role
+            #     isn't locked out of the turn with "NOT YOUR TURN".
+            # Together these force "active set == addressed set". Issue
+            # #168 moved to the role-groups model. Edge-case coverage:
             # ``tests/test_active_roles_narrowing.py``.
             narrow_result = narrow_active_role_groups(
                 roles=session.roles,
@@ -1386,24 +1390,35 @@ class TurnDriver:
                 ai_groups=[list(g) for g in outcome.set_active_role_groups],
             )
             final_active_role_groups = narrow_result.kept_groups
-            if narrow_result.narrowed:
+            if narrow_result.narrowed or narrow_result.promoted:
                 # Build human-readable label lists for the audit +
                 # decision log so the creator can see what the engine
                 # did. We intentionally use ``label`` here (not
                 # display_name) because the AI Decision Log surface is
                 # operator-focused.
                 role_by_id = {r.id: r for r in session.roles}
+                # Fall back to the raw role_id when a reconciled id is no
+                # longer in the roster: the AI can yield a stale/invalid id
+                # (it lands in ``dropped``), or a role can be removed
+                # mid-turn. Without the fallback the label lists silently
+                # empty and the decision-log note loses which id moved
+                # (Copilot review on #250). Raw ids are safe to surface
+                # here — this is the operator-only decision log, never
+                # rendered to players as a name.
                 dropped_labels = [
-                    role_by_id[rid].label
+                    role_by_id[rid].label if rid in role_by_id else rid
                     for rid in narrow_result.dropped
-                    if rid in role_by_id
+                ]
+                promoted_labels = [
+                    role_by_id[rid].label if rid in role_by_id else rid
+                    for rid in narrow_result.promoted
                 ]
                 kept_group_labels = [
-                    [role_by_id[rid].label for rid in g if rid in role_by_id]
+                    [role_by_id[rid].label if rid in role_by_id else rid for rid in g]
                     for g in narrow_result.kept_groups
                 ]
                 _logger.info(
-                    "active_roles_narrowed",
+                    "active_roles_reconciled",
                     session_id=session.id,
                     turn_id=turn.id,
                     turn_index=turn.index,
@@ -1411,6 +1426,13 @@ class TurnDriver:
                     kept_groups=narrow_result.kept_groups,
                     dropped=narrow_result.dropped,
                     dropped_labels=dropped_labels,
+                    # Roles the AI addressed at clause-start but failed
+                    # to yield to — the engine promoted each into its
+                    # own ASK group so a directly-addressed role (often
+                    # one that joined mid-turn) isn't locked out of the
+                    # turn. The inverse of ``dropped``.
+                    promoted=narrow_result.promoted,
+                    promoted_labels=promoted_labels,
                     # The full set of roles the matcher considered
                     # addressed — including any the AI didn't yield
                     # to. Surfaces the "AI under-yielded" failure
@@ -1424,11 +1446,14 @@ class TurnDriver:
                 # operator can see the engine's reasoning. Players
                 # never see this — exposing engine internals to them
                 # is confusing. The structlog line above is the
-                # canonical audit record.
-                rationale = (
-                    f"Narrowed active groups: kept {kept_group_labels}, "
-                    f"dropped {dropped_labels} — not addressed in this "
-                    f"turn's message."
+                # canonical audit record. ``_build_reconcile_rationale``
+                # renders whichever direction(s) actually fired and is
+                # total: it never emits a dangling "...: ." even when
+                # both label lists are empty.
+                rationale = _build_reconcile_rationale(
+                    kept_group_labels=kept_group_labels,
+                    dropped_labels=dropped_labels,
+                    promoted_labels=promoted_labels,
                 )
                 entry = DecisionLogEntry(
                     turn_index=turn.index,
@@ -1463,6 +1488,29 @@ class TurnDriver:
                             entry_id=entry.id,
                             error=str(exc),
                         )
+            else:
+                # No drop, no promote: the AI's yield was kept verbatim —
+                # either it already matched the addressed set, or no role
+                # was addressed at clause-start (a generic "Team — …"
+                # broadcast or a pure data brief, where the engine can't
+                # infer an audience and trusts the yield). Log it anyway so
+                # the active-set decision is observable on EVERY turn:
+                # when a creator asks "why is this seat still pending?" on
+                # a brief-only turn, this breadcrumb shows the AI itself
+                # yielded that role with no specific addressee — the
+                # narrower didn't add it. Without this line the no-op path
+                # was silent, leaving the most-likely support question
+                # (per the product + user-persona reviews) un-answerable
+                # from the logs alone.
+                _logger.info(
+                    "active_roles_kept_ai_yield",
+                    session_id=session.id,
+                    turn_id=turn.id,
+                    turn_index=turn.index,
+                    kept_groups=narrow_result.kept_groups,
+                    addressed_role_ids=sorted(narrow_result.addressed_role_ids),
+                    reason=narrow_result.reason,
+                )
             turn.status = "complete"
             turn.ended_at = _now()
             new_index = len(session.turns)
@@ -1700,6 +1748,34 @@ def _trim_rationale(text: str) -> str:
     if len(text) <= _RATIONALE_MAX_CHARS:
         return text
     return text[: _RATIONALE_MAX_CHARS - 1] + "…"
+
+
+def _build_reconcile_rationale(
+    *,
+    kept_group_labels: list[list[str]],
+    dropped_labels: list[str],
+    promoted_labels: list[str],
+) -> str:
+    """Compose the creator decision-log note for an active-set reconcile.
+
+    Pure and *total*: always returns a well-formed sentence, even when
+    both label lists are empty — it never emits the dangling
+    ``"Reconciled active groups to [...]: ."`` that the previous
+    unconditional ``": " + "; ".join(parts) + "."`` produced when a
+    reconciled role_id had left the roster (Copilot review on #250).
+    Callers pass labels that already fall back to raw role_ids, so in
+    practice ``parts`` is non-empty whenever a reconcile fired; the
+    empty-suffix guard is defensive against a future regression.
+    """
+
+    parts: list[str] = []
+    if dropped_labels:
+        parts.append(f"dropped {dropped_labels} (not addressed this turn)")
+    if promoted_labels:
+        parts.append(f"added {promoted_labels} (addressed but not yielded to)")
+    base = f"Reconciled active groups to {kept_group_labels}"
+    detail = "; ".join(parts)
+    return f"{base}: {detail}." if detail else f"{base}."
 
 
 def _merge_outcomes(target: DispatchOutcome, src: DispatchOutcome) -> None:

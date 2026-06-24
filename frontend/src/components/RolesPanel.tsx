@@ -538,7 +538,10 @@ export function RolesPanel({
                     enabled={markReadyEnabled}
                     onToggle={(next) => onMarkReady(r.id, next)}
                     variant={isSelfRole ? "self" : "impersonate"}
-                    subjectLabel={r.label}
+                    // Prefer the player's name ("READY ON JOHN'S
+                    // BEHALF") over the role label; fall back to the
+                    // label for an as-yet-unnamed seat.
+                    subjectLabel={r.display_name || r.label}
                     disabledReason={markReadyDisabledReason}
                     inFlight={
                       pendingMarkReadySubjects?.has(r.id) ?? false
