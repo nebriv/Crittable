@@ -52,8 +52,8 @@ Hiring an outside firm to facilitate solves that. A good facilitated
 tabletop is worth the money, but it's expensive, and most teams manage it
 maybe once a year. That isn't often enough to get good at it.
 
-Crittable runs the exercise so we don't have to. It holds the scenario
-and throws the injects, reacting to what the team does. That frees
+Crittable runs the exercise so the whole team can take part. It holds the
+scenario and throws the injects, reacting to what the team does. That frees
 whoever usually facilitates to play instead of run the room. We come in
 blind like everyone else, work the problem together, and actually learn
 something. It won't replace a real facilitated tabletop, but it lets us
