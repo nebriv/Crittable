@@ -40,6 +40,25 @@ itself while the room is still warm.
 > for multi-process WS fan-out). Authoritative architecture:
 > [`docs/PLAN.md`](docs/PLAN.md).
 
+## Why
+
+Small security teams can't run a tabletop on themselves. Someone has to
+be the white cell — write the scenario, throw the injects, adjudicate the
+curveballs — and on a two-person team that someone is the same person who
+most needs the practice. You can't be surprised by an inject you wrote,
+so the lead ends up running the exercise instead of being tested by it.
+
+A facilitated tabletop from an outside firm fixes that, and a good one is
+worth the money — but it's costly and it happens maybe once a year.
+That's not enough reps to build reflexes.
+
+Crittable hands the white-cell seat to the AI. It holds the scenario,
+throws the injects, and reacts to whatever the room does — so the person
+who used to run the exercise can come in blind, work the problem with the
+team, and learn from it instead of running it. It doesn't replace a
+professional facilitated tabletop; it makes the cheap, frequent reps
+possible in between.
+
 ## What it does
 
 - **Set the brief.** Scenario / team / environment / constraints in four
