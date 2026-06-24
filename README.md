@@ -42,21 +42,22 @@ itself while the room is still warm.
 
 ## Why
 
-My security team is two people. That makes it hard to run a tabletop on
-ourselves: someone has to build the scenario and play the adversary, and
-on a team this small that someone is me. I write the injects, so nothing
-in the exercise surprises me, and I end up running the test instead of
-taking it.
+Small security teams can't run a tabletop on themselves. Someone has to
+build the scenario and play the adversary, and that's usually one of the
+people who'd get the most out of taking part. If we wrote the injects,
+nothing in the exercise surprises us, and we end up running the test
+instead of taking it.
 
 Hiring an outside firm to facilitate solves that. A good facilitated
-tabletop is worth the money, but it's expensive, and we do it maybe once
-a year. That isn't often enough to get good at it.
+tabletop is worth the money, but it's expensive, and most teams manage it
+maybe once a year. That isn't often enough to get good at it.
 
-Crittable runs the exercise so I don't have to. It holds the scenario and
-throws the injects, reacting to what the team does. That lets me play
-instead of facilitate. I come in blind like everyone else, work the
-problem with the team, and actually learn something. It won't replace a
-real facilitated tabletop, but it lets us practice in the months between.
+Crittable runs the exercise so we don't have to. It holds the scenario
+and throws the injects, reacting to what the team does. That frees
+whoever usually facilitates to play instead of run the room. We come in
+blind like everyone else, work the problem together, and actually learn
+something. It won't replace a real facilitated tabletop, but it lets us
+practice in the months between.
 
 ## What it does
 
