@@ -187,3 +187,34 @@ def test_setup_reply_not_exhausted_with_headroom(monkeypatch) -> None:
         assert body["setup_budget_exhausted"] is False
     finally:
         client.__exit__(None, None, None)
+
+
+def test_setup_reply_short_circuit_has_consistent_shape(monkeypatch) -> None:
+    """When setup is already finished (state != SETUP), ``/setup/reply``
+    short-circuits but still returns the SAME shape as the normal path —
+    ``setup_budget_exhausted`` is always present (False) so the frontend
+    ``SetupReplyResult`` contract holds on both branches. Copilot review
+    on PR #253."""
+
+    client = _make_client(monkeypatch, budget=12)
+    try:
+        ses = _create_session(client)
+        sid, token = ses["sid"], ses["token"]
+
+        # Leave SETUP via the skip shortcut (no LLM call) → state != SETUP.
+        client.post(f"/api/sessions/{sid}/setup/skip?token={token}")
+        snap = client.get(f"/api/sessions/{sid}?token={token}").json()
+        assert snap["state"] != "SETUP"
+
+        body = client.post(
+            f"/api/sessions/{sid}/setup/reply?token={token}",
+            json={"content": "late reply after setup finished"},
+        ).json()
+        # Single consistent contract: the field the frontend type requires
+        # is present even on the short-circuit branch.
+        assert body["ok"] is True
+        assert body["setup_budget_exhausted"] is False
+        assert "plan_proposed" in body
+        assert "diagnostics" in body
+    finally:
+        client.__exit__(None, None, None)

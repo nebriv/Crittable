@@ -829,13 +829,25 @@ def register_api_routes(app: FastAPI) -> None:
         except AuthorizationError as exc:
             raise HTTPException(status.HTTP_403_FORBIDDEN, str(exc)) from exc
 
+        # Stale tab / already-finalized setup (raced finalize / skip /
+        # start): return the consistent ``/setup/reply`` shape instead of
+        # 500ing on ``append_setup_message``'s SETUP guard below. Single
+        # response contract — ``setup_budget_exhausted`` is moot here but
+        # always present (False), matching the frontend ``SetupReplyResult``
+        # type. Copilot review on PR #253.
+        session = await manager.get_session(session_id)
+        if session.state != SessionState.SETUP:
+            return {
+                "ok": True,
+                "plan_proposed": session.plan is not None,
+                "diagnostics": [],
+                "setup_budget_exhausted": False,
+            }
+
         await manager.append_setup_message(
             session_id=session_id, speaker="creator", content=body.content
         )
         driver = TurnDriver(manager=manager)
-        session = await manager.get_session(session_id)
-        if session.state != SessionState.SETUP:
-            return {"ok": True, "state": session.state.value}
         # Snapshot the audit "high-water mark" before the LLM call so
         # we can return *only* the diagnostics emitted by THIS reply
         # (older ones from previous replies stay invisible to this
