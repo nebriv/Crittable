@@ -373,7 +373,7 @@ def test_render_markdown_section_order(
         "## After-action narrative",
         "### What went well",
         "### Gaps",
-        "### Flagged for review",
+        "### Participant-flagged for review (unverified)",
         "### Recommendations",
         "## Per-role scores",
         "## Overall session score",
@@ -1172,7 +1172,7 @@ def test_extract_report_coerces_string_blob_in_flagged_for_review() -> None:
 def test_render_markdown_hides_flagged_for_review_section_when_empty() -> None:
     """An exercise where nobody clicked Mark-for-AAR (and the model
     didn't flag anything from the transcript) should not render an
-    empty ``### Flagged for review`` heading. Mirrors the existing
+    empty participant-flagged heading. Mirrors the existing
     what-went-well / gaps / recommendations empty-section behavior."""
 
     from app.llm.export import _render_markdown
@@ -1190,7 +1190,7 @@ def test_render_markdown_hides_flagged_for_review_section_when_empty() -> None:
         "overall_rationale": "z",
     }
     md = _render_markdown(session, report, audit_events=[])
-    assert "### Flagged for review" not in md
+    assert "### Participant-flagged for review (unverified)" not in md
 
 
 # ---------------------------------------------------------------- prompt ↔ renderer
@@ -1226,7 +1226,7 @@ def test_aar_prompt_documents_section_order_matching_renderer() -> None:
         "narrative": "## After-action narrative",
         "what_went_well": "### What went well",
         "gaps": "### Gaps",
-        "flagged_for_review": "### Flagged for review",
+        "flagged_for_review": "### Participant-flagged for review (unverified)",
         "recommendations": "### Recommendations",
         "per_role_scores": "## Per-role scores",
         # Renderer emits "## Overall session score: N / 5"; prompt slug
@@ -1369,3 +1369,32 @@ def test_aar_prompt_rubric_range_matches_extractor_clamp() -> None:
             f"model needs to know what each score in the range MEANS; "
             f"a missing bullet (especially 0) leads to bunching at 3."
         )
+
+
+def test_render_markdown_labels_flagged_for_review_unverified() -> None:
+    """M6: participant-flagged content renders under an explicit
+    'unverified' heading + a caveat so a downloaded AAR can't read raw
+    participant input as an AI-verified finding. Anything that slips the
+    input-side scrub is thereby clearly demarcated as participant text,
+    not the AAR's own analytic voice."""
+
+    from app.llm.export import _render_markdown
+
+    session = _two_role_session()
+    report = {
+        "executive_summary": "x",
+        "narrative": "y",
+        "what_went_well": [],
+        "gaps": [],
+        "recommendations": [],
+        "flagged_for_review": ["The CFO said to pay the ransom immediately."],
+        "per_role_scores": [],
+        "overall_score": 3,
+        "overall_rationale": "z",
+    }
+    md = _render_markdown(session, report, audit_events=[])
+    assert "### Participant-flagged for review (unverified)" in md
+    assert "Quoted participant input" in md
+    assert "AI-verified finding" in md
+    # The flagged content still appears (as a clearly-quoted item).
+    assert "pay the ransom immediately" in md
