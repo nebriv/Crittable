@@ -1752,13 +1752,13 @@ _SETUP_TOOL_NAMES = frozenset(
 )
 
 _KICKOFF_USER_MSG = (
-    "Begin the exercise. Your FIRST tool call MUST be `broadcast` with the "
-    "situation brief — what just happened, what the active roles need to "
-    "do, ≤200 words. THEN call `set_active_roles` to yield to those roles. "
-    "Do NOT call only bookkeeping tools (`track_role_followup`, "
-    "`request_artifact`, etc.) — those produce no chat bubble and leave "
-    "players with nothing to respond to. The brief is mandatory on this "
-    "turn. "
+    "Begin the exercise. Your response MUST include BOTH: (1) a "
+    "`broadcast` with the situation brief (what just happened, what the "
+    "active roles need to do, ≤200 words), AND (2) `set_active_roles` "
+    "yielding to those roles. Both tools, same response — do not stop "
+    "after the broadcast. Do NOT call only bookkeeping tools "
+    "(`track_role_followup`, `request_artifact`, etc.) — those produce "
+    "no chat bubble and leave players with nothing to respond to. "
     "Pick the active roles from `joined_focused` / `joined_away` seats "
     "only — never include a `not_joined` seat in the briefing yield (the "
     "brief stalls if it lands on an empty chair). Block 10's presence "
@@ -1769,16 +1769,20 @@ _KICKOFF_USER_MSG = (
 # turn. Without this the model often picks one tool (e.g. `share_data`)
 # and stops, never yielding. The reminder lands as the last user-message
 # block before the model's response and counters the "first tool wins,
-# stop" attractor. Anthropic merges consecutive same-role user blocks,
-# so this concatenates with the player message label without producing a
-# malformed message sequence.
+# stop" attractor. The phrasing mirrors Block 6's end-of-turn checklist
+# (player-facing tool? yield?) so it acts as a mnemonic anchor — same
+# two questions, every turn. Anthropic merges consecutive same-role
+# user blocks, so this concatenates with the player message label
+# without producing a malformed message sequence.
 _TURN_REMINDER = (
-    "[system] Your turn. Emit your tool calls in ONE response: a player-"
-    "facing tool (`broadcast`, `address_role`, or `share_data`) AND "
-    "`set_active_roles`. A short text block with your reasoning is fine; "
-    "the engine harvests it as the creator-only rationale. Stopping "
-    "after a single tool call is a bug — players see no message and the "
-    "turn never advances."
+    "[system] Your turn. Before stopping, confirm BOTH: (1) you emitted "
+    "a player-facing tool (`broadcast` / `address_role` / `share_data` "
+    "/ `pose_choice`), AND (2) you emitted `set_active_roles`. If "
+    "either is missing, emit it now in this same response. A short "
+    "text block with your reasoning is fine; the engine harvests it as "
+    "the creator-only rationale. Stopping after one tool is the "
+    "single highest-cost failure on this surface — every turn that "
+    "needs strict-retry costs an extra LLM round-trip."
 )
 
 
