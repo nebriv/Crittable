@@ -241,21 +241,28 @@ def create_app(
             ),
         )
     # Boot-time confirmation that the soft anti-strangers gate is on,
-    # plus a loud warning if the operator forgot to pair it with the
-    # rate-limit middleware. Without the warn an operator can think
-    # "INVITE_CODE is set, I'm safe" and miss that an attacker can
-    # grind ``GET /api/invite/status?code=…`` at thousands of probes
-    # per second to brute the value.
+    # plus a loud warning if the operator has *also* disabled every
+    # throttle on the only path that checks the code. The invite code is
+    # validated inline on ``POST /api/sessions`` (the brute-force surface;
+    # the old ``GET /api/invite/status?code=…`` oracle was removed in M7).
+    # That path is normally throttled by the always-on per-IP create
+    # limiter (``SESSION_CREATE_RATE_PER_MIN``, default 5) independent of
+    # ``RATE_LIMIT_ENABLED`` — so the code is only grindable when BOTH
+    # throttles are off. Warn precisely for that combination; an operator
+    # on defaults (create limiter = 5/min) is already protected and
+    # shouldn't see a misleading "no throttling" warning.
     if cfg.invite_code_required():
         _bootstrap_log.info("invite_code_gate_enabled")
-        if not cfg.rate_limit_enabled:
+        if not cfg.rate_limit_enabled and cfg.session_create_rate_per_min <= 0:
             _bootstrap_log.warning(
-                "invite_code_set_without_rate_limit",
+                "invite_code_set_without_throttle",
                 note=(
-                    "INVITE_CODE is set but RATE_LIMIT_ENABLED=false; "
-                    "an attacker can brute the code via "
-                    "POST /api/sessions without throttling. "
-                    "Enable RATE_LIMIT_ENABLED=true for any public deploy."
+                    "INVITE_CODE is set but both RATE_LIMIT_ENABLED=false "
+                    "and SESSION_CREATE_RATE_PER_MIN=0; the code is checked "
+                    "inline on POST /api/sessions with no per-IP throttle, "
+                    "so an attacker can grind candidates. Set "
+                    "SESSION_CREATE_RATE_PER_MIN (a per-IP create cap) "
+                    "and/or RATE_LIMIT_ENABLED=true for any public deploy."
                 ),
             )
 
@@ -282,12 +289,32 @@ def create_app(
             "Refusing to boot an exposed deploy where anonymous callers "
             "can loop session creation and burn setup-tier LLM tokens."
         )
-    _bootstrap_log.info(
-        "session_create_front_door_ok",
-        is_real_deploy=_is_real_deploy,
-        invite_code_gate=cfg.invite_code_required(),
-        session_create_rate_per_min=cfg.session_create_rate_per_min,
-    )
+    if _has_front_door:
+        _bootstrap_log.info(
+            "session_create_front_door_ok",
+            is_real_deploy=_is_real_deploy,
+            invite_code_gate=cfg.invite_code_required(),
+            session_create_rate_per_min=cfg.session_create_rate_per_min,
+        )
+    else:
+        # Reachable only for a local/toy deploy (CORS_ORIGINS='*') — the
+        # real-deploy + no-door combo already raised above. We still boot
+        # so laptop dev stays frictionless, but POST /api/sessions is
+        # unthrottled here: if this exact config is exposed on a reachable
+        # port, an anonymous caller can loop session creation and burn
+        # setup-tier LLM tokens. Warn loudly so the operator finds it in
+        # the boot log instead of via a surprise Anthropic bill (audit
+        # L-1).
+        _bootstrap_log.warning(
+            "session_create_unthrottled_local",
+            note=(
+                "CORS_ORIGINS='*' with no INVITE_CODE and "
+                "SESSION_CREATE_RATE_PER_MIN=0 — session creation is "
+                "unthrottled. Fine on a laptop; if this port is reachable "
+                "by anyone else, set SESSION_CREATE_RATE_PER_MIN (a per-IP "
+                "cap) and/or INVITE_CODE to gate it."
+            ),
+        )
 
     app = FastAPI(
         title="Crittable",

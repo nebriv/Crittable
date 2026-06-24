@@ -31,7 +31,7 @@ from ..sessions.progress import compute_progress_pct
 from ..sessions.repository import SessionCapacityError, SessionNotFoundError
 from ..sessions.turn_driver import TurnDriver
 from ..sessions.turn_engine import IllegalTransitionError
-from .errors import curate, http_error
+from .errors import http_error
 
 
 def _ascii_filename_slug(title: str | None, *, max_len: int = 40) -> str:
@@ -86,18 +86,62 @@ def _invitee_failure_code(exc: BaseException) -> str:
 def _proxy_target_reject_message(exc: BaseException) -> str:
     """Curated client detail for a proxy-respond target rejection.
 
-    ``proxy_submit_as`` raises a plain ``IllegalTransitionError`` for two
-    distinct cases (target not seated vs. target is a spectator). We can't
-    distinguish them by exception *type*, so we classify on the manager's
-    own stable message substrings — those are our strings, not user- or
-    model-controlled (same pattern as ``_invitee_failure_code``). The
-    value returned is a constant chosen by our code, never ``str(exc)``,
+    ``proxy_submit_as`` raises a plain ``IllegalTransitionError`` for four
+    distinct causes — target not a player role, target not seated, no
+    current turn, and "not accepting player input" — and we can't tell
+    them apart by exception *type*. We classify on the manager's own
+    stable message substrings (our strings, never user- or
+    model-controlled; same pattern as ``_invitee_failure_code``). The
+    returned value is a constant chosen by our code, never ``str(exc)``,
     so the M11 / CWE-209 taint flow stays broken.
+
+    Audit M-1: the pre-fix version collapsed the two wrong-state causes
+    into "not seated", mis-telling the operator the *target role* was the
+    problem when the session simply wasn't accepting input. Each cause
+    now maps to its own message; the raw ``str(exc)`` is logged at the
+    call site.
     """
 
-    if "not a player role" in str(exc).lower():
+    text = str(exc).lower()
+    if "not a player role" in text:
         return "target role is not a player role; cannot proxy-submit"
-    return "target role is not seated in this session"
+    if "not seated" in text:
+        return "target role is not seated in this session"
+    if "no current turn" in text or "not accepting player input" in text:
+        return "the session is not accepting input right now"
+    return "cannot proxy-submit for that role right now"
+
+
+def _reject(
+    exc: BaseException,
+    *,
+    status_code: int,
+    event: str,
+    session_id: str | None = None,
+    message: str | None = None,
+    **ctx: object,
+) -> HTTPException:
+    """Log ``exc`` in full and return a curated ``HTTPException`` (audit H-1).
+
+    Thin routes-layer wrapper over :func:`app.api.errors.http_error`: pins
+    the ``api`` logger and threads ``session_id`` (plus any extra context)
+    into the WARNING line so every domain error mapped onto a 4xx leaves a
+    server-side breadcrumb carrying the real ``str(exc)``. Without it the
+    curated client detail alone makes a 403/409 undiagnosable past the
+    generic access-log entry — the exact swallowed-context gap CLAUDE.md's
+    logging rules call out as must-fix.
+    """
+
+    if session_id is not None:
+        ctx["session_id"] = session_id
+    return http_error(
+        exc,
+        status_code=status_code,
+        log=get_logger("api"),
+        log_event=event,
+        message=message,
+        **ctx,
+    )
 
 
 class InviteeRoleSpec(BaseModel):
@@ -663,9 +707,19 @@ def register_api_routes(app: FastAPI) -> None:
                 acting_token_version=int(token.get("v", 0)),
             )
         except AuthorizationError as exc:
-            raise HTTPException(status.HTTP_403_FORBIDDEN, curate(exc)) from exc
+            raise _reject(
+                exc,
+                status_code=status.HTTP_403_FORBIDDEN,
+                event="authz_denied",
+                session_id=session_id,
+            ) from exc
         except IllegalTransitionError as exc:
-            raise HTTPException(status.HTTP_409_CONFLICT, curate(exc)) from exc
+            raise _reject(
+                exc,
+                status_code=status.HTTP_409_CONFLICT,
+                event="illegal_transition",
+                session_id=session_id,
+            ) from exc
         except SessionNotFoundError as exc:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "session not found") from exc
         return {
@@ -878,9 +932,19 @@ def register_api_routes(app: FastAPI) -> None:
             require_creator(token)
             await manager.start_session(session_id=session_id)
         except AuthorizationError as exc:
-            raise HTTPException(status.HTTP_403_FORBIDDEN, curate(exc)) from exc
+            raise _reject(
+                exc,
+                status_code=status.HTTP_403_FORBIDDEN,
+                event="authz_denied",
+                session_id=session_id,
+            ) from exc
         except IllegalTransitionError as exc:
-            raise HTTPException(status.HTTP_409_CONFLICT, curate(exc)) from exc
+            raise _reject(
+                exc,
+                status_code=status.HTTP_409_CONFLICT,
+                event="illegal_transition",
+                session_id=session_id,
+            ) from exc
 
         # Kick the briefing turn off in the background.
         driver = TurnDriver(manager=manager)
@@ -907,7 +971,12 @@ def register_api_routes(app: FastAPI) -> None:
         try:
             require_creator(token)
         except AuthorizationError as exc:
-            raise HTTPException(status.HTTP_403_FORBIDDEN, curate(exc)) from exc
+            raise _reject(
+                exc,
+                status_code=status.HTTP_403_FORBIDDEN,
+                event="authz_denied",
+                session_id=session_id,
+            ) from exc
 
         # Stale tab / already-finalized setup (raced finalize / skip /
         # start): return the consistent ``/setup/reply`` shape instead of
@@ -979,9 +1048,19 @@ def register_api_routes(app: FastAPI) -> None:
                 plan=_default_dev_plan(session.scenario_prompt),
             )
         except AuthorizationError as exc:
-            raise HTTPException(status.HTTP_403_FORBIDDEN, curate(exc)) from exc
+            raise _reject(
+                exc,
+                status_code=status.HTTP_403_FORBIDDEN,
+                event="authz_denied",
+                session_id=session_id,
+            ) from exc
         except IllegalTransitionError as exc:
-            raise HTTPException(status.HTTP_409_CONFLICT, curate(exc)) from exc
+            raise _reject(
+                exc,
+                status_code=status.HTTP_409_CONFLICT,
+                event="illegal_transition",
+                session_id=session_id,
+            ) from exc
         return {"ok": True}
 
     @router.post("/sessions/{session_id}/setup/finalize")
@@ -1014,9 +1093,19 @@ def register_api_routes(app: FastAPI) -> None:
                 )
             await manager.finalize_setup(session_id=session_id, plan=scenario_plan)
         except AuthorizationError as exc:
-            raise HTTPException(status.HTTP_403_FORBIDDEN, curate(exc)) from exc
+            raise _reject(
+                exc,
+                status_code=status.HTTP_403_FORBIDDEN,
+                event="authz_denied",
+                session_id=session_id,
+            ) from exc
         except IllegalTransitionError as exc:
-            raise HTTPException(status.HTTP_409_CONFLICT, curate(exc)) from exc
+            raise _reject(
+                exc,
+                status_code=status.HTTP_409_CONFLICT,
+                event="illegal_transition",
+                session_id=session_id,
+            ) from exc
         return {"ok": True}
 
     @router.post("/sessions/{session_id}/admin/proxy-respond")
@@ -1119,10 +1208,19 @@ def register_api_routes(app: FastAPI) -> None:
                 mentions=cleaned_mentions,
             )
         except AuthorizationError as exc:
-            raise HTTPException(status.HTTP_403_FORBIDDEN, curate(exc)) from exc
+            raise _reject(
+                exc,
+                status_code=status.HTTP_403_FORBIDDEN,
+                event="proxy_respond_forbidden",
+                session_id=session_id,
+            ) from exc
         except IllegalTransitionError as exc:
-            raise HTTPException(
-                status.HTTP_409_CONFLICT, _proxy_target_reject_message(exc)
+            raise _reject(
+                exc,
+                status_code=status.HTTP_409_CONFLICT,
+                event="proxy_respond_rejected",
+                session_id=session_id,
+                message=_proxy_target_reject_message(exc),
             ) from exc
 
         session = await manager.get_session(session_id)
@@ -1201,9 +1299,19 @@ def register_api_routes(app: FastAPI) -> None:
                 content=content,
             )
         except AuthorizationError as exc:
-            raise HTTPException(status.HTTP_403_FORBIDDEN, curate(exc)) from exc
+            raise _reject(
+                exc,
+                status_code=status.HTTP_403_FORBIDDEN,
+                event="authz_denied",
+                session_id=session_id,
+            ) from exc
         except IllegalTransitionError as exc:
-            raise HTTPException(status.HTTP_409_CONFLICT, curate(exc)) from exc
+            raise _reject(
+                exc,
+                status_code=status.HTTP_409_CONFLICT,
+                event="illegal_transition",
+                session_id=session_id,
+            ) from exc
 
         # If the proxy filled the last pending seat, drive the next AI turn
         # exactly the way submit_response does.
@@ -1233,7 +1341,12 @@ def register_api_routes(app: FastAPI) -> None:
             require_creator(token)
             session = await manager.get_session(session_id)
         except AuthorizationError as exc:
-            raise HTTPException(status.HTTP_403_FORBIDDEN, curate(exc)) from exc
+            raise _reject(
+                exc,
+                status_code=status.HTTP_403_FORBIDDEN,
+                event="authz_denied",
+                session_id=session_id,
+            ) from exc
         except SessionNotFoundError as exc:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "session not found") from exc
 
@@ -1273,9 +1386,19 @@ def register_api_routes(app: FastAPI) -> None:
                 reason="operator aborted via god mode",
             )
         except AuthorizationError as exc:
-            raise HTTPException(status.HTTP_403_FORBIDDEN, curate(exc)) from exc
+            raise _reject(
+                exc,
+                status_code=status.HTTP_403_FORBIDDEN,
+                event="authz_denied",
+                session_id=session_id,
+            ) from exc
         except IllegalTransitionError as exc:
-            raise HTTPException(status.HTTP_409_CONFLICT, curate(exc)) from exc
+            raise _reject(
+                exc,
+                status_code=status.HTTP_409_CONFLICT,
+                event="illegal_transition",
+                session_id=session_id,
+            ) from exc
         return {"ok": True}
 
     @router.post("/sessions/{session_id}/force-advance")
@@ -1286,7 +1409,12 @@ def register_api_routes(app: FastAPI) -> None:
             require_creator(token)
             await manager.force_advance(session_id=session_id, by_role_id=token["role_id"])
         except AuthorizationError as exc:
-            raise HTTPException(status.HTTP_403_FORBIDDEN, curate(exc)) from exc
+            raise _reject(
+                exc,
+                status_code=status.HTTP_403_FORBIDDEN,
+                event="authz_denied",
+                session_id=session_id,
+            ) from exc
         except IllegalTransitionError as exc:
             raise HTTPException(
                 status.HTTP_409_CONFLICT,
@@ -1321,7 +1449,12 @@ def register_api_routes(app: FastAPI) -> None:
                 reason=(body.reason or "ended"),
             )
         except AuthorizationError as exc:
-            raise HTTPException(status.HTTP_403_FORBIDDEN, curate(exc)) from exc
+            raise _reject(
+                exc,
+                status_code=status.HTTP_403_FORBIDDEN,
+                event="authz_denied",
+                session_id=session_id,
+            ) from exc
         except IllegalTransitionError as exc:
             raise HTTPException(
                 status.HTTP_409_CONFLICT, "only the creator can end the session"
@@ -1343,7 +1476,12 @@ def register_api_routes(app: FastAPI) -> None:
         try:
             require_creator(token)
         except AuthorizationError as exc:
-            raise HTTPException(status.HTTP_403_FORBIDDEN, curate(exc)) from exc
+            raise _reject(
+                exc,
+                status_code=status.HTTP_403_FORBIDDEN,
+                event="authz_denied",
+                session_id=session_id,
+            ) from exc
         await manager.set_ai_paused(
             session_id=session_id, paused=True, by_role_id=token["role_id"]
         )
@@ -1360,7 +1498,12 @@ def register_api_routes(app: FastAPI) -> None:
         try:
             require_creator(token)
         except AuthorizationError as exc:
-            raise HTTPException(status.HTTP_403_FORBIDDEN, curate(exc)) from exc
+            raise _reject(
+                exc,
+                status_code=status.HTTP_403_FORBIDDEN,
+                event="authz_denied",
+                session_id=session_id,
+            ) from exc
         await manager.set_ai_paused(
             session_id=session_id, paused=False, by_role_id=token["role_id"]
         )
@@ -1395,7 +1538,12 @@ def register_api_routes(app: FastAPI) -> None:
             require_participant(token)
             session = await manager.get_session(session_id)
         except AuthorizationError as exc:
-            raise HTTPException(status.HTTP_403_FORBIDDEN, curate(exc)) from exc
+            raise _reject(
+                exc,
+                status_code=status.HTTP_403_FORBIDDEN,
+                event="authz_denied",
+                session_id=session_id,
+            ) from exc
         except SessionNotFoundError as exc:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "session not found") from exc
 
@@ -1468,7 +1616,12 @@ def register_api_routes(app: FastAPI) -> None:
             require_participant(token)
             session = await manager.get_session(session_id)
         except AuthorizationError as exc:
-            raise HTTPException(status.HTTP_403_FORBIDDEN, curate(exc)) from exc
+            raise _reject(
+                exc,
+                status_code=status.HTTP_403_FORBIDDEN,
+                event="authz_denied",
+                session_id=session_id,
+            ) from exc
         except SessionNotFoundError as exc:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "session not found") from exc
 
@@ -1544,7 +1697,12 @@ def register_api_routes(app: FastAPI) -> None:
         try:
             require_participant(token)
         except AuthorizationError as exc:
-            raise HTTPException(status.HTTP_403_FORBIDDEN, curate(exc)) from exc
+            raise _reject(
+                exc,
+                status_code=status.HTTP_403_FORBIDDEN,
+                event="authz_denied",
+                session_id=session_id,
+            ) from exc
 
         notepad = manager.notepad()
         async with await manager.with_lock(session_id):
@@ -1627,7 +1785,12 @@ def register_api_routes(app: FastAPI) -> None:
         try:
             require_creator(token)
         except AuthorizationError as exc:
-            raise HTTPException(status.HTTP_403_FORBIDDEN, curate(exc)) from exc
+            raise _reject(
+                exc,
+                status_code=status.HTTP_403_FORBIDDEN,
+                event="authz_denied",
+                session_id=session_id,
+            ) from exc
 
         # Validate against the catalog. ``"custom"`` is reserved for
         # creators who paste their own template; everything else has
@@ -1682,7 +1845,12 @@ def register_api_routes(app: FastAPI) -> None:
         try:
             require_participant(token)
         except AuthorizationError as exc:
-            raise HTTPException(status.HTTP_403_FORBIDDEN, curate(exc)) from exc
+            raise _reject(
+                exc,
+                status_code=status.HTTP_403_FORBIDDEN,
+                event="authz_denied",
+                session_id=session_id,
+            ) from exc
 
         notepad = manager.notepad()
         async with await manager.with_lock(session_id):
@@ -1733,7 +1901,12 @@ def register_api_routes(app: FastAPI) -> None:
         try:
             require_participant(token)
         except AuthorizationError as exc:
-            raise HTTPException(status.HTTP_403_FORBIDDEN, curate(exc)) from exc
+            raise _reject(
+                exc,
+                status_code=status.HTTP_403_FORBIDDEN,
+                event="authz_denied",
+                session_id=session_id,
+            ) from exc
         # Touch the session so a missing id 404s consistently with the
         # other notepad endpoints.
         await manager.get_session(session_id)
@@ -1763,7 +1936,12 @@ def register_api_routes(app: FastAPI) -> None:
         try:
             require_participant(token)
         except AuthorizationError as exc:
-            raise HTTPException(status.HTTP_403_FORBIDDEN, curate(exc)) from exc
+            raise _reject(
+                exc,
+                status_code=status.HTTP_403_FORBIDDEN,
+                event="authz_denied",
+                session_id=session_id,
+            ) from exc
 
         async with await manager.with_lock(session_id):
             session = await manager.get_session(session_id)
@@ -1801,9 +1979,19 @@ def register_api_routes(app: FastAPI) -> None:
                 value=body.value,
             )
         except AuthorizationError as exc:
-            raise HTTPException(status.HTTP_403_FORBIDDEN, curate(exc)) from exc
+            raise _reject(
+                exc,
+                status_code=status.HTTP_403_FORBIDDEN,
+                event="authz_denied",
+                session_id=session_id,
+            ) from exc
         except IllegalTransitionError as exc:
-            raise HTTPException(status.HTTP_409_CONFLICT, curate(exc)) from exc
+            raise _reject(
+                exc,
+                status_code=status.HTTP_409_CONFLICT,
+                event="illegal_transition",
+                session_id=session_id,
+            ) from exc
         return {"ok": True}
 
     @router.post("/sessions/{session_id}/roles/{role_id}/reissue")
@@ -1828,9 +2016,23 @@ def register_api_routes(app: FastAPI) -> None:
                 by_role_id=token["role_id"],
             )
         except AuthorizationError as exc:
-            raise HTTPException(status.HTTP_403_FORBIDDEN, curate(exc)) from exc
+            raise _reject(
+                exc,
+                status_code=status.HTTP_403_FORBIDDEN,
+                event="reissue_role_forbidden",
+                session_id=session_id,
+            ) from exc
         except IllegalTransitionError as exc:
-            raise HTTPException(status.HTTP_404_NOT_FOUND, curate(exc)) from exc
+            # Reissue (revoke_previous=False) can only fail with "role
+            # not found" — a 404, not the generic curated "wrong state"
+            # string the bare ``curate`` produced (audit M-2).
+            raise _reject(
+                exc,
+                status_code=status.HTTP_404_NOT_FOUND,
+                event="reissue_role_not_found",
+                session_id=session_id,
+                message="role not found",
+            ) from exc
         return {"token": new_token, "join_url": f"/play/{session_id}/{new_token}"}
 
     @router.post("/sessions/{session_id}/roles/{role_id}/revoke")
@@ -1854,9 +2056,33 @@ def register_api_routes(app: FastAPI) -> None:
                 by_role_id=token["role_id"],
             )
         except AuthorizationError as exc:
-            raise HTTPException(status.HTTP_403_FORBIDDEN, curate(exc)) from exc
+            raise _reject(
+                exc,
+                status_code=status.HTTP_403_FORBIDDEN,
+                event="revoke_role_forbidden",
+                session_id=session_id,
+            ) from exc
         except IllegalTransitionError as exc:
-            raise HTTPException(status.HTTP_409_CONFLICT, curate(exc)) from exc
+            # Revoke (revoke_previous=True) fails for two distinct
+            # reasons: the role doesn't exist (404), or it's the
+            # creator's own token, which can't be revoked mid-session
+            # (409). The bare curated string mislabelled both (audit
+            # M-2); branch on the manager's stable message.
+            if "role not found" in str(exc).lower():
+                raise _reject(
+                    exc,
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    event="revoke_role_not_found",
+                    session_id=session_id,
+                    message="role not found",
+                ) from exc
+            raise _reject(
+                exc,
+                status_code=status.HTTP_409_CONFLICT,
+                event="revoke_role_conflict",
+                session_id=session_id,
+                message="cannot revoke the creator's token mid-session",
+            ) from exc
         return {"token": new_token, "join_url": f"/play/{session_id}/{new_token}"}
 
     @router.post("/sessions/{session_id}/roles/me/display_name")
@@ -1909,7 +2135,12 @@ def register_api_routes(app: FastAPI) -> None:
                 role_id=token["role_id"],
                 error=str(exc),
             )
-            raise HTTPException(status.HTTP_403_FORBIDDEN, curate(exc)) from exc
+            raise _reject(
+                exc,
+                status_code=status.HTTP_403_FORBIDDEN,
+                event="authz_denied",
+                session_id=session_id,
+            ) from exc
         except IllegalTransitionError as exc:
             api_logger.warning(
                 "set_self_display_name_rejected",
@@ -1917,7 +2148,12 @@ def register_api_routes(app: FastAPI) -> None:
                 role_id=token["role_id"],
                 error=str(exc),
             )
-            raise HTTPException(status.HTTP_409_CONFLICT, curate(exc)) from exc
+            raise _reject(
+                exc,
+                status_code=status.HTTP_409_CONFLICT,
+                event="illegal_transition",
+                session_id=session_id,
+            ) from exc
         except SessionNotFoundError as exc:
             api_logger.warning(
                 "set_self_display_name_session_missing",
@@ -1943,9 +2179,19 @@ def register_api_routes(app: FastAPI) -> None:
                 session_id=session_id, role_id=role_id, by_role_id=token["role_id"]
             )
         except AuthorizationError as exc:
-            raise HTTPException(status.HTTP_403_FORBIDDEN, curate(exc)) from exc
+            raise _reject(
+                exc,
+                status_code=status.HTTP_403_FORBIDDEN,
+                event="authz_denied",
+                session_id=session_id,
+            ) from exc
         except IllegalTransitionError as exc:
-            raise HTTPException(status.HTTP_409_CONFLICT, curate(exc)) from exc
+            raise _reject(
+                exc,
+                status_code=status.HTTP_409_CONFLICT,
+                event="illegal_transition",
+                session_id=session_id,
+            ) from exc
         return {"ok": True}
 
     @router.get("/sessions/{session_id}/export.md", response_class=PlainTextResponse)
@@ -1982,7 +2228,12 @@ def register_api_routes(app: FastAPI) -> None:
             require_participant(token)
             session = await manager.get_session(session_id)
         except AuthorizationError as exc:
-            raise HTTPException(status.HTTP_403_FORBIDDEN, curate(exc)) from exc
+            raise _reject(
+                exc,
+                status_code=status.HTTP_403_FORBIDDEN,
+                event="authz_denied",
+                session_id=session_id,
+            ) from exc
         except SessionNotFoundError as exc:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "session not found") from exc
 
@@ -2062,7 +2313,12 @@ def register_api_routes(app: FastAPI) -> None:
             require_participant(token)
             session = await manager.get_session(session_id)
         except AuthorizationError as exc:
-            raise HTTPException(status.HTTP_403_FORBIDDEN, curate(exc)) from exc
+            raise _reject(
+                exc,
+                status_code=status.HTTP_403_FORBIDDEN,
+                event="authz_denied",
+                session_id=session_id,
+            ) from exc
         except SessionNotFoundError as exc:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "session not found") from exc
 
@@ -2218,7 +2474,12 @@ def register_api_routes(app: FastAPI) -> None:
             require_creator(token)
             session = await manager.get_session(session_id)
         except AuthorizationError as exc:
-            raise HTTPException(status.HTTP_403_FORBIDDEN, curate(exc)) from exc
+            raise _reject(
+                exc,
+                status_code=status.HTTP_403_FORBIDDEN,
+                event="authz_denied",
+                session_id=session_id,
+            ) from exc
         except SessionNotFoundError as exc:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "session not found") from exc
 
@@ -2254,7 +2515,12 @@ def register_api_routes(app: FastAPI) -> None:
             require_creator(token)
             session = await manager.get_session(session_id)
         except AuthorizationError as exc:
-            raise HTTPException(status.HTTP_403_FORBIDDEN, curate(exc)) from exc
+            raise _reject(
+                exc,
+                status_code=status.HTTP_403_FORBIDDEN,
+                event="authz_denied",
+                session_id=session_id,
+            ) from exc
         except SessionNotFoundError as exc:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "session not found") from exc
 
@@ -2290,7 +2556,12 @@ def register_api_routes(app: FastAPI) -> None:
         try:
             require_creator(token)
         except AuthorizationError as exc:
-            raise HTTPException(status.HTTP_403_FORBIDDEN, curate(exc)) from exc
+            raise _reject(
+                exc,
+                status_code=status.HTTP_403_FORBIDDEN,
+                event="authz_denied",
+                session_id=session_id,
+            ) from exc
         session = await manager.get_session(session_id)
         in_flight = manager.llm().in_flight_for(session_id)
         import time as _t
@@ -2403,7 +2674,12 @@ def register_api_routes(app: FastAPI) -> None:
         try:
             require_creator(token)
         except AuthorizationError as exc:
-            raise HTTPException(status.HTTP_403_FORBIDDEN, curate(exc)) from exc
+            raise _reject(
+                exc,
+                status_code=status.HTTP_403_FORBIDDEN,
+                event="authz_denied",
+                session_id=session_id,
+            ) from exc
         session = await manager.get_session(session_id)
         registry = _registry(request)
         audit = manager.audit().dump(session_id)

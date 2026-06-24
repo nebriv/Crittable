@@ -50,6 +50,7 @@ import {
   readStoredSessionDraft,
   writeStoredSessionDraft,
 } from "../lib/sessionDraftStorage";
+import { CenteredCard } from "../components/brand/CenteredCard";
 import { SiteHeader } from "../components/brand/SiteHeader";
 import { Eyebrow } from "../components/brand/Eyebrow";
 import { SetupLobbyView } from "../components/setup/SetupLobbyView";
@@ -345,8 +346,10 @@ export function Facilitator() {
   // is carried forward optimistically as the candidate; if it's stale,
   // ``POST /api/sessions`` returns 403 and the create handler clears it
   // and re-prompts via <InviteGate> with a stale-code notice. The
-  // front-side gate is the UX layer; the authenticated, rate-limited
-  // create path is the actual validation boundary.
+  // front-side gate is the UX layer; the invite-gated, rate-limited
+  // create path is the actual validation boundary — it is intentionally
+  // unauthenticated (the cost-abuse front door), gated by the invite
+  // code and the per-IP create limiter rather than a token.
   const [inviteRequired, setInviteRequired] = useState<boolean | null>(null);
   const [inviteCode, setInviteCode] = useState<string | null>(null);
   const [staleInviteNotice, setStaleInviteNotice] = useState<string | null>(
@@ -2838,80 +2841,57 @@ function CapacityNotice({
         ? `in about ${retryAfterSec} second${retryAfterSec === 1 ? "" : "s"}`
         : `in about ${Math.ceil(retryAfterSec / 60)} minutes`;
   return (
-    <main
-      className="grid min-h-screen grid-cols-1"
-      style={{ background: "var(--ink-900)" }}
-    >
-      <SiteHeader />
-      <section
-        className="flex flex-1 items-start justify-center overflow-auto p-5 lg:p-8"
-        style={{ minHeight: 0 }}
-      >
-        <div
-          role="alert"
-          className="flex flex-col gap-5"
+    <CenteredCard tone="warn" role="alert">
+      <header className="flex flex-col gap-2">
+        <Eyebrow>Status · At capacity</Eyebrow>
+        <h1
+          className="sans"
           style={{
-            width: "100%",
-            maxWidth: 480,
-            marginTop: "8vh",
-            padding: 24,
-            background: "var(--ink-800)",
-            border: "1px solid var(--warn)",
-            borderRadius: 4,
+            fontSize: 26,
+            fontWeight: 600,
+            color: "var(--ink-050)",
+            margin: 0,
+            letterSpacing: "-0.01em",
           }}
         >
-          <header className="flex flex-col gap-2">
-            <Eyebrow>Status · At capacity</Eyebrow>
-            <h1
-              className="sans"
-              style={{
-                fontSize: 26,
-                fontWeight: 600,
-                color: "var(--ink-050)",
-                margin: 0,
-                letterSpacing: "-0.01em",
-              }}
-            >
-              Crittable is at capacity
-            </h1>
-            <p
-              className="sans"
-              style={{
-                fontSize: 13,
-                color: "var(--ink-300)",
-                margin: 0,
-                lineHeight: 1.5,
-              }}
-            >
-              Every live session slot is currently in use. Your brief
-              wasn't lost — try again {wait}. If you were invited as a
-              player, your join link still works; this limit only applies
-              to starting a new session.
-            </p>
-          </header>
-          <button
-            type="button"
-            onClick={onRetry}
-            className="mono"
-            style={{
-              marginTop: 4,
-              padding: "10px 16px",
-              background: "var(--signal)",
-              color: "var(--ink-950)",
-              border: "1px solid var(--signal-deep)",
-              borderRadius: 2,
-              fontSize: 12,
-              fontWeight: 700,
-              letterSpacing: "0.12em",
-              textTransform: "uppercase",
-              cursor: "pointer",
-            }}
-          >
-            Back to setup · retry
-          </button>
-        </div>
-      </section>
-    </main>
+          Crittable is at capacity
+        </h1>
+        <p
+          className="sans"
+          style={{
+            fontSize: 13,
+            color: "var(--ink-300)",
+            margin: 0,
+            lineHeight: 1.5,
+          }}
+        >
+          Every live session slot is currently in use. Your brief
+          wasn't lost — try again {wait}. If you were invited as a
+          player, your join link still works; this limit only applies
+          to starting a new session.
+        </p>
+      </header>
+      <button
+        type="button"
+        onClick={onRetry}
+        className="mono"
+        style={{
+          marginTop: 4,
+          padding: "10px 16px",
+          background: "var(--signal)",
+          color: "var(--ink-950)",
+          border: "1px solid var(--signal-deep)",
+          borderRadius: 2,
+          fontSize: 12,
+          fontWeight: 700,
+          letterSpacing: "0.12em",
+          textTransform: "uppercase",
+          cursor: "pointer",
+        }}
+      >
+        Back to setup · retry
+      </button>
+    </CenteredCard>
   );
 }
 

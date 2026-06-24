@@ -18,6 +18,7 @@ The C1 boot gate (also part of this PR) is exercised in
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -206,6 +207,30 @@ def test_security_headers_on_error_response(
     with TestClient(app) as client:
         r = client.get("/api/sessions/nope")
         assert r.status_code == 401
+        _assert_security_headers(r.headers)
+
+
+def test_security_headers_on_spa_fallback(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """M5: the SPA catch-all (``GET /play/<sid>/<token>`` → index.html)
+    must carry the hardening headers too. That route serves the player
+    join page whose URL embeds the per-role HMAC token, so the
+    no-referrer header is load-bearing *exactly* here — a click-out from
+    the join page must not leak the token in the Referer. The middleware
+    is the outermost layer, so it should wrap the FileResponse; pin it
+    via the ``static_dir_override`` test seam."""
+
+    (tmp_path / "index.html").write_text(
+        "<!doctype html><title>crit-spa</title>", encoding="utf-8"
+    )
+    reset_settings_cache()
+    app = create_app(static_dir_override=tmp_path)
+    with TestClient(app) as client:
+        r = client.get("/play/abc/some-token")
+        assert r.status_code == 200, r.text
+        # Served the SPA shell (fell through to index.html), not a 404.
+        assert "crit-spa" in r.text
         _assert_security_headers(r.headers)
 
 

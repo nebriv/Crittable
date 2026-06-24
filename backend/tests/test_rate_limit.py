@@ -21,7 +21,11 @@ from typing import Any
 import pytest
 
 from app.config import Settings
-from app.rate_limit import RateLimitMiddleware, resolve_client_ip
+from app.rate_limit import (
+    RateLimitMiddleware,
+    SessionCreateRateLimiter,
+    resolve_client_ip,
+)
 
 # ---------------------------------------------------------------- helpers
 
@@ -204,6 +208,37 @@ async def test_bucket_refills_over_time(monkeypatch: pytest.MonkeyPatch) -> None
         await mw(_http_scope(), receive=lambda: None, send=send2)  # type: ignore[arg-type]
     statuses2 = [ev["status"] for ev in send2.events if ev.get("type") == "http.response.start"]
     assert statuses2 == [200, 200, 200]
+
+
+@pytest.mark.asyncio
+async def test_session_create_limiter_refills_over_time(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The dedicated create limiter (audit C1) shares the token-bucket
+    refill math with the middleware: faking monotonic time fully refills
+    its per-IP bucket after a minute idle. The HTTP-layer 429 + Retry-After
+    path is covered in ``test_http_edge_hardening``; this pins the refill
+    directly so a regression in the create limiter's own consume/refill
+    loop (it's a separate class from the middleware) fails here."""
+
+    fake_now = {"t": 1000.0}
+    monkeypatch.setattr(time, "monotonic", lambda: fake_now["t"])
+
+    limiter = SessionCreateRateLimiter(
+        Settings(
+            LLM_API_KEY="x",
+            SESSION_SECRET="x" * 32,
+            SESSION_CREATE_RATE_PER_MIN=3,
+        )
+    )
+    scope = _http_scope()
+    # Drain the full 3-token bucket; the 4th request is refused.
+    assert [await limiter.check(scope) for _ in range(3)] == [True, True, True]
+    assert await limiter.check(scope) is False
+    # Idle 60s → full refill → allowed again, then refused again.
+    fake_now["t"] += 60.0
+    assert [await limiter.check(scope) for _ in range(3)] == [True, True, True]
+    assert await limiter.check(scope) is False
 
 
 # ---------------------------------------------------------------- 4429 path (WS)

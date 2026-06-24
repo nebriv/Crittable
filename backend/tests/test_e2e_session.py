@@ -25,6 +25,50 @@ _TOOLS_JSON = """[{
 }]"""
 
 
+def _bounded_receive_json(ws: Any, *, timeout: float = 2.0) -> dict[str, Any] | None:
+    """Receive a single WS frame, bounded by ``timeout``.
+
+    Starlette's ``WebSocketTestSession.receive_json`` blocks forever on
+    its underlying queue — there is no ``timeout`` kwarg. A regression
+    that drops an expected frame would therefore HANG CI on the receive
+    loop rather than failing the asserting test. We bound it by running
+    the receive in a daemon thread and ``join(timeout=...)``-ing; a
+    still-alive thread (no frame arrived) returns ``None`` so the caller
+    fails fast. Socket / decode errors are logged before swallowing
+    (CLAUDE.md logging rules apply to test infra too). Mirrors
+    ``test_set_ready._drain``; kept local so each WS test file stays
+    self-contained.
+    """
+
+    import threading
+
+    holder: dict[str, Any] = {}
+
+    def _recv() -> None:
+        try:
+            holder["evt"] = ws.receive_json()
+        except Exception as exc:
+            holder["err"] = exc
+
+    t = threading.Thread(target=_recv, daemon=True)
+    t.start()
+    t.join(timeout=timeout)
+    if t.is_alive():
+        # Daemon thread dies with the test process.
+        print(
+            f"[test_e2e_session] _bounded_receive_json: timed out after "
+            f"{timeout}s waiting for a frame"
+        )
+        return None
+    if "err" in holder:
+        print(
+            f"[test_e2e_session] _bounded_receive_json: socket error before "
+            f"a frame arrived: {holder['err']!r}"
+        )
+        return None
+    return holder.get("evt")
+
+
 @pytest.fixture(autouse=True)
 def _e2e_env(monkeypatch) -> None:
     monkeypatch.setenv("LLM_MODEL_PLAY", "mock-play")
@@ -570,10 +614,16 @@ def test_ws_request_end_session_rejected_for_non_creator(
     ) as ws:
         ws.send_json({"type": "request_end_session", "reason": "spite"})
         saw_rejection = False
+        # Bounded receive: this loop matches on the rejection *wording*
+        # ("creator"), so an M11-style message reflatten that drops the
+        # word would otherwise hang here forever on a bare
+        # ``receive_json()`` (the ``range(64)`` only advances when a
+        # frame actually arrives). ``_bounded_receive_json`` returns
+        # ``None`` once no frame lands within the timeout, so a future
+        # regression fails this assertion fast instead of stalling CI.
         for _ in range(64):
-            try:
-                evt = ws.receive_json()
-            except Exception:
+            evt = _bounded_receive_json(ws)
+            if evt is None:
                 break
             if (
                 evt.get("type") == "error"
