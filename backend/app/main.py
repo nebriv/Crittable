@@ -240,25 +240,39 @@ def create_app(
                 "tests-only convenience; never enable in production."
             ),
         )
-    # Boot-time confirmation that the soft anti-strangers gate is on,
-    # plus a loud warning if the operator has *also* disabled every
-    # throttle on the only path that checks the code. The invite code is
-    # validated inline on ``POST /api/sessions`` (the brute-force surface;
-    # the old ``GET /api/invite/status?code=…`` oracle was removed in M7).
-    # That path is normally throttled by the always-on per-IP create
-    # limiter (``SESSION_CREATE_RATE_PER_MIN``, default 5) independent of
-    # ``RATE_LIMIT_ENABLED`` — so the code is only grindable when BOTH
+    # Parse + validate INVITE_CODES once at boot so a malformed JSON
+    # array (or a bad entry — wrong type, typo'd key, blank code) fails
+    # startup loudly instead of silently ungating a deploy the operator
+    # believed was protected.
+    try:
+        _invite_codes = cfg.invite_codes()
+    except ValueError as exc:
+        _bootstrap_log.error("invite_codes_invalid", error=str(exc))
+        raise
+    # Boot-time confirmation that the soft anti-strangers gate is on
+    # (count + operator labels, never the code values), plus a loud
+    # warning if the operator has *also* disabled every throttle on the
+    # only path that checks the codes. Codes are validated inline on
+    # ``POST /api/sessions`` (the brute-force surface; the old
+    # ``GET /api/invite/status?code=…`` oracle was removed in M7). That
+    # path is normally throttled by the always-on per-IP create limiter
+    # (``SESSION_CREATE_RATE_PER_MIN``, default 5) independent of
+    # ``RATE_LIMIT_ENABLED`` — so codes are only grindable when BOTH
     # throttles are off. Warn precisely for that combination; an operator
     # on defaults (create limiter = 5/min) is already protected and
     # shouldn't see a misleading "no throttling" warning.
-    if cfg.invite_code_required():
-        _bootstrap_log.info("invite_code_gate_enabled")
+    if _invite_codes:
+        _bootstrap_log.info(
+            "invite_code_gate_enabled",
+            code_count=len(_invite_codes),
+            labels=[ic.label or "(unlabeled)" for ic in _invite_codes],
+        )
         if not cfg.rate_limit_enabled and cfg.session_create_rate_per_min <= 0:
             _bootstrap_log.warning(
                 "invite_code_set_without_throttle",
                 note=(
-                    "INVITE_CODE is set but both RATE_LIMIT_ENABLED=false "
-                    "and SESSION_CREATE_RATE_PER_MIN=0; the code is checked "
+                    "INVITE_CODES is set but both RATE_LIMIT_ENABLED=false "
+                    "and SESSION_CREATE_RATE_PER_MIN=0; codes are checked "
                     "inline on POST /api/sessions with no per-IP throttle, "
                     "so an attacker can grind candidates. Set "
                     "SESSION_CREATE_RATE_PER_MIN (a per-IP create cap) "
@@ -268,7 +282,7 @@ def create_app(
 
     # Fail-closed front-door gate (security audit C1). On a real deploy
     # (CORS_ORIGINS narrowed away from "*") the session-create path must
-    # have *some* protection — either the INVITE_CODE gate or the
+    # have *some* protection — either the INVITE_CODES gate or the
     # dedicated per-IP creation throttle (SESSION_CREATE_RATE_PER_MIN).
     # With neither, an anonymous caller can loop POST /api/sessions and
     # each request fires a setup-tier LLM call. Mirrors the
@@ -283,7 +297,7 @@ def create_app(
     if _is_real_deploy and not _has_front_door:
         raise RuntimeError(
             "No front-door protection on POST /api/sessions for a "
-            "non-local deploy (CORS_ORIGINS is not '*'). Set INVITE_CODE "
+            "non-local deploy (CORS_ORIGINS is not '*'). Set INVITE_CODES "
             "to gate session creation, and/or set "
             "SESSION_CREATE_RATE_PER_MIN to a non-zero per-IP cap. "
             "Refusing to boot an exposed deploy where anonymous callers "
@@ -308,11 +322,11 @@ def create_app(
         _bootstrap_log.warning(
             "session_create_unthrottled_local",
             note=(
-                "CORS_ORIGINS='*' with no INVITE_CODE and "
+                "CORS_ORIGINS='*' with no INVITE_CODES and "
                 "SESSION_CREATE_RATE_PER_MIN=0 — session creation is "
                 "unthrottled. Fine on a laptop; if this port is reachable "
                 "by anyone else, set SESSION_CREATE_RATE_PER_MIN (a per-IP "
-                "cap) and/or INVITE_CODE to gate it."
+                "cap) and/or INVITE_CODES to gate it."
             ),
         )
 

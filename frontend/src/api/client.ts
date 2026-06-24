@@ -438,7 +438,7 @@ export const DEFAULT_SESSION_FEATURES: SessionFeatures = {
 };
 
 /** Shape returned by ``GET /api/invite/status``. ``required`` reflects
- *  whether the server has the ``INVITE_CODE`` env var set — that's the
+ *  whether the server has the ``INVITE_CODES`` env var set — that's the
  *  *only* thing this endpoint reveals. The frontend hits it on the
  *  facilitator page mount to decide whether to SHOW the invite-code
  *  input.
@@ -446,8 +446,9 @@ export const DEFAULT_SESSION_FEATURES: SessionFeatures = {
  *  The old ``valid`` field (a live "does this code match?" oracle) was
  *  removed server-side: echoing match/no-match for an arbitrary
  *  ``?code=`` turned the endpoint into a brute-force oracle. Code
- *  validation now happens only on the authenticated, rate-limited
- *  ``POST /api/sessions`` path, which returns 403 for a bad code. */
+ *  validation now happens only on the invite-gated, rate-limited
+ *  ``POST /api/sessions`` path (intentionally unauthenticated — the
+ *  cost-abuse front door), which returns 403 for a bad code. */
 export interface InviteStatus {
   required: boolean;
 }
@@ -456,7 +457,7 @@ export const api = {
   /** Probe the soft anti-strangers gate.
    *
    *  Returns only ``{ required }`` — whether the server has
-   *  ``INVITE_CODE`` set. There is no longer a code-match oracle here
+   *  ``INVITE_CODES`` set. There is no longer a code-match oracle here
    *  (see ``InviteStatus``); the supplied code, if any, is not echoed
    *  back as valid/invalid. We still call this with no argument from
    *  the facilitator mount to decide whether to render the gate. */
@@ -487,7 +488,7 @@ export const api = {
       features: SessionFeatures;
     };
     /** Soft anti-strangers gate. Required when the server has
-     *  ``INVITE_CODE`` set; ignored otherwise. The gate UI on the
+     *  ``INVITE_CODES`` set; ignored otherwise. The gate UI on the
      *  facilitator page reads it from localStorage and threads it
      *  through here. Player join links don't need it. */
     invite_code?: string;

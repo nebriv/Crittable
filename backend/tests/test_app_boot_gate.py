@@ -51,7 +51,7 @@ def test_boot_ok_real_deploy_with_invite_code(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("CORS_ORIGINS", "https://crit.example.com")
-    monkeypatch.setenv("INVITE_CODE", "tabletop-2026")
+    monkeypatch.setenv("INVITE_CODES", '[{"code": "tabletop-2026"}]')
     monkeypatch.setenv("SESSION_CREATE_RATE_PER_MIN", "0")
     reset_settings_cache()
     create_app()

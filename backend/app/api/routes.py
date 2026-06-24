@@ -189,7 +189,7 @@ class CreateSessionBody(BaseModel):
     # avoids the wasted auto-greet LLM call (and the bare-text leak
     # bug it can produce). Used by the frontend's "Dev mode" toggle.
     skip_setup: bool = False
-    # Soft anti-strangers gate. Required when the ``INVITE_CODE`` env
+    # Soft anti-strangers gate. Required when the ``INVITE_CODES`` env
     # var is set on the server; ignored when it isn't. The check is
     # constant-time and the value is never logged. Player join links
     # don't need this — they already carry their own HMAC tokens —
@@ -487,7 +487,7 @@ def register_api_routes(app: FastAPI) -> None:
         Returns ``{"required": bool}`` only. Security audit M7 removed
         the optional ``?code=`` verification branch: returning
         ``{"valid": bool}`` for an arbitrary candidate turned this
-        endpoint into an online brute-force oracle for ``INVITE_CODE``
+        endpoint into an online brute-force oracle for ``INVITE_CODES``
         (cheap GET, no side effects, instant yes/no). The code is now
         validated **only** inline on ``POST /api/sessions`` — which
         already 403s on a bad code and is throttled by the C1
@@ -516,15 +516,23 @@ def register_api_routes(app: FastAPI) -> None:
                 "session creation rate limit exceeded; slow down",
                 headers={"Retry-After": "60"},
             )
-        if settings.invite_code_required() and not settings.verify_invite_code(
-            body.invite_code
-        ):
-            # WARNING not INFO so a brute-force shows up in the same
-            # log-level scans operators use for other auth failures.
-            # The candidate is intentionally never logged.
-            get_logger("api").warning("create_session_invite_rejected")
-            raise HTTPException(
-                status.HTTP_403_FORBIDDEN, "invite code required"
+        if settings.invite_code_required():
+            matched = settings.match_invite_code(body.invite_code)
+            if matched is None:
+                # WARNING not INFO so a brute-force shows up in the same
+                # log-level scans operators use for other auth failures.
+                # The candidate is intentionally never logged.
+                get_logger("api").warning("create_session_invite_rejected")
+                raise HTTPException(
+                    status.HTTP_403_FORBIDDEN, "invite code required"
+                )
+            # Attribute the create to the group the code was handed to.
+            # Only the operator-assigned label is logged — never the code
+            # value — so a session can be traced to its invite group
+            # without exposing the secret in the audit trail.
+            get_logger("api").info(
+                "create_session_invite_ok",
+                invite_label=matched.label or "(unlabeled)",
             )
         manager = _manager(request)
         try:
