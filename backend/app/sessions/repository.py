@@ -6,7 +6,7 @@ import asyncio
 from collections.abc import Iterable
 from typing import Protocol
 
-from .models import Session
+from .models import Session, SessionState
 
 
 class SessionNotFoundError(KeyError):
@@ -44,7 +44,18 @@ class InMemoryRepository:
         async with self._lock:
             if session.id in self._sessions:
                 raise ValueError(f"session already exists: {session.id}")
-            if len(self._sessions) >= self._max:
+            # Count only LIVE (non-ENDED) sessions toward the cap
+            # (security audit M2). ENDED sessions linger as tombstones
+            # until the GC reaps them per ``EXPORT_RETENTION_MIN``, but
+            # they no longer hold an LLM-driving slot — so ending a
+            # session frees capacity for a new one immediately instead
+            # of the operator having to wait out the retention window.
+            live = sum(
+                1
+                for existing in self._sessions.values()
+                if existing.state != SessionState.ENDED
+            )
+            if live >= self._max:
                 raise SessionCapacityError(
                     f"session capacity reached ({self._max}); end one before creating another"
                 )

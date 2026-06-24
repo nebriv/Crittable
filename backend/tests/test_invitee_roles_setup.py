@@ -213,8 +213,11 @@ def test_invitee_roles_partial_failure_surfaces_in_response(
     # Patch ``manager.add_role`` to raise ``IllegalTransitionError``
     # for one specific label so we can verify the create call still
     # 200s, the OK invitees land in the response context, and the
-    # failed one is echoed in ``failed_invitees`` with the
-    # exception text.
+    # failed one is echoed in ``failed_invitees`` with a structured,
+    # enumerated reason code (M11 / CWE-209 — the wire carries a stable
+    # token, never the raw ``str(exc)``). We raise the manager's own
+    # roster-full message so ``_invitee_failure_code`` classifies it as
+    # ``limit_reached`` — the realistic "cap hit" path this test names.
     from app.sessions.manager import SessionManager
     from app.sessions.turn_engine import IllegalTransitionError
 
@@ -222,7 +225,7 @@ def test_invitee_roles_partial_failure_surfaces_in_response(
 
     async def patched_add_role(self, *, session_id, label, **kw):  # type: ignore[no-untyped-def]
         if label == "Doomed Role":
-            raise IllegalTransitionError("simulated cap hit")
+            raise IllegalTransitionError("max roles reached for this session")
         return await real_add_role(self, session_id=session_id, label=label, **kw)
 
     monkeypatch.setattr(SessionManager, "add_role", patched_add_role)
@@ -253,7 +256,9 @@ def test_invitee_roles_partial_failure_surfaces_in_response(
     failed = body["failed_invitees"]
     assert len(failed) == 1
     assert failed[0]["label"] == "Doomed Role"
-    assert "simulated cap hit" in failed[0]["reason"]
+    # M11 alert-#5: the reason is now a stable enumerated code, not the
+    # raw exception text. A roster-full failure maps to "limit_reached".
+    assert failed[0]["reason"] == "limit_reached"
 
 
 def test_invitee_role_label_strips_control_chars(client: TestClient) -> None:

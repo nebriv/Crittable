@@ -29,7 +29,8 @@ from .llm.dispatch import ToolDispatcher
 from .llm.guardrail import InputGuardrail
 from .llm.protocol import ChatClient
 from .logging_setup import RequestContextMiddleware, configure_logging, get_logger
-from .rate_limit import RateLimitMiddleware
+from .rate_limit import RateLimitMiddleware, SessionCreateRateLimiter
+from .security_headers import SecurityHeadersMiddleware
 from .sessions.gc import SessionGC
 from .sessions.manager import SessionManager
 from .sessions.repository import InMemoryRepository
@@ -115,6 +116,10 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.registry = registry
     app.state.llm = llm
     app.state.session_gc = session_gc
+    # Dedicated per-IP throttle on POST /api/sessions (security audit
+    # C1). Constructed here so its bucket state lives for the app's
+    # lifetime; the create_session handler reads it off app.state.
+    app.state.session_create_limiter = SessionCreateRateLimiter(settings)
 
     from .config import ModelTier
 
@@ -249,11 +254,40 @@ def create_app(
                 note=(
                     "INVITE_CODE is set but RATE_LIMIT_ENABLED=false; "
                     "an attacker can brute the code via "
-                    "GET /api/invite/status?code=… or "
                     "POST /api/sessions without throttling. "
                     "Enable RATE_LIMIT_ENABLED=true for any public deploy."
                 ),
             )
+
+    # Fail-closed front-door gate (security audit C1). On a real deploy
+    # (CORS_ORIGINS narrowed away from "*") the session-create path must
+    # have *some* protection — either the INVITE_CODE gate or the
+    # dedicated per-IP creation throttle (SESSION_CREATE_RATE_PER_MIN).
+    # With neither, an anonymous caller can loop POST /api/sessions and
+    # each request fires a setup-tier LLM call. Mirrors the
+    # require_llm_api_key() import-time gate: raising here makes uvicorn
+    # exit non-zero with a clear message instead of silently booting an
+    # exposed deploy. Local / toy deploys (CORS_ORIGINS="*") are
+    # untouched so dev stays frictionless.
+    _is_real_deploy = cfg.cors_origin_list() != "*"
+    _has_front_door = (
+        cfg.invite_code_required() or cfg.session_create_rate_per_min > 0
+    )
+    if _is_real_deploy and not _has_front_door:
+        raise RuntimeError(
+            "No front-door protection on POST /api/sessions for a "
+            "non-local deploy (CORS_ORIGINS is not '*'). Set INVITE_CODE "
+            "to gate session creation, and/or set "
+            "SESSION_CREATE_RATE_PER_MIN to a non-zero per-IP cap. "
+            "Refusing to boot an exposed deploy where anonymous callers "
+            "can loop session creation and burn setup-tier LLM tokens."
+        )
+    _bootstrap_log.info(
+        "session_create_front_door_ok",
+        is_real_deploy=_is_real_deploy,
+        invite_code_gate=cfg.invite_code_required(),
+        session_create_rate_per_min=cfg.session_create_rate_per_min,
+    )
 
     app = FastAPI(
         title="Crittable",
@@ -278,6 +312,14 @@ def create_app(
     # the middleware itself short-circuits when disabled so adding it to the
     # stack is cheap.
     app.add_middleware(RateLimitMiddleware, settings=cfg)
+
+    # Security-headers middleware (security audit M5). Added last so it
+    # is the OUTERMOST wrapper — every response gets the hardening
+    # headers, including rate-limit 429s, CORS responses, the SPA
+    # fallback, and static assets. Priority header is
+    # ``Referrer-Policy: no-referrer`` (the join token rides in the URL
+    # path, so a Referer leak would expose it).
+    app.add_middleware(SecurityHeadersMiddleware, settings=cfg)
 
     @app.get("/healthz")
     async def healthz() -> JSONResponse:
