@@ -42,22 +42,21 @@ itself while the room is still warm.
 
 ## Why
 
-Small security teams can't run a tabletop on themselves. Someone has to
-be the white cell — write the scenario, throw the injects, adjudicate the
-curveballs — and on a two-person team that someone is the same person who
-most needs the practice. You can't be surprised by an inject you wrote,
-so the lead ends up running the exercise instead of being tested by it.
+My security team is two people. That makes it hard to run a tabletop on
+ourselves: someone has to build the scenario and play the adversary, and
+on a team this small that someone is me. I write the injects, so nothing
+in the exercise surprises me, and I end up running the test instead of
+taking it.
 
-A facilitated tabletop from an outside firm fixes that, and a good one is
-worth the money — but it's costly and it happens maybe once a year.
-That's not enough reps to build reflexes.
+Hiring an outside firm to facilitate solves that. A good facilitated
+tabletop is worth the money, but it's expensive, and we do it maybe once
+a year. That isn't often enough to get good at it.
 
-Crittable hands the white-cell seat to the AI. It holds the scenario,
-throws the injects, and reacts to whatever the room does — so the person
-who used to run the exercise can come in blind, work the problem with the
-team, and learn from it instead of running it. It doesn't replace a
-professional facilitated tabletop; it makes the cheap, frequent reps
-possible in between.
+Crittable runs the exercise so I don't have to. It holds the scenario and
+throws the injects, reacting to what the team does. That lets me play
+instead of facilitate. I come in blind like everyone else, work the
+problem with the team, and actually learn something. It won't replace a
+real facilitated tabletop, but it lets us practice in the months between.
 
 ## What it does
 

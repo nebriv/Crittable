@@ -10,10 +10,10 @@ authoritative rules live there, not here.
 
 A multi-user, browser-based chat room that runs a cybersecurity tabletop
 exercise. The creator opens a session, defines roles (CISO / IR Lead /
-Legal / Comms / etc.), and shares a per-role join link. The AI drives a
-turn-based loop — narrates beats, throws injects, yields to specific
-roles via tool calls — and produces a markdown after-action report at
-session end. Typical exercise: 30–60 minutes.
+Legal / Comms / etc.), and shares a per-role join link. The AI runs the
+turn-based loop: it narrates beats, throws injects, and hands the turn to
+specific roles via tool calls. At session end it writes a markdown
+after-action report. A typical exercise runs 30–60 minutes.
 
 The session walks a phase machine:
 
@@ -58,7 +58,7 @@ load-bearing references; CONTRIBUTING.md is just the index.
 |---|---|
 | [`docs/architecture.md`](docs/architecture.md) | Touching the request/turn flow. Live diagrams, retry-feedback loop, phase-policy contract, current tool palette, operator runtime controls. |
 | [`docs/configuration.md`](docs/configuration.md) | Adding any env var or operator-tunable knob. Quick-start cheat sheet + hardening checklist. |
-| [`docs/llm_providers.md`](docs/llm_providers.md) | Wiring Bedrock / Vertex / OpenRouter / Ollama via `LLM_API_BASE`. |
+| [`docs/llm_providers.md`](docs/llm_providers.md) | Wiring Bedrock / Vertex / OpenRouter / Ollama via `LLM_MODEL_<TIER>`. |
 | [`docs/prompts.md`](docs/prompts.md) | Editing system prompts, guardrails, tool-use protocol, AAR rubric. JSON tool-use only — no XML function-call shapes. |
 | [`docs/prompt-writing-rules.md`](docs/prompt-writing-rules.md) | **Style guide for prompt copy.** Shape-not-phrase, deflection patterns, trust-boundary first. Distilled from the 2026-05-04 / 2026-05-05 live-test sweep. |
 | [`docs/tool-design.md`](docs/tool-design.md) | **Adding, renaming, or rewording any play-tier tool.** Five trap patterns documented. |
