@@ -43,10 +43,9 @@ itself while the room is still warm.
 ## Why
 
 Small security teams can't run a tabletop on themselves. Someone has to
-build the scenario and play the adversary, and that's usually one of the
-people who'd get the most out of taking part. If we wrote the injects,
-nothing in the exercise surprises us, and we end up running the test
-instead of taking it.
+build the scenario and play the adversary, and that person already knows
+every inject. So whoever would get the most out of the exercise ends up
+running the test instead of taking it.
 
 Hiring an outside firm to facilitate solves that. A good facilitated
 tabletop is worth the money, but it's expensive, and most teams manage it
@@ -54,10 +53,10 @@ maybe once a year. That isn't often enough to get good at it.
 
 Crittable runs the exercise so the whole team can take part. It holds the
 scenario and throws the injects, reacting to what the team does. That frees
-whoever usually facilitates to play instead of run the room. We come in
-blind like everyone else, work the problem together, and actually learn
-something. It won't replace a real facilitated tabletop, but it lets us
-practice in the months between.
+whoever usually facilitates to play instead of run the room. Everyone
+comes in blind, works the problem together, and actually learns something.
+It won't replace a real facilitated tabletop, but it lets a team practice
+in the months between.
 
 ## What it does
 
