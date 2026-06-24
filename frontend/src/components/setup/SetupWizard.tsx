@@ -804,17 +804,17 @@ const DIFFICULTY_OPTIONS: { value: Difficulty; label: string; sub: string }[] = 
   {
     value: "easy",
     label: "EASY",
-    sub: "Coaching mode. AI fills gaps and hints. Adversary stays passive.",
+    sub: "Coaching mode. AI fills gaps, hints between beats, adds a short read on data drops. Adversary stays passive.",
   },
   {
     value: "standard",
     label: "STANDARD",
-    sub: "Balanced. Reasonable assumptions allowed; injects fire on plan triggers.",
+    sub: "Response-test mode. Raw telemetry, no pivot menus, no in-stream grading — the AAR is the grade.",
   },
   {
     value: "hard",
     label: "HARD",
-    sub: "Literal execution. AI does only what was ordered; adversary exploits gaps.",
+    sub: "Adversarial-test mode. Literal execution; wrong calls surface as consequences; adversary exploits gaps.",
   },
 ];
 

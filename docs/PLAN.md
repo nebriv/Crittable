@@ -225,7 +225,7 @@ Goal: turn a one-line scenario prompt into a concrete, internally-consistent exe
 The system prompt (`llm/prompts.py`) is assembled per-turn from these blocks (all cached together as a single content block to maximize prompt-cache hits):
 
 1. **Identity** — "You are an AI cybersecurity tabletop facilitator running an interactive exercise for a defensive security team."
-2. **Mission** — drive a realistic, on-topic, educational exercise; assess decisions; produce a useful AAR.
+2. **Mission** — run a realistic, on-topic incident-response capability assessment (the team is being tested, not taught); assess decisions; produce a useful AAR. Coaching voice is `easy`-only.
 3. **Plan adherence** — follow the frozen scenario plan; reference its `narrative_arc` and `injects`; document deviations in tool reasoning.
 4. **Hard boundaries** (the "no Mom's cookies" rules):
    - Refuse off-topic content generation (recipes, jokes, creative writing, code unrelated to the scenario, personal advice). Acknowledge briefly, redirect to the exercise.

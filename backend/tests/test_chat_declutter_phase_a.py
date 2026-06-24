@@ -1051,6 +1051,11 @@ class TestPromptToolConsistencyFlagOn:
             "time_pressure",
             "executive_escalation",
             "media_pressure",
+            # Difficulty-tier names referenced by ``_MISSION``'s
+            # coaching-voice carve-out (Block 2). Not tools.
+            "easy",
+            "standard",
+            "hard",
         }
         # The intersect with `known_tools` should equal the model's
         # actual tool palette (positive evidence). The diff is the
