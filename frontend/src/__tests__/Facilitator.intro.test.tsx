@@ -466,6 +466,7 @@ const baseProps = {
   wsStatus: "open" as const,
   godMode: false,
   turnIndex: null,
+  maxTurns: null,
   rationaleCount: 0,
   connectionCount: null,
   lastEventAt: null,
@@ -594,6 +595,22 @@ describe("BottomActionBar — phase CTAs (issue #62)", () => {
     expect(screen.getByText("Rationale: 7")).toBeInTheDocument();
     expect(screen.getByText("Tabs: 5")).toBeInTheDocument();
     expect(screen.getByText("Cost: $0.0234")).toBeInTheDocument();
+  });
+
+  it("shows the turn cap as 'T#N / MAX' when maxTurns is known", async () => {
+    render(
+      <BottomActionBar
+        {...baseProps}
+        phase="play"
+        playerCount={3}
+        hasFinalizedPlan={true}
+        aarStatus={null}
+        turnIndex={7}
+        maxTurns={40}
+      />,
+    );
+    // Badge reads the cap so an operator can self-pace before the park.
+    expect(screen.getByText(/T#7\s*\/\s*40/)).toBeInTheDocument();
   });
 
   it("renders dash placeholders when telemetry is null", async () => {

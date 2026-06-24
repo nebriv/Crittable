@@ -15,6 +15,9 @@ import { AarReportView } from "../components/AarReport";
 import { Composer } from "../components/Composer";
 import { CriticalEventBanner } from "../components/CriticalEventBanner";
 import { UpstreamLlmErrorBanner } from "../components/UpstreamLlmErrorBanner";
+import { BackendStatusChip } from "../components/BackendStatusChip";
+import { TurnLimitApproachingChip } from "../components/TurnLimitApproachingChip";
+import { TurnLimitBanner } from "../components/TurnLimitBanner";
 import { DecisionLogPanel } from "../components/DecisionLogPanel";
 import { ExportsPanel } from "../components/ExportsPanel";
 import { GodModePanel } from "../components/GodModePanel";
@@ -406,7 +409,43 @@ export function Facilitator() {
   }, []);
 
   const [setupReply, setSetupReply] = useState("");
+  // Creator-only ``setup/reply`` budget signal. Flipped true the moment a
+  // ``setupReply`` response reports the setup-turn budget is spent — the
+  // AI won't ask further questions, so the creator must finalize / skip.
+  // Surfaced as a prompt inside <SetupView>. Cleared when the plan is
+  // finalized (we leave the SETUP phase) — there's no recovery path that
+  // un-exhausts the budget, so it only ever latches on.
+  const [setupBudgetExhausted, setSetupBudgetExhausted] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Creator-only "backend degraded / heavy load" signal (``backend_status``
+  // WS event). ``message`` is the latest operator-facing copy; ``nonce``
+  // is bumped on every frame so <BackendStatusChip> re-arms its
+  // self-clear timer even when the message repeats. Low-information by
+  // design — no counts, just the message. Players never receive the
+  // event so this state stays empty on the player path.
+  const [backendStatus, setBackendStatus] = useState<{
+    message: string | null;
+    nonce: number;
+  }>({ message: null, nonce: 0 });
+  // Broadcast ``turn_limit_reached`` cap. Non-null once the session hits
+  // its configured ``max_turns`` — drives the prominent End-session
+  // banner. ``record=True`` server-side so a reconnecting creator tab
+  // still learns the cap was reached.
+  const [turnLimitMax, setTurnLimitMax] = useState<number | null>(null);
+  // The session's configured ``MAX_TURNS_PER_SESSION``, learned from the
+  // creator-only ``cost_updated`` frame (which carries ``max_turns``) and
+  // backstopped by the ``turn_limit_approaching`` nudge. Surfaced on the
+  // TURN chips ("TURN 7 / 40") so the operator can self-pace before the
+  // hard cap parks the exercise. Null until the first frame lands.
+  const [maxTurns, setMaxTurns] = useState<number | null>(null);
+  // One-time ``turn_limit_approaching`` soft-warning notice. ``nonce`` is
+  // bumped on each frame so the self-expiring info chip re-arms (the
+  // engine only fires this once per session, but the nonce keeps the
+  // chip pattern identical to <BackendStatusChip>). Null until fired.
+  const [turnLimitNotice, setTurnLimitNotice] = useState<{
+    turnsRemaining: number;
+    nonce: number;
+  }>({ turnsRemaining: 0, nonce: 0 });
   // Issue #191 — most recent ``{type: "error", scope: "upstream_llm"}``
   // event. Creator-only; players never receive these. Cleared by the
   // banner's Dismiss button or replaced by a fresher upstream event.
@@ -1099,6 +1138,45 @@ export function Facilitator() {
         break;
       case "cost_updated":
         setCost(evt.cost);
+        // Latch the configured cap so the TURN chips can render "N / MAX".
+        setMaxTurns(evt.max_turns);
+        break;
+      case "backend_status":
+        // Creator-only degraded-health nudge. Bump the nonce so the
+        // subtle, self-expiring chip re-arms even on a repeat message.
+        // Non-blocking and auto-clearing — see <BackendStatusChip>.
+        console.info("[facilitator] backend_status", {
+          status: evt.status,
+          message: evt.message,
+        });
+        setBackendStatus((prev) => ({
+          message: evt.message,
+          nonce: prev.nonce + 1,
+        }));
+        break;
+      case "turn_limit_reached":
+        // Broadcast cap hit. Latch the max so the End-session banner
+        // shows until the creator ends the exercise.
+        console.info("[facilitator] turn_limit_reached", {
+          max_turns: evt.max_turns,
+        });
+        setTurnLimitMax(evt.max_turns);
+        setMaxTurns(evt.max_turns);
+        break;
+      case "turn_limit_approaching":
+        // One-time soft warning (cost/abuse C2). Surface a brief,
+        // non-blocking "N turns left" notice so the creator can wrap up
+        // before the hard cap parks the exercise; also seed ``maxTurns``
+        // for the TURN chips in case no cost frame has landed yet.
+        console.info("[facilitator] turn_limit_approaching", {
+          turns_remaining: evt.turns_remaining,
+          max_turns: evt.max_turns,
+        });
+        setMaxTurns(evt.max_turns);
+        setTurnLimitNotice((prev) => ({
+          turnsRemaining: evt.turns_remaining,
+          nonce: prev.nonce + 1,
+        }));
         break;
       case "decision_logged":
         setDecisionLog((prev) => {
@@ -1299,7 +1377,14 @@ export function Facilitator() {
     // small "AI is typing" dots inside <SetupChat>; the prominent
     // DieLoader banner stays parked until plan-drafting time.
     try {
-      await api.setupReply(state.sessionId, state.token, content.trim());
+      const reply = await api.setupReply(state.sessionId, state.token, content.trim());
+      // Latch the setup-budget-exhausted prompt the moment the engine
+      // reports the setup-turn budget is spent (the AI won't ask
+      // further questions; the creator must finalize / skip).
+      if (reply.setup_budget_exhausted) {
+        console.info("[facilitator] setup_budget_exhausted");
+        setSetupBudgetExhausted(true);
+      }
       await refreshSnapshot();
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -1362,6 +1447,10 @@ export function Facilitator() {
     console.info("[facilitator] looks_ready_clicked nudging plan");
     try {
       const reply = await api.setupReply(state.sessionId, state.token, NUDGE_PROPOSE);
+      if (reply.setup_budget_exhausted) {
+        console.info("[facilitator] setup_budget_exhausted (looks-ready path)");
+        setSetupBudgetExhausted(true);
+      }
       const snap = await api.getSession(state.sessionId, state.token);
       setSnapshot(snap);
       if (snap.plan) {
@@ -1941,6 +2030,7 @@ export function Facilitator() {
           busy={busy}
           busyMessage={busyMessage}
           draftingPlan={draftingPlan || aiDraftingPlan}
+          budgetExhausted={setupBudgetExhausted}
         />
       );
     } else if (wizardReadyForReview && snapshot.plan) {
@@ -1999,6 +2089,25 @@ export function Facilitator() {
             onAcknowledge={() => setCriticalBanner(null)}
           />
         ) : null}
+        {/* Backend-degraded chip also mounts during setup/ready — the
+            ``backend_status`` event can fire while the AI is drafting
+            the plan (setup-tier LLM calls). Same fixed, non-blocking,
+            self-expiring chip as the in-session render (``bottom: 56``
+            to match — clears any bottom chrome). */}
+        <div
+          style={{
+            position: "fixed",
+            right: 12,
+            bottom: 56,
+            zIndex: 30,
+            pointerEvents: "none",
+          }}
+        >
+          <BackendStatusChip
+            message={backendStatus.message}
+            nonce={backendStatus.nonce}
+          />
+        </div>
         <SetupWizard
           phase={phase}
           setupParts={setupParts}
@@ -2053,6 +2162,43 @@ export function Facilitator() {
           onDismiss={() => setUpstreamLlmError(null)}
         />
       ) : null}
+      {/* Turn-cap banner — broadcast to everyone; for the creator the
+          prominent affordance is END SESSION (the creator is who can
+          end). Sits below the infra/critical banners so an active
+          inject still wins the top slot. */}
+      {turnLimitMax !== null ? (
+        <TurnLimitBanner
+          maxTurns={turnLimitMax}
+          isCreator
+          onEnd={handleEnd}
+        />
+      ) : null}
+      {/* Subtle, self-expiring "system degraded" chip — creator-only,
+          non-blocking (pointer-events:none), auto-clears ~8 s after the
+          last frame. Fixed to the bottom-right and lifted clear of the
+          48 px sticky <BottomActionBar> (``bottom: 56``) so it never
+          reflows the layout or sits over the action-bar counters.
+          Renders nothing when idle. */}
+      <div
+        style={{
+          position: "fixed",
+          right: 12,
+          bottom: 56,
+          zIndex: 30,
+          pointerEvents: "none",
+        }}
+      >
+        <BackendStatusChip
+          message={backendStatus.message}
+          nonce={backendStatus.nonce}
+        />
+      </div>
+      {/* One-time soft warning when the session nears its turn cap —
+          owns its own fixed, non-blocking, self-expiring chrome. */}
+      <TurnLimitApproachingChip
+        turnsRemaining={turnLimitNotice.turnsRemaining}
+        nonce={turnLimitNotice.nonce}
+      />
       {/* Issue #62 (round 2): consolidated top bar — debug telemetry +
           phase CTA + meta actions on a single row. See ``TopBar`` for
           layout rationale. */}
@@ -2072,6 +2218,7 @@ export function Facilitator() {
         aarStatus={snapshot.aar_status ?? null}
         busy={busy}
         turnIndex={snapshot.current_turn?.index ?? null}
+        maxTurns={maxTurns}
         rationaleCount={decisionLog.length}
         connectionCount={connectionCount}
         lastEventAt={lastEventAt}
@@ -2573,6 +2720,7 @@ export function Facilitator() {
         aarStatus={snapshot.aar_status ?? null}
         busy={busy}
         turnIndex={snapshot.current_turn?.index ?? null}
+        maxTurns={maxTurns}
         rationaleCount={decisionLog.length}
         connectionCount={connectionCount}
         lastEventAt={lastEventAt}
@@ -2675,6 +2823,10 @@ export function TopBar(props: {
   // before the first WS frame / snapshot fetch lands.
   /** ``snapshot.current_turn?.index`` — null when no turn is active. */
   turnIndex: number | null;
+  /** Configured ``MAX_TURNS_PER_SESSION`` (from the ``cost_updated``
+   *  frame). When set, the TURN chip shows "N / MAX" so the operator can
+   *  self-pace. Null until the first cost frame lands. */
+  maxTurns: number | null;
   /** ``decisionLog.length`` — count of AI rationale entries logged. */
   rationaleCount: number;
   /** Server-pushed total open WS tabs on this session, or null if unknown. */
@@ -2765,7 +2917,11 @@ export function TopBar(props: {
         {props.turnIndex != null ? (
           <span className="mono inline-flex items-center gap-1 rounded-r-1 border border-ink-500 bg-ink-700 px-2 py-0.5 text-[11px] font-semibold uppercase">
             <span className="text-ink-300 opacity-70">TURN</span>
-            <span className="tabular-nums text-ink-100">{props.turnIndex}</span>
+            <span className="tabular-nums text-ink-100">
+              {props.maxTurns != null
+                ? `${props.turnIndex} / ${props.maxTurns}`
+                : props.turnIndex}
+            </span>
           </span>
         ) : null}
         <span className="mono inline-flex items-center gap-1 rounded-r-1 border border-ink-500 bg-ink-700 px-2 py-0.5 text-[11px] font-semibold uppercase">
@@ -2880,6 +3036,7 @@ export function SetupView({
   busy,
   busyMessage,
   draftingPlan,
+  budgetExhausted = false,
 }: {
   snapshot: SessionSnapshot;
   setupReply: string;
@@ -2891,6 +3048,12 @@ export function SetupView({
   onPickOption: (option: string) => void;
   busy: boolean;
   busyMessage: string | null;
+  /** True once the ``setup/reply`` budget is spent — the AI won't ask
+   *  further questions. Renders a clear "finalize or skip" prompt and
+   *  keeps the Finalize / Skip affordances reachable. Defaults false so
+   *  the standalone unit-test renders (which don't pass it) stay
+   *  unaffected. */
+  budgetExhausted?: boolean;
   /** True while the AI is drafting the scenario plan — driven by
    *  EITHER (a) the operator clicking LOOKS READY → PROPOSE THE PLAN
    *  (Facilitator's local ``draftingPlan`` state) OR (b) the
@@ -3086,6 +3249,32 @@ export function SetupView({
           </>
         )}
       </p>
+
+      {/* Setup-budget-exhausted prompt (creator-only flag from the
+          ``setup/reply`` response). The AI won't ask further questions
+          once the budget is spent, so steer the creator to the two ways
+          out: finalize the plan — either approve an existing draft, or
+          click LOOKS READY to draft one — or skip setup. Both
+          affordances live in the reply form / plan panel below and stay
+          reachable; this banner just names the wall. ``role="status"``
+          (not alert) — it's a state nudge, not an error. */}
+      {budgetExhausted ? (
+        <div
+          role="status"
+          aria-live="polite"
+          data-testid="setup-budget-exhausted"
+          className="flex flex-col gap-1 rounded-r-2 border border-warn bg-warn-bg p-3"
+        >
+          <p className="mono text-[11px] font-bold uppercase tracking-[0.16em] text-warn">
+            ● SETUP LIMIT REACHED
+          </p>
+          <p className="text-xs text-ink-100 leading-relaxed">
+            {hasPlan
+              ? "You've reached the setup limit — finalize the plan (approve it on the panel) or skip setup to continue."
+              : "You've reached the setup limit — finalize the plan with “Looks ready” below, or skip setup to continue."}
+          </p>
+        </div>
+      ) : null}
 
       {hasPlan ? (
         // 2-row × 2-col grid (collapses to a single column at sub-xl).

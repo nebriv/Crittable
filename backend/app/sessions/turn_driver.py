@@ -23,6 +23,7 @@ directive factories in ``turn_validator.py``.
 
 from __future__ import annotations
 
+import math
 from datetime import UTC, datetime
 from typing import Any
 
@@ -272,7 +273,23 @@ class TurnDriver:
             # ``MAX_SETUP_TURNS``. Lifting it lets a model that wants to
             # ``ask_setup_question`` → ``propose_scenario_plan`` →
             # ``finalize_setup`` in one cycle do so without a premature break.
+            setup_budget = self._manager.settings().max_setup_calls_per_session
             for _ in range(self._manager.settings().max_setup_turns):
+                if session.setup_call_count >= setup_budget:
+                    # Cost/abuse M3: per-session setup-call budget spent.
+                    # Stop making setup-tier calls; the route surfaces
+                    # ``setup_budget_exhausted`` so the creator UI prompts
+                    # "finalize the draft or skip setup". ``MAX_SETUP_TURNS``
+                    # caps the chained loop within one reply; this caps the
+                    # number of replies.
+                    _logger.warning(
+                        "setup_call_budget_reached",
+                        session_id=session.id,
+                        count=session.setup_call_count,
+                        budget=setup_budget,
+                    )
+                    break
+                session.setup_call_count += 1
                 messages = _setup_messages(session)
                 # Setup uses ``astream`` (not ``acomplete``) specifically
                 # so the ``tool_use_start`` event can fire as soon as the
@@ -412,6 +429,22 @@ class TurnDriver:
         """
 
         assert_state("play", session.state)
+
+        # Cost/abuse C2: never make a play-tier LLM call for a turn at or
+        # beyond ``MAX_TURNS_PER_SESSION``. The advance-point guard in
+        # ``_apply_play_outcome`` normally prevents such a turn from
+        # opening at all; this entry guard catches force-advance /
+        # recovery openers that created one directly. Park (no auto-end)
+        # and prompt the creator to end → AAR.
+        max_turns = self._manager.settings().max_turns_per_session
+        if turn.index >= max_turns:
+            _logger.info(
+                "turn_limit_reached_block_play_call",
+                session_id=session.id,
+                turn_index=turn.index,
+                max_turns=max_turns,
+            )
+            return await self._park_turn_limit_reached(session, turn)
 
         dispatcher = self._manager.dispatcher()
         registry = self._manager.registry()
@@ -893,6 +926,22 @@ class TurnDriver:
                 "run_interject requires state=AWAITING_PLAYERS; "
                 f"got {session.state.value!r}"
             )
+
+        # Cost/abuse C2: once the session has parked at
+        # ``MAX_TURNS_PER_SESSION`` (``_park_turn_limit_reached`` flipped
+        # the flag), refuse the interject's play-tier ``astream`` call.
+        # Without this an ``@facilitator``-ing player could drive
+        # unbounded play-tier spend past the cap — the entry guard in
+        # ``run_play_turn`` only covers the advancing turn, not the
+        # side-channel. A general per-turn interject rate cap is a
+        # separate concern; this gate is *only* the turn-limit park.
+        if session.turn_limit_reached:
+            _logger.info(
+                "interject_skipped_turn_limit_reached",
+                session_id=session.id,
+                turn_index=turn.index,
+            )
+            return session
 
         from ..llm.prompts import INTERJECT_NOTE
 
@@ -1514,6 +1563,19 @@ class TurnDriver:
             turn.status = "complete"
             turn.ended_at = _now()
             new_index = len(session.turns)
+            if new_index >= self._manager.settings().max_turns_per_session:
+                # Cost/abuse C2: opening this turn would exceed the cap.
+                # The AI's just-delivered response stands; park instead of
+                # opening a new turn (the unbounded play-LLM-cost path) and
+                # prompt the creator to end → AAR. No auto-end.
+                _logger.info(
+                    "turn_limit_reached_skip_open",
+                    session_id=session.id,
+                    new_index=new_index,
+                    max_turns=self._manager.settings().max_turns_per_session,
+                )
+                await self._park_turn_limit_reached(session, turn)
+                return
             new_turn = Turn(
                 index=new_index,
                 active_role_groups=final_active_role_groups,
@@ -1547,6 +1609,7 @@ class TurnDriver:
                     "progress_pct": compute_progress_pct(session),
                 },
             )
+            await self._maybe_warn_turn_limit(session, new_turn.index)
         else:
             # No yielding tool fired AND no end_session — the turn engine
             # stays in AI_PROCESSING. Intentional: the run_play_turn caller
@@ -1555,6 +1618,95 @@ class TurnDriver:
             # without a flicker) or mark the turn errored if both attempts
             # have been exhausted.
             await self._manager._repo.save(session)
+
+    async def _maybe_warn_turn_limit(
+        self, session: Session, new_index: int
+    ) -> None:
+        """Cost/abuse C2 (soft warning): fire a one-time
+        ``turn_limit_approaching`` nudge when a freshly-opened turn first
+        crosses ``AI_TURN_SOFT_WARN_PCT`` of the cap.
+
+        Idempotent via ``session.turn_limit_warned`` — only the first
+        crossing broadcasts; later turns up to the hard cap stay quiet so
+        the creator + players see a single "start wrapping up" notice.
+        """
+
+        if session.turn_limit_warned:
+            return
+        settings = self._manager.settings()
+        max_turns = settings.max_turns_per_session
+        threshold = math.ceil(max_turns * settings.ai_turn_soft_warn_pct / 100)
+        if new_index < threshold:
+            return
+        session.turn_limit_warned = True
+        turns_remaining = max_turns - new_index
+        _logger.info(
+            "turn_limit_approaching",
+            session_id=session.id,
+            new_index=new_index,
+            turns_remaining=turns_remaining,
+            max_turns=max_turns,
+        )
+        await self._manager._repo.save(session)
+        await self._manager.connections().broadcast(
+            session.id,
+            {
+                "type": "turn_limit_approaching",
+                "turns_remaining": turns_remaining,
+                "max_turns": max_turns,
+            },
+        )
+
+    async def _park_turn_limit_reached(
+        self, session: Session, turn: Turn
+    ) -> Session:
+        """Cost/abuse C2: the session reached ``MAX_TURNS_PER_SESSION``.
+
+        Stop driving play turns (the unbounded play-tier-LLM-cost path)
+        without auto-ending: complete the current turn, open no new turn,
+        flag the session, and prompt the creator to end → AAR. Idempotent
+        — a repeat call re-broadcasts the nudge but appends no duplicate
+        SYSTEM line and makes no LLM call.
+        """
+
+        max_turns = self._manager.settings().max_turns_per_session
+        if turn.status != "complete":
+            turn.status = "complete"
+            turn.ended_at = _now()
+        already = session.turn_limit_reached
+        session.turn_limit_reached = True
+        # Park in AWAITING_PLAYERS with no fresh turn — players have
+        # nothing to answer; the only forward action is the creator
+        # ending the session. (The advance / force-advance paths likewise
+        # set state directly rather than via assert_transition.)
+        if session.state == SessionState.AI_PROCESSING:
+            session.state = SessionState.AWAITING_PLAYERS
+        if not already:
+            session.messages.append(
+                Message(
+                    kind=MessageKind.SYSTEM,
+                    body=(
+                        f"Turn limit reached ({max_turns} turns). End the "
+                        "session to generate the after-action report."
+                    ),
+                    turn_id=turn.id,
+                )
+            )
+        await self._manager._repo.save(session)
+        await self._manager.connections().broadcast(
+            session.id,
+            {"type": "turn_limit_reached", "max_turns": max_turns},
+        )
+        await self._manager.connections().broadcast(
+            session.id,
+            {
+                "type": "state_changed",
+                "state": session.state.value,
+                "turn_index": turn.index,
+                "progress_pct": compute_progress_pct(session),
+            },
+        )
+        return session
 
     async def _apply_cost(self, session_id: str, result: LLMResult) -> None:
         await self._manager.add_cost(

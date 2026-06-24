@@ -114,6 +114,28 @@ class ConnectionManager:
         for conn in recipients:
             await self._enqueue(conn, event)
 
+    async def broadcast_to_creator(
+        self, session_id: str, event: dict[str, Any]
+    ) -> None:
+        """Fan out an event to the creator's connection(s) only.
+
+        Used for creator-scoped operational signals — currently the
+        ``backend_status`` degraded notice the LLM concurrency governor
+        emits when calls start queuing (cost/abuse H2). Never recorded in
+        the replay buffer: it's an ephemeral live-load signal, stale the
+        moment the burst clears, and the client self-expires the chip.
+        No-ops silently when the creator has no open tab. Targets by the
+        connection's ``is_creator`` flag so callers (e.g. the LLM client)
+        don't need the creator's ``role_id``.
+        """
+
+        async with self._lock:
+            recipients = [
+                c for c in self._connections.get(session_id, ()) if c.is_creator
+            ]
+        for conn in recipients:
+            await self._enqueue(conn, event)
+
     async def disconnect_role(
         self,
         session_id: str,

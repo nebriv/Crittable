@@ -1,0 +1,84 @@
+{
+  "meta": {
+    "name": "Turn-limit stop — 2 role",
+    "description": "Cost/abuse C2 regression scenario. A CISO + SOC Analyst exercise that keeps trading turns until MAX_TURNS_PER_SESSION is reached. At the cap the engine PARKS (no auto-end): it makes no further play-tier LLM call, opens no new turn, sets session.turn_limit_reached=True, appends a SYSTEM 'Turn limit reached' line, broadcasts a turn_limit_reached WS event, and lands in AWAITING_PLAYERS so the creator must click End -> AAR. Runs in engine mode so run_play_turn / _apply_play_outcome (where the entry + advance-point guards live) actually execute. The companion test (backend/tests/scenarios/test_turn_limit_scenario.py) sets a low MAX_TURNS_PER_SESSION and asserts the park. Deterministic mode cannot express this park because the deterministic runner injects recorded AI messages and opens turns directly, bypassing the guarded engine paths (see CLAUDE.md 'Known fragility seams #1 - lifecycle order').",
+    "tags": [
+      "regression",
+      "2role",
+      "cost-abuse",
+      "turn-limit",
+      "C2"
+    ]
+  },
+  "scenario_prompt": "Ransomware via vendor portal — finance laptops impacted at 03:14 Wed. Long-running exercise used to verify the turn-limit park.",
+  "creator_label": "CISO",
+  "creator_display_name": "Alex (CISO)",
+  "skip_setup": true,
+  "replay_mode": "engine",
+  "roster": [
+    {
+      "label": "SOC Analyst",
+      "display_name": "Bo (SOC)",
+      "kind": "player"
+    }
+  ],
+  "setup_replies": [],
+  "play_turns": [
+    {
+      "submissions": [
+        {
+          "role_label": "CISO",
+          "content": "Isolate the affected laptops via Defender. Pull IR Lead in. Start the regulator-notification clock.",
+          "ready_after": true
+        },
+        {
+          "role_label": "SOC Analyst",
+          "content": "Acknowledged — disabling the vendor account and pulling the Defender event timeline now.",
+          "ready_after": true
+        }
+      ],
+      "active_role_label_groups": [
+        ["CISO"],
+        ["SOC Analyst"]
+      ]
+    },
+    {
+      "submissions": [
+        {
+          "role_label": "CISO",
+          "content": "Stage a Comms draft for legal review. Notify the board chair via the secure channel.",
+          "ready_after": true
+        },
+        {
+          "role_label": "SOC Analyst",
+          "content": "Initial scope: 3 finance laptops behind the vendor portal. No lateral movement seen yet.",
+          "ready_after": true
+        }
+      ],
+      "active_role_label_groups": [
+        ["CISO"],
+        ["SOC Analyst"]
+      ]
+    },
+    {
+      "submissions": [
+        {
+          "role_label": "CISO",
+          "content": "Containment verified. Move to recovery planning. Document the timeline for the AAR.",
+          "ready_after": true
+        },
+        {
+          "role_label": "SOC Analyst",
+          "content": "Recovery plan: re-image laptops from clean backups, rotate VPN creds, audit vendor-portal access logs.",
+          "ready_after": true
+        }
+      ],
+      "active_role_label_groups": [
+        ["CISO"],
+        ["SOC Analyst"]
+      ]
+    }
+  ],
+  "end_reason": "turn-limit stop regression",
+  "mock_llm_script": null
+}

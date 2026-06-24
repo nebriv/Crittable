@@ -2,6 +2,8 @@ import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "re
 import { api, SessionSnapshot } from "../api/client";
 import { Composer } from "../components/Composer";
 import { CriticalEventBanner } from "../components/CriticalEventBanner";
+import { TurnLimitBanner } from "../components/TurnLimitBanner";
+import { TurnLimitApproachingChip } from "../components/TurnLimitApproachingChip";
 import { HighlightActionPopover } from "../components/HighlightActionPopover";
 import { RightSidebar } from "../components/RightSidebar";
 import { RoleRoster } from "../components/RoleRoster";
@@ -72,6 +74,21 @@ export function Play({ sessionId, token }: Props) {
     headline: string;
     body: string;
   } | null>(null);
+  // Broadcast ``turn_limit_reached`` cap. Non-null once the session hits
+  // its configured ``max_turns``. Players see an informational banner;
+  // the creator (when their own tab is in the player view) gets the
+  // prominent End affordance via ``TurnLimitBanner``'s ``isCreator``
+  // branch. ``record=True`` server-side so a reconnecting tab still
+  // learns the cap was hit.
+  const [turnLimitMax, setTurnLimitMax] = useState<number | null>(null);
+  // One-time ``turn_limit_approaching`` soft-warning notice (cost/abuse
+  // C2). Players get the same "N turns left — wrap up" nudge as the
+  // creator so they're not surprised when the cap parks the exercise.
+  // ``nonce`` re-arms the self-expiring chip; null until fired.
+  const [turnLimitNotice, setTurnLimitNotice] = useState<{
+    turnsRemaining: number;
+    nonce: number;
+  }>({ turnsRemaining: 0, nonce: 0 });
   const [error, setError] = useState<string | null>(null);
   // Incrementing counter the Composer watches so it can restore the
   // last-attempted text on a submit-rejected error rather than letting
@@ -371,6 +388,25 @@ export function Play({ sessionId, token }: Props) {
         break;
       case "critical_event":
         setCriticalBanner({ severity: evt.severity, headline: evt.headline, body: evt.body });
+        break;
+      case "turn_limit_reached":
+        // Broadcast cap hit — surface the informational banner for
+        // players (the creator's own tab gets the prominent End
+        // affordance). Latch the max so it persists until ENDED.
+        console.info("[play] turn_limit_reached", { max_turns: evt.max_turns });
+        setTurnLimitMax(evt.max_turns);
+        break;
+      case "turn_limit_approaching":
+        // One-time soft warning — surface the brief, non-blocking
+        // "N turns left" notice so players know to wrap up.
+        console.info("[play] turn_limit_approaching", {
+          turns_remaining: evt.turns_remaining,
+          max_turns: evt.max_turns,
+        });
+        setTurnLimitNotice((prev) => ({
+          turnsRemaining: evt.turns_remaining,
+          nonce: prev.nonce + 1,
+        }));
         break;
       case "ai_pause_state_changed":
         // Wave 3 (issue #69): the creator flipped the AI-pause flag.
@@ -1451,6 +1487,24 @@ export function Play({ sessionId, token }: Props) {
           onAcknowledge={() => setCriticalBanner(null)}
         />
       ) : null}
+      {/* Turn-cap banner — broadcast to everyone. Players see it as
+          informational; the creator (if viewing the player surface)
+          gets the prominent END SESSION affordance. Suppressed once the
+          session is ENDED (the dedicated "Exercise complete" banner
+          below takes over). */}
+      {turnLimitMax !== null && snapshot.state !== "ENDED" ? (
+        <TurnLimitBanner
+          maxTurns={turnLimitMax}
+          isCreator={isSelfCreator}
+          onEnd={handleEnd}
+        />
+      ) : null}
+      {/* One-time soft warning when the session nears its turn cap —
+          owns its own fixed, non-blocking, self-expiring chrome. */}
+      <TurnLimitApproachingChip
+        turnsRemaining={turnLimitNotice.turnsRemaining}
+        nonce={turnLimitNotice.nonce}
+      />
       {/*
         Wave 3 (issue #69): session-wide pause banner. Visible to all
         participants for the duration of the pause so a player who

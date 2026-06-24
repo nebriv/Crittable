@@ -221,6 +221,15 @@ export interface SetupReplyResult {
   plan_proposed?: boolean;
   /** Backend-side rejections / truncations that occurred during this reply. */
   diagnostics?: BackendDiagnostic[];
+  /**
+   * True once the session has consumed its setup-turn budget — the AI
+   * won't ask further clarifying questions, so the creator must
+   * finalize the plan (or skip setup) to proceed. The setup UI surfaces
+   * a clear prompt and keeps the Finalize / Skip affordances reachable.
+   * Always present on the wire (CLAUDE.md "no back-compat optional
+   * fields"); ``false`` until the budget is exhausted.
+   */
+  setup_budget_exhausted: boolean;
 }
 
 /** One scenario entry in the dev-tools picker. Mirrors the

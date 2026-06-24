@@ -512,7 +512,10 @@ class LiteLLMChatClient(ChatClient):
     """LiteLLM-backed ``ChatClient``. acomplete lands in Phase 2; astream in Phase 3."""
 
     def __init__(self, *, settings: Settings) -> None:
-        super().__init__()
+        super().__init__(
+            max_concurrency=settings.llm_max_concurrency,
+            acquire_timeout_s=settings.llm_acquire_timeout_s,
+        )
         # Re-harden in case a third party imported ``litellm`` after our
         # module load and re-populated a callback list (e.g. an extension
         # that calls ``litellm.success_callback.append("langfuse")``).
@@ -808,7 +811,8 @@ class LiteLLMChatClient(ChatClient):
         )
         started = time.monotonic()
         try:
-            response = await litellm.acompletion(**kwargs)
+            async with self._concurrency_slot(tier=tier, session_id=session_id):
+                response = await litellm.acompletion(**kwargs)
         except Exception as exc:
             _logger.warning(
                 "llm_call_failed",
@@ -927,6 +931,18 @@ class LiteLLMChatClient(ChatClient):
         )
         started = time.monotonic()
 
+        # Acquire a heavy-lane concurrency slot held for the whole stream
+        # duration (cost/abuse H2). Done after ``_begin_call`` so the
+        # ``ai_thinking`` indicator covers any queue wait. Guarded so an
+        # acquire-timeout still ends the call (``sem_slot`` would be unbound
+        # in the main ``finally`` otherwise); released there once the
+        # network stream is drained.
+        try:
+            sem_slot = await self._acquire_slot(tier=tier, session_id=session_id)
+        except BaseException:
+            self._end_call(session_id, call)
+            raise
+
         chunks: list[Any] = []
         text_buffer: list[str] = []
         chunk_warn_logged = False
@@ -1034,6 +1050,8 @@ class LiteLLMChatClient(ChatClient):
                     raise classified from exc
                 raise
         finally:
+            if sem_slot is not None:
+                sem_slot.release()
             self._end_call(session_id, call)
 
         # Reconstruct the final response from the chunks. ``messages``

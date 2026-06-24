@@ -154,6 +154,7 @@ describe("Facilitator — handleLooksReady doesn't auto-finalize (regression)", 
       ok: true,
       plan_proposed: true,
       diagnostics: [],
+      setup_budget_exhausted: false,
     });
     const finalizeSpy = vi.spyOn(api, "setupFinalize");
 
