@@ -29,7 +29,7 @@
 **`ROLL · RESPOND · REVIEW`**
 
 A multi-user, browser-based tabletop platform for incident response.
-Open a session, brief the AI, share per-role join links, and Claude
+Open a session, brief the AI, share per-role join links, and the AI
 runs the room while your team responds. The after-action report drafts
 itself while the room is still warm.
 
@@ -40,12 +40,30 @@ itself while the room is still warm.
 > for multi-process WS fan-out). Authoritative architecture:
 > [`docs/PLAN.md`](docs/PLAN.md).
 
+## Why
+
+Small security teams can't run a tabletop on themselves. Someone has to
+build the scenario and play the adversary, and that person already knows
+every inject. So whoever would get the most out of the exercise ends up
+running the test instead of taking it.
+
+Hiring an outside firm to facilitate solves that. A good facilitated
+tabletop is worth the money, but it's expensive, and most teams manage it
+maybe once a year. That isn't often enough to get good at it.
+
+Crittable runs the exercise so the whole team can take part. It holds the
+scenario and throws the injects, reacting to what the team does. That frees
+whoever usually facilitates to play instead of run the room. Everyone
+comes in blind, works the problem together, and actually learns something.
+It won't replace a real facilitated tabletop, but it lets a team practice
+in the months between.
+
 ## What it does
 
 - **Set the brief.** Scenario / team / environment / constraints in four
-  short sections. Claude proposes a plan. You approve or skip.
+  short sections. The AI proposes a plan. You approve or skip.
 - **Per-role join links.** HMAC-signed tokens. Kick-and-reissue on demand.
-- **Turn-based exercise.** Claude narrates beats, throws injects, yields
+- **Turn-based exercise.** The AI narrates beats, throws injects, yields
   to specific roles via tool calls. Typical session: 30–60 min.
 - **Critical-event banners.** Per-role typing indicators. AI auto-interject
   on direct questions.
@@ -56,8 +74,10 @@ itself while the room is still warm.
 - **Operator-tunable everything.** Per-tier model / max_tokens / temperature
   / top_p / timeout, strict-retry count, setup-turn cap, submission cap,
   poll cadences. See [`docs/configuration.md`](docs/configuration.md).
-- **Provider swap.** `LLM_API_BASE` → Bedrock / Vertex / OpenRouter
-  / local Ollama via litellm. See [`docs/llm_providers.md`](docs/llm_providers.md).
+- **Provider swap.** Point `LLM_MODEL_<TIER>` at any of ~100 providers
+  (Bedrock / Vertex / OpenRouter / local Ollama / …) via LiteLLM;
+  `LLM_API_BASE` retargets a custom endpoint. See
+  [`docs/llm_providers.md`](docs/llm_providers.md).
 
 ## Quickstart
 
@@ -134,7 +154,8 @@ the forward button (NEXT, or ROLL SESSION on the final step) is disabled
 until you trim, so you'll never get bounced by the server after the
 fact. Role labels and display names are capped at 64 characters each
 (the wizard's role inputs stop you at the limit), and a session can have
-at most 32 invited roles.
+at most 24 roles by default — the creator plus up to 23 others (raise
+`MAX_ROLES_PER_SESSION` to lift it).
 
 > Tip: name systems by product (Splunk, Defender, Okta, IRIS, PagerDuty),
 > not generic categories. The more concrete the environment, the more it
@@ -193,7 +214,7 @@ them):
   cap. Be vivid but tight — cut filler, not detail; if you're running
   long, shorten prose before dropping facts.
 - Each role label (e.g. "IR Lead", "Comms") is at most 64 characters,
-  and so is each person's display name. Propose at most 32 roles.
+  and so is each person's display name. Propose at most 24 roles total.
 - Target duration must be between 15 and 180 minutes.
 
 Now draft the brief in EXACTLY these four sections, each under a clear
@@ -251,6 +272,7 @@ is the long form.
 | `SESSION_SECRET` | randomly generated, with a startup warning | HMAC key for join tokens. Not setting this means tokens are invalidated on every restart. Use 32+ random bytes. |
 | `CORS_ORIGINS` | `*` | Comma-separated allowlist. Lock to your actual origin(s). |
 | `RATE_LIMIT_ENABLED` | `false` | Flip to `true` and tune `RATE_LIMIT_REQ_PER_MIN` (default 60). |
+| `INVITE_CODE` | _unset_ | Optional anti-strangers gate on session creation — creators must supply a matching code. Player join links are unaffected (they carry their own HMAC tokens). Pair with `RATE_LIMIT_ENABLED` on a public URL. |
 
 ### Useful day-to-day
 
@@ -294,9 +316,9 @@ boundaries are enforced in code:
 1. Every turn driver entry point asserts the session state matches the
    tier's `allowed_states`.
 2. The LLM client filters the `tools` list against the tier's
-   `allowed_tool_names` before forwarding to Anthropic.
+   `allowed_tool_names` before forwarding to the provider (via LiteLLM).
 3. The dispatcher rejects forbidden tool calls at runtime and returns a
-   proper Anthropic `tool_result` so the model can self-correct rather
+   proper `tool_result` so the model can self-correct rather
    than retry blind.
 
 ## Documentation

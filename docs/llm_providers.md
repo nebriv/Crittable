@@ -265,10 +265,9 @@ If you add a new astream call site, add a row here.
 
 ## Why this matters
 
-Operators have varying constraints — air-gapped networks, regional
-data-residency rules, vendor-diversity mandates, model-family
-preferences, existing contractual relationships. Routing every call
-through LiteLLM covers:
+Operators run under different constraints: air-gapped networks,
+data-residency rules, or an approved-vendor list that doesn't include
+Anthropic. Routing every call through LiteLLM covers:
 
 - **The 95% case**: stick with the default, point at Anthropic.
 - **The "we have an Anthropic-shaped proxy" case**: `LLM_API_BASE`.
