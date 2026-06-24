@@ -206,6 +206,74 @@ describe("<MarkReadyButton/>", () => {
       const btn = screen.getByTestId("mark-ready-impersonate");
       expect(btn.textContent).toMatch(/READY ON THIS ROLE'S BEHALF/);
     });
+
+    it("renders the 'for them · not you' proxy caption when interactive — the misclick guard's textual channel", () => {
+      render(
+        <MarkReadyButton
+          isReady={false}
+          enabled={true}
+          onToggle={vi.fn()}
+          variant="impersonate"
+          subjectLabel="SOC Analyst"
+        />,
+      );
+      const btn = screen.getByTestId("mark-ready-impersonate");
+      expect(btn.textContent).toMatch(/for them · not you/);
+    });
+
+    it("renders the proxy caption in the READY state too (persistent, not just not-ready)", () => {
+      render(
+        <MarkReadyButton
+          isReady={true}
+          enabled={true}
+          onToggle={vi.fn()}
+          variant="impersonate"
+          subjectLabel="SOC Analyst"
+        />,
+      );
+      expect(
+        screen.getByTestId("mark-ready-impersonate").textContent,
+      ).toMatch(/for them · not you/);
+    });
+
+    it("hides the proxy caption while disabled (the disabledLabel carries the state instead)", () => {
+      render(
+        <MarkReadyButton
+          isReady={false}
+          enabled={false}
+          onToggle={vi.fn()}
+          variant="impersonate"
+          subjectLabel="SOC Analyst"
+          disabledLabel="NOT YOUR TURN"
+        />,
+      );
+      const btn = screen.getByTestId("mark-ready-impersonate");
+      expect(btn.textContent).toMatch(/NOT YOUR TURN/);
+      expect(btn.textContent).not.toMatch(/for them · not you/);
+    });
+
+    it("is structurally distinct from the self button — dashed border + smaller text, so it can't be misclicked for your own (creator feedback)", () => {
+      const { rerender } = render(
+        <MarkReadyButton isReady={false} enabled={true} onToggle={vi.fn()} variant="self" />,
+      );
+      const selfCls = screen.getByTestId("mark-ready").className;
+      rerender(
+        <MarkReadyButton
+          isReady={false}
+          enabled={true}
+          onToggle={vi.fn()}
+          variant="impersonate"
+          subjectLabel="SOC"
+        />,
+      );
+      const proxyCls = screen.getByTestId("mark-ready-impersonate").className;
+      // Self stays the solid, full-size primary; impersonate is dashed
+      // + one step smaller. Distinct on shape AND size, not just colour.
+      expect(selfCls).not.toMatch(/border-dashed/);
+      expect(proxyCls).toMatch(/border-dashed/);
+      expect(selfCls).toMatch(/text-\[11px\]/);
+      expect(proxyCls).toMatch(/text-\[10px\]/);
+    });
   });
 
   describe("in-flight pulse (UI/UX review MEDIUM M2)", () => {
