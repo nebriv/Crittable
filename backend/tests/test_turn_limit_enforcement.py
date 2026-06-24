@@ -23,7 +23,7 @@ from fastapi.testclient import TestClient
 
 from app.config import reset_settings_cache
 from app.main import create_app
-from app.sessions.models import Message, MessageKind, Session, SessionState, Turn
+from app.sessions.models import MessageKind, Session, SessionState, Turn
 from app.sessions.turn_driver import TurnDriver
 from tests.conftest import default_settings_body
 from tests.mock_chat_client import install_mock_chat_client, setup_then_play_script
