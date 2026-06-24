@@ -10,7 +10,7 @@ authoritative rules live there, not here.
 
 A multi-user, browser-based chat room that runs a cybersecurity tabletop
 exercise. The creator opens a session, defines roles (CISO / IR Lead /
-Legal / Comms / etc.), and shares a per-role join link. Claude drives a
+Legal / Comms / etc.), and shares a per-role join link. The AI drives a
 turn-based loop — narrates beats, throws injects, yields to specific
 roles via tool calls — and produces a markdown after-action report at
 session end. Typical exercise: 30–60 minutes.
@@ -31,7 +31,7 @@ are enforced in code.
 ## Repo layout
 
 ```
-backend/        FastAPI + Anthropic SDK; all turn / state / LLM logic
+backend/        FastAPI + LiteLLM (routes to ~100 providers); all turn / state / LLM logic
   app/api/      REST endpoints
   app/ws/       WebSocket + connection manager (chat-style fan-out)
   app/sessions/ Phase machine, turn driver, validator, slots, repository

@@ -153,7 +153,6 @@ Before adding or rewording a tool, verify each:
 | `share_data` | DRIVE | AI text bubble with bold label + markdown body | Synthetic data dump (logs, IOCs, telemetry) **only when explicitly asked**. |
 | `pose_choice` | DRIVE | AI text bubble with question + lettered options | Multi-choice tactical decision prompt for one role. |
 | `set_active_roles` | YIELD | (no chat — engine state change) | Yield the turn. Mandatory pair with one of the player-facing tools above. |
-| `end_session` | TERMINATE | (no chat — kicks AAR) | Terminate the exercise. |
 | `inject_critical_event` | ESCALATE | Red banner (everyone) | Headline-grade escalation. MUST be followed in same turn by broadcast + set_active_roles. |
 | `request_artifact` | BOOKKEEPING | (no chat — engine state) | Ask a role for a structured deliverable. Pair with broadcast for the framing. |
 | `track_role_followup` | BOOKKEEPING | (no chat) | Open a per-role follow-up todo. |
@@ -172,6 +171,12 @@ Before adding or rewording a tool, verify each:
   (`*[T+5min — Defender auto-isolated FIN-04]*`).
 - `mark_timeline_point` — sidebar pin. Model picked it as a "do
   something quick and stop" attractor.
+- `end_session` — model-facing turn terminator. Removed in the
+  2026-05-02 cleanup (after this redesign, issue #104); ending an
+  exercise is now operator-only via the creator's `request_end_session`
+  control, so the model can't self-terminate a session mid-turn. The
+  dispatcher / turn-driver still carry the `end_session_reason` plumbing
+  for that operator path.
 
 The dispatcher handlers for these tools remain as defensive dead code
 so an extension or legacy mock script that emits them still routes
@@ -249,12 +254,11 @@ head ref via the Actions UI.
 ### Per-run dollar cap
 
 [`backend/tests/live/cost_cap.py`](../backend/tests/live/cost_cap.py)
-intercepts every `AsyncAnthropic.messages.create` AND
-`messages.stream` call during the live session, multiplies
-`usage.input_tokens` / `output_tokens` / cache tokens by the
-per-million rate from
-[`app/llm/cost.py`](../backend/app/llm/cost.py), and aborts the run
-when the cumulative spend crosses the cap. Default cap: **$2.00**
+records usage on every live LLM call — a `litellm.callbacks` handler
+covers the production (LiteLLM-routed) path, with a fallback wrapper
+around the direct-Anthropic judge client — and prices each call via
+`app.llm._shared.compute_cost_usd` (which reads `litellm.cost_per_token`),
+aborting the run when the cumulative spend crosses the cap. Default cap: **$2.00**
 (standing suite is ~$1.40, ~$0.60 / 40% headroom for new tests,
 latency variance, and one retried flake). A tighter default would
 false-trip on routine variance and push contributors toward

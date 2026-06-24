@@ -32,7 +32,7 @@ export at session end.
 │  sessions/   models · repository(InMemory) · turn_engine     │
 │              · phase_policy · turn_driver · manager          │
 │              (per-session asyncio.Lock)                      │
-│  llm/    ChatClient ABC + Anthropic/LiteLLM backends         │
+│  llm/    ChatClient ABC + LiteLLM backend (~100 providers)   │
 │          · dispatch · guardrail · export                     │
 │  extensions/   ToolRegistry · ResourceRegistry ·             │
 │                PromptRegistry · loaders/env                  │
@@ -41,9 +41,9 @@ export at session end.
 └────────────────────────────┬─────────────────────────────────┘
                              │
                              ▼
-                    Anthropic API (HTTPS)
-                    (or any Anthropic-compatible
-                     endpoint via LLM_API_BASE)
+                    LLM provider API (HTTPS)
+                    (Anthropic / OpenAI / Bedrock /
+                     Vertex / … routed via LiteLLM)
 ```
 
 ## Session state machine
