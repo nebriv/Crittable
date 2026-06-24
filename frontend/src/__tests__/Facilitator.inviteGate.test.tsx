@@ -5,11 +5,10 @@
  *
  * - The wizard does NOT render while the mount-time probe is in flight.
  * - The wizard renders when the server reports the gate is off.
- * - A returning visitor with a stored + still-valid code skips the
- *   gate entirely (no wizard-filling-then-bouncing UX from the
- *   user-agent review HIGH-1).
- * - A returning visitor with a stored + invalid code lands on the
- *   gate (stored value cleared) without filling the wizard first.
+ * - A returning visitor with ANY stored code skips the gate (the code
+ *   is carried forward optimistically; a stale one is rejected at
+ *   create time, not by a mount-time oracle — that oracle was removed
+ *   server-side). The stored value is preserved, not cleared.
  * - A first-time visitor on a gated deploy lands on the gate.
  *
  * The WS module is stubbed because the test stays on the intro phase
@@ -69,7 +68,6 @@ describe("Facilitator — invite-code probe orchestration", () => {
   it("renders the wizard when the server reports no gate", async () => {
     vi.spyOn(api, "getInviteStatus").mockResolvedValue({
       required: false,
-      valid: null,
     });
     render(<Facilitator />);
     expect(
@@ -82,7 +80,6 @@ describe("Facilitator — invite-code probe orchestration", () => {
   it("renders the gate (not the wizard) on a first-time visit to a gated deploy", async () => {
     vi.spyOn(api, "getInviteStatus").mockResolvedValue({
       required: true,
-      valid: null,
     });
     render(<Facilitator />);
     expect(
@@ -93,11 +90,15 @@ describe("Facilitator — invite-code probe orchestration", () => {
     ).not.toBeInTheDocument();
   });
 
-  it("skips the gate for a returning visitor whose stored code is still valid", async () => {
+  it("skips the gate (and preserves the stored code) for a returning visitor on a gated deploy", async () => {
+    // Post-oracle-removal: the mount probe only reports ``required``,
+    // so ANY stored code is carried forward optimistically and the gate
+    // is skipped. A stale code is no longer caught here — it's rejected
+    // at create time (covered in the create-403 path), where the user
+    // is re-prompted. The stored value is NOT cleared on mount.
     window.localStorage.setItem(INVITE_CODE_STORAGE_KEY, "tabletop-2026");
     vi.spyOn(api, "getInviteStatus").mockResolvedValue({
       required: true,
-      valid: true,
     });
     render(<Facilitator />);
     expect(
@@ -109,22 +110,22 @@ describe("Facilitator — invite-code probe orchestration", () => {
     expect(readStoredInviteCode()).toBe("tabletop-2026");
   });
 
-  it("clears storage + shows the gate when a returning visitor's stored code is no longer valid", async () => {
-    // The user-agent review HIGH-1 — a returning visitor with a
-    // rotated-since-last-visit code MUST NOT fill out the wizard
-    // first. The revalidation lives at the Facilitator probe.
-    window.localStorage.setItem(INVITE_CODE_STORAGE_KEY, "old-code");
+  it("clears the stored code and shows the wizard when the gate is off", async () => {
+    // When the server reports no gate, a leftover stored code is
+    // dropped so a later flip back to gated can't accept a now-
+    // untrusted value. (This is the one mount-time path that still
+    // clears storage; the invalid-code clear moved to the create-403
+    // handler.)
+    window.localStorage.setItem(INVITE_CODE_STORAGE_KEY, "leftover");
     vi.spyOn(api, "getInviteStatus").mockResolvedValue({
-      required: true,
-      valid: false,
+      required: false,
     });
     render(<Facilitator />);
     expect(
-      await screen.findByLabelText(/invite code/i),
+      await screen.findByPlaceholderText(
+        /What happened, when, at what severity/i,
+      ),
     ).toBeInTheDocument();
-    expect(
-      screen.queryByPlaceholderText(/What happened, when, at what severity/i),
-    ).not.toBeInTheDocument();
     await waitFor(() => {
       expect(readStoredInviteCode()).toBeNull();
     });

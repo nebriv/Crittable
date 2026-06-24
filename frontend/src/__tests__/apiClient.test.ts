@@ -211,6 +211,78 @@ describe("api/client — request wrapper", () => {
     await expect(api.start("s1", "tok")).rejects.toThrow(/500/);
   });
 
+  it("parses a numeric Retry-After header onto ApiError.retryAfter (503 at-capacity)", async () => {
+    _mockFetch(
+      async () =>
+        new Response(
+          JSON.stringify({ detail: "Crittable is at capacity; try again shortly." }),
+          {
+            status: 503,
+            headers: {
+              "content-type": "application/json",
+              "Retry-After": "30",
+            },
+          },
+        ),
+    );
+    const err = (await api
+      .createSession({
+        scenario_prompt: "x",
+        creator_label: "CISO",
+        creator_display_name: "Alex",
+        settings: {
+          difficulty: "standard",
+          duration_minutes: 60,
+          features: {
+            active_adversary: true,
+            time_pressure: true,
+            executive_escalation: true,
+            media_pressure: false,
+          },
+        },
+      })
+      .catch((e) => e)) as ApiError;
+    expect(err).toBeInstanceOf(ApiError);
+    expect(err.status).toBe(503);
+    expect(err.retryAfter).toBe(30);
+    expect(err.message).toMatch(/at capacity/i);
+  });
+
+  it("leaves ApiError.retryAfter null when the header is absent or non-numeric", async () => {
+    // Absent header → null.
+    _mockFetch(async () =>
+      new Response(JSON.stringify({ detail: "nope" }), {
+        status: 503,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+    const absent = (await api.start("s1", "tok").catch((e) => e)) as ApiError;
+    expect(absent.retryAfter).toBeNull();
+
+    // HTTP-date form (spec-legal but our server never sends it) → null,
+    // not a misleading number.
+    _mockFetch(async () =>
+      new Response(JSON.stringify({ detail: "nope" }), {
+        status: 503,
+        headers: {
+          "content-type": "application/json",
+          "Retry-After": "Wed, 21 Oct 2026 07:28:00 GMT",
+        },
+      }),
+    );
+    const dated = (await api.start("s1", "tok").catch((e) => e)) as ApiError;
+    expect(dated.retryAfter).toBeNull();
+  });
+
+  it("getInviteStatus probes the bare endpoint with no ?code= oracle query", async () => {
+    const fetchMock = _mockFetch(async () => _jsonResponse({ required: true }));
+    const status = await api.getInviteStatus();
+    expect(status).toEqual({ required: true });
+    const [path] = fetchMock.mock.calls[0]!;
+    expect(path).toBe("/api/invite/status");
+    expect(String(path)).not.toContain("code=");
+  });
+
   it("warns to console on a 4xx without exposing the raw token", async () => {
     _mockFetch(async () =>
       new Response(JSON.stringify({ detail: "nope" }), {

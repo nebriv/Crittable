@@ -120,7 +120,6 @@ describe("Facilitator — handleLooksReady doesn't auto-finalize (regression)", 
     // already polls, so an explicit mock is simpler.
     vi.spyOn(api, "getInviteStatus").mockResolvedValue({
       required: false,
-      valid: null,
     });
   });
 

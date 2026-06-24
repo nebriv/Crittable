@@ -279,10 +279,22 @@ function _scrub(path: string): string {
  */
 export class ApiError extends Error {
   status: number;
-  constructor(message: string, status: number) {
+  /**
+   * Parsed ``Retry-After`` header value in **seconds**, when the server
+   * sent one (it does on the 503 "at capacity" rejection from
+   * ``POST /api/sessions`` and on the 425 AAR-poll path). ``null`` when
+   * the header is absent or non-numeric. Callers branching on a 503 use
+   * this to tell the operator roughly how long to wait. This is a
+   * client-side error property, not a wire field — it's genuinely
+   * absent on the vast majority of errors, so optional here is correct
+   * (it is NOT a back-compat shim for an older backend).
+   */
+  retryAfter: number | null;
+  constructor(message: string, status: number, retryAfter: number | null = null) {
     super(message);
     this.name = "ApiError";
     this.status = status;
+    this.retryAfter = retryAfter;
   }
 }
 
@@ -349,6 +361,22 @@ function _formatErrorDetail(detail: unknown, status: number): string {
   return `${status}`;
 }
 
+/**
+ * Parse a ``Retry-After`` header into a non-negative integer number of
+ * seconds, or ``null`` when absent / non-numeric. The backend emits the
+ * delta-seconds form (``Retry-After: 30``) on its backpressure paths;
+ * the HTTP-date form is allowed by the spec but our server never sends
+ * it, so we don't parse it (and a stray date safely degrades to
+ * ``null`` rather than a misleading number).
+ */
+function _parseRetryAfter(raw: string | null): number | null {
+  if (raw == null) return null;
+  const trimmed = raw.trim();
+  if (!/^\d+$/.test(trimmed)) return null;
+  const n = Number.parseInt(trimmed, 10);
+  return Number.isFinite(n) && n >= 0 ? n : null;
+}
+
 async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
   const safePath = _scrub(path);
   console.debug(`[api] ${method} ${safePath}`, body ?? "");
@@ -367,8 +395,13 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
     } catch {
       /* ignore */
     }
+    // ``Retry-After`` is a delta-seconds integer on the backpressure
+    // paths (503 at-capacity, 425 AAR-not-ready). Surface it on the
+    // error so a caller can tell the operator how long to wait without
+    // re-reading the response (which the wrapper has already consumed).
+    const retryAfter = _parseRetryAfter(res.headers.get("retry-after"));
     console.warn(`[api] ${method} ${safePath} → ${res.status} (${ms}ms)`, detail);
-    throw new ApiError(detail, res.status);
+    throw new ApiError(detail, res.status, retryAfter);
   }
   const out = (await res.json()) as T;
   console.debug(`[api] ${method} ${safePath} → ${res.status} (${ms}ms)`);
@@ -405,30 +438,30 @@ export const DEFAULT_SESSION_FEATURES: SessionFeatures = {
 };
 
 /** Shape returned by ``GET /api/invite/status``. ``required`` reflects
- *  whether the server has the ``INVITE_CODE`` env var set; ``valid``
- *  is ``null`` when no ``?code=`` was supplied or when no gate runs.
- *  The frontend hits this on the facilitator page mount to decide
- *  whether to show the gate UI, and again on submit to validate the
- *  user's entry without going through the heavier create-session
- *  path. */
+ *  whether the server has the ``INVITE_CODE`` env var set — that's the
+ *  *only* thing this endpoint reveals. The frontend hits it on the
+ *  facilitator page mount to decide whether to SHOW the invite-code
+ *  input.
+ *
+ *  The old ``valid`` field (a live "does this code match?" oracle) was
+ *  removed server-side: echoing match/no-match for an arbitrary
+ *  ``?code=`` turned the endpoint into a brute-force oracle. Code
+ *  validation now happens only on the authenticated, rate-limited
+ *  ``POST /api/sessions`` path, which returns 403 for a bad code. */
 export interface InviteStatus {
   required: boolean;
-  valid: boolean | null;
 }
 
 export const api = {
   /** Probe the soft anti-strangers gate.
    *
-   *  ``code`` is optional: without it, the response just says
-   *  whether the gate is on. With it, ``valid`` reports whether the
-   *  supplied code matches. The backend logs rejected probes at
-   *  WARNING so brute-force attempts surface in normal log scans;
-   *  the code is never logged. */
-  async getInviteStatus(code?: string): Promise<InviteStatus> {
-    const qs = code != null && code.length > 0
-      ? `?code=${encodeURIComponent(code)}`
-      : "";
-    return request("GET", `/api/invite/status${qs}`);
+   *  Returns only ``{ required }`` — whether the server has
+   *  ``INVITE_CODE`` set. There is no longer a code-match oracle here
+   *  (see ``InviteStatus``); the supplied code, if any, is not echoed
+   *  back as valid/invalid. We still call this with no argument from
+   *  the facilitator mount to decide whether to render the gate. */
+  async getInviteStatus(): Promise<InviteStatus> {
+    return request("GET", "/api/invite/status");
   },
 
   async createSession(body: {
