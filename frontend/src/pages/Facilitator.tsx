@@ -50,7 +50,9 @@ import {
   readStoredSessionDraft,
   writeStoredSessionDraft,
 } from "../lib/sessionDraftStorage";
+import { CenteredCard } from "../components/brand/CenteredCard";
 import { SiteHeader } from "../components/brand/SiteHeader";
+import { Eyebrow } from "../components/brand/Eyebrow";
 import { SetupLobbyView } from "../components/setup/SetupLobbyView";
 import { SetupReviewView } from "../components/setup/SetupReviewView";
 import { PlanView } from "../components/setup/PlanView";
@@ -337,15 +339,17 @@ export function Facilitator() {
   // Tri-state: ``null`` while the mount-time probe is in flight (we
   // render a tiny loader rather than flashing the wizard then snapping
   // to the gate); ``false`` once the server confirms no gate; ``true``
-  // when the server confirms a gate AND we haven't already validated a
-  // code below. The probe answers both questions in one round-trip —
-  // is the gate on, and (if there's a localStorage code) is it still
-  // valid — so a returning visitor whose code was rotated mid-night
-  // lands on the gate directly instead of after filling out the whole
-  // wizard. Backend re-validates on ``POST /api/sessions`` regardless,
-  // so a stale localStorage value or a missed probe still get caught
-  // there; the front-side gate is the UX layer, not the security
-  // boundary.
+  // when the server confirms a gate AND we don't yet have a candidate
+  // code below. The probe answers ONE question now — is the gate on?
+  // (The old code-match oracle was removed server-side; the endpoint no
+  // longer reports whether a stored code is still valid.) A stored code
+  // is carried forward optimistically as the candidate; if it's stale,
+  // ``POST /api/sessions`` returns 403 and the create handler clears it
+  // and re-prompts via <InviteGate> with a stale-code notice. The
+  // front-side gate is the UX layer; the invite-gated, rate-limited
+  // create path is the actual validation boundary — it is intentionally
+  // unauthenticated (the cost-abuse front door), gated by the invite
+  // code and the per-IP create limiter rather than a token.
   const [inviteRequired, setInviteRequired] = useState<boolean | null>(null);
   const [inviteCode, setInviteCode] = useState<string | null>(null);
   const [staleInviteNotice, setStaleInviteNotice] = useState<string | null>(
@@ -356,10 +360,9 @@ export function Facilitator() {
     (async () => {
       const stored = readStoredInviteCode();
       try {
-        // One round-trip resolves both questions:
-        // - status.required → is the gate on?
-        // - status.valid (when ?code= passed) → is the stored code still valid?
-        const status = await api.getInviteStatus(stored ?? undefined);
+        // The probe now resolves a single question: is the gate on?
+        // (status.required). There's no code-match oracle to consult.
+        const status = await api.getInviteStatus();
         if (canceled) return;
         if (!status.required) {
           // Server isn't gating; drop any stale stored value so a
@@ -370,19 +373,14 @@ export function Facilitator() {
           setInviteRequired(false);
           return;
         }
-        if (stored && status.valid === true) {
-          // Returning visitor with a still-valid code: skip the gate.
+        // Gate is on. Carry a stored code forward optimistically as the
+        // candidate so a returning visitor with a still-good code skips
+        // the gate; a stale one is caught at create time (403 →
+        // re-prompt). With no stored code we render the gate.
+        if (stored) {
           setInviteCode(stored);
           setInviteRequired(true);
           return;
-        }
-        // Either no stored code, or the stored one no longer matches.
-        // Drop it so the next render shows the gate cleanly.
-        if (stored && status.valid !== true) {
-          clearStoredInviteCode();
-          console.info(
-            "[facilitator] stored invite code is no longer valid; re-prompting",
-          );
         }
         setInviteCode(null);
         setInviteRequired(true);
@@ -417,6 +415,15 @@ export function Facilitator() {
   // un-exhausts the budget, so it only ever latches on.
   const [setupBudgetExhausted, setSetupBudgetExhausted] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // "At capacity" signal: set when ``POST /api/sessions`` returns 503
+  // (the server has hit its live-session cap). Rendered as a distinct,
+  // on-brand card on the intro phase instead of the generic red error
+  // line, because it's a transient "try again shortly" state, not an
+  // operator mistake. ``retryAfterSec`` is the parsed ``Retry-After``
+  // header when present (null otherwise) so the card can name the wait.
+  const [capacityNotice, setCapacityNotice] = useState<{
+    retryAfterSec: number | null;
+  } | null>(null);
   // Creator-only "backend degraded / heavy load" signal (``backend_status``
   // WS event). ``message`` is the latest operator-facing copy; ``nonce``
   // is bumped on every frame so <BackendStatusChip> re-arms its
@@ -821,6 +828,7 @@ export function Facilitator() {
   async function handleCreate(e: FormEvent) {
     e.preventDefault();
     setError(null);
+    setCapacityNotice(null);
     setBusy(true);
     setBusyMessage(
       devMode
@@ -948,6 +956,16 @@ export function Facilitator() {
         setStaleInviteNotice(
           "Your invite code is no longer valid — likely rotated by the operator. Enter the current code to continue.",
         );
+      } else if (err instanceof ApiError && err.status === 503) {
+        // Server is at its live-session cap. Distinct from a generic
+        // failure: it's transient and the operator just needs to wait,
+        // so we surface a calm on-brand "at capacity" card rather than
+        // a red error line. The ``Retry-After`` header (parsed onto the
+        // ApiError) tells them roughly how long.
+        console.warn("[facilitator] create_session_at_capacity", {
+          retryAfter: err.retryAfter,
+        });
+        setCapacityNotice({ retryAfterSec: err.retryAfter });
       } else {
         console.warn("[facilitator] create_session_failed", msg, err);
         setError(msg);
@@ -1845,6 +1863,23 @@ export function Facilitator() {
   };
 
   if (phase === "intro") {
+    // "At capacity" takes priority over everything else on the intro
+    // phase: once the create call comes back 503 the operator's only
+    // useful action is to wait and retry, so we replace the wizard with
+    // a calm card rather than burying a red error line under the form.
+    // RETRY clears the notice and drops them back into the wizard with
+    // their draft intact (form state is untouched on this path).
+    if (capacityNotice !== null) {
+      return (
+        <CapacityNotice
+          retryAfterSec={capacityNotice.retryAfterSec}
+          onRetry={() => {
+            console.info("[facilitator] at-capacity retry");
+            setCapacityNotice(null);
+          }}
+        />
+      );
+    }
     // While the mount-time probe is in flight (``inviteRequired ===
     // null``) we render a tiny <SiteHeader> + <DieLoader> rather
     // than flashing the wizard then snapping to the gate. The probe
@@ -2777,6 +2812,86 @@ export function Facilitator() {
         />
       ) : null}
     </main>
+  );
+}
+
+/**
+ * "At capacity" card shown on the intro phase when ``POST /api/sessions``
+ * returns 503 (the server has hit its live-session cap). Distinct from
+ * the generic red error line: this is a transient, no-fault "try again
+ * shortly" state, so it gets calm on-brand chrome (the same centered
+ * card the <InviteGate> uses) rather than reading as an operator
+ * mistake. ``retryAfterSec`` comes from the response's ``Retry-After``
+ * header when present; we name the wait so the operator isn't guessing.
+ */
+function CapacityNotice({
+  retryAfterSec,
+  onRetry,
+}: {
+  retryAfterSec: number | null;
+  onRetry: () => void;
+}) {
+  // Turn the delta-seconds header into operator-friendly copy. Round up
+  // to the nearest minute past 90 s so "try again in 2 minutes" reads
+  // cleaner than "in 120 seconds"; keep the raw seconds below that.
+  const wait =
+    retryAfterSec == null
+      ? "in a few minutes"
+      : retryAfterSec <= 90
+        ? `in about ${retryAfterSec} second${retryAfterSec === 1 ? "" : "s"}`
+        : `in about ${Math.ceil(retryAfterSec / 60)} minutes`;
+  return (
+    <CenteredCard tone="warn" role="alert">
+      <header className="flex flex-col gap-2">
+        <Eyebrow>Status · At capacity</Eyebrow>
+        <h1
+          className="sans"
+          style={{
+            fontSize: 26,
+            fontWeight: 600,
+            color: "var(--ink-050)",
+            margin: 0,
+            letterSpacing: "-0.01em",
+          }}
+        >
+          Crittable is at capacity
+        </h1>
+        <p
+          className="sans"
+          style={{
+            fontSize: 13,
+            color: "var(--ink-300)",
+            margin: 0,
+            lineHeight: 1.5,
+          }}
+        >
+          Every live session slot is currently in use. Your brief
+          wasn't lost — try again {wait}. If you were invited as a
+          player, your join link still works; this limit only applies
+          to starting a new session.
+        </p>
+      </header>
+      <button
+        type="button"
+        onClick={onRetry}
+        className="mono"
+        style={{
+          marginTop: 4,
+          padding: "10px 16px",
+          background: "var(--signal)",
+          color: "var(--ink-950)",
+          border: "1px solid var(--signal-deep)",
+          borderRadius: 2,
+          fontSize: 12,
+          fontWeight: 700,
+          letterSpacing: "0.12em",
+          textTransform: "uppercase",
+          cursor: "pointer",
+        }}
+      >
+        Back to setup · retry
+      </button>
+    </CenteredCard>
   );
 }
 

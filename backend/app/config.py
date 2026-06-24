@@ -335,6 +335,53 @@ class Settings(BaseSettings):
     cors_origins: str = Field(default="*", alias="CORS_ORIGINS")
     rate_limit_enabled: bool = Field(default=False, alias="RATE_LIMIT_ENABLED")
     rate_limit_req_per_min: int = Field(default=60, alias="RATE_LIMIT_REQ_PER_MIN", ge=1)
+    # Dedicated per-IP throttle on ``POST /api/sessions`` (security audit
+    # C1). Session creation is the single most expensive request the app
+    # serves — each one fires a setup-tier LLM call — so it gets its own
+    # token bucket independent of ``RATE_LIMIT_REQ_PER_MIN`` and runs
+    # *regardless* of ``RATE_LIMIT_ENABLED``: the general request limiter
+    # is opt-in for the cheap routes, but the create path is always
+    # throttled because the abuse-cost asymmetry is too steep to leave
+    # ungated by default. Tune the cap up for a busy multi-facilitator
+    # deploy; set ``0`` to disable entirely (only safe behind an
+    # ``INVITE_CODE`` gate or an upstream WAF). Keyed on the same
+    # hardened client-IP resolution the request limiter uses, so a
+    # spoofed ``X-Forwarded-For`` can't shard the bucket.
+    session_create_rate_per_min: int = Field(
+        default=5, alias="SESSION_CREATE_RATE_PER_MIN", ge=0
+    )
+    # Trust the ``X-Forwarded-For`` header for client-IP resolution
+    # (security audit H7). OFF by default: when off, the rate limiters
+    # key on the socket peer (``scope["client"]``) and ignore XFF
+    # entirely, so a direct client can't spoof its way into a fresh
+    # bucket. Turn ON only when the app sits behind a reverse proxy you
+    # control that **overwrites** (not appends) XFF — and list that
+    # proxy's egress IP(s) in ``TRUSTED_PROXIES``. With both set, the
+    # resolver walks XFF right-to-left, skipping trusted hops, and takes
+    # the first untrusted entry as the real client. An XFF arriving from
+    # an untrusted immediate peer is ignored even when this flag is on.
+    trust_forwarded_for: bool = Field(
+        default=False, alias="TRUST_FORWARDED_FOR"
+    )
+    # Comma-separated IPs / CIDRs of the reverse proxies whose
+    # ``X-Forwarded-For`` is trusted (security audit H7). Empty (the
+    # default) means "trust no proxy" — consulted only when
+    # ``TRUST_FORWARDED_FOR=true``. Membership is tested with the
+    # stdlib ``ipaddress`` module so both single addresses
+    # (``10.0.0.7``) and ranges (``10.0.0.0/8``, ``2001:db8::/32``)
+    # work. The immediate socket peer must be in this set before any
+    # XFF entry is honoured.
+    trusted_proxies: str = Field(default="", alias="TRUSTED_PROXIES")
+    # Optional override for the response ``Content-Security-Policy``
+    # header (security audit M5). Empty (the default) ships the
+    # hardened built-in policy in ``app.security_headers``. Set this
+    # only if a deployment genuinely needs a looser policy (e.g. an
+    # operator embedding an external analytics beacon) — the default
+    # is self-hosted-only on purpose so air-gapped / strict-CSP
+    # security-team deploys work out of the box.
+    content_security_policy: str = Field(
+        default="", alias="CONTENT_SECURITY_POLICY"
+    )
     # Soft "anti-strangers" gate on ``POST /api/sessions``. When set to
     # a non-empty value, the creator must supply a matching ``invite_code``
     # on session creation; the player-side join links still work without
@@ -521,6 +568,17 @@ class Settings(BaseSettings):
         if raw == "*":
             return "*"
         return [item.strip() for item in raw.split(",") if item.strip()]
+
+    def trusted_proxy_list(self) -> list[str]:
+        """Parse ``TRUSTED_PROXIES`` into a list of raw IP / CIDR strings.
+
+        Empty / whitespace-only entries are dropped. The strings are
+        validated into ``ip_network`` objects lazily in
+        ``rate_limit.resolve_client_ip`` (a malformed entry there logs a
+        warning and is skipped rather than crashing request handling).
+        """
+
+        return [item.strip() for item in self.trusted_proxies.split(",") if item.strip()]
 
     def resolve_session_secret(self) -> str:
         """Return the configured secret, or generate (and warn about) a transient one."""

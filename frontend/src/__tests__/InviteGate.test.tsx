@@ -1,14 +1,17 @@
 /**
  * Component tests for the soft anti-strangers invite gate.
  *
- * Pins the contract <Facilitator/> depends on: the user can submit a
- * code, the submit path revalidates against ``api.getInviteStatus``,
- * valid codes persist to localStorage + call ``onValidated``, invalid
- * ones surface an inline error without storing anything, and a
- * ``staleNotice`` prop renders the operator-rotated-code recovery
- * banner. The stored-code revalidation on mount is <Facilitator/>'s
- * responsibility (covered in ``Facilitator.intro.test.tsx``), not
- * the gate's — keeping it here would split the source of truth.
+ * Pins the contract <Facilitator/> depends on AFTER the invite-status
+ * oracle removal: the user can submit a code, a non-empty code is
+ * persisted to localStorage and handed up via ``onValidated`` WITHOUT a
+ * pre-validation probe (the match oracle was removed server-side — the
+ * code is validated on the create-session call instead), an empty /
+ * whitespace-only code is blocked inline, and a ``staleNotice`` prop
+ * renders the operator-rotated-code recovery banner.
+ *
+ * The mount-time probe + the create-time 403 re-prompt are
+ * <Facilitator/>'s responsibility (covered in Facilitator.inviteGate /
+ * Facilitator.atCapacity tests), not the gate's.
  */
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -26,12 +29,10 @@ describe("InviteGate", () => {
     vi.restoreAllMocks();
   });
 
-  it("calls onValidated and persists the code when the server accepts it", async () => {
+  it("persists the code and calls onValidated without probing the server", async () => {
     const onValidated = vi.fn();
-    vi.spyOn(api, "getInviteStatus").mockResolvedValue({
-      required: true,
-      valid: true,
-    });
+    // The gate must NOT hit the status endpoint on submit anymore.
+    const probe = vi.spyOn(api, "getInviteStatus");
     render(<InviteGate onValidated={onValidated} />);
 
     fireEvent.change(screen.getByLabelText(/invite code/i), {
@@ -43,29 +44,25 @@ describe("InviteGate", () => {
       expect(onValidated).toHaveBeenCalledWith("tabletop-2026");
     });
     expect(readStoredInviteCode()).toBe("tabletop-2026");
+    expect(probe).not.toHaveBeenCalled();
   });
 
-  it("surfaces an inline error and does not persist when the server rejects", async () => {
+  it("trims surrounding whitespace before persisting and handing up", async () => {
     const onValidated = vi.fn();
-    vi.spyOn(api, "getInviteStatus").mockResolvedValue({
-      required: true,
-      valid: false,
-    });
     render(<InviteGate onValidated={onValidated} />);
 
     fireEvent.change(screen.getByLabelText(/invite code/i), {
-      target: { value: "wrong" },
+      target: { value: "  tabletop-2026  " },
     });
     fireEvent.click(screen.getByRole("button", { name: /continue/i }));
 
     await waitFor(() => {
-      expect(screen.getByRole("alert")).toHaveTextContent(/didn't match/i);
+      expect(onValidated).toHaveBeenCalledWith("tabletop-2026");
     });
-    expect(onValidated).not.toHaveBeenCalled();
-    expect(readStoredInviteCode()).toBeNull();
+    expect(readStoredInviteCode()).toBe("tabletop-2026");
   });
 
-  it("blocks submit on an empty / whitespace-only code without probing the server", async () => {
+  it("blocks submit on an empty / whitespace-only code without storing or handing up", async () => {
     const onValidated = vi.fn();
     const probe = vi.spyOn(api, "getInviteStatus");
     render(<InviteGate onValidated={onValidated} />);
@@ -77,22 +74,6 @@ describe("InviteGate", () => {
 
     expect(screen.getByRole("alert")).toHaveTextContent(/enter the invite code/i);
     expect(probe).not.toHaveBeenCalled();
-    expect(onValidated).not.toHaveBeenCalled();
-  });
-
-  it("surfaces a network error instead of silently dropping the submit", async () => {
-    const onValidated = vi.fn();
-    vi.spyOn(api, "getInviteStatus").mockRejectedValue(new Error("boom"));
-    render(<InviteGate onValidated={onValidated} />);
-
-    fireEvent.change(screen.getByLabelText(/invite code/i), {
-      target: { value: "tabletop-2026" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: /continue/i }));
-
-    await waitFor(() => {
-      expect(screen.getByRole("alert")).toHaveTextContent(/boom/);
-    });
     expect(onValidated).not.toHaveBeenCalled();
     expect(readStoredInviteCode()).toBeNull();
   });

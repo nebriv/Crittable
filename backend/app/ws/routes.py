@@ -7,6 +7,7 @@ from typing import Any
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, status
 
+from ..api.errors import ws_error_message
 from ..auth.authn import HMACAuthenticator, InvalidTokenError, ParticipantKindLiteral
 from ..auth.authz import AuthorizationError, require_creator, require_participant
 from ..config import Settings
@@ -608,11 +609,19 @@ async def _client_pump(
                 try:
                     require_participant(token_payload)
                 except AuthorizationError as exc:
+                    # M11: curated client message; raw detail logged.
+                    _logger.warning(
+                        "ws_mutating_event_unauthorized",
+                        session_id=session_id,
+                        role_id=role_id,
+                        event_type=event_type,
+                        error=str(exc),
+                    )
                     await websocket.send_json(
                         {
                             "type": "error",
                             "scope": event_type,
-                            "message": str(exc),
+                            "message": ws_error_message(exc),
                         }
                     )
                     continue
@@ -690,8 +699,19 @@ async def _client_pump(
                     )
                     continue
                 except IllegalTransitionError as exc:
+                    # M11: curated client message; raw detail logged.
+                    _logger.warning(
+                        "ws_submit_response_rejected",
+                        session_id=session_id,
+                        role_id=role_id,
+                        error=str(exc),
+                    )
                     await websocket.send_json(
-                        {"type": "error", "scope": "submit_response", "message": str(exc)}
+                        {
+                            "type": "error",
+                            "scope": "submit_response",
+                            "message": ws_error_message(exc),
+                        }
                     )
                     continue
                 if outcome.truncated:
@@ -782,7 +802,7 @@ async def _client_pump(
                         {
                             "type": "error",
                             "scope": "force_advance",
-                            "message": str(exc),
+                            "message": ws_error_message(exc),
                         }
                     )
                     continue
@@ -796,13 +816,20 @@ async def _client_pump(
                         await TurnDriver(manager=manager).run_play_turn(
                             session=session, turn=turn
                         )
-                except AuthorizationError as exc:
-                    await websocket.send_json(
-                        {"type": "error", "scope": "force_advance", "message": str(exc)}
+                except (AuthorizationError, IllegalTransitionError) as exc:
+                    # M11: curated client message; raw detail logged.
+                    _logger.warning(
+                        "ws_force_advance_rejected",
+                        session_id=session_id,
+                        role_id=role_id,
+                        error=str(exc),
                     )
-                except IllegalTransitionError as exc:
                     await websocket.send_json(
-                        {"type": "error", "scope": "force_advance", "message": str(exc)}
+                        {
+                            "type": "error",
+                            "scope": "force_advance",
+                            "message": ws_error_message(exc),
+                        }
                     )
             elif event_type == "set_ready":
                 # Decoupled-ready model: the composer no longer carries
@@ -907,7 +934,13 @@ async def _client_pump(
                         reason=str(exc),
                     )
                     await websocket.send_json(
-                        {"type": "error", "scope": "end_session", "message": str(exc)}
+                        {
+                            "type": "error",
+                            "scope": "end_session",
+                            "message": ws_error_message(
+                                exc, message="only the creator can end the session"
+                            ),
+                        }
                     )
             elif event_type in ("typing_start", "typing_stop"):
                 # Relay to other connections only (not the sender). Lightweight

@@ -160,10 +160,42 @@ Defaults preserve historical behavior so unset = no change.
 | Var | Default | Effect |
 |---|---|---|
 | `SESSION_SECRET` | randomly generated at startup (warn) | HMAC key for join tokens. **Set explicitly for any non-toy deploy.** |
-| `CORS_ORIGINS` | `*` | Comma-separated allowlist. **Set explicitly before going public.** |
-| `RATE_LIMIT_ENABLED` | `false` | Toggle the rate-limit middleware |
-| `RATE_LIMIT_REQ_PER_MIN` | `60` | Per-IP request cap when enabled |
-| `INVITE_CODE` | unset (no gate) | Soft anti-strangers gate on `POST /api/sessions`. When set to a non-empty value, the creator must supply a matching code on the wizard's invite gate before a session can be created; the wizard caches a validated code in `localStorage` so refreshes don't re-prompt. Player join links don't need it — they already carry per-role HMAC tokens. This is NOT a security boundary; it's a stopgap so a public-URL deploy doesn't burn LLM tokens on every drive-by. **Pair with `RATE_LIMIT_ENABLED=true`** so a brute-forcer can't grind through the code via the cheap `GET /api/invite/status?code=…` probe or the heavier `POST /api/sessions` path. Comparison is constant-time and surrounding whitespace is stripped so a copy-paste with a trailing newline still matches. The value is redacted from access logs and the browser-console request wrapper. App emits `invite_code_gate_enabled` at boot (or `invite_code_set_without_rate_limit` WARNING if the rate-limit middleware isn't on). |
+| `CORS_ORIGINS` | `*` | Comma-separated allowlist. **Set explicitly before going public.** Narrowing it away from `*` marks the deploy as "real" and arms the C1 front-door boot gate (see below). |
+| `RATE_LIMIT_ENABLED` | `false` | Toggle the general per-IP rate-limit middleware (covers all routes except `/healthz` / `/readyz`). |
+| `RATE_LIMIT_REQ_PER_MIN` | `60` | Per-IP request cap for the general middleware when enabled. |
+| `SESSION_CREATE_RATE_PER_MIN` | `5` | **Dedicated** per-IP token bucket on `POST /api/sessions` (security audit C1), independent of `RATE_LIMIT_REQ_PER_MIN` and applied **regardless of `RATE_LIMIT_ENABLED`**. Session creation is the costliest request (each one fires a setup-tier LLM call), so it's always throttled. Past the cap the route returns **429 + `Retry-After: 60`**. Set `0` to disable — only safe behind an `INVITE_CODE` gate or an upstream WAF (and the C1 boot gate will refuse to start a non-local deploy that has neither). Keyed on the hardened client-IP resolver (see `TRUST_FORWARDED_FOR`). |
+| `TRUST_FORWARDED_FOR` | `false` | Whether to trust the `X-Forwarded-For` header for client-IP resolution in the rate limiters (security audit H7). **Off by default**: the limiters key on the socket peer, so a direct client can't spoof XFF to mint a fresh per-IP bucket. Turn on **only** behind a reverse proxy you control that **overwrites** (not appends) XFF, and list that proxy in `TRUSTED_PROXIES`. When on, the resolver walks XFF right-to-left, skips trusted hops, and takes the first untrusted entry as the real client; an XFF arriving from an untrusted immediate peer is ignored. |
+| `TRUSTED_PROXIES` | unset (empty) | Comma-separated IPs / CIDRs of the reverse proxies whose `X-Forwarded-For` is trusted (security audit H7). Consulted only when `TRUST_FORWARDED_FOR=true`. Both single addresses (`10.0.0.7`) and ranges (`10.0.0.0/8`, `2001:db8::/32`) work (stdlib `ipaddress`). A malformed entry is logged (`trusted_proxy_parse_failed`) and skipped. The immediate socket peer must match this set before any XFF entry is honoured. |
+| `CONTENT_SECURITY_POLICY` | unset (hardened default) | Override for the response `Content-Security-Policy` header (security audit M5). Empty ships the self-hosted-only default: `default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'`. Set this only if a deploy genuinely needs a looser policy — the default is intentionally external-asset-free so air-gapped / strict-CSP security-team deploys work out of the box. |
+| `INVITE_CODE` | unset (no gate) | Soft anti-strangers gate on `POST /api/sessions`. When set to a non-empty value, the creator must supply a matching code on the wizard's invite gate before a session can be created; the wizard caches a validated code in `localStorage` so refreshes don't re-prompt. Player join links don't need it — they already carry per-role HMAC tokens. This is NOT a security boundary; it's a stopgap so a public-URL deploy doesn't burn LLM tokens on every drive-by. The code is validated **inline on `POST /api/sessions`** (403 on mismatch); there is **no `?code=` verification on `GET /api/invite/status`** — that endpoint returns only `{"required": bool}` so it can't be used as a brute-force oracle (security audit M7). Comparison is constant-time and surrounding whitespace is stripped so a copy-paste with a trailing newline still matches. The value is redacted from access logs and the browser-console request wrapper. App emits `invite_code_gate_enabled` at boot. |
+
+> **Security headers (M5).** Every HTTP response (API, SPA fallback,
+> static assets, error responses, `/healthz`) carries
+> `Referrer-Policy: no-referrer` (the priority — the per-role join token
+> rides in the URL path, so this stops Referer leakage),
+> `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, and the
+> `Content-Security-Policy` above.
+
+> **Front-door boot gate (C1).** On a real deploy (`CORS_ORIGINS != "*"`),
+> the app **refuses to start** unless `POST /api/sessions` has some
+> protection — either `INVITE_CODE` set, or `SESSION_CREATE_RATE_PER_MIN`
+> non-zero (the default 5 satisfies this). With neither, `create_app`
+> raises at import time (uvicorn exits non-zero) rather than booting an
+> exposed deploy where anonymous callers can loop session creation and
+> burn setup-tier LLM tokens. Local deploys (`CORS_ORIGINS="*"`) are
+> exempt. The pass case logs `session_create_front_door_ok`.
+
+> **Rate-limit proxy requirement & multi-worker note.** The per-IP
+> limiters only resolve a trustworthy client IP behind a proxy that
+> **overwrites** `X-Forwarded-For` (e.g. Cloudflare, a correctly-
+> configured nginx `proxy_set_header X-Forwarded-For $remote_addr`) — a
+> proxy that *appends* lets a client prepend a forged left-most hop.
+> Both limiters keep their token buckets **in-process**, so a
+> multi-worker / horizontally-scaled deploy gets one bucket *per worker*
+> (effective cap = configured cap × workers). The Phase-3 Redis backend
+> replaces the in-memory buckets with a shared store for a coherent
+> cross-worker view; until then, prefer a single worker if the per-IP
+> cap must be exact.
 
 ## Extensions
 
@@ -177,8 +209,17 @@ Defaults preserve historical behavior so unset = no change.
 ## Before going public — hardening checklist
 
 1. Set `SESSION_SECRET` to a long random value (minimum 32 bytes).
-2. Set `CORS_ORIGINS` to your actual origin(s).
-3. Set `RATE_LIMIT_ENABLED=true` and tune `RATE_LIMIT_REQ_PER_MIN`.
-4. Restrict the GHCR image's port exposure to the reverse proxy only.
-5. Front the container with a TLS-terminating proxy (Caddy / Cloudflare / etc.).
-6. Confirm `LLM_API_KEY` is supplied via the runtime secret store, not baked in.
+2. Set `CORS_ORIGINS` to your actual origin(s). (This also arms the C1
+   front-door boot gate — the app won't start without a create-path
+   protection once CORS is narrowed.)
+3. Set `RATE_LIMIT_ENABLED=true` and tune `RATE_LIMIT_REQ_PER_MIN`. The
+   dedicated `SESSION_CREATE_RATE_PER_MIN` create-path throttle is on by
+   default (cap 5); tune or pair with `INVITE_CODE`.
+4. If behind a proxy that overwrites `X-Forwarded-For`, set
+   `TRUST_FORWARDED_FOR=true` and `TRUSTED_PROXIES` to the proxy's
+   egress IP(s)/CIDR(s) so per-IP limits key on the real client. Leave
+   both unset if clients hit the app directly.
+5. Restrict the GHCR image's port exposure to the reverse proxy only.
+6. Front the container with a TLS-terminating proxy (Caddy / Cloudflare / etc.)
+   that **overwrites** (not appends) `X-Forwarded-For`.
+7. Confirm `LLM_API_KEY` is supplied via the runtime secret store, not baked in.

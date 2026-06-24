@@ -37,7 +37,6 @@ describe("Facilitator intro — Roles step (issue #61, redesign)", () => {
     });
     vi.spyOn(api, "getInviteStatus").mockResolvedValue({
       required: false,
-      valid: null,
     });
   });
 
@@ -266,7 +265,6 @@ describe("Facilitator intro — refresh recovery", () => {
   beforeEach(() => {
     vi.spyOn(api, "getInviteStatus").mockResolvedValue({
       required: false,
-      valid: null,
     });
   });
 

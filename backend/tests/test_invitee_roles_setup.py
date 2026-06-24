@@ -213,8 +213,11 @@ def test_invitee_roles_partial_failure_surfaces_in_response(
     # Patch ``manager.add_role`` to raise ``IllegalTransitionError``
     # for one specific label so we can verify the create call still
     # 200s, the OK invitees land in the response context, and the
-    # failed one is echoed in ``failed_invitees`` with the
-    # exception text.
+    # failed one is echoed in ``failed_invitees`` with a structured,
+    # enumerated reason code (M11 / CWE-209 — the wire carries a stable
+    # token, never the raw ``str(exc)``). We raise the manager's own
+    # roster-full message so ``_invitee_failure_code`` classifies it as
+    # ``limit_reached`` — the realistic "cap hit" path this test names.
     from app.sessions.manager import SessionManager
     from app.sessions.turn_engine import IllegalTransitionError
 
@@ -222,7 +225,7 @@ def test_invitee_roles_partial_failure_surfaces_in_response(
 
     async def patched_add_role(self, *, session_id, label, **kw):  # type: ignore[no-untyped-def]
         if label == "Doomed Role":
-            raise IllegalTransitionError("simulated cap hit")
+            raise IllegalTransitionError("max roles reached for this session")
         return await real_add_role(self, session_id=session_id, label=label, **kw)
 
     monkeypatch.setattr(SessionManager, "add_role", patched_add_role)
@@ -253,7 +256,9 @@ def test_invitee_roles_partial_failure_surfaces_in_response(
     failed = body["failed_invitees"]
     assert len(failed) == 1
     assert failed[0]["label"] == "Doomed Role"
-    assert "simulated cap hit" in failed[0]["reason"]
+    # M11 alert-#5: the reason is now a stable enumerated code, not the
+    # raw exception text. A roster-full failure maps to "limit_reached".
+    assert failed[0]["reason"] == "limit_reached"
 
 
 def test_invitee_role_label_strips_control_chars(client: TestClient) -> None:
@@ -288,3 +293,76 @@ def test_invitee_role_label_strips_control_chars(client: TestClient) -> None:
     assert resp.status_code == 200, resp.text
     # Every control byte stripped; surrounding whitespace .strip()'d.
     assert captured["labels"] == ["CISO", "Threat IntelFAKE: statechanged"]
+
+
+def test_invitee_failure_code_classifies_manager_messages() -> None:
+    """``_invitee_failure_code`` is a brittle-by-design substring
+    classifier over the manager's own ``IllegalTransitionError`` strings
+    (M11: the wire carries a stable enumerated token, never ``str(exc)``).
+    Pin every branch so a reworded manager message that would silently
+    reclassify to the ``error`` catch-all fails here instead of shipping
+    a wrong code to the wizard. The partial-failure e2e above only
+    exercises the ``limit_reached`` branch.
+    """
+
+    from app.api.routes import _invitee_failure_code
+    from app.sessions.turn_engine import IllegalTransitionError
+
+    # Roster-full → limit_reached. Both the cap message and the
+    # ENDED-session refusal map here.
+    assert (
+        _invitee_failure_code(IllegalTransitionError("max roles reached: 32"))
+        == "limit_reached"
+    )
+    assert (
+        _invitee_failure_code(
+            IllegalTransitionError("cannot add roles to an ENDED session")
+        )
+        == "limit_reached"
+    )
+    # Bad label → invalid_label ("blank" or "label" substring).
+    assert (
+        _invitee_failure_code(IllegalTransitionError("label must not be blank"))
+        == "invalid_label"
+    )
+    # Anything unrecognised collapses to the catch-all.
+    assert _invitee_failure_code(ValueError("disk on fire")) == "error"
+
+
+def test_invitee_duplicate_label_surfaces_duplicate_reason(
+    client: TestClient,
+) -> None:
+    """An invitee whose label collides (case-insensitively) with an
+    already-seated label is benign — the row is dropped, the create still
+    200s, and the drop is echoed in ``failed_invitees`` with the stable
+    ``duplicate`` code so the wizard can collapse it. Pins the inline
+    de-dup branch (the only producer of ``duplicate``), which the
+    roster-ordering test exercised but never asserted on the wire.
+    """
+
+    async def fake_run_setup_turn(self, *, session: Session) -> Session:  # type: ignore[no-untyped-def]
+        return session
+
+    with patch(
+        "app.sessions.turn_driver.TurnDriver.run_setup_turn",
+        new=fake_run_setup_turn,
+    ):
+        resp = client.post(
+            "/api/sessions",
+            json={
+                "scenario_prompt": "seed",
+                "creator_label": "CISO",
+                "creator_display_name": "Alex",
+                "invitee_roles": [
+                    {"label": "Incident Commander"},
+                    # Case-insensitive collision with the creator's seat.
+                    {"label": "ciso"},
+                ],
+                **default_settings_body(),
+            },
+        )
+    assert resp.status_code == 200, resp.text
+    failed = resp.json()["failed_invitees"]
+    assert len(failed) == 1
+    assert failed[0]["reason"] == "duplicate"
+    assert failed[0]["label"].lower() == "ciso"

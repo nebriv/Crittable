@@ -21,7 +21,11 @@ from typing import Any
 import pytest
 
 from app.config import Settings
-from app.rate_limit import RateLimitMiddleware, _client_ip
+from app.rate_limit import (
+    RateLimitMiddleware,
+    SessionCreateRateLimiter,
+    resolve_client_ip,
+)
 
 # ---------------------------------------------------------------- helpers
 
@@ -206,6 +210,37 @@ async def test_bucket_refills_over_time(monkeypatch: pytest.MonkeyPatch) -> None
     assert statuses2 == [200, 200, 200]
 
 
+@pytest.mark.asyncio
+async def test_session_create_limiter_refills_over_time(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The dedicated create limiter (audit C1) shares the token-bucket
+    refill math with the middleware: faking monotonic time fully refills
+    its per-IP bucket after a minute idle. The HTTP-layer 429 + Retry-After
+    path is covered in ``test_http_edge_hardening``; this pins the refill
+    directly so a regression in the create limiter's own consume/refill
+    loop (it's a separate class from the middleware) fails here."""
+
+    fake_now = {"t": 1000.0}
+    monkeypatch.setattr(time, "monotonic", lambda: fake_now["t"])
+
+    limiter = SessionCreateRateLimiter(
+        Settings(
+            LLM_API_KEY="x",
+            SESSION_SECRET="x" * 32,
+            SESSION_CREATE_RATE_PER_MIN=3,
+        )
+    )
+    scope = _http_scope()
+    # Drain the full 3-token bucket; the 4th request is refused.
+    assert [await limiter.check(scope) for _ in range(3)] == [True, True, True]
+    assert await limiter.check(scope) is False
+    # Idle 60s → full refill → allowed again, then refused again.
+    fake_now["t"] += 60.0
+    assert [await limiter.check(scope) for _ in range(3)] == [True, True, True]
+    assert await limiter.check(scope) is False
+
+
 # ---------------------------------------------------------------- 4429 path (WS)
 
 
@@ -222,47 +257,116 @@ async def test_ws_burst_closes_with_4429() -> None:
     assert closes[0]["code"] == 4429
 
 
-# ---------------------------------------------------------------- _client_ip parsing
+# ----------------------------------------------- resolve_client_ip (H7 hardening)
 
 
-def test_client_ip_prefers_xff_first_value() -> None:
+def _ip_settings(*, trust: bool = False, proxies: str = "") -> Settings:
+    return Settings(
+        LLM_API_KEY="x",
+        SESSION_SECRET="x" * 32,
+        TRUST_FORWARDED_FOR=trust,
+        TRUSTED_PROXIES=proxies,
+    )
+
+
+def test_resolve_client_ip_ignores_xff_by_default() -> None:
+    """H7: with TRUST_FORWARDED_FOR off (default), a spoofed XFF is
+    ignored entirely — we key on the socket peer. This is the core
+    anti-spoof property."""
+
     scope = {
         "client": ["10.10.10.10", 9000],
-        "headers": [(b"x-forwarded-for", b"203.0.113.7, 10.0.0.1")],
+        "headers": [(b"x-forwarded-for", b"203.0.113.7, 1.2.3.4")],
     }
-    assert _client_ip(scope) == "203.0.113.7"
+    assert resolve_client_ip(scope, _ip_settings()) == "10.10.10.10"
 
 
-def test_client_ip_falls_back_to_scope_client_when_no_xff() -> None:
-    scope = {"client": ["192.168.0.1", 9000], "headers": []}
-    assert _client_ip(scope) == "192.168.0.1"
-
-
-def test_client_ip_returns_unknown_when_no_client() -> None:
-    scope = {"client": None, "headers": []}
-    assert _client_ip(scope) == "unknown"
-
-
-def test_client_ip_handles_malformed_xff_bytes() -> None:
-    """Production has seen the proxy attach garbage bytes here; we
-    must fall through to the scope's ``client`` rather than 500-ing."""
+def test_resolve_client_ip_ignores_xff_when_peer_not_trusted() -> None:
+    """Trusting XFF is enabled, but the immediate peer is NOT a trusted
+    proxy → the header is a direct-client forgery and must be ignored."""
 
     scope = {
-        "client": ["10.0.0.5", 9000],
-        # Invalid UTF-8 — split() fires on the bytes after .decode("ascii"),
-        # which raises UnicodeDecodeError. Caller falls through.
+        "client": ["8.8.8.8", 9000],  # not in TRUSTED_PROXIES
+        "headers": [(b"x-forwarded-for", b"203.0.113.7")],
+    }
+    settings = _ip_settings(trust=True, proxies="10.0.0.0/8")
+    assert resolve_client_ip(scope, settings) == "8.8.8.8"
+
+
+def test_resolve_client_ip_honors_xff_from_trusted_proxy_rightmost() -> None:
+    """When the peer is a trusted proxy, walk XFF right-to-left and take
+    the first untrusted hop — the real client the outermost trusted
+    proxy observed. A client-prepended junk entry on the left is
+    ignored."""
+
+    scope = {
+        "client": ["10.0.0.7", 9000],  # trusted proxy
+        # Client forged "1.1.1.1" on the far left; "10.0.0.9" is an
+        # internal trusted hop; "203.0.113.7" is the real client edge.
+        "headers": [
+            (b"x-forwarded-for", b"1.1.1.1, 203.0.113.7, 10.0.0.9"),
+        ],
+    }
+    settings = _ip_settings(trust=True, proxies="10.0.0.0/8")
+    assert resolve_client_ip(scope, settings) == "203.0.113.7"
+
+
+def test_resolve_client_ip_single_hop_from_trusted_proxy() -> None:
+    scope = {
+        "client": ["10.0.0.7", 9000],
+        "headers": [(b"x-forwarded-for", b"203.0.113.7")],
+    }
+    settings = _ip_settings(trust=True, proxies="10.0.0.7")
+    assert resolve_client_ip(scope, settings) == "203.0.113.7"
+
+
+def test_resolve_client_ip_all_trusted_falls_back_to_peer() -> None:
+    """If every XFF entry is itself a trusted proxy, there's no real
+    client hop to extract — fall back to the peer."""
+
+    scope = {
+        "client": ["10.0.0.7", 9000],
+        "headers": [(b"x-forwarded-for", b"10.0.0.8, 10.0.0.9")],
+    }
+    settings = _ip_settings(trust=True, proxies="10.0.0.0/8")
+    assert resolve_client_ip(scope, settings) == "10.0.0.7"
+
+
+def test_resolve_client_ip_returns_unknown_when_no_client() -> None:
+    scope = {"client": None, "headers": []}
+    assert resolve_client_ip(scope, _ip_settings()) == "unknown"
+
+
+def test_resolve_client_ip_handles_malformed_xff_bytes() -> None:
+    """Garbage bytes in XFF must fall through to the peer, not 500."""
+
+    scope = {
+        "client": ["10.0.0.7", 9000],
         "headers": [(b"x-forwarded-for", b"\xff\xfe garbage")],
     }
-    assert _client_ip(scope) == "10.0.0.5"
+    settings = _ip_settings(trust=True, proxies="10.0.0.0/8")
+    assert resolve_client_ip(scope, settings) == "10.0.0.7"
 
 
-def test_client_ip_handles_empty_xff() -> None:
+def test_resolve_client_ip_empty_xff_from_trusted_peer() -> None:
     scope = {
-        "client": ["10.0.0.5", 9000],
+        "client": ["10.0.0.7", 9000],
         "headers": [(b"x-forwarded-for", b"")],
     }
-    # Empty xff is falsy — falls through to scope.client.
-    assert _client_ip(scope) == "10.0.0.5"
+    settings = _ip_settings(trust=True, proxies="10.0.0.0/8")
+    assert resolve_client_ip(scope, settings) == "10.0.0.7"
+
+
+def test_resolve_client_ip_skips_malformed_trusted_proxy_cidr() -> None:
+    """A typo in TRUSTED_PROXIES must not crash resolution — the bad
+    entry is dropped and the good one still matches."""
+
+    scope = {
+        "client": ["10.0.0.7", 9000],
+        "headers": [(b"x-forwarded-for", b"203.0.113.7")],
+    }
+    settings = _ip_settings(trust=True, proxies="not-an-ip, 10.0.0.0/8")
+    assert resolve_client_ip(scope, settings) == "203.0.113.7"
 
 
 # ---------------------------------------------------------------- concurrency

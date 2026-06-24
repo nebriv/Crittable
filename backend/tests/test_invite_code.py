@@ -108,43 +108,40 @@ def test_invite_status_reports_not_required_when_env_unset(
     try:
         r = client.get("/api/invite/status")
         assert r.status_code == 200
-        assert r.json() == {"required": False, "valid": None}
+        # M7: ``valid`` was removed — the endpoint reports ONLY whether
+        # the gate is on, never verifies a candidate (that would be a
+        # brute-force oracle).
+        assert r.json() == {"required": False}
     finally:
         client.close()
 
 
-def test_invite_status_required_no_code_returns_required_only(
+def test_invite_status_required_returns_required_only(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     client = _client(monkeypatch, code="tabletop-2026")
     try:
         r = client.get("/api/invite/status")
         assert r.status_code == 200
-        assert r.json() == {"required": True, "valid": None}
+        assert r.json() == {"required": True}
     finally:
         client.close()
 
 
-def test_invite_status_required_with_correct_code_returns_valid_true(
+def test_invite_status_never_reports_valid_key(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """M7 regression net: the oracle is gone. Even with a ``?code=``
+    query (which the handler now ignores), the response must never carry
+    a ``valid`` field — no online verification of a candidate."""
+
     client = _client(monkeypatch, code="tabletop-2026")
     try:
-        r = client.get("/api/invite/status", params={"code": "tabletop-2026"})
-        assert r.status_code == 200
-        assert r.json() == {"required": True, "valid": True}
-    finally:
-        client.close()
-
-
-def test_invite_status_required_with_wrong_code_returns_valid_false(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    client = _client(monkeypatch, code="tabletop-2026")
-    try:
-        r = client.get("/api/invite/status", params={"code": "wrong"})
-        assert r.status_code == 200
-        assert r.json() == {"required": True, "valid": False}
+        for code in ("tabletop-2026", "wrong"):
+            r = client.get("/api/invite/status", params={"code": code})
+            assert r.status_code == 200
+            assert r.json() == {"required": True}
+            assert "valid" not in r.json()
     finally:
         client.close()
 
@@ -220,45 +217,12 @@ def test_create_session_gated_empty_string_code_rejected(
         client.close()
 
 
-def test_create_session_status_endpoint_caps_query_length(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Defense against a no-rate-limit deployment getting
-    ``?code=<5MB>`` probes — the validator chains
-    ``hmac.compare_digest`` on the candidate and that's O(n)."""
-
-    client = _client(monkeypatch, code="tabletop-2026")
-    try:
-        oversized = "a" * 129
-        r = client.get("/api/invite/status", params={"code": oversized})
-        assert r.status_code == 422, r.text
-    finally:
-        client.close()
-
-
 # ---------------------------------------------------------------- logging contracts
 #
 # CLAUDE.md elevates "missing log line at a meaningful boundary" to a
 # must-fix even at LOW. These tests lock the WARNING level so a future
 # refactor can't silently demote them to INFO and disappear the only
 # brute-force breadcrumb on the audit trail.
-
-
-def test_invite_validate_rejected_emits_warning(
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    client = _client(monkeypatch, code="tabletop-2026")
-    try:
-        r = client.get("/api/invite/status", params={"code": "wrong"})
-        assert r.status_code == 200
-        out = capsys.readouterr().out
-        assert "invite_validate_rejected" in out, out
-        # The code itself MUST NOT appear anywhere in the log line —
-        # not in the structlog event, not in the access-log path.
-        assert "wrong" not in out, out
-    finally:
-        client.close()
 
 
 def test_create_session_invite_rejected_emits_warning(
