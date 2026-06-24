@@ -108,7 +108,7 @@ describe("<MarkReadyButton/>", () => {
   });
 
   describe("impersonate variant", () => {
-    it("not-ready: shows MARK <ROLE> READY → using subjectLabel", () => {
+    it("not-ready: shows READY ON <SUBJECT>'S BEHALF using subjectLabel", () => {
       render(
         <MarkReadyButton
           isReady={false}
@@ -119,8 +119,9 @@ describe("<MarkReadyButton/>", () => {
         />,
       );
       const btn = screen.getByTestId("mark-ready-impersonate");
-      // Subject label uppercased + framed inside the action verb.
-      expect(btn.textContent).toMatch(/MARK SOC ANALYST READY/);
+      // Subject (the player's name in production) uppercased + framed
+      // as acting on their behalf, not toggling the creator's own seat.
+      expect(btn.textContent).toMatch(/READY ON SOC ANALYST'S BEHALF/);
       // No "tap to undo" hint on the impersonation variant — it'd
       // be ambiguous (whose ready are we undoing?).
       expect(btn.textContent).not.toMatch(/tap to undo/i);
@@ -193,7 +194,7 @@ describe("<MarkReadyButton/>", () => {
       );
     });
 
-    it("missing subjectLabel falls back to 'role'", () => {
+    it("missing subjectLabel falls back to 'this role'", () => {
       render(
         <MarkReadyButton
           isReady={false}
@@ -203,7 +204,7 @@ describe("<MarkReadyButton/>", () => {
         />,
       );
       const btn = screen.getByTestId("mark-ready-impersonate");
-      expect(btn.textContent).toMatch(/MARK ROLE READY/);
+      expect(btn.textContent).toMatch(/READY ON THIS ROLE'S BEHALF/);
     });
   });
 

@@ -73,6 +73,7 @@ def test_drops_unaddressed_role_when_broadcast_names_only_one() -> None:
     assert result.narrowed is True
     assert result.kept == [ben.id]
     assert result.dropped == [eng.id]
+    assert result.reason == "dropped_unaddressed_roles"
     assert ben.id in result.addressed_role_ids
     assert eng.id not in result.addressed_role_ids
 
@@ -273,10 +274,11 @@ def test_generic_broadcast_no_names_keeps_full_set() -> None:
     assert result.reason == "no_addressed_roles_no_narrowing"
 
 
-def test_would_narrow_to_empty_keeps_original() -> None:
-    """If the heuristic misses every name in the AI's set (e.g. the
-    model used a nickname not in the roster), don't shrink to empty —
-    keep the AI's directional intent."""
+def test_unmatched_nickname_keeps_original_set() -> None:
+    """If the heuristic misses every name (e.g. the model used a
+    nickname not in the roster), no role is addressed — fall into the
+    no-addressed branch and keep the AI's directional intent rather than
+    shrinking to empty."""
 
     ben = _make_role(id_label="Cybersecurity Manager", display_name="Benjamin")
     eng = _make_role(id_label="Cybersecurity Engineer")
@@ -359,17 +361,23 @@ def test_request_artifact_target_counts_as_addressed() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_empty_ai_set_returns_empty() -> None:
+def test_empty_ai_set_no_address_returns_empty() -> None:
+    """Empty yield + a generic broadcast with no clause-start address →
+    nothing to keep and nothing to promote. (The promote-on-empty-yield
+    recovery only fires when a role is actually addressed; see
+    ``test_silent_yield_promotes_addressed_role``.)"""
+
     ben = _make_role(id_label="Cybersecurity Manager", display_name="Ben")
 
     result = narrow_active_role_groups(
         roles=[ben],
-        appended_messages=[_broadcast("Ben — your call?")],
+        appended_messages=[_broadcast("Team — stand by for the next inject.")],
         ai_groups=[],
     )
 
     assert result.kept == []
     assert result.dropped == []
+    assert result.promoted == []
     assert result.narrowed is False
 
 
@@ -429,6 +437,8 @@ def test_case_insensitive_match() -> None:
     )
 
     assert ben.id in result.addressed_role_ids
+    # AI's yield already matches the addressed set → no drop, no promote.
+    assert result.reason == "ai_set_already_matches_addressed"
 
 
 def test_kept_preserves_input_order() -> None:
@@ -503,6 +513,182 @@ def test_cumulative_merge_after_strict_retry_narrows_correctly() -> None:
     )
     assert result.kept == [ciso.id]
     assert result.dropped == [soc.id]
+
+
+# ---------------------------------------------------------------------------
+# Promotion: a role the AI ADDRESSED but did NOT yield to is added back as
+# its own ASK. Mirror of the drop pass. This is the user-reported bug:
+# "John was added, the AI addressed him, but he couldn't mark ready." A
+# role that joined mid-turn isn't in the roster snapshot when the model
+# drafts its yield, so it writes "John — pull the portal" but ships
+# set_active_roles=[ben]; without promotion John gets "NOT YOUR TURN".
+# ---------------------------------------------------------------------------
+
+
+def test_promotes_addressed_role_missing_from_yield() -> None:
+    """Headline bug: AI addresses Ben AND John but only yields Ben. John
+    is promoted into his own singleton group so he can respond."""
+
+    ben = _make_role(id_label="Cybersecurity Manager", display_name="Ben")
+    john = _make_role(id_label="Security Engineer", display_name="John")
+
+    msgs = [
+        _broadcast(
+            "Ben — kick off the audit log pull. "
+            "John — check the M365 admin portal for live inbox rules."
+        )
+    ]
+
+    result = narrow_active_role_groups(
+        roles=[ben, john],
+        appended_messages=msgs,
+        ai_groups=[[ben.id]],  # AI under-yielded — John omitted.
+    )
+
+    assert result.promoted == [john.id]
+    assert result.dropped == []
+    assert result.kept_groups == [[ben.id], [john.id]]
+    assert result.kept == [ben.id, john.id]
+    assert result.reason == "promoted_addressed_roles"
+    # ``narrowed`` tracks the DROP direction only; a promote-only turn is
+    # not "narrowed" — the promotion is reported via ``promoted``.
+    assert result.narrowed is False
+
+
+def test_drop_and_promote_in_one_turn() -> None:
+    """The AI yields a role it didn't address (drop) AND fails to yield a
+    role it did (promote). Both directions fire; reason reflects both."""
+
+    ben = _make_role(id_label="Cybersecurity Manager", display_name="Ben")
+    john = _make_role(id_label="Security Engineer", display_name="John")
+    eng = _make_role(id_label="Cybersecurity Engineer")
+
+    # Addresses Ben + John; yields Ben + Eng (Eng never addressed).
+    msgs = [_broadcast("Ben — confirm containment. John — pull the portal logs.")]
+
+    result = narrow_active_role_groups(
+        roles=[ben, john, eng],
+        appended_messages=msgs,
+        ai_groups=[[ben.id], [eng.id]],
+    )
+
+    assert result.dropped == [eng.id]  # yielded but not addressed
+    assert result.promoted == [john.id]  # addressed but not yielded
+    assert result.kept_groups == [[ben.id], [john.id]]
+    assert result.narrowed is True
+    assert result.reason == "reconciled_dropped_and_promoted"
+
+
+def test_promotion_order_is_roster_order() -> None:
+    """Two addressed-but-unyielded roles promote in ROSTER order, not the
+    order they appear in the text (``addressed`` is an unordered set, so
+    promotion must be deterministic for replay)."""
+
+    a = _make_role(id_label="Alpha")
+    b = _make_role(id_label="Bravo")
+    c = _make_role(id_label="Charlie")
+
+    # Text addresses Charlie before Alpha; roster order is A, B, C.
+    msgs = [_broadcast("Charlie — go. Alpha — go.")]
+
+    result = narrow_active_role_groups(
+        roles=[a, b, c],
+        appended_messages=msgs,
+        ai_groups=[[b.id]],  # only Bravo yielded; Bravo NOT addressed.
+    )
+
+    assert result.dropped == [b.id]
+    assert result.promoted == [a.id, c.id]  # roster order, not text order
+    assert result.kept_groups == [[a.id], [c.id]]
+
+
+def test_promotes_explicit_tool_target_missing_from_yield() -> None:
+    """An ``address_role`` tool target the AI forgot to yield to is also
+    promoted (explicit targets are the highest-confidence address)."""
+
+    ben = _make_role(id_label="Cybersecurity Manager", display_name="Ben")
+    legal = _make_role(id_label="Legal Counsel")
+
+    msgs = [
+        _broadcast("Ben — confirm containment posture."),
+        _address_role(legal.id, "Draft the breach notification for the AG."),
+    ]
+
+    result = narrow_active_role_groups(
+        roles=[ben, legal],
+        appended_messages=msgs,
+        ai_groups=[[ben.id]],  # Legal addressed via tool but not yielded.
+    )
+
+    assert legal.id in result.promoted
+    assert result.kept == [ben.id, legal.id]
+
+
+def test_promotion_preserves_any_of_group() -> None:
+    """An any-of group the AI yielded for two addressed roles survives
+    intact; a THIRD addressed-but-unyielded role promotes as its own
+    REQUIRED singleton (not folded into the any-of)."""
+
+    paul = _make_role(id_label="DevOps", display_name="Paul")
+    lawrence = _make_role(id_label="IT", display_name="Lawrence")
+    ben = _make_role(id_label="Cybersecurity Manager", display_name="Ben")
+
+    msgs = [
+        _broadcast(
+            "Paul or Lawrence — who files the Jira ticket? "
+            "Ben — you own the comms update."
+        )
+    ]
+
+    result = narrow_active_role_groups(
+        roles=[paul, lawrence, ben],
+        appended_messages=msgs,
+        ai_groups=[[paul.id, lawrence.id]],  # any-of; Ben omitted.
+    )
+
+    assert [paul.id, lawrence.id] in result.kept_groups  # any-of preserved
+    assert [ben.id] in result.kept_groups  # promoted singleton
+    assert result.promoted == [ben.id]
+
+
+def test_silent_yield_promotes_addressed_role() -> None:
+    """Defensive: an empty yield (the 'silent yield' failure mode) plus a
+    clause-start address recovers the addressed role, so the turn opens
+    with a real active seat instead of none."""
+
+    ben = _make_role(id_label="Cybersecurity Manager", display_name="Ben")
+
+    result = narrow_active_role_groups(
+        roles=[ben],
+        appended_messages=[_broadcast("Ben — your call on isolation?")],
+        ai_groups=[],
+    )
+
+    assert result.kept == [ben.id]
+    assert result.promoted == [ben.id]
+
+
+def test_passing_mention_is_not_promoted() -> None:
+    """The promote pass uses the SAME addressing heuristic as the drop
+    pass — a referenced-but-not-addressed role must NOT be promoted. AI
+    addresses Ben, merely mentions Mike, and yields only Ben: nothing
+    changes (Mike is neither kept nor promoted). Guards against promotion
+    re-introducing the wide-yield stall the drop pass exists to prevent."""
+
+    ben = _make_role(id_label="Cybersecurity Manager", display_name="Ben")
+    mike = _make_role(id_label="CISO", display_name="Mike")
+
+    msgs = [_broadcast("Ben — your call? Loop in Mike when you can.")]
+
+    result = narrow_active_role_groups(
+        roles=[ben, mike],
+        appended_messages=msgs,
+        ai_groups=[[ben.id]],
+    )
+
+    assert result.promoted == []
+    assert mike.id not in result.kept
+    assert result.kept == [ben.id]
 
 
 if __name__ == "__main__":  # pragma: no cover — convenience for local runs

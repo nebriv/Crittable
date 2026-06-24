@@ -68,7 +68,8 @@ interface Props {
    * "self" → the local participant is toggling their own ready state
    *   (label: ``MARK READY`` / ``READY ✓``).
    * "impersonate" → the creator is toggling on behalf of another active
-   *   role (label: ``MARK <ROLE> READY`` / ``<ROLE> READY ✓``).
+   *   role (label: ``READY ON <SUBJECT>'S BEHALF`` / ``<SUBJECT> READY ✓``,
+   *   where <SUBJECT> is the player's name passed via ``subjectLabel``).
    *
    * Distinct copy AND distinct tone (signal=self, info=impersonate)
    * so a creator scanning the rail can tell at a glance which row
@@ -128,8 +129,12 @@ export function MarkReadyButton({
     // still wins when the parent hasn't opted in (legacy call sites).
     if (!enabled && disabledLabel) return disabledLabel;
     if (variant === "impersonate") {
-      const target = trunc((subjectLabel ?? "role").toUpperCase());
-      return isReady ? `${target} READY ✓` : `MARK ${target} READY →`;
+      const target = trunc((subjectLabel ?? "this role").toUpperCase());
+      // "READY ON <NAME>'S BEHALF" (not the role-label "MARK <ROLE>
+      // READY"): the creator reads this as acting FOR another person,
+      // not toggling their own seat. Pairs with passing the player's
+      // display_name as subjectLabel from RolesPanel.
+      return isReady ? `${target} READY ✓` : `READY ON ${target}'S BEHALF →`;
     }
     return isReady ? "READY ✓" : "MARK READY →";
   })();
@@ -143,9 +148,9 @@ export function MarkReadyButton({
   // ``aria-pressed`` is only meaningful on the self variant — it
   // describes the LOCAL participant's ready state. On the
   // impersonation variant the toggle reflects another role's state,
-  // so AT announcing "MARK SOC READY, pressed" would confuse the
+  // so AT announcing "READY ON SOC'S BEHALF, pressed" would confuse the
   // creator into thinking THEY are ready. The visual+textual label
-  // ("SOC READY ✓" vs "MARK SOC READY →") already disambiguates; we
+  // ("SOC READY ✓" vs "READY ON SOC'S BEHALF →") already disambiguates; we
   // drop ``aria-pressed`` for the impersonate variant and lean on
   // the explicit label instead. QA review HIGH.
   const ariaPressed = variant === "self" ? isReady : undefined;
@@ -219,7 +224,7 @@ export function MarkReadyButton({
         }
         return isReady
           ? `Walk back ${subjectLabel ?? "this role"}'s ready signal`
-          : `Mark ${subjectLabel ?? "this role"} ready`;
+          : `Mark ready on ${subjectLabel ?? "this role"}'s behalf`;
       })()}
       title={title}
       data-tone={tone}

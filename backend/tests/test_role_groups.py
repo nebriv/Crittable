@@ -436,16 +436,12 @@ class TestNarrowActiveRoleGroups:
             ai_groups=[["paul", "law"]],
         )
         # Neither is at clause-start; neither chain piece matches a
-        # canonical name. Either of the two safety branches
-        # ("no_addressed_roles_no_narrowing" / "would_narrow_to_empty_
-        # kept_original") is acceptable — both keep the AI's groups
-        # intact and never narrow the prose-laden chain to empty.
+        # canonical name. With no role addressed, the narrower takes the
+        # "no addressed roles" branch and keeps the AI's groups intact —
+        # never narrowing the prose-laden chain to empty.
         assert result.kept_groups == [["paul", "law"]]
         assert result.narrowed is False
-        assert result.reason in {
-            "no_addressed_roles_no_narrowing",
-            "would_narrow_to_empty_kept_original",
-        }
+        assert result.reason == "no_addressed_roles_no_narrowing"
 
     def test_chain_after_clause_break_addresses_trailing_pair(
         self,
@@ -465,6 +461,26 @@ class TestNarrowActiveRoleGroups:
         # the splitter strips out "after paul confirms" via the
         # "or" boundary.
         assert result.kept_groups == [["paul", "law"]]
+
+    def test_promotes_addressed_role_the_ai_forgot_to_yield(self) -> None:
+        # Inverse of ``test_unaddressed_group_is_elided``: the AI
+        # addresses John at clause-start but ships a yield that predates
+        # him (he joined mid-turn). Promotion adds John back as his own
+        # ASK group so he isn't locked out of the turn he was handed a
+        # task in. ``promoted`` carries the recovery; ``narrowed`` stays
+        # False because nothing was dropped.
+        roles = [_role("ben", "Ben"), _role("john", "John")]
+        msgs = [_broadcast("Ben — pull the audit log. John — check the portal.")]
+        result = narrow_active_role_groups(
+            roles=roles,
+            appended_messages=msgs,
+            ai_groups=[["ben"]],
+        )
+        assert result.kept_groups == [["ben"], ["john"]]
+        assert result.promoted == ["john"]
+        assert result.dropped == []
+        assert result.narrowed is False
+        assert result.reason == "promoted_addressed_roles"
 
 
 class TestKickedRoleScrubbing:
