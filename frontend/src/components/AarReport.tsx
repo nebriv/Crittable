@@ -300,10 +300,17 @@ function LeftColumn({ report }: { report: AarReport }) {
         <BriefBlock title="WHAT DIDN'T" items={report.gaps} tone="warn" />
       ) : null}
       {report.flagged_for_review.length > 0 ? (
+        // M6: participant-flagged ("Mark for AAR") snippets are raw player
+        // input, not AI-verified findings. Match the markdown export —
+        // explicit "(unverified)" heading + caveat + warn tone — so a
+        // reader can't mistake quoted participant claims for analyst
+        // conclusions (the in-app view is the surface the creator reads
+        // first, before any download).
         <BriefBlock
-          title="FLAGGED FOR REVIEW"
+          title="PARTICIPANT-FLAGGED (UNVERIFIED)"
           items={report.flagged_for_review}
-          tone="signal"
+          tone="warn"
+          caption="Quoted participant input — not an AI-verified finding. Review before acting."
         />
       ) : null}
       {report.recommendations.length > 0 ? (
@@ -591,10 +598,12 @@ function BriefBlock({
   title,
   items,
   tone = "signal",
+  caption,
 }: {
   title: string;
   items: string[];
   tone?: "signal" | "warn" | "crit";
+  caption?: string;
 }) {
   const t = toneClass(tone);
   return (
@@ -606,6 +615,11 @@ function BriefBlock({
       >
         {title}
       </p>
+      {caption ? (
+        <p className="sans mb-2 text-[11px] leading-snug text-ink-300">
+          {caption}
+        </p>
+      ) : null}
       <ul className="flex list-none flex-col gap-1.5 pl-0 text-sm leading-relaxed text-ink-100">
         {items.map((it, i) => (
           <li key={i} className="flex gap-2">

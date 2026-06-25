@@ -3544,6 +3544,68 @@ def test_proxy_respond_blocks_prompt_injection(client: TestClient) -> None:
     assert bodies == []
 
 
+def test_proxy_respond_unverified_fails_open(client: TestClient) -> None:
+    """H5 / review on #259: when the guardrail returns ``unverified`` (it
+    errored / timed out), the creator-only proxy-respond endpoint fails
+    OPEN — the proxied message posts — consistent with the creator
+    fail-open carve-out on the WS pipeline (the operator drives the
+    session; we don't lock them out of proxying on a flaky upstream). The
+    ``prompt_injection`` screen still applies when the classifier is up;
+    the fail-open here is deliberate and logged, not a silent gap."""
+
+    import asyncio
+
+    from app.sessions.models import SessionState, Turn
+
+    seats = _create_and_seat(client, role_count=2)
+    sid = seats["session_id"]
+    cr = seats["creator_token"]
+    creator_role_id = seats["creator_role_id"]
+    other_role_id = seats["role_ids"][1]
+
+    client.post(f"/api/sessions/{sid}/setup/skip?token={cr}")
+
+    async def _open_awaiting() -> None:
+        manager = client.app.state.manager
+        session = await manager.get_session(sid)
+        turn = Turn(
+            index=0,
+            active_role_groups=[[creator_role_id]],
+            status="awaiting",
+        )
+        session.turns.append(turn)
+        session.state = SessionState.AWAITING_PLAYERS
+        await manager._repo.save(session)
+
+    asyncio.run(_open_awaiting())
+
+    class _StubGuardrail:
+        async def classify(self, *, message: str) -> str:
+            return "unverified"
+
+    client.app.state.manager._guardrail = _StubGuardrail()
+
+    r = client.post(
+        f"/api/sessions/{sid}/admin/proxy-respond?token={cr}",
+        json={
+            "as_role_id": other_role_id,
+            "content": "Containing the affected host now.",
+            "mentions": [],
+            "intent": "ready",
+        },
+    )
+    assert r.status_code == 200, r.text
+
+    # Fail-open: the proxied message DID land in the transcript.
+    snap = client.get(f"/api/sessions/{sid}?token={cr}").json()
+    bodies = [
+        m["body"]
+        for m in snap["messages"]
+        if m.get("role_id") == other_role_id and m.get("kind") == "player"
+    ]
+    assert "Containing the affected host now." in bodies
+
+
 def test_out_of_turn_facilitator_mention_fires_interject(client: TestClient) -> None:
     """Issue #78 + Wave 2: a participant whose role is NOT in the
     current turn's active set may ``@facilitator`` and the engine fires

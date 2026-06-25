@@ -448,6 +448,19 @@ export function Play({ sessionId, token }: Props) {
         console.warn("[play] guardrail blocked", evt.verdict, evt.message);
         setError(`Blocked (${evt.verdict}): ${evt.message}`);
         break;
+      case "guardrail_unverified":
+        // H5 fail-closed (transient): the safety check was briefly
+        // unavailable, so the message was HELD, not rejected. Use the
+        // neutral notice pill (not the red error) — the player isn't
+        // being accused of anything, they just need to resend. Bump
+        // ``submitErrorEpoch`` so the Composer restores the held text:
+        // it was optimistically cleared on submit and never echoed back
+        // into the transcript, so without the restore "send it again"
+        // would mean retyping from scratch.
+        console.warn("[play] guardrail unverified — restoring composer text", evt.message);
+        setNotice(evt.message);
+        setSubmitErrorEpoch((n) => n + 1);
+        break;
       case "submission_truncated":
         // Distinct from ``error`` — the message DID post, just clipped.
         // Shown as a slate info pill so the player doesn't think their

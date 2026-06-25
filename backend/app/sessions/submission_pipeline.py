@@ -225,12 +225,42 @@ async def prepare_and_submit_player_response(
         submitted=mentions,
     )
 
-    # Input-side guardrail classifies the message. Only
-    # ``prompt_injection`` blocks; ``off_topic`` and similar verdicts
-    # flow through to ``submit_response``. Matches the WS handler
-    # gate exactly.
+    # Input-side guardrail classifies the message. ``prompt_injection``
+    # blocks; ``off_topic`` and similar verdicts flow through to
+    # ``submit_response``. ``unverified`` (H5 — the classifier errored /
+    # timed out) fails CLOSED for player turns: the message is held and
+    # the player gets a retryable prompt, so a slow/down classifier can't
+    # wave a possible injection through. The creator path stays fail-open
+    # (they own the session; locking the owner out on a flaky upstream is
+    # worse than the low residual risk of their own message). Matches the
+    # WS handler gate exactly.
     verdict = await manager.guardrail().classify(message=content)
-    if verdict == "prompt_injection":
+    if verdict == "unverified":
+        session = await manager.get_session(session_id)
+        if role_id == session.creator_role_id:
+            _logger.warning(
+                "guardrail_unverified_creator_fail_open",
+                session_id=session_id,
+                role_id=role_id,
+            )
+            # Fall through to submit — creator stays fail-open.
+        else:
+            _logger.warning(
+                "submission_held_guardrail_unverified",
+                session_id=session_id,
+                role_id=role_id,
+                content_preview=content[:120],
+            )
+            return SubmissionOutcome(
+                content=content,
+                truncated=truncated,
+                original_len=original_len,
+                blocked=True,
+                blocked_verdict="unverified",
+                advanced=False,
+                mentions=cleaned_mentions,
+            )
+    elif verdict == "prompt_injection":
         _logger.warning(
             "submission_blocked_by_guardrail",
             session_id=session_id,

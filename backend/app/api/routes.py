@@ -1176,6 +1176,25 @@ def register_api_routes(app: FastAPI) -> None:
                     status.HTTP_400_BAD_REQUEST,
                     "message looked like a prompt-injection attempt and was blocked",
                 )
+            if verdict == "unverified":
+                # H5: the classifier couldn't render a verdict (upstream
+                # error / timeout). This endpoint is creator-only
+                # (``require_creator``) and creator-driven, so — consistent
+                # with the creator fail-OPEN carve-out on the WS pipeline
+                # (``submission_pipeline``) — we PROCEED rather than lock
+                # the operator out of proxying on a flaky upstream. The
+                # ``prompt_injection`` screen above still applies whenever
+                # the classifier is up; a leaked-creator-token abuser
+                # during an outage is bounded and is mitigated by token
+                # revocation (PR3), not the guardrail. Logged so a
+                # sustained outage is visible and this stays a *deliberate*
+                # fail-open, not a silent fall-through (Copilot / sec / QA
+                # review on #259).
+                get_logger("api").warning(
+                    "proxy_respond_guardrail_unverified_fail_open",
+                    session_id=session_id,
+                    as_role_id=as_role_id,
+                )
             # Wave 2: validate ``mentions`` the same way the WS
             # pipeline does — drop unknowns + cap. The validator is
             # the single source of truth for both the WS path and
