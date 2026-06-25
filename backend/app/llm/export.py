@@ -719,18 +719,22 @@ def _render_markdown(
     if report.get("flagged_for_review"):
         # M6: this section is sourced from participant "Mark for AAR"
         # chat snippets — raw player input, NOT an AI-verified finding.
-        # Label it explicitly and quote it so a reader downloading the
-        # AAR doesn't read participant claims as analyst conclusions, and
-        # so anything that slipped the input-side scrub renders as
-        # clearly-marked participant text rather than in the AAR's voice.
+        # Label it explicitly and render the snippets as a BLOCKQUOTE
+        # (not analyst bullets) so a reader downloading the AAR doesn't
+        # read participant claims as analyst conclusions, and so anything
+        # that slipped the input-side scrub renders as clearly-marked,
+        # visually-quoted participant text rather than in the AAR's voice.
         lines.append("### Participant-flagged for review (unverified)")
         lines.append(
             "> Flagged by participants during the exercise (via "
             "*Mark for AAR*). Quoted participant input — not an "
             "AI-verified finding. Review before acting."
         )
-        lines.append("")
-        lines.extend(_render_bullets(report["flagged_for_review"]))
+        # ``>`` continues the same blockquote, so the caveat and the
+        # quoted snippets read as one participant-sourced block.
+        lines.append(">")
+        for item in report["flagged_for_review"]:
+            lines.append(f"> {item}")
         lines.append("")
     if report.get("recommendations"):
         lines.append("### Recommendations")

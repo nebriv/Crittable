@@ -1262,10 +1262,15 @@ export function Facilitator() {
       case "guardrail_unverified":
         // H5: the creator path is fail-OPEN, so the creator's own
         // submissions shouldn't normally land here — but a proxied or
-        // future fail-closed path could. Surface the transient
-        // "couldn't verify, resend" without the accusatory wording.
+        // future fail-closed path could. Surface it as a NON-blocking
+        // backend-status nudge, NOT the red persistent error toast, so a
+        // transient verifier outage doesn't read as an operator mistake
+        // (Copilot review on #259).
         console.warn("[facilitator] guardrail unverified — resend", evt.message);
-        setError(evt.message);
+        setBackendStatus((prev) => ({
+          message: evt.message,
+          nonce: prev.nonce + 1,
+        }));
         break;
       case "submission_truncated":
         // Don't escalate to error — the message DID post.

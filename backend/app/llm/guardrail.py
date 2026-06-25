@@ -110,7 +110,14 @@ class InputGuardrail:
             # a flaky upstream). The LLM client already logs
             # ``upstream_llm_error`` at WARNING with the provider
             # request_id, so ops keeps the trace ID.
-            _logger.warning("guardrail_classifier_failed", error=str(exc))
+            _logger.warning(
+                "guardrail_classifier_failed",
+                error=str(exc),
+                # ``str(exc)`` is empty for some exception classes — keep
+                # the type so a blank upstream message still names the
+                # failure mode in the audit stream (sec review LOW-2).
+                error_type=type(exc).__name__,
+            )
             return "unverified"
 
         text = "".join(
