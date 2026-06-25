@@ -227,6 +227,13 @@ _NON_TOOL_ALLOWLIST = frozenset(
         "time_pressure",
         "executive_escalation",
         "media_pressure",
+        # Difficulty-tier names referenced by ``_MISSION`` when it
+        # carves out coaching voice as the ``easy``-only mode (Block
+        # 2 references ``easy`` / ``standard`` / ``hard`` so the
+        # model knows which tier relaxes Player-primacy). Not tools.
+        "easy",
+        "standard",
+        "hard",
         # AAR per-role-scores entry sub-fields (the AAR system block
         # now calls these out by name when explaining the JSON-array-
         # of-objects contract for ``per_role_scores``).

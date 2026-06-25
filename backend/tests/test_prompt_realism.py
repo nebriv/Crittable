@@ -128,8 +128,69 @@ def test_play_prompt_forbids_data_extract_asks() -> None:
     # complained about ("Joe — what does Sentinel show on
     # info-uapp-003?") must remain in the forbidden-phrasings list.
     assert "what does Sentinel show" in text
-    # Block 6 — concrete-handoff rule prescribing the right reframe
-    assert "direction-of-investigation fork" in text
+    # Block 6 — concrete-handoff rule prescribing the right reframe:
+    # the AI surfaces what the tool would show via `share_data`,
+    # without bolting a pivot menu onto the end.
+    assert "share_data` what the tool would show" in text
+    # Block 6 — the EXEMPT carve-out for data-direction asks. This
+    # is the load-bearing change from "every ask needs a fork" to
+    # "data turns end with the data". A regression that re-tightens
+    # the rule will silently teach the model to add menus again.
+    assert "Data-direction asks are EXEMPT" in text
+
+
+def test_play_prompt_enforces_player_primacy_on_share_data() -> None:
+    """Regression net for the user-reported "AI plays facilitator-
+    teacher, not data-room" failure mode (transcript: '🔴 ATO
+    CONFIRMED — Decision Point' inside a broadcast, A/B/C
+    investigation menus after every data drop). The Player-primacy
+    rule in Block 6 forbids the AI from narrating verdicts /
+    conclusions / next-step menus on top of telemetry — the team
+    reads the data and calls the shot. If this assertion fails,
+    audit any diff that touched ``_TOOL_USE_PROTOCOL`` and re-read
+    the rule before pushing.
+
+    The rule is the difference between a capability assessment
+    (assessor surfaces conditions, team responds, AAR grades) and
+    a guided tour (assistant pre-chews findings and offers picks).
+    """
+
+    text = _flatten_blocks(
+        build_play_system_blocks(_minimal_session(), registry=_empty_registry())
+    )
+    # Block 6 — the rule itself must be present by name.
+    assert "Player primacy" in text
+    # Block 6 — the rule must forbid pre-packaged investigation
+    # menus so the AI doesn't bolt "your options are A / B / C"
+    # onto a share_data drop.
+    assert "Pre-packaged investigation menus" in text
+    # Block 6 — verdict-label antipatterns from the user transcript
+    # (the literal "🔴 ATO CONFIRMED" the model emitted) must be
+    # named so a future copy-edit can't quietly walk this back.
+    assert "ATO CONFIRMED" in text
+    # Block 5b — the Replacement pattern must direct the AI to
+    # `share_data` and stop, not to fork over named pivots.
+    assert "GIVE THEM THE" in text
+    # Block 5b — the no-fork directive must remain explicit.
+    assert "no pivot menu" in text
+    # Block 6 — pre-chewed-conclusion antipatterns (the canonical
+    # "Key finding:" / "This confirms X" headers from the user
+    # transcript) must remain named so a future copy-edit can't
+    # quietly delete the rule.
+    assert "Key finding" in text
+    assert "This confirms" in text
+    # Block 6 — explicit "what is allowed" carve-out so the model
+    # doesn't over-correct into silent yields on tactical commits.
+    # This was the live-test regression the rule originally
+    # introduced (model dropped its broadcast after a player
+    # decision because it read Player-primacy as "no narration").
+    assert "What is EXPLICITLY allowed" in text
+    # Block 12 — standard-tier ban on in-stream grading. The rule
+    # only lives in one place (``_DIFFICULTY_GUIDANCE["standard"]``);
+    # without a test pin a future tier rewrite could silently delete
+    # it. ``_minimal_session()`` defaults to standard difficulty so
+    # the guidance lands in the play-tier blocks.
+    assert "Do not grade the team's calls in-stream" in text
 
 
 def test_realism_block_absent_from_aar_prompt() -> None:
