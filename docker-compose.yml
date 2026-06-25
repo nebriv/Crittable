@@ -24,4 +24,24 @@ services:
       DEV_SCENARIOS_PATH: ${DEV_SCENARIOS_PATH:-}
       INPUT_GUARDRAIL_ENABLED: ${INPUT_GUARDRAIL_ENABLED:-}
       SESSION_SECRET: ${SESSION_SECRET:-}
+      # Front-door / anti-abuse hardening (security audit C1/M2/M5/H7 +
+      # the INVITE_CODES gate). SAME passthrough requirement as the dev
+      # flags above — without these lines an operator who sets e.g.
+      # ``INVITE_CODES`` or ``CORS_ORIGINS`` in ``.env`` would see it land
+      # in the host shell but NEVER reach uvicorn, silently shipping an
+      # ungated / wide-open deploy they believed was protected (and the
+      # C1 boot gate can't see a "real deploy" if CORS_ORIGINS never
+      # arrives, so it won't refuse to start either). Each ``${VAR:-}``
+      # defaults to empty when unset, which ``env_ignore_empty`` in
+      # config.py treats as "use the field default" — so omitting one
+      # here keeps the documented default, it doesn't force a value.
+      INVITE_CODES: ${INVITE_CODES:-}
+      CORS_ORIGINS: ${CORS_ORIGINS:-}
+      RATE_LIMIT_ENABLED: ${RATE_LIMIT_ENABLED:-}
+      RATE_LIMIT_REQ_PER_MIN: ${RATE_LIMIT_REQ_PER_MIN:-}
+      SESSION_CREATE_RATE_PER_MIN: ${SESSION_CREATE_RATE_PER_MIN:-}
+      TRUST_FORWARDED_FOR: ${TRUST_FORWARDED_FOR:-}
+      TRUSTED_PROXIES: ${TRUSTED_PROXIES:-}
+      MAX_SESSIONS: ${MAX_SESSIONS:-}
+      CONTENT_SECURITY_POLICY: ${CONTENT_SECURITY_POLICY:-}
     restart: unless-stopped

@@ -335,7 +335,7 @@ export function Facilitator() {
     // component — listing it in deps is for correctness, not because
     // the effect needs to re-run.
   }, [restoredDraft]);
-  // Soft anti-strangers gate on session creation (env: ``INVITE_CODE``).
+  // Soft anti-strangers gate on session creation (env: ``INVITE_CODES``).
   // Tri-state: ``null`` while the mount-time probe is in flight (we
   // render a tiny loader rather than flashing the wizard then snapping
   // to the gate); ``false`` once the server confirms no gate; ``true``
@@ -864,7 +864,7 @@ export function Facilitator() {
           features,
         },
         // Soft anti-strangers gate. ``null`` when the server has no
-        // ``INVITE_CODE`` set; populated from <InviteGate/> via
+        // ``INVITE_CODES`` set; populated from <InviteGate/> via
         // localStorage when it does. The backend re-validates and
         // returns 403 if it doesn't match (handled below).
         ...(inviteCode != null ? { invite_code: inviteCode } : {}),

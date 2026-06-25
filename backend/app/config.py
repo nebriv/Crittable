@@ -16,12 +16,21 @@ Conventions
 from __future__ import annotations
 
 import hmac
+import json
 import secrets
 import warnings
+from datetime import UTC, date, datetime
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import Field, SecretStr, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    SecretStr,
+    ValidationError,
+    field_validator,
+)
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 ModelTier = Literal["play", "setup", "aar", "guardrail"]
@@ -104,6 +113,40 @@ _TIMEOUT_DEFAULTS: dict[ModelTier, float | None] = {
     "aar": 900.0,
     "guardrail": 15.0,
 }
+
+
+class InviteCode(BaseModel):
+    """One configured invite code: a secret value plus operator metadata.
+
+    Parsed from each object in the ``INVITE_CODES`` JSON array. ``code``
+    is the secret a creator types into the wizard gate; ``label`` is an
+    operator-assigned group name (e.g. "Acme Corp") used only for boot /
+    audit logging — never the code value; ``expires`` (optional,
+    ``YYYY-MM-DD``) makes the code stop matching after that calendar day
+    (evaluated in UTC). ``extra="forbid"`` turns a typo'd key
+    (``{"cdoe": …}``) into a loud boot failure instead of a silently
+    ungated entry.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    code: SecretStr
+    label: str | None = Field(default=None, max_length=64)
+    expires: date | None = None
+
+    @field_validator("code")
+    @classmethod
+    def _code_not_blank(cls, v: SecretStr) -> SecretStr:
+        if not v.get_secret_value().strip():
+            raise ValueError("invite code must not be blank")
+        return v
+
+
+# Defensive upper bound on the ``INVITE_CODES`` array. A real operator
+# has a handful of groups; anything past this is a misconfiguration, and
+# leaving it unbounded would let a fat array burn CPU re-parsing on the
+# (rate-limited) create path. Security audit PR3 / MEDIUM-1.
+_MAX_INVITE_CODES = 256
 
 
 class Settings(BaseSettings):
@@ -344,7 +387,7 @@ class Settings(BaseSettings):
     # throttled because the abuse-cost asymmetry is too steep to leave
     # ungated by default. Tune the cap up for a busy multi-facilitator
     # deploy; set ``0`` to disable entirely (only safe behind an
-    # ``INVITE_CODE`` gate or an upstream WAF). Keyed on the same
+    # ``INVITE_CODES`` gate or an upstream WAF). Keyed on the same
     # hardened client-IP resolution the request limiter uses, so a
     # spoofed ``X-Forwarded-For`` can't shard the bucket.
     session_create_rate_per_min: int = Field(
@@ -382,17 +425,23 @@ class Settings(BaseSettings):
     content_security_policy: str = Field(
         default="", alias="CONTENT_SECURITY_POLICY"
     )
-    # Soft "anti-strangers" gate on ``POST /api/sessions``. When set to
-    # a non-empty value, the creator must supply a matching ``invite_code``
-    # on session creation; the player-side join links still work without
-    # it because they already carry per-role HMAC tokens. When unset
-    # (the default), no gate runs — local dev stays frictionless. This
-    # is NOT a security boundary against motivated attackers; it's a
+    # Soft "anti-strangers" gate on ``POST /api/sessions``. A JSON array
+    # of invite-code objects (``[{"code": "...", "label": "...",
+    # "expires": "YYYY-MM-DD"}]``); ``label`` and ``expires`` are
+    # optional. When the array is non-empty, the creator must supply a
+    # code matching one of the listed (non-expired) entries on session
+    # creation; the player-side join links still work without it because
+    # they already carry per-role HMAC tokens. When unset / empty (the
+    # default), no gate runs — local dev stays frictionless. Multiple
+    # codes let an operator hand a distinct code to each group and
+    # rotate/revoke per group by editing the array (persisted in the
+    # host ``.env``, so it survives container restarts). This is NOT a
+    # security boundary against motivated attackers; it's a
     # rate-limit-style stopgap to keep random web traffic from spending
     # LLM tokens on a public deploy. Pair with ``RATE_LIMIT_ENABLED=true``
-    # so a brute-forcer can't grind through the code at thousands of
-    # requests per minute. See ``docs/configuration.md`` § Security.
-    invite_code: SecretStr | None = Field(default=None, alias="INVITE_CODE")
+    # / ``SESSION_CREATE_RATE_PER_MIN`` so a brute-forcer can't grind
+    # through codes. See ``docs/configuration.md`` § Security.
+    invite_codes_json: str | None = Field(default=None, alias="INVITE_CODES")
 
     # ---- Audit ---------------------------------------------------------
     audit_ring_size: int = Field(default=2000, alias="AUDIT_RING_SIZE", ge=10)
@@ -594,37 +643,93 @@ class Settings(BaseSettings):
         )
         return secrets.token_urlsafe(32)
 
+    def invite_codes(self) -> tuple[InviteCode, ...]:
+        """Parse ``INVITE_CODES`` (a JSON array) into validated entries.
+
+        Empty / whitespace-only / unset all mean "no gate" → ``()``.
+        Anything else MUST be a JSON array (≤256 entries) of code objects;
+        malformed JSON, a non-array top level, an oversize array, or a bad
+        entry raises ``ValueError`` so a misconfigured gate fails **loudly
+        at boot** instead of silently ungating a deploy the operator
+        believed was protected (``app/main.py`` calls this during
+        startup). Re-parses per call; the input is bounded and the call
+        sites are low-frequency (boot + once per session create).
+
+        A bad entry's error is rebuilt from pydantic's per-error ``msg``
+        (a static template) + field location — never from ``str(exc)`` or
+        the raw ``input`` — because a non-string ``code`` (e.g. a bare
+        JSON number) makes pydantic embed the raw value *before*
+        ``SecretStr`` can mask it, and that string is logged at boot. This
+        keeps the loud, debuggable failure without leaking a mistyped code
+        value into the log (security audit PR3 / LOW-1).
+        """
+
+        raw = (self.invite_codes_json or "").strip()
+        if not raw:
+            return ()
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"INVITE_CODES is not valid JSON: {exc}") from exc
+        if not isinstance(data, list):
+            raise ValueError(
+                "INVITE_CODES must be a JSON array of code objects, e.g. "
+                '[{"code": "acme-7Fq2", "label": "Acme Corp"}]'
+            )
+        if len(data) > _MAX_INVITE_CODES:
+            raise ValueError(
+                f"INVITE_CODES has {len(data)} entries; the maximum is "
+                f"{_MAX_INVITE_CODES}"
+            )
+        codes: list[InviteCode] = []
+        for i, item in enumerate(data):
+            try:
+                codes.append(InviteCode.model_validate(item))
+            except ValidationError as exc:
+                detail = "; ".join(
+                    f"{'.'.join(str(p) for p in e['loc']) or '(root)'}: {e['msg']}"
+                    for e in exc.errors()
+                )
+                raise ValueError(
+                    f"INVITE_CODES entry #{i} is invalid — {detail}"
+                ) from None
+        return tuple(codes)
+
     def invite_code_required(self) -> bool:
-        """True iff a non-empty ``INVITE_CODE`` is configured.
+        """True iff at least one ``INVITE_CODES`` entry is configured.
 
-        Empty / whitespace-only / unset all mean "no gate" — local dev
-        and toy deploys boot frictionless. Operators on a public URL
-        set ``INVITE_CODE`` to gate session creation against random
-        web traffic.
+        Empty / unset means "no gate" — local dev and toy deploys boot
+        frictionless. Operators on a public URL list one or more codes to
+        gate session creation against random web traffic.
         """
 
-        if self.invite_code is None:
-            return False
-        return bool(self.invite_code.get_secret_value().strip())
+        return len(self.invite_codes()) > 0
 
-    def verify_invite_code(self, candidate: str | None) -> bool:
-        """Constant-time compare ``candidate`` against ``INVITE_CODE``.
+    def match_invite_code(self, candidate: str | None) -> InviteCode | None:
+        """Return the matching, non-expired ``InviteCode`` or ``None``.
 
-        Returns ``True`` when no gate is configured (``INVITE_CODE``
-        unset) so callers can use a single check. Whitespace is stripped
-        from both sides before compare so an operator who pastes the
-        code with a trailing newline doesn't lock themselves out.
-        ``hmac.compare_digest`` avoids the timing-side-channel that a
-        plain ``==`` would expose on a short invite code.
+        Whitespace is stripped from both sides so a copy-paste with a
+        trailing newline still matches. Every configured code is compared
+        with ``hmac.compare_digest`` (timing-safe) and the loop does
+        **not** short-circuit on the first hit, so per-code match timing
+        doesn't leak which code matched. An expired code (``expires`` <
+        today, UTC) never matches even if the value is right. Only called
+        when :meth:`invite_code_required` is true.
         """
 
-        if not self.invite_code_required():
-            return True
         if not candidate:
-            return False
-        assert self.invite_code is not None  # narrowed by ``invite_code_required``
-        expected = self.invite_code.get_secret_value().strip()
-        return hmac.compare_digest(expected, candidate.strip())
+            return None
+        cand = candidate.strip()
+        if not cand:
+            return None
+        today = datetime.now(UTC).date()
+        matched: InviteCode | None = None
+        for ic in self.invite_codes():
+            expected = ic.code.get_secret_value().strip()
+            is_match = hmac.compare_digest(expected, cand)
+            if is_match and (ic.expires is None or ic.expires >= today):
+                matched = ic
+        return matched
 
     def require_llm_api_key(self) -> str:
         """Return ``LLM_API_KEY`` or raise.

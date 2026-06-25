@@ -5,7 +5,7 @@ import { Eyebrow } from "./brand/Eyebrow";
 
 /**
  * Soft anti-strangers gate rendered ahead of the facilitator wizard
- * when the server has ``INVITE_CODE`` set. Public-URL deploys (e.g.
+ * when the server has ``INVITE_CODES`` set. Public-URL deploys (e.g.
  * the crittable.app Cloudflare tunnel) use it to keep random web
  * traffic from spending LLM tokens on session creation; player join
  * links don't need it because they already carry per-role HMAC tokens.
@@ -106,9 +106,9 @@ export function InviteGate({ onValidated, staleNotice }: Props) {
               color: "var(--ink-100)",
             }}
           >
-            INVITE_CODE
+            INVITE_CODES
           </code>{" "}
-          in your backend env (unset to disable this gate). The
+          array in your backend env (unset to disable this gate). The
           backend rate-limits invalid attempts.
         </p>
       </header>
