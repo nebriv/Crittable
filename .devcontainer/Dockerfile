@@ -8,6 +8,6 @@
 # Pin to 3.13 to match the runtime image (security audit M9): 3.14 pulled a
 # newer litellm (1.83.0) carrying open CVEs into dev containers; the runtime is
 # on 3.13 so dev should match it rather than drift onto a different resolve.
-FROM mcr.microsoft.com/devcontainers/python:3.13-bookworm
+FROM mcr.microsoft.com/devcontainers/python:3.14-bookworm
 
 RUN rm -f /etc/apt/sources.list.d/yarn.list
